@@ -1,0 +1,6 @@
+{
+  "name": "callboard",
+  "version": "0.1.0",
+  "description": "A cue file selects when a lane is named, started, resumed or compacted; it carries no text.",
+  "types": "./types/index.d.ts"
+}
