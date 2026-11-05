@@ -1,0 +1,26 @@
+# macOS
+.DS_Store
+
+# Editors
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# Local working area: the manager's state, tracker and audit records, lane reports
+.archive/
+
+# Orchestrator lock runtime state (created on acquire; never committed)
+.workspace-lock/
+
+# Dependencies and caches
+node_modules/
+__pycache__/
+
+# Local environment files (may hold secrets; never committed)
+.env
+.env.*
