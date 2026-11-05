@@ -167,19 +167,30 @@ function createLanes({ vscode, registry, sleep, now, workspaceFolders = () => un
     } catch {}
   }
 
+  // The state of a process the registry names (the registry keeps the rows of processes that died, and a pid can be reused):
+  //   'dead'  its pid is not a valid pid, does not answer, or `ps` gave a start time that differs from a recorded one;
+  //   'live'  its pid answers and `ps` gave the recorded start time;
+  //   'maybe' its pid answers but nothing proves it is the same process: no start time was recorded, or `ps` failed or timed out.
+  // reopen takes only 'live'; the sweep closes a tab only on 'dead', so a check that fails keeps the tab.
+  const procState = async (pid, procStart) => {
+    if (!Number.isInteger(pid) || pid < 2 || !alive(pid)) return 'dead'
+    const want = startKey(procStart)
+    if (want === undefined) return 'maybe'
+    const got = startKey(await startOf(pid))
+    if (got === undefined) return 'maybe'
+    return got === want ? 'live' : 'dead'
+  }
+  const rowLive = async (e) => (await procState(e.pid, e.procStart)) === 'live'
+
   // Reopens a saved conversation by its session id. Only a registry row whose process is alive counts (the registry keeps the rows of processes that died), and
   // alive means its pid answers and `ps` agrees with the row's procStart, as the mod checks: a pid reused by another process leaves the old row dead. A live
   // panel of that id returns at once, a live row that is not a panel (a terminal) is refused rather than opened a second time, and the wait takes only a live
   // panel whose pid is new, so a row left by the stopped process is never taken for the reopened one. The spool passes a timeout shorter than the lead's wait.
   function reopen(sid, { timeoutMs: limitMs = timeoutMs } = {}) {
     if (!SID_RE.test(String(sid))) return Promise.reject(new Error('bad session id'))
-    const started = async (e) => {
-      const want = startKey(e.procStart)
-      return want !== undefined && startKey(await startOf(e.pid)) === want
-    }
     const live = async (list) => {
       const out = []
-      for (const e of list) if (e.sessionId === sid && Number.isInteger(e.pid) && e.pid > 1 && alive(e.pid) && (await started(e))) out.push(e)
+      for (const e of list) if (e.sessionId === sid && (await rowLive(e))) out.push(e)
       return out
     }
     return serial(async () => {
@@ -209,28 +220,51 @@ function createLanes({ vscode, registry, sleep, now, workspaceFolders = () => un
   }
 
   // A panel this extension opened leaves a dead tab with an exit banner once its session ends. Sweeping notes each such panel's last name,
-  // process id and tab from the registry. When the entry is gone and that process is dead, its tab is closed, but only if no live session
+  // process id and tab from the registry. When no live entry is left and that process is dead, its tab is closed, but only if no live session
   // still carries that name (a new panel for the same lane), only for a known pid (a missing or odd pid is never taken for dead), never a
   // reserved name, and only the tab seen for that panel (or, if VS Code gave out a new object, the one Claude tab with its label).
   // History stays, so the session can be reopened. A live process (a /clear or a resume in the same panel) is never closed.
+  // Rows and the recorded process are judged by procState: a dead row neither keeps a tab nor blocks a close, and anything not proven dead
+  // (a failed `ps`, a row with no start time) keeps the tab: a row of that sid that is 'maybe' and not the recorded pid keeps it, the recorded
+  // pid closes it only when 'dead' (a pid since reused by another process is 'dead'), and a row with the name blocks the close unless 'dead'.
+  // Sweeps never overlap (the interval may fire while one still waits on `ps`): a call during a sweep returns that sweep.
   const lastSeen = new Map()
   const adoptedAt = new Map()
   const claudeTabs = () =>
     vscode.window.tabGroups.all.flatMap((g) => g.tabs).filter((t) => /claude/i.test(String(t.input && t.input.viewType)))
-  async function sweep() {
+  let sweeping
+  function sweep() {
+    if (!sweeping) sweeping = sweepOnce().finally(() => { sweeping = undefined })
+    return sweeping
+  }
+  async function sweepOnce() {
     if (opened.size === 0) return
     const all = await registry.list()
     if (all.complete === false) return
     const list = panels(all)
     for (const sid of [...opened.keys()]) {
-      const e = list.find((x) => x.sessionId === sid)
+      let e
+      let firstMaybe
+      const maybePids = []
+      for (const x of list) {
+        if (x.sessionId !== sid) continue
+        const st = await procState(x.pid, x.procStart)
+        if (st === 'live') { e = x; break }
+        if (st === 'maybe') { maybePids.push(x.pid); if (!firstMaybe) firstMaybe = x }
+      }
+      const note = (x) => {
+        const same = x.name ? claudeTabs().filter((t) => t.label === x.name) : []
+        const prev = lastSeen.get(sid)
+        lastSeen.set(sid, { name: x.name, pid: x.pid, procStart: x.procStart, tab: same.length === 1 ? same[0] : prev && prev.name === x.name ? prev.tab : undefined })
+      }
       if (e) {
         adoptedAt.delete(sid)
-        const same = e.name ? claudeTabs().filter((t) => t.label === e.name) : []
-        const prev = lastSeen.get(sid)
-        lastSeen.set(sid, { name: e.name, pid: e.pid, tab: same.length === 1 ? same[0] : prev && prev.name === e.name ? prev.tab : undefined })
+        note(e)
         continue
       }
+      // No live row, but one that may be live: note it, so its tab can still close once its pid is proven dead. The step below keeps the tab
+      // while it is 'maybe'; an adopted record still expires by its TTL.
+      if (firstMaybe) note(firstMaybe)
       const rec = lastSeen.get(sid)
       if (!rec) {
         if (now() - opened.get(sid) > guardMs) opened.delete(sid)
@@ -242,7 +276,7 @@ function createLanes({ vscode, registry, sleep, now, workspaceFolders = () => un
         adoptedAt.delete(sid)
         continue
       }
-      if (alive(rec.pid)) {
+      if (maybePids.some((p) => p !== rec.pid) || (await procState(rec.pid, rec.procStart)) !== 'dead') {
         if (adoptedAt.has(sid) && now() - adoptedAt.get(sid) > adoptTtlMs) {
           opened.delete(sid)
           lastSeen.delete(sid)
@@ -254,7 +288,9 @@ function createLanes({ vscode, registry, sleep, now, workspaceFolders = () => un
       lastSeen.delete(sid)
       adoptedAt.delete(sid)
       if (!rec.name || reservedHit(rec.name)) continue
-      if (all.some((x) => x.name === rec.name)) continue
+      let held = false
+      for (const x of all) if (x.name === rec.name && (await procState(x.pid, x.procStart)) !== 'dead') { held = true; break }
+      if (held) continue
       const tabs = claudeTabs().filter((t) => t.label === rec.name)
       const tab = rec.tab && tabs.includes(rec.tab) ? rec.tab : tabs.length === 1 ? tabs[0] : undefined
       if (!tab) continue
@@ -273,13 +309,15 @@ function createLanes({ vscode, registry, sleep, now, workspaceFolders = () => un
     const prev = lastSeen.get(sid)
     if (!opened.has(sid)) adoptedAt.set(sid, now())
     opened.set(sid, now())
-    lastSeen.set(sid, { name, pid, tab: prev && prev.name === name ? prev.tab : undefined })
+    lastSeen.set(sid, { name, pid, procStart: prev && prev.pid === pid ? prev.procStart : undefined, tab: prev && prev.name === name ? prev.tab : undefined })
     return true
   }
 
   async function close(sid) {
     if (!SID_RE.test(String(sid))) throw new Error('bad session id')
-    const entry = panels(await registry.list()).find((e) => e.sessionId === sid)
+    // Only a live row counts: a stale row (or one whose check failed) could carry an old name that another session's tab now has.
+    let entry
+    for (const e of panels(await registry.list())) if (e.sessionId === sid && (await rowLive(e))) { entry = e; break }
     if (!entry || !entry.name) throw new Error('no such open panel')
     if (reservedHit(entry.name)) throw new Error('refusing to close a reserved lane name')
     const tabs = vscode.window.tabGroups.all

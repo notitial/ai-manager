@@ -297,7 +297,7 @@ test('reopen: a live row of that sid that is not a panel throws live-elsewhere a
 })
 
 test('close needs exactly one tab named for the panel', async () => {
-  const w = world()
+  const w = world({ pids: true, alive: () => true })
   world.nextCwd = A
   const s = await w.lanes.open(A)
   const closedTabs = []
@@ -311,7 +311,7 @@ test('close needs exactly one tab named for the panel', async () => {
 })
 
 test('close ignores an editor tab that is not a Claude panel, and reserved names', async () => {
-  const w = world()
+  const w = world({ pids: true, alive: () => true })
   world.nextCwd = A
   const s = await w.lanes.open(A)
   w.vscode.window.tabGroups.all.push({ tabs: [{ label: w.entries[0].name, input: { viewType: 'default' } }] })
@@ -354,13 +354,16 @@ test('sweep closes the tab of an opened panel once its session is gone and its p
 })
 
 test('sweep never closes a panel it did not open, a reserved name, an ambiguous label or a non-Claude tab', async () => {
-  const w = world({ alive: () => false })
+  // Each process is alive while its row is listed and dead once the row is gone.
+  const dead = new Set()
+  const w = world({ alive: (pid) => !dead.has(pid) })
+  const gone = (pid) => { w.entries.length = 0; dead.add(pid) }
   const closed = []
   w.vscode.window.tabGroups.close = async (t) => closed.push(t)
   w.entries.push({ sessionId: 'f0000000-0000-4000-8000-000000000009', cwd: A, entrypoint: 'claude-vscode', name: 'LABX', pid: 7 })
   w.vscode.window.tabGroups.all.push({ tabs: [{ label: 'LABX', input: { viewType: CLAUDE_VIEW } }] })
   await w.lanes.sweep()
-  w.entries.length = 0
+  gone(7)
   await w.lanes.sweep()
   assert.deepEqual(closed, [], 'not opened by the extension')
 
@@ -370,7 +373,7 @@ test('sweep never closes a panel it did not open, a reserved name, an ambiguous 
   w.entries[0].name = 'manager'
   w.vscode.window.tabGroups.all[0].tabs = [{ label: 'manager', input: { viewType: CLAUDE_VIEW } }]
   await w.lanes.sweep()
-  w.entries.length = 0
+  gone(11)
   await w.lanes.sweep()
   assert.deepEqual(closed, [], 'reserved name')
 
@@ -379,7 +382,7 @@ test('sweep never closes a panel it did not open, a reserved name, an ambiguous 
   w.entries[0].name = 'LABB'
   w.vscode.window.tabGroups.all[0].tabs = [{ label: 'LABB', input: { viewType: CLAUDE_VIEW } }, { label: 'LABB', input: { viewType: CLAUDE_VIEW } }]
   await w.lanes.sweep()
-  w.entries.length = 0
+  gone(12)
   await w.lanes.sweep()
   assert.deepEqual(closed, [], 'two tabs with the same label')
 
@@ -388,13 +391,14 @@ test('sweep never closes a panel it did not open, a reserved name, an ambiguous 
   w.entries[0].name = 'LABC'
   w.vscode.window.tabGroups.all[0].tabs = [{ label: 'LABC', input: { viewType: 'default' } }]
   await w.lanes.sweep()
-  w.entries.length = 0
+  gone(13)
   await w.lanes.sweep()
   assert.deepEqual(closed, [], 'not a Claude panel')
 })
 
 test('sweep keeps the tab when a live session already carries the name, and drops a record with no known pid without closing', async () => {
-  const w = world({ alive: () => false })
+  const dead = new Set()
+  const w = world({ alive: (pid) => !dead.has(pid) })
   const closed = []
   w.vscode.window.tabGroups.close = async (t) => closed.push(t)
   world.nextCwd = A
@@ -404,6 +408,7 @@ test('sweep keeps the tab when a live session already carries the name, and drop
   w.vscode.window.tabGroups.all.push({ tabs: [{ label: 'LABA', input: { viewType: CLAUDE_VIEW } }] })
   await w.lanes.sweep()
   const gone = w.entries.shift()
+  dead.add(21)
   w.entries.push({ sessionId: 'f0000000-0000-4000-8000-0000000000aa', cwd: A, entrypoint: 'claude-vscode', name: 'LABA', pid: 22 })
   await w.lanes.sweep()
   assert.deepEqual(closed, [], 'a new live LABA holds the name')
@@ -423,7 +428,8 @@ test('sweep keeps the tab when a live session already carries the name, and drop
 })
 
 test('sweep survives a close that rejects and closes the tab it saw', async () => {
-  const w = world({ alive: () => false })
+  let live = true
+  const w = world({ alive: () => live })
   world.nextCwd = A
   await w.lanes.open(A)
   w.entries[0].pid = 31
@@ -434,12 +440,14 @@ test('sweep survives a close that rejects and closes the tab it saw', async () =
   w.vscode.window.tabGroups.close = (t) => { tried = t; return Promise.reject(new Error('no')) }
   await w.lanes.sweep()
   w.entries.length = 0
+  live = false
   await w.lanes.sweep()
   assert.equal(tried, tab)
 })
 
 test('sweep closes nothing when the registry read was incomplete, and closes once the read is whole again', async () => {
-  const w = world({ alive: () => false })
+  let live = true
+  const w = world({ alive: () => live })
   const closed = []
   w.vscode.window.tabGroups.close = async (t) => closed.push(t)
   world.nextCwd = A
@@ -450,6 +458,7 @@ test('sweep closes nothing when the registry read was incomplete, and closes onc
   w.vscode.window.tabGroups.all.push({ tabs: [tab] })
   await w.lanes.sweep()
   w.entries.length = 0
+  live = false
   const list = w.registry.list
   w.registry.list = async function () { return Object.defineProperty(await list.call(this), 'complete', { value: false }) }
   await w.lanes.sweep()
@@ -565,7 +574,8 @@ test('adopt gives the sweep a panel it did not open: its tab closes once the pid
 })
 
 test('an adopted panel keeps its tab while a live session carries the name, or while its registry entry is still there', async () => {
-  const w = world({ alive: () => false })
+  const dead = new Set([4242])
+  const w = world({ alive: (pid) => !dead.has(pid) })
   const tab = { label: 'ATT', input: { viewType: CLAUDE_VIEW } }
   const closed = []
   w.vscode.window.tabGroups.all.push({ tabs: [tab] })
@@ -577,9 +587,11 @@ test('an adopted panel keeps its tab while a live session carries the name, or w
   assert.equal(w.lanes.adopt(VALID_SID, { name: 'ATT', pid: 4242 }), true, 'the record was dropped with the check; a new request adopts again')
   w.entries.length = 0
   w.entries.push({ sessionId: VALID_SID, cwd: A, entrypoint: 'claude-vscode', name: 'ATT', pid: 4242 })
+  dead.delete(4242)
   await w.lanes.sweep()
   assert.deepEqual(closed, [], 'the entry is still in the registry')
   w.entries.length = 0
+  dead.add(4242)
   await w.lanes.sweep()
   assert.deepEqual(closed, [tab])
 })
@@ -661,6 +673,185 @@ test('an adopted panel that the registry shows is tracked like one the extension
   live = false
   await w.lanes.sweep()
   assert.deepEqual(closed, [tab])
+})
+
+// The registry keeps the rows of dead processes: a row counts for the sweep only while its pid is alive and `ps` agrees with its procStart.
+test('sweep: a stale row with the sid (its pid dead) no longer keeps the entry: the tab closes once the recorded pid is dead', async () => {
+  const dead = new Set()
+  const w = world({ alive: (pid) => !dead.has(pid) })
+  const tab = { label: 'LABS', input: { viewType: CLAUDE_VIEW } }
+  const closed = []
+  w.vscode.window.tabGroups.all.push({ tabs: [tab] })
+  w.vscode.window.tabGroups.close = async (t) => closed.push(t)
+  world.nextCwd = A
+  await w.lanes.open(A)
+  w.entries[0].pid = 4242
+  w.entries[0].name = 'LABS'
+  await w.lanes.sweep()
+  assert.deepEqual(closed, [], 'live')
+  dead.add(4242)
+  await w.lanes.sweep()
+  assert.deepEqual(closed, [tab], 'the row is still listed, but its process is dead')
+  assert.equal(w.entries.length, 1)
+  // An adopted panel whose stale row stays listed is closed too, and its record does not linger.
+  const v = world({ alive: () => false })
+  const vtab = { label: 'ATT', input: { viewType: CLAUDE_VIEW } }
+  const vclosed = []
+  v.vscode.window.tabGroups.all.push({ tabs: [vtab] })
+  v.vscode.window.tabGroups.close = async (t) => vclosed.push(t)
+  v.entries.push({ sessionId: VALID_SID, cwd: A, entrypoint: 'claude-vscode', name: 'ATT', pid: 4242 })
+  v.lanes.adopt(VALID_SID, { name: 'ATT', pid: 4242 })
+  await v.lanes.sweep()
+  assert.deepEqual(vclosed, [vtab])
+})
+
+test('sweep: a stale row with the lane\'s name (its pid dead) no longer blocks the close', async () => {
+  const w = world({ alive: () => false })
+  const tab = { label: 'ATT', input: { viewType: CLAUDE_VIEW } }
+  const closed = []
+  w.vscode.window.tabGroups.all.push({ tabs: [tab] })
+  w.vscode.window.tabGroups.close = async (t) => closed.push(t)
+  w.entries.push({ sessionId: 'b0000000-0000-4000-8000-0000000000b1', cwd: A, entrypoint: 'claude-vscode', name: 'ATT', pid: 4300 })
+  w.lanes.adopt(VALID_SID, { name: 'ATT', pid: 4242 })
+  await w.lanes.sweep()
+  assert.deepEqual(closed, [tab])
+})
+
+test('sweep: a row with the lane\'s name whose pid is alive but whose procStart differs counts as dead; a failed ps or a missing procStart blocks the close', async () => {
+  const TAB = 'closes'
+  for (const [row, startOf, want] of [
+    [{ pid: 4300 }, async (pid) => (pid === 4300 ? 'someone else' : `start-${pid}`), TAB],
+    [{ pid: 4300, procStart: '' }, undefined, 'kept'],
+    [{ pid: 4300 }, async (pid) => (pid === 4300 ? undefined : `start-${pid}`), 'kept'],
+  ]) {
+    const w = world({ alive: (pid) => pid !== 4242, startOf })
+    const tab = { label: 'ATT', input: { viewType: CLAUDE_VIEW } }
+    const closed = []
+    w.vscode.window.tabGroups.all.push({ tabs: [tab] })
+    w.vscode.window.tabGroups.close = async (t) => closed.push(t)
+    w.entries.push({ sessionId: 'b0000000-0000-4000-8000-0000000000b2', cwd: A, entrypoint: 'claude-vscode', name: 'ATT', ...row })
+    w.lanes.adopt(VALID_SID, { name: 'ATT', pid: 4242 })
+    await w.lanes.sweep()
+    assert.deepEqual(closed, want === TAB ? [tab] : [], JSON.stringify(row))
+  }
+})
+
+test('sweep: the recorded pid, reused by another process (alive, another start time), is dead: the tab closes; a failed ps keeps it', async () => {
+  let start4242 = 'start-4242'
+  const w = world({ alive: () => true, startOf: async (pid) => (pid === 4242 ? start4242 : `start-${pid}`) })
+  const tab = { label: 'LABR', input: { viewType: CLAUDE_VIEW } }
+  const closed = []
+  w.vscode.window.tabGroups.all.push({ tabs: [tab] })
+  w.vscode.window.tabGroups.close = async (t) => closed.push(t)
+  world.nextCwd = A
+  await w.lanes.open(A)
+  w.entries[0].pid = 4242
+  w.entries[0].name = 'LABR'
+  await w.lanes.sweep()
+  w.entries.length = 0
+  start4242 = undefined
+  await w.lanes.sweep()
+  assert.deepEqual(closed, [], 'ps failed: not proven dead')
+  start4242 = 'someone else'
+  await w.lanes.sweep()
+  assert.deepEqual(closed, [tab], 'the pid now belongs to another process')
+})
+
+test('sweep: a row of the sid whose check fails (ps failed) keeps the tab even when the recorded pid is dead, until its own pid is dead', async () => {
+  const dead = new Set([4242])
+  const w = world({ alive: (pid) => !dead.has(pid), startOf: async (pid) => (pid === 4243 ? undefined : `start-${pid}`) })
+  const tab = { label: 'LABM', input: { viewType: CLAUDE_VIEW } }
+  const closed = []
+  w.vscode.window.tabGroups.all.push({ tabs: [tab] })
+  w.vscode.window.tabGroups.close = async (t) => closed.push(t)
+  w.entries.push({ sessionId: VALID_SID, cwd: A, entrypoint: 'claude-vscode', name: 'LABM', pid: 4243 })
+  w.lanes.adopt(VALID_SID, { name: 'LABM', pid: 4242 })
+  await w.lanes.sweep()
+  assert.deepEqual(closed, [], 'a maybe-live process of that sid')
+  w.entries.length = 0
+  await w.lanes.sweep()
+  assert.deepEqual(closed, [], 'the noted process is still maybe-live')
+  dead.add(4243)
+  await w.lanes.sweep()
+  assert.deepEqual(closed, [tab])
+})
+
+test('sweep: a live row still keeps the tab open, and a live row with the lane\'s name still blocks the close', async () => {
+  const w = world({ alive: () => true })
+  const tab = { label: 'LABL', input: { viewType: CLAUDE_VIEW } }
+  const closed = []
+  w.vscode.window.tabGroups.all.push({ tabs: [tab] })
+  w.vscode.window.tabGroups.close = async (t) => closed.push(t)
+  world.nextCwd = A
+  await w.lanes.open(A)
+  w.entries[0].pid = 4242
+  w.entries[0].name = 'LABL'
+  for (let i = 0; i < 3; i++) await w.lanes.sweep()
+  w.tick(60 * 60_000)
+  await w.lanes.sweep()
+  assert.deepEqual(closed, [])
+  const v = world({ alive: (pid) => pid !== 4242 })
+  const vtab = { label: 'ATT', input: { viewType: CLAUDE_VIEW } }
+  const vclosed = []
+  v.vscode.window.tabGroups.all.push({ tabs: [vtab] })
+  v.vscode.window.tabGroups.close = async (t) => vclosed.push(t)
+  v.entries.push({ sessionId: 'b0000000-0000-4000-8000-0000000000b3', cwd: A, entrypoint: 'claude-vscode', name: 'ATT', pid: 4300 })
+  v.lanes.adopt(VALID_SID, { name: 'ATT', pid: 4242 })
+  await v.lanes.sweep()
+  assert.deepEqual(vclosed, [], 'a live session carries the name')
+})
+
+test('close uses only a live row: a stale row whose old name is now another live session\'s tab closes nothing, nor does a row whose check fails', async () => {
+  const s = 'abcdef01-0000-4000-8000-0000000000c1'
+  for (const [alive, startOf] of [[(pid) => pid !== 4242, undefined], [() => true, async (pid) => (pid === 4242 ? undefined : `start-${pid}`)]]) {
+    const w = world({ alive, startOf })
+    const closed = []
+    w.vscode.window.tabGroups.close = async (t) => closed.push(t)
+    w.entries.push({ sessionId: s, cwd: A, entrypoint: 'claude-vscode', name: 'LABO', nameSource: 'user', pid: 4242 })
+    w.entries.push({ sessionId: 'abcdef01-0000-4000-8000-0000000000c2', cwd: A, entrypoint: 'claude-vscode', name: 'LABO', nameSource: 'user', pid: 4300 })
+    w.vscode.window.tabGroups.all.push({ tabs: [{ label: 'LABO', input: { viewType: CLAUDE_VIEW } }] })
+    await assert.rejects(w.lanes.close(s), /no such open panel/)
+    assert.deepEqual(closed, [])
+  }
+})
+
+test('sweep: a panel only ever seen as maybe-live (ps failing) is noted, and its tab closes once its pid is dead', async () => {
+  let live = true
+  const w = world({ alive: () => live, startOf: async (pid) => (pid === 4242 ? undefined : `start-${pid}`) })
+  const tab = { label: 'LABQ', input: { viewType: CLAUDE_VIEW } }
+  const closed = []
+  w.vscode.window.tabGroups.all.push({ tabs: [tab] })
+  w.vscode.window.tabGroups.close = async (t) => closed.push(t)
+  world.nextCwd = A
+  await w.lanes.open(A)
+  w.entries[0].pid = 4242
+  w.entries[0].name = 'LABQ'
+  await w.lanes.sweep()
+  await w.lanes.sweep()
+  assert.deepEqual(closed, [], 'maybe-live: kept')
+  w.entries.length = 0
+  live = false
+  await w.lanes.sweep()
+  assert.deepEqual(closed, [tab])
+})
+
+test('sweeps do not overlap: a call while one runs returns that sweep, and the tab is closed once', async () => {
+  let release
+  const gate = new Promise((r) => { release = r })
+  const w = world({ alive: (pid) => pid !== 4242, startOf: async (pid) => { await gate; return `start-${pid}` } })
+  const tab = { label: 'ATT', input: { viewType: CLAUDE_VIEW } }
+  const closed = []
+  w.vscode.window.tabGroups.all.push({ tabs: [tab] })
+  w.vscode.window.tabGroups.close = async (t) => closed.push(t)
+  w.entries.push({ sessionId: 'b0000000-0000-4000-8000-0000000000b4', cwd: A, entrypoint: 'claude-vscode', name: 'ATT', pid: 4300, procStart: 'stale' })
+  w.lanes.adopt(VALID_SID, { name: 'ATT', pid: 4242 })
+  const a = w.lanes.sweep()
+  const b = w.lanes.sweep()
+  assert.equal(a, b)
+  release()
+  await Promise.all([a, b])
+  assert.deepEqual(closed, [tab])
+  assert.notEqual(w.lanes.sweep(), a, 'a later call starts a new sweep')
 })
 
 test('after a reopen, focus returns to the tab that was active', async () => {
