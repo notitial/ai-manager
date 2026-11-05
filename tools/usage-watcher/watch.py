@@ -1162,7 +1162,8 @@ def log_meter_history(out_dir, meter):
 
     A window whose own observation is older than its freshness limit before the line's time is
     written as '-': the statusline can carry a borrowed five-hour value next to a live weekly one,
-    and the line must not stamp that old value with the weekly time.
+    and the line must not stamp that old value with the weekly time. A five-hour value whose
+    observed_at is unknown (-1, or missing) is written as '-' for the same reason.
     """
     if not meter:
         return
@@ -1172,7 +1173,7 @@ def log_meter_history(out_dir, meter):
         return
     at = max(seen)
     view = dict(meter)
-    if meter.get("harvestLive") and at - meter["harvestedAt"] > METER_MAX_AGE_S:
+    if not meter.get("harvestLive") or at - meter["harvestedAt"] > METER_MAX_AGE_S:
         view["five"] = None
     if meter.get("weekLive") and at - meter["weekSeenAt"] > WEEK_FRESH_S:
         view["week"] = None

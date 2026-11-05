@@ -481,6 +481,15 @@ class WatchTest(unittest.TestCase):
         self.assertIn("7d=10%", lines[0])
         self.assertIn("5h=- reset5h=-", lines[0], "an old five-hour value is not stamped with the weekly time")
 
+    def test_meter_history_drops_a_five_hour_value_of_unknown_age(self):
+        # observed_at -1: the statusline carried the five-hour value over without a time.
+        self.write_meter(40, observed_ago=-1, week_observed_ago=30)
+        self.run_watch()
+        lines = self.history()
+        self.assertEqual(len(lines), 1)
+        self.assertIn("7d=10%", lines[0])
+        self.assertIn("5h=- reset5h=-", lines[0], "a five-hour value of unknown age is not stamped with the weekly time")
+
     def test_meter_history_keeps_a_five_hour_value_seen_shortly_before_the_weekly_one(self):
         self.write_meter(40, observed_ago=600, week_observed_ago=30)
         self.run_watch()
