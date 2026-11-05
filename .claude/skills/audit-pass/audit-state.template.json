@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "host": "<short host label>",
+  "cadenceDays": 30,
+  "lastRun": null,
+  "windowStart": null,
+  "windowEnd": null,
+  "reportPath": null,
+  "knownBenign": [
+    { "id": "<slug>", "what": "<the pattern not to re-flag>", "why": "<why it is expected>", "since": "<YYYY-MM-DD>" }
+  ],
+  "openFollowUps": [
+    { "id": "<slug>", "what": "<one line>", "owner": "<the person, or a lead or lane name>", "since": "<YYYY-MM-DD>", "closed": null }
+  ],
+  "unverified": [
+    { "id": "<slug>", "what": "<what could not be checked>", "why": "<why, e.g. guard-denied>", "since": "<YYYY-MM-DD>" }
+  ],
+  "runs": [
+    { "at": "<ISO>", "windowStart": "<ISO>", "windowEnd": "<ISO>", "reportPath": "<path>", "verdict": "<one line>" }
+  ]
+}
