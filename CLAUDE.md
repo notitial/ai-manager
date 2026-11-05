@@ -13,8 +13,9 @@ mod, a usage watcher, a session lister and the manager's project skills. ai-tool
 
 ## Build / Test / Lint
 
-No repo-wide build or lint. `bash tools/test-all.sh` runs every suite below and prints a pass/fail table; keep its
-suite list in step with this one.
+No repo-wide build or lint. `bash tools/test-all.sh` is the entry point: it runs every suite below and prints a
+pass/fail table (`--quick` skips the slow `callboard` suite, `NAME…` runs only those). Its suites: `callboard`,
+`usage-watcher`, `account-stamp`, `usage-watcher-install`, `session-peers`; keep its list in step with this one.
 
 - `tools/callboard/` — after changing anything under it, run `bash tools/callboard/sums.sh --write` first, then
   `bash tools/callboard/test.sh`, and commit the updated `SHA256SUMS`. Needs node 22.18 or later and the `claude` CLI
@@ -23,7 +24,7 @@ suite list in step with this one.
   `bash tools/usage-watcher/test-account-stamp.sh` after changing `account-stamp.sh` (needs jq);
   `bash tools/usage-watcher/test-install.sh` after changing `install.sh`.
 - `tools/session-peers/` — `bash tools/session-peers/test-peers.sh` after changing `peers.sh` (needs jq and python3).
-- `docs/` and `.claude/skills/` have no suite: check them by reading against the ADRs.
+- `docs/`, `rules/` and `.claude/skills/` have no suite: check them by reading against the ADRs.
 
 Outside those directories, do not search for `package.json`, `Makefile`, or similar.
 
@@ -33,8 +34,11 @@ Outside those directories, do not search for `package.json`, `Makefile`, or simi
 - `docs/adr/` — the decisions behind the design (index: `docs/adr/README.md`). Check them before proposing an
   architectural change; propose a new ADR when a significant decision is made.
 - `docs/setup.md` — the install order on a machine.
-- `.claude/skills/` — the manager's project skills.
-- `tools/` — the callboard mod, the usage watcher and the session lister, each with its own tests.
+- `.claude/skills/` — the manager's project skills; `.claude/skills/setup-manager/` walks a person through
+  `docs/setup.md`.
+- `rules/callboard.md` — an always-on global rule for callboard's turns, linked into `~/.claude/rules/` by hand.
+- `tools/` — the callboard mod, the usage watcher and the session lister, each with its own tests;
+  `tools/test-all.sh` runs them all.
 - `assets/icon/` — the project icon (SVG, mono variant, colour PNGs from 16 to 1024 px).
 - `.archive/` — gitignored local working area: the manager's state, tracker and audit records, lane reports.
 
@@ -62,4 +66,5 @@ Its verdict is a signal, not a required approval. The rules it holds a change to
   typed by the person in the session that acts on it.
 - A change to a shipped callboard file without `sums.sh --write` and an updated `SHA256SUMS` is a bug.
 - An installer fetches from a fixed URL into a fresh temporary repository and never reads the checkout's own object
-  store or git config.
+  store or git config. Callboard's installs only a pinned `--ref` on `main`, checked against the `SHA256SUMS` hash
+  from the description of the PR that last changed `tools/callboard`.

@@ -51,6 +51,9 @@ per machine. The grant lives in memory: every start and resume asks again. Its t
 `lane_compact`, `lane_terminate`, `lane_retire` and `lane_remove`; it never creates, opens, renames, starts or parks a
 lane. Every stop and every remove opens its own dialog, which the person answers.
 
+**Amended 2026-11-05 (callboard v15.1):** the only built-in reserved name is `MANAGER`. A machine adds its own with
+`/callboard reserve NAME`, so a second machine's manager reserves a different name there the same way.
+
 **The hard line.** The role file carries it, and the callboard briefing carries H2 word for word:
 - **H1** Never decide an approval.
 - **H2** Never dispatch, cancel, `kill_all` or restart anything. One exception: a callboard `lane_terminate` or
