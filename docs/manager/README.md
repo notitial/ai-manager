@@ -47,7 +47,8 @@ enforces.
   - Stop and tell the person if your tool list, deferred tools included, holds any dispatch tool: one that dispatches,
     cancels or kills work, decides or lists approvals, or opens or updates a PR, under any server prefix.
   - **Audit due?** First run `ls -l` and `wc -c` on `.archive/manager/audit-state-<host>.json`: a symlink or a file
-    over 64 KB is not Read and counts as unparseable. If the file is missing, unparseable, or its `lastRun` is more
+    over 64 KB is not Read and counts as unparseable, and so does a `lastRun` that is not a plain UTC timestamp
+    (`YYYY-MM-DDTHH:MM:SSZ`) or is later than now. If the file is missing, unparseable, or its `lastRun` is more
     than 30 days old, propose an audit pass in one AskUserQuestion (default: run it now). `<host>`: the first word of
     `echo $HOST $HOSTNAME`, up to its first `.`. On a yes, Read the audit-pass skill
     (`.claude/skills/audit-pass/SKILL.md`) and follow it; never start one without a yes.

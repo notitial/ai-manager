@@ -16,6 +16,6 @@
     { "id": "<slug>", "what": "<what could not be checked>", "why": "<why, e.g. guard-denied>", "since": "<YYYY-MM-DD>" }
   ],
   "runs": [
-    { "at": "<ISO>", "windowStart": "<ISO>", "windowEnd": "<ISO>", "reportPath": "<path>", "verdict": "<one line>" }
+    { "at": "<YYYY-MM-DDTHH:MM:SSZ>", "windowStart": "<YYYY-MM-DDTHH:MM:SSZ>", "windowEnd": "<YYYY-MM-DDTHH:MM:SSZ>", "reportPath": "<path>", "verdict": "<one line, or incomplete>" }
   ]
 }

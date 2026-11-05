@@ -36,8 +36,9 @@ Argument: one of a duration, `status` or `stop`; nothing else is accepted.
    `-d` display, `-i` idle sleep, `-m` disk, `-s` system sleep on AC power (on battery `-s` asserts
    nothing, so do not claim it). Never `-u`, and never omit `-t`. Measured 2026-10-23: the process keeps
    running, with its four assertions held, after the tool call that started it returns.
-4. **Verify the new process:** run `pgrep -x caffeinate` again; exactly one pid that was not listed before
-   must appear, and `pmset -g assertions` must show `caffeinate asserting for <seconds> secs` for it. Report
+4. **Verify the new process:** run `pgrep -x caffeinate` again, then `ps -o pid=,args= -p <pid>` for each pid
+   that was not listed before. Exactly one of them must show `caffeinate -dims -t <seconds>` (another tool may start
+   its own short hold meanwhile), and `pmset -g assertions` must show `caffeinate asserting for <seconds> secs` for it. Report
    the pid with the end time (now + duration). No new pid means the start failed: say so.
 
 ## Status
@@ -54,8 +55,8 @@ start their own.
 2. Right before killing, re-check each chosen pid: `ps -o ucomm= -p <pid>` must print `caffeinate` (the
    kernel's name; `comm` follows argv[0] and truncates a full path). A pid that ended in the meantime may
    already belong to another process, so skip any pid that fails the check and say so. Then `kill <pid> …`.
-   Where `kill` prompts, a pid can still change while the prompt waits: answer it promptly. Only
-   when the user asks to stop all of them: `pkill -x caffeinate`.
+   Where `kill` prompts, a pid can still change while the prompt waits: answer it promptly. When the user
+   asks to stop all of them, that means every pid listed in step 1, each re-checked and killed by pid as above.
 3. Verify with `pgrep -x caffeinate`: the stopped pids are gone.
 
 ## Permissions
@@ -65,16 +66,15 @@ start prompts the user, in auto mode too (an explicit ask rule runs before the c
 allow rule). Both forms are listed so the prompt does not depend on how the matcher treats the `nohup`
 wrapper. A start written another way (`env … caffeinate`, `bash -c …`, `ssh …`) matches neither rule and
 would not prompt; the fixed start form above is the only thing that keeps the command on a matching form.
-`pmset -g` only reads. The template also asks for `pkill -x caffeinate`, which stops every caffeinate. It
-does not ask-gate `kill`: that prompts in default mode, and in auto mode the classifier decides. Permission prompts are invisible to the model: only the user can confirm a start prompted.
+`pmset -g` only reads. The template also asks for `pkill -x caffeinate`, which stops every caffeinate; this skill never runs it.
+The template does not ask-gate `kill`: that prompts in default mode, and in auto mode the classifier decides. Permission prompts are invisible to the model: only the user can confirm a start prompted.
 
 In a lock-armed checkout, the toolkit's workspace-lock guard lets a session that does not hold the lock
 (MANAGER) run this skill's commands in exactly the forms above, and nothing near them: `pgrep -x caffeinate`,
 `pmset -g assertions`, the start form with `-t` from 1 to 86400 as the whole command, `kill <pid> …` with
 plain pids that are all running caffeinate, and `pkill -x caffeinate`. `ps` is a read already. Any other
 form needs the lock. The guard cannot tell MANAGER from any other session, so every session without the
-lock gets these forms. A session on the template, MANAGER included, is asked for the start and
-`pkill -x caffeinate`, not for `kill`.
+lock gets these forms. A session on the template, MANAGER included, is asked for the start, not for `kill`.
 
 ## Another machine (not built)
 
