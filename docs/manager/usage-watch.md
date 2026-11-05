@@ -49,9 +49,11 @@ The watcher measures; you ask; the person decides.
 - Resolve through `ListAgents`, never from the file. `ListAgents` shows no session id, so an exact name match is the
   only address.
 - **Addressable** only when the alert has `live: true`, `kind: "interactive"` and `addr: true`, and exactly one
-  interactive `ListAgents` row other than yours carries exactly its `name`.
-- Anything else (not live, not interactive, `addr: false`, no row, several rows): report the name, `sid8` and `why`,
-  and ask nothing.
+  interactive `ListAgents` row other than yours carries exactly its `name`, and that row is a session on this machine.
+  The watcher measures only this machine. `ListAgents` labels each row by kind; a Remote Control or cloud row is
+  another machine's session.
+- Anything else (not live, not interactive, `addr: false`, no row, several rows, or a same-name row from another
+  machine): report the name, `sid8` and `why`, and ask nothing.
 - A meter alert with no `sid`: report the meter level only.
 
 ### Log without asking
@@ -75,7 +77,7 @@ assigned work, and on any `runaway`-level alert.
 
 ### On "Send"
 
-- Run `ListAgents` again and re-check the match.
+- Run `ListAgents` again and re-check the match, with the same limit: exactly one row, on this machine.
 - Send exactly one message, this text and nothing else:
   `Stop at your next boundary and write a /handover; the person will restart you.`
 - It may go to a session that is not a lead or a named session: the one exception to H3. It never goes to a
@@ -90,7 +92,8 @@ Only when the person asks for one; none runs otherwise.
 
 - **Arm:** `CronList` first. One recurring job at off-minutes (for example `7,37 * * * *`), prompt
   `run the MANAGER tick`. Record its id, created date and expiry (+7 days) in the tracker header.
-- **Lifetime:** it survives `/compact` and returns on `--continue`; a fresh start has none. It can fire up to half a
+- **Lifetime:** it survives `/compact` and returns on `--continue`; a fresh start has none. The start checks run
+  `CronList` against the tracker's Tick id and reset it to `none` when the job is gone. It can fire up to half a
   period late. On day 6, `CronCreate` the new job, `CronDelete` the old id, record the new one. Never leave two tick
   jobs alive.
 - **Each tick:**

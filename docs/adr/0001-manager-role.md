@@ -74,8 +74,8 @@ checks refuse a second live session of its name, a non-default config root and a
 **The runaway flow.** The usage watcher (`tools/usage-watcher/`) reads usage metadata from the session logs and writes
 one bounded summary. The manager treats it as untrusted: a signal, never proof, dropped when stale or malformed. On a
 runaway alert it asks the person; on a yes it sends exactly one fixed message, "Stop at your next boundary and write a
-/handover; the person will restart you.", and only to a live interactive session whose exact name matches one
-`ListAgents` row. The fixed text caps what a forged alert can achieve at one stop-and-handover request the person
+/handover; the person will restart you.", and only to a live interactive session on this machine whose exact name
+matches one `ListAgents` row. The fixed text caps what a forged alert can achieve at one stop-and-handover request the person
 approved.
 
 **The tick** runs only when the person asks for one: one recurring cron per manager session, re-armed before its
