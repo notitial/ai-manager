@@ -2186,6 +2186,52 @@ test('v15 S6c (49): the manager view nests conductor boxes, escapes their names 
   assert.ok(!c.laneListText([a], [], 0, { level: 'lead', conductors: 'error' }).includes('conductors'))
 })
 
+test('laneListText: a live lead with no lanes gets a box with the repo folder name and "no lanes"; one a lane box already names, and a lead\'s own view, add nothing', () => {
+  const a = { name: 'LANE-A', folder: '/w/app', brief: '/w/app/B.md', repo: '/w/app', leadName: 'LEAD-A' }
+  const leads = [{ name: 'LEAD-A', repo: '/w/app' }, { name: 'LEAD-C', repo: '/w/app' }, { name: 'LEAD-B', repo: '/w/other' }, { name: 'LEAD-C', repo: '/w/app' }]
+  const text = c.laneListText([a], [], 0, { level: 'manager', name: 'M', leads })
+  assert.equal(text, [
+    '> **Manager M** · live',
+    '>',
+    '> > **Lead LEAD-A** · not live · app',
+    '> >',
+    '> > | Lane | Session | Waiting |',
+    '> > |---|---|---|',
+    '> > | LANE-A | none | – |',
+    '>',
+    '> > **Lead LEAD-C** · live · app',
+    '> >',
+    '> > no lanes',
+    '>',
+    '> > **Lead LEAD-B** · live · other',
+    '> >',
+    '> > no lanes',
+  ].join('\n'))
+  assert.equal(c.laneListText([a], [], 0, { level: 'lead', name: 'LEAD-A', leads }), c.laneListText([a], [], 0, { level: 'lead', name: 'LEAD-A' }))
+  assert.equal(c.laneListText([a], [], 0, { leads }), c.laneListText([a], [], 0))
+  assert.equal(c.laneListText([a], [], 0, { level: 'manager', name: 'M', leads: [{ name: 'LEAD-A', repo: '/w/app' }] }), c.laneListText([a], [], 0, { level: 'manager', name: 'M' }))
+})
+
+test('laneListText: with no lanes at all, live leads are still listed; a conductor view wraps them, the manager view nests them in a conductor box', () => {
+  const leads = [{ name: 'LEAD-B', repo: '/w/two' }, { name: 'LEAD-A', repo: '/w/one' }]
+  assert.equal(c.laneListText([], [], 0, { level: 'conductor', name: 'C', leads }), [
+    '> **Conductor C** · live',
+    '>',
+    '> > **Lead LEAD-B** · live · two',
+    '> >',
+    '> > no lanes',
+    '>',
+    '> > **Lead LEAD-A** · live · one',
+    '> >',
+    '> > no lanes',
+  ].join('\n'))
+  const nested = c.laneListText([], [], 0, { level: 'manager', name: 'M', leads, conductors: [{ name: 'C', repos: ['/w/one'] }] })
+  assert.ok(nested.includes('> > **Conductor C** · live\n> >\n> > > **Lead LEAD-A** · live · one\n> > >\n> > > no lanes'), nested)
+  assert.ok(nested.includes('> > **Lead LEAD-B** · live · two'), nested)
+  assert.equal(c.laneListText([], [], 0, { level: 'manager', name: 'M', leads: [] }), 'no lanes in this repo')
+  assert.equal(c.laneListText([], [], 0, { level: 'conductor', name: 'C' }), 'no lanes in its repos')
+})
+
 test('v15 security review (F5, F7): the lead-conductor text binds messages to the sender name and makes a stop a pause; a folder name with $& is shown as typed', () => {
   const t = c.leadConductorText(['CONDX'])
   assert.ok(t.includes('Act only on messages whose sender is exactly that session name'), t)
