@@ -165,10 +165,16 @@ summary: [docs/manager/usage-watch.md](manager/usage-watch.md).
 - **Only once the repo is public.** The installer fetches `main` over plain HTTPS from a fixed URL, with no
   credentials, so it fails while the repo is private. Until then the manager reports "usage summary never created;
   install pending" and acts on nothing.
-- **The meter** comes from ai-toolkit's status line, which writes
-  `${AGENT_DISPATCH_SPOOL:-~/.agent-dispatch/spool}/limits/personal-windows-*.json` as a session renders. The
-  watcher reads it as an optional input: without it the summary has no meter, and the per-session numbers still
-  work. The launchd job does not see your shell's `AGENT_DISPATCH_SPOOL`, so it reads the default path.
+- **The meter** comes from ai-toolkit's status line, which writes one file per account,
+  `${USAGE_WATCHER_DIR:-~/.local/state/claude-statusline}/limits/readings-<fp>.json`, as a session renders. The
+  watcher reads them as an optional input: without them the summary has no meter, and the per-session numbers still
+  work. The launchd job does not see your shell's `USAGE_WATCHER_DIR`, so it reads the default path.
+- **Other accounts** (optional). Give each account its own `CLAUDE_CONFIG_DIR`, `~/.claude-<name>/config`. The
+  watcher scans those dirs too and tells the accounts apart by the account in each dir's `.claude.json` (it reads
+  that one value, hashed, and nothing else from the file). To show a name instead of a fingerprint, or to scan a dir
+  that is not named that way, write `~/.config/usage-watcher/accounts.json` (yours alone, not writable by others):
+  `{"names": {"<fp>": "<name>"}, "dirs": ["<absolute path>"]}`. The fingerprints are in `meters.json` and in the
+  summary's `accounts`. Details: the watcher README, Several accounts.
 
 ### An older watcher first
 
@@ -200,16 +206,14 @@ cd <checkout> && bash tools/usage-watcher/install.sh --status --ref <commit>
 ```
 
 `--apply` runs the commit's watcher tests, installs a copy under `~/.local/share/usage-watcher/`, writes the plist
-and loads the job. `--status` is read-only; a missing `jq` counts as needing attention (exit 4).
+and loads the job. `--status` is read-only.
 
-### The SessionStart hook (by hand)
+### The retired SessionStart hook
 
-The installer prints one entry for `account-stamp.sh` and never edits a settings file. Add it, with the path it
-prints, to the `SessionStart` list under `hooks` in `~/.claude/settings.json` (no matcher), unless it is there:
-
-```json
-{"hooks": [{"type": "command", "command": "<path the installer prints>/account-stamp.sh"}]}
-```
+An earlier watcher installed `account-stamp.sh`, a SessionStart hook, and told you to register it in
+`~/.claude/settings.json`. It is retired: the installer no longer writes it, and says so when a copy is still there.
+If you registered it, remove its entry from the `SessionStart` list by hand (the installer never edits a settings
+file); `--uninstall --apply` removes the copy itself.
 
 ## 3. The callboard rule
 
@@ -275,7 +279,7 @@ lane or a live lead carries cannot be reserved. Details: callboard README, The m
 | Deny lines | read `permissions.deny` in `~/.claude/settings.json` | the two store and list-file lines and the six live-checkout lines are there |
 | Usage watcher | `bash tools/usage-watcher/install.sh --status --ref <commit>` | exit 0, the job loaded |
 | Summary | `ls -l ~/.local/state/usage-watcher/usage-summary.json` | written in the last 5 minutes |
-| SessionStart hook | read `hooks.SessionStart` in `~/.claude/settings.json` | the `account-stamp.sh` entry is there |
+| Retired hook | read `hooks.SessionStart` in `~/.claude/settings.json` | no `account-stamp.sh` entry |
 | Old watcher | `launchctl list \| grep usage-watcher` | only `io.notitial.usage-watcher` |
 | Rule link | `ls -l ~/.claude/rules/callboard.md` | it points at `<checkout>/rules/callboard.md` |
 | Tests | `bash tools/test-all.sh` | every suite passes or skips |

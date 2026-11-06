@@ -55,7 +55,6 @@ write_tree() {
   esac
   /bin/mkdir -p "$d"
   printf '# fixture watch.py %s\nprint("fixture %s")\n' "$2" "$2" >"$d/watch.py"
-  printf '#!/bin/bash\n# fixture account-stamp.sh %s\nexit 0\n' "$2" >"$d/account-stamp.sh"
   printf 'import sys\nsys.exit(%s)\n' "$3" >"$d/test_watch.py"
   /bin/cat >"$d/$LABEL.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -121,8 +120,7 @@ EVIL=$(tg -C "$T/wt-evil" rev-parse evil)
 
 # --- stubs -----------------------------------------------------------------------------------------------------------
 
-# id -u is 4242, or the content of fake-uid when present. bootstrap fails while fail-bootstrap exists. jq sits in its
-# own folder, so a run can leave it off PATH.
+# id -u is 4242, or the content of fake-uid when present. bootstrap fails while fail-bootstrap exists.
 /bin/cat >"$T/stub/id" <<EOF
 #!/bin/bash
 if [ "\${1:-}" = -u ]; then
@@ -131,9 +129,6 @@ else
   exec /usr/bin/id "\$@"
 fi
 EOF
-/bin/mkdir -p "$T/jq"
-printf '#!/bin/sh\nexit 0\n' >"$T/jq/jq"
-/bin/chmod 0755 "$T/jq/jq"
 /bin/cat >"$T/stub/launchctl" <<EOF
 #!/bin/bash
 st='$T/ld'
@@ -165,7 +160,7 @@ case \${1:-} in
 esac
 EOF
 /bin/chmod 0755 "$T/stub/id" "$T/stub/launchctl"
-SPATH="$T/stub:$T/jq:/usr/bin:/bin"
+SPATH="$T/stub:/usr/bin:/bin"
 check "$(/usr/bin/env -i PATH="$SPATH" /bin/bash -c 'command -v launchctl')" "$T/stub/launchctl" "launchctl resolves to the stub"
 check "$(/usr/bin/env -i PATH="$SPATH" /bin/bash -c 'command -v id')" "$T/stub/id" "id resolves to the stub"
 [ "$FAIL" = 0 ] || { echo "stubs not first on PATH; refusing to run the installer" >&2; exit 1; }
@@ -238,7 +233,7 @@ has "dry run" "$OUT" "source: file://$T/origin.git, main at $V2"
 has "dry run" "$OUT" "would write $H/.local/share/usage-watcher/watch.py (mode 0444"
 has "dry run" "$OUT" "would load the job: launchctl bootstrap gui/4242 $H/Library/LaunchAgents/$LABEL.plist"
 has "dry run" "$OUT" "<string>$H/.local/share/usage-watcher/watch.py</string>"
-has "dry run hook line" "$OUT" "{\"hooks\": [{\"type\": \"command\", \"command\": \"$H/.local/share/usage-watcher/account-stamp.sh\"}]}"
+lacks "dry run" "$OUT" "SessionStart"
 check "$(snap "$H")" "$before" "dry run changes nothing in the home"
 check "$(lc_count bootstrap)$(lc_count bootout)" 00 "dry run neither loads nor unloads"
 check "$(tmp_left)" 0 "dry run removes its temporary folder"
@@ -251,9 +246,8 @@ run -- "$H" "$INST" --apply
 check "$RC" 0 "--apply exits 0"
 has "--apply" "$OUT" "installed from $V2"
 check "$(/bin/cat "$S/watch.py")" "$(printf '# fixture watch.py v2\nprint("fixture v2")')" "watch.py is main's"
-check "$(/usr/bin/grep -c 'account-stamp.sh v2' "$S/account-stamp.sh")" 1 "account-stamp.sh is main's"
+check "$([ -e "$S/account-stamp.sh" ] && echo present || echo absent)" absent "account-stamp.sh is retired: not installed"
 check "$(/usr/bin/stat -f %Lp "$S/watch.py")" 444 "watch.py mode"
-check "$(/usr/bin/stat -f %Lp "$S/account-stamp.sh")" 555 "account-stamp.sh mode"
 check "$(/usr/bin/stat -f %Lp "$P")" 644 "plist mode"
 check "$(/usr/bin/stat -f %Lp "$S")" 700 "share dir mode"
 check "$(/usr/bin/stat -f %Lp "$H/.local/state/usage-watcher")" 700 "data dir mode"
@@ -267,7 +261,7 @@ check "$(/usr/bin/tail -n 1 "$T/launchctl.log")" "print gui/4242/$LABEL" "apply 
 check "$(lc_count "bootstrap gui/4242 $P")" 1 "apply bootstraps the job in gui/<uid>"
 check "$(lc_count bootout)" 0 "first apply has nothing to boot out"
 check "$(/usr/bin/shasum -a 256 "$H/.claude/settings.json")" "$SETTINGS_SUM" "settings.json untouched"
-has "--apply hook line" "$OUT" "\"command\": \"$S/account-stamp.sh\""
+lacks "--apply" "$OUT" "SessionStart"
 check "$(tmp_left)" 0 "apply removes its temporary folder"
 check "$(/bin/ls -A "$S" | /usr/bin/grep -c '^\.uw-install' || true)" 0 "no leftover pending file"
 
@@ -279,6 +273,19 @@ has "second --apply" "$OUT" "plist unchanged"
 check "$(lc_count "bootout gui/4242/$LABEL")" 1 "second apply boots the job out before loading it"
 check "$(lc_count bootstrap)" 2 "second apply loads it again"
 
+# a copy of the retired account-stamp.sh from an earlier install: noted by every mode, never rewritten or removed
+# except by --uninstall --apply, and never an error
+printf '#!/bin/bash\n# the retired hook\nexit 0\n' >"$S/account-stamp.sh"
+/bin/chmod 0555 "$S/account-stamp.sh"
+retired=$(/usr/bin/shasum -a 256 "$S/account-stamp.sh")
+run -- "$H" "$INST"
+check "$RC" 0 "the dry run with a retired copy exits 0"
+has "dry run, retired copy" "$OUT" "account-stamp.sh is retired and a copy is still at $S/account-stamp.sh"
+run -- "$H" "$INST" --apply
+check "$RC" 0 "--apply with a retired copy exits 0"
+has "--apply, retired copy" "$OUT" "Remove its SessionStart entry from"
+check "$(/usr/bin/shasum -a 256 "$S/account-stamp.sh")" "$retired" "--apply leaves the retired copy as it was"
+
 # --- status ----------------------------------------------------------------------------------------------------------
 
 before=$(snap "$H")
@@ -286,6 +293,7 @@ run -- "$H" "$INST" --status
 check "$RC" 0 "--status exits 0 when installed"
 has "--status" "$OUT" "loaded   gui/4242/$LABEL (last exit code = 0)"
 has "--status" "$OUT" "all good"
+has "--status, retired copy" "$OUT" "account-stamp.sh is retired"
 run -- "$H" "$INST" --status --ref "$V2"
 check "$RC" 0 "--status --ref main's tip exits 0"
 has "--status --ref" "$OUT" "same     watch.py as at $V2"
@@ -309,7 +317,7 @@ check "$(snap "$H")" "$before" "refused --ref changes nothing"
 run -- "$H" "$INST" --apply
 check "$(/usr/bin/grep -c 'fixture v2' "$S/watch.py")" 1 "--apply without --ref goes back to main"
 
-# --- a failing bootstrap, a missing jq, root, a relative TMPDIR ------------------------------------------------------
+# --- a failing bootstrap, root, a relative TMPDIR --------------------------------------------------------------------
 
 : >"$T/fail-bootstrap"
 n=$(lc_count "bootout gui/4242/$LABEL")
@@ -320,16 +328,6 @@ check "$(lc_count "bootout gui/4242/$LABEL")" "$((n + 1))" "the job was booted o
 /bin/rm -f "$T/fail-bootstrap"
 run -- "$H" "$INST" --apply
 check "$RC" 0 "re-running --apply after the cause is fixed loads the job"
-
-run "PATH=$T/stub" -- "$H" "$INST"
-check "$RC" 0 "the dry run without jq exits 0"
-has "no jq, dry run" "$OUT" "account-stamp.sh will record nothing"
-run "PATH=$T/stub" -- "$H" "$INST" --apply
-check "$RC" 0 "--apply without jq exits 0"
-has "no jq, --apply" "$OUT" "account-stamp.sh will record nothing"
-run "PATH=$T/stub" -- "$H" "$INST" --status
-check "$RC" 4 "--status without jq exits 4"
-has "no jq, --status" "$OUT" "account-stamp.sh will record nothing"
 
 printf '0\n' >"$T/fake-uid"
 before=$(snap "$H")
@@ -350,6 +348,7 @@ n=$(lc_count bootout)
 run -- "$H" "$INST" --uninstall
 check "$RC" 0 "--uninstall dry run exits 0"
 has "--uninstall dry run" "$OUT" "would remove $P"
+has "--uninstall dry run" "$OUT" "would remove $S/account-stamp.sh"
 check "$(snap "$H")" "$before" "--uninstall dry run changes nothing"
 check "$(lc_count bootout)" "$n" "--uninstall dry run unloads nothing"
 run -- "$H" "$INST" --uninstall --apply
@@ -450,7 +449,6 @@ P8=$H8/Library/LaunchAgents/$LABEL.plist
 /usr/bin/plutil -lint -s "$P8" >/dev/null && ok || bad "the escaped plist lints"
 check "$(/usr/bin/plutil -extract ProgramArguments.4 raw -o - "$P8")" "$CFG" "the config dir reads back unchanged"
 check "$(/usr/bin/grep -c "<string>$T/cfg &amp; &lt;x&gt; dir</string>" "$P8" || true)" 1 "the config dir is XML-escaped in the file"
-has "hook line names the config dir" "$OUT" "hook in $CFG/settings.json"
 
 # --- ignores a poisoned git environment ------------------------------------------------------------------------------
 

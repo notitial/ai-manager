@@ -51,7 +51,6 @@ suite() {  # suite <name> <slow:0|1> <needs> <command>; needs is one or more com
 suites() {
   suite callboard              1 'node claude plutil'       'bash tools/callboard/test.sh'
   suite usage-watcher          0 /usr/bin/python3           '/usr/bin/python3 -I tools/usage-watcher/test_watch.py'
-  suite account-stamp          0 jq                         'bash tools/usage-watcher/test-account-stamp.sh'
   suite usage-watcher-install  0 'plutil /usr/bin/python3'  'bash tools/usage-watcher/test-install.sh'
   suite session-peers          0 'jq python3'               'bash tools/session-peers/test-peers.sh'
 }

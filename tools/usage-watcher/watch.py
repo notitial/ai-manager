@@ -2,8 +2,11 @@
 """Runaway-session usage watcher.
 
 Run every ~5 min by launchd. Reads only usage metadata appended to Claude Code session
-logs since the last run and atomically writes one bounded usage-summary.json. It never
-reads message text, never messages a session, and never writes outside its output dir.
+logs since the last run (in every account's config dir), one value of each account's
+.claude.json (its accountUuid, hashed to a fingerprint at once), the status line's readings
+files and the person's optional account config, and atomically writes one bounded
+usage-summary.json. It never reads message text, never messages a session, and never writes
+outside its output dir.
 Built from a design spec and its review (see README.md).
 
 Python 3.9 stdlib only (the pinned /usr/bin/python3 on macOS).
@@ -44,10 +47,18 @@ WEEK_FRESH_S = 6 * 3600  # a weekly figure moves slowly: fresh while seen within
 PACE_WARN = {"five": 100, "week": 90}  # statusline.sh FIVE_HOUR_WARN_AT / WEEKLY_WARN_AT
 PACE_DAMP_BELOW = 25  # statusline.sh RATE_DAMP_BELOW
 METERS_ACCOUNTS_MAX = 8
-LABEL_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,15}$")  # an account label: AIT_ACCOUNT, as the hook and statusline.sh check it
-LABEL_FILES_MAX = 500
-LABEL_FILE_MAX_BYTES = 1024
-LABEL_FILE_KEEP_S = 30 * 86400  # a session's label file older than this belongs to a session long gone
+ACCOUNT_DIRS_MAX = METERS_ACCOUNTS_MAX  # config dirs scanned, the main one included
+ACCOUNTS_CONF_MAX_BYTES = 65536
+ACCOUNT_NAMES_MAX = 64
+CLAUDE_JSON_MAX_BYTES = 256 * 1024 * 1024  # read in chunks, so this bounds time, not memory
+CLAUDE_JSON_CHUNK = 1 << 20
+UNKNOWN_ACCT = "unknown"  # the account of a session whose config dir names no account
+# The field statusline.sh greps out (its first match), with the value and the gap bounded so a match can be found
+# across a chunk boundary: a real account id is 36 characters.
+UUID_RE = re.compile(rb'"accountUuid" {0,64}: {0,64}"([^"]{0,256})"')
+UUID_OVERLAP = 1024
+REGISTRY_MAX_BYTES = 65536
+FP_RE = re.compile(r"[0-9a-f]{6,64}")
 READING_MAX_BYTES = 65536
 READING_SRCS = ("statusline", "mod", "probe")
 TOP_N = 8
@@ -350,12 +361,28 @@ def prune_file(fs, now):
     fs["ctx"] = [c for c in fs["ctx"] if c[0] >= bcut]
 
 
-def scan(config_dir, state, now, health):
+def log_paths(base, strict):
+    """The session logs under <config dir>/projects: <project>/<sid>.jsonl and every .jsonl below
+    <project>/<sid>/subagents, found without following a link below `subagents`. With `strict` (a dir other than
+    the main one) a project folder that is a link is skipped too."""
+    paths = []
+    for proj in glob.glob(os.path.join(glob.escape(base), "*")):
+        if strict and os.path.islink(proj):
+            continue
+        paths += glob.glob(os.path.join(glob.escape(proj), "*.jsonl"))
+        for sub in glob.glob(os.path.join(glob.escape(proj), "*", "subagents")):
+            for dirpath, _, names in os.walk(sub, followlinks=False):
+                paths += [os.path.join(dirpath, n) for n in names if n.endswith(".jsonl")]
+    return paths
+
+
+def scan(config_dir, state, now, health, acct=None, strict=False):
+    """Read a config dir's session logs into state. `acct` is the dir's account key (None: the main account); every
+    file read here is stamped with it, so the summary can split the sessions by account."""
     files = state["files"]
     keys = state["keys"]
     base = os.path.join(config_dir, "projects")
-    paths = glob.glob(os.path.join(base, "*", "*.jsonl"))
-    paths += glob.glob(os.path.join(base, "*", "*", "subagents", "**", "*.jsonl"), recursive=True)
+    paths = log_paths(base, strict)
     stats = []
     for path in paths:
         try:
@@ -382,6 +409,7 @@ def scan(config_dir, state, now, health):
                     del keys[k]
             fs = new_file_state(state, st, sid, sub)
             files[path] = fs
+        fs["acct"] = acct
         fs["proj"] = safe(rel[0][-NAME_MAX:])
         if st.st_size > fs["off"]:
             try:
@@ -399,89 +427,181 @@ def scan(config_dir, state, now, health):
 
 # ---------------------------------------------------------------- inputs: meter + registry
 
-def valid_label(v):
-    # fullmatch, not match: `$` also matches before a trailing newline, which the hook's and the status line's
-    # bash test rejects, so "second\n" would otherwise be a second account beside "second".
-    return v if isinstance(v, str) and LABEL_RE.fullmatch(v) else None
+def my_uid():
+    return os.getuid()
 
 
-def labelled_file(path):
-    """True when a readings file belongs to a labelled account (AIT_ACCOUNT), which is never the summary's meter.
-    Read with the size cap read_accounts uses: the optional spool may be writable by other processes, and this
-    runs on every personal-windows file before the one-file check, so a huge planted file must not be parsed."""
+def account_fp(claude_json):
+    """The account fingerprint of a .claude.json: the first 12 hex of sha256 of its accountUuid, as ai-toolkit's
+    statusline.sh computes it (its first `"accountUuid": "..."` match). Only that one value is taken: the file is
+    read as bytes in chunks, matched, and dropped, and neither the uuid nor anything else from it is logged,
+    printed or stored. None when the file is missing, not a regular file of ours, over the cap, or names no
+    account."""
     try:
-        with os.fdopen(open_regular(path), "r") as f:
-            raw = f.read(READING_MAX_BYTES + 1)
-        if len(raw) > READING_MAX_BYTES:
-            return False
-        d = json.loads(raw)
-    except (OSError, ValueError, RecursionError):
-        return False
-    return isinstance(d, dict) and valid_label(d.get("label")) is not None
-
-
-def read_labels(out_dir, now):
-    """sid -> account label for the sessions that have one: <out-dir>/accounts/<sid>.json, written by
-    account-stamp.sh at session start. A session without a file is the main account. Regular files only,
-    small, and a file older than LABEL_FILE_KEEP_S is ignored. Bounded in number AFTER those filters, newest
-    first: nothing deletes a label file, so a cap taken on the raw listing would one day be filled by old files
-    and temp files, and a live labelled session would silently count as the main account."""
-    base = os.path.join(out_dir, "accounts")
-    try:
-        names = os.listdir(base)
+        fd = open_regular(claude_json)
+        with os.fdopen(fd, "rb") as f:
+            if os.fstat(f.fileno()).st_uid != my_uid():
+                return None
+            tail, total = b"", 0
+            while True:
+                chunk = f.read(CLAUDE_JSON_CHUNK)
+                if not chunk:
+                    return None
+                total += len(chunk)
+                if total > CLAUDE_JSON_MAX_BYTES:
+                    return None
+                buf = tail + chunk
+                m = UUID_RE.search(buf)
+                if m:
+                    return hashlib.sha256(m.group(1)).hexdigest()[:12] if m.group(1) else None
+                tail = buf[-UUID_OVERLAP:]
     except OSError:
-        return {}
-    cands = []
-    for fn in names:
-        sid = fn[:-len(".json")] if fn.endswith(".json") else ""
-        if not SID_RE.fullmatch(sid):
-            continue
-        try:
-            mtime = os.lstat(os.path.join(base, fn)).st_mtime
-        except OSError:
-            continue
-        if now - LABEL_FILE_KEEP_S <= mtime <= now + 60:
-            cands.append((mtime, fn))
-    labels = {}
-    for _, fn in sorted(cands, reverse=True)[:LABEL_FILES_MAX]:
-        sid = fn[:-len(".json")]
-        try:
-            fd = open_regular(os.path.join(base, fn))
-            with os.fdopen(fd, "r") as f:
-                mtime = os.fstat(f.fileno()).st_mtime
-                raw = f.read(LABEL_FILE_MAX_BYTES + 1)
-            if len(raw) > LABEL_FILE_MAX_BYTES or not (now - LABEL_FILE_KEEP_S <= mtime <= now + 60):
-                continue
-            d = json.loads(raw)
-        except (OSError, ValueError, RecursionError):
-            continue
-        lab = valid_label(d.get("label")) if isinstance(d, dict) else None
-        if lab:
-            labels[sid] = lab
-    return labels
-
-
-def oversized(path):
-    """True when the file at path is over READING_MAX_BYTES (by its size; nothing is read). False when it
-    cannot be stat'ed: the read that follows fails on it as before."""
-    try:
-        return os.lstat(path).st_size > READING_MAX_BYTES
-    except OSError:
-        return False
-
-
-def read_meter(spool, now, fp):
-    """The 5h/7d meter from personal-windows-<fp>.json. With no fp, only an unambiguous single file; a file of
-    a labelled account (AIT_ACCOUNT) is not the main account's meter and does not count."""
-    pattern = "personal-windows-%s.json" % fp if fp else "personal-windows-*.json"
-    # An oversized file is skipped before the one-file count (the read_accounts cap): the optional spool may be
-    # writable by other processes, so a planted huge file must neither be parsed nor make the meter ambiguous.
-    paths = [p for p in glob.glob(os.path.join(spool, "limits", pattern)) if not oversized(p)]
-    if not fp:
-        paths = [p for p in paths if not labelled_file(p)]
-    if len(paths) != 1:
         return None
-    path = paths[0]
+
+
+def claude_json_of(config_dir, home):
+    """Where a config dir's account lives. Claude Code keeps it in <CLAUDE_CONFIG_DIR>/.claude.json, and in
+    ~/.claude.json (beside the folder, not in it) when the variable is unset: the default ~/.claude."""
+    if os.path.normpath(config_dir) == os.path.join(os.path.normpath(home), ".claude"):
+        return os.path.join(home, ".claude.json")
+    return os.path.join(config_dir, ".claude.json")
+
+
+def encodable(p):
+    try:
+        os.fsencode(p)
+        return True
+    except ValueError:
+        return False
+
+
+def read_accounts_conf(path):
+    """The person's local account config, if there is one: {"names": {"<fp>": "<name>"}, "dirs": ["<abs path>"]}.
+    Never in the repo, and read only. A regular file of ours, not writable by group or others, small. Anything
+    else, or anything malformed, reads as no config. Names are reduced to [A-Za-z0-9 _.-] (24 characters); a name
+    already taken by an earlier fingerprint is dropped, so one name is never two accounts, and a name that looks
+    like a fingerprint or is "unknown" is dropped, so a row's `acct` is never mistaken for another account's key."""
+    empty = {"names": {}, "dirs": []}
+    try:
+        fd = open_regular(path)
+        with os.fdopen(fd, "r") as f:
+            st = os.fstat(f.fileno())
+            if st.st_uid != my_uid() or stat.S_IMODE(st.st_mode) & 0o022:
+                err("accounts config ignored: not a file of yours, or writable by others")
+                return empty
+            raw = f.read(ACCOUNTS_CONF_MAX_BYTES + 1)
+        if len(raw) > ACCOUNTS_CONF_MAX_BYTES:
+            err("accounts config ignored: over the size cap")
+            return empty
+        d = json.loads(raw)
+    except FileNotFoundError:
+        return empty
+    except (OSError, ValueError, RecursionError):
+        err("accounts config ignored: unreadable or not JSON")
+        return empty
+    if not isinstance(d, dict):
+        return empty
+    names, taken = {}, set()
+    raw_names = d.get("names") if isinstance(d.get("names"), dict) else {}
+    for fp in sorted(raw_names)[:ACCOUNT_NAMES_MAX]:
+        name = safe(raw_names[fp])
+        if (isinstance(fp, str) and FP_RE.fullmatch(fp) and name and name not in taken
+                and name != UNKNOWN_ACCT and not FP_RE.fullmatch(name)):
+            names[fp] = name
+            taken.add(name)
+    dirs = [p for p in (d.get("dirs") if isinstance(d.get("dirs"), list) else [])
+            if isinstance(p, str) and os.path.isabs(p) and "\0" not in p and encodable(p)][:ACCOUNT_DIRS_MAX]
+    return {"names": names, "dirs": dirs}
+
+
+def plain_dir_of_ours(path):
+    """None when `path` is a real directory (not a link) that we own and group and others cannot write, else the
+    reason it is not."""
+    st = os.lstat(path)
+    if not stat.S_ISDIR(st.st_mode):
+        return "not a plain directory"
+    if st.st_uid != my_uid():
+        return "owned by someone else"
+    if stat.S_IMODE(st.st_mode) & 0o022:
+        return "writable by group or others"
+    return None
+
+
+def account_dir_ok(path, home):
+    """True when a config dir other than the main one may be scanned: a plain directory owned by us and not
+    writable by group or others, as are its parent and its `projects` and `sessions` (when they exist), whose real
+    path stays inside the home folder. A dir that fails is skipped and logged by its reason only."""
+    reason = None
+    try:
+        reason = plain_dir_of_ours(path) or plain_dir_of_ours(os.path.dirname(path))
+        if reason is None:
+            home_real = os.path.realpath(home)
+            if not os.path.realpath(path).startswith(home_real.rstrip(os.sep) + os.sep):
+                reason = "outside the home folder"
+        for sub in ("projects", "sessions"):
+            if reason is None and os.path.lexists(os.path.join(path, sub)):
+                reason = plain_dir_of_ours(os.path.join(path, sub))
+                if reason:
+                    reason = sub + ": " + reason
+    except FileNotFoundError:
+        reason = "missing"
+    except (OSError, ValueError):
+        reason = "unreadable"
+    if reason is None:
+        return True
+    err("account config dir %s skipped: %s" % (safe(os.path.basename(os.path.dirname(path)) + "/" +
+                                                    os.path.basename(path), 48) or "?", reason))
+    return False
+
+
+def account_dirs(main_dir, home, conf, fallback_fp=None, dir_fps=None):
+    """([(config dir, account key)], main account fingerprint): the dirs to scan, the main account's dir first. The
+    key is None for the main account, the account's fingerprint for another, or UNKNOWN_ACCT for a dir whose
+    .claude.json names no account. The other dirs are the `dirs` of the local config plus every
+    ~/.claude-*/config, each one checked by account_dir_ok (the person's listed dirs come first, so the cap cuts
+    the globbed ones). A dir whose account is the main account's (the same login, kept in a second place) counts as
+    the main one. When the main account's .claude.json cannot be read this run (it is rewritten often),
+    `fallback_fp`, the last one seen, stands in, so a second dir does not flip accounts for a run. The same holds
+    for every other dir: `dir_fps` (dir -> fingerprint, updated in place) keeps the last fingerprint read from each,
+    used when a read fails and replaced only by a read that succeeds, so one failed read never turns an account
+    into UNKNOWN_ACCT for a run."""
+    dir_fps = {} if dir_fps is None else dir_fps
+    main_fp = account_fp(claude_json_of(main_dir, home))
+    if main_fp is None:
+        main_fp = fallback_fp
+        err("the main account is not named in its .claude.json this run" +
+            ("; using the last one seen" if fallback_fp else ": no main meter"))
+    out, seen = [(main_dir, None)], {os.path.realpath(main_dir)}
+    cands = list(conf["dirs"]) + sorted(glob.glob(os.path.join(glob.escape(home), ".claude-*", "config")))
+    for i, path in enumerate(cands):
+        if len(out) >= ACCOUNT_DIRS_MAX:
+            err("more than %d config dirs: the last %d are not scanned" % (ACCOUNT_DIRS_MAX, len(cands) - i))
+            break
+        path = os.path.normpath(path)
+        if os.path.realpath(path) in seen or not account_dir_ok(path, home):
+            continue
+        seen.add(os.path.realpath(path))
+        fp = account_fp(claude_json_of(path, home))
+        if fp is not None:
+            dir_fps[path] = fp
+        elif dir_fps.get(path):
+            fp = dir_fps[path]
+            err("a config dir's account was not read this run; using the last one seen")
+        out.append((path, None if fp is not None and fp == main_fp else (fp or UNKNOWN_ACCT)))
+    return out, main_fp
+
+
+def acct_name(key, names):
+    """What the summary shows for an account key: the person's name for the fingerprint, else the fingerprint."""
+    return names.get(key) or key
+
+
+def read_meter(readings, now, fp):
+    """The 5h/7d meter of the main account: readings-<fp>.json in the status line's limits folder. No fp (the main
+    account's .claude.json names no account) or no file: no meter."""
+    if not fp:
+        return None
+    path = os.path.join(readings, "readings-%s.json" % fp)
     try:
         mtime = os.lstat(path).st_mtime
         if mtime > now + 60:
@@ -491,7 +611,7 @@ def read_meter(spool, now, fp):
         if len(raw) > READING_MAX_BYTES:
             return None
         d = json.loads(raw)
-    except (OSError, ValueError, RecursionError):
+    except (OSError, ValueError, ArithmeticError, RecursionError):
         return None
     if not isinstance(d, dict):
         return None
@@ -501,7 +621,7 @@ def read_meter(spool, now, fp):
         if not isinstance(w, dict):
             return None
         pct, ra = w.get("used_percentage"), w.get("resets_at")
-        if not all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in (pct, ra)):
+        if not (_num(pct) and _num(ra)):
             return None
         # A window whose reset has passed describes the last window, not this one (q5, 2026-10-27).
         if not (0 <= pct <= 100) or not (now < ra <= now + horizon + 60):
@@ -517,7 +637,7 @@ def read_meter(spool, now, fp):
     w5 = d.get("five_hour")
     if isinstance(w5, dict) and "observed_at" in w5:
         obs = w5.get("observed_at")
-        ok = isinstance(obs, (int, float)) and not isinstance(obs, bool) and math.isfinite(obs) and 0 <= obs <= now + 60
+        ok = _num(obs) and 0 <= obs <= now + 60
         seen = obs if ok else None
         live = ok
     fresh = bool(five) and seen is not None and (now - seen) <= METER_MAX_AGE_S
@@ -527,7 +647,7 @@ def read_meter(spool, now, fp):
     w7 = d.get("seven_day")
     if isinstance(w7, dict) and "observed_at" in w7:
         obs = w7.get("observed_at")
-        ok = isinstance(obs, (int, float)) and not isinstance(obs, bool) and math.isfinite(obs) and 0 <= obs <= now + 60
+        ok = _num(obs) and 0 <= obs <= now + 60
         wseen = obs if ok else None
         wlive = ok
     week_fresh = bool(week) and wseen is not None and (now - wseen) <= WEEK_FRESH_S
@@ -607,39 +727,35 @@ def meter_window(w, key, now, mtime):
             "state": state, "hitsAt": hits, "observedAt": obs, "ageS": age, "src": src, "fresh": fresh}
 
 
-def read_accounts(out_dir, spool, now):
-    """Windows per account: limits/readings-<fp>.json in out_dir first, the spool's personal-windows-<fp>.json
-    for an account the new directory does not have."""
-    found, seen, examined = {}, set(), 0
-    for base, prefix, fallback in ((os.path.join(out_dir, "limits"), "readings-", False),
-                                   (os.path.join(spool, "limits"), "personal-windows-", True)):
-        for path in sorted(glob.glob(os.path.join(base, prefix + "*.json"))):
-            fp = os.path.basename(path)[len(prefix):-len(".json")]
-            if not re.fullmatch(r"[0-9a-f]{6,64}", fp) or (fallback and fp in seen):
+def read_accounts(readings, now, names=None):
+    """Windows per account: readings-<fp>.json in the status line's limits folder, one file per account, keyed by
+    its fingerprint. `name` is the person's name for the fingerprint, when the local config has one."""
+    found, examined = {}, 0
+    for path in sorted(glob.glob(os.path.join(readings, "readings-*.json"))):
+        fp = os.path.basename(path)[len("readings-"):-len(".json")]
+        if not FP_RE.fullmatch(fp):
+            continue
+        examined += 1
+        if examined > METERS_ACCOUNTS_MAX * 2:
+            return found
+        try:
+            fd = open_regular(path)
+            with os.fdopen(fd, "r") as f:
+                mtime = os.fstat(f.fileno()).st_mtime
+                raw = f.read(READING_MAX_BYTES + 1)
+            if mtime > now + 60 or len(raw) > READING_MAX_BYTES:
                 continue
-            examined += 1
-            if examined > METERS_ACCOUNTS_MAX * 2:
-                return found
-            try:
-                fd = open_regular(path)
-                with os.fdopen(fd, "r") as f:
-                    mtime = os.fstat(f.fileno()).st_mtime
-                    raw = f.read(READING_MAX_BYTES + 1)
-                if mtime > now + 60 or len(raw) > READING_MAX_BYTES:
-                    continue
-                d = json.loads(raw)
-                if not isinstance(d, dict):
-                    continue
-                seen.add(fp)  # this directory has the account, even if both windows are past
-                five = meter_window(d.get("five_hour"), "five", now, mtime)
-                week = meter_window(d.get("seven_day"), "week", now, mtime)
-            except (OSError, ValueError, ArithmeticError, RecursionError):
+            d = json.loads(raw)
+            if not isinstance(d, dict):
                 continue
-            if (five or week) and len(found) < METERS_ACCOUNTS_MAX:
-                found[fp] = {"fiveHour": five, "sevenDay": week}
-                lab = valid_label(d.get("label"))
-                if lab:  # additive: only a labelled account (AIT_ACCOUNT) names itself
-                    found[fp]["label"] = lab
+            five = meter_window(d.get("five_hour"), "five", now, mtime)
+            week = meter_window(d.get("seven_day"), "week", now, mtime)
+        except (OSError, ValueError, ArithmeticError, RecursionError):
+            continue
+        if (five or week) and len(found) < METERS_ACCOUNTS_MAX:
+            found[fp] = {"fiveHour": five, "sevenDay": week}
+            if names and names.get(fp):
+                found[fp]["name"] = names[fp]
     return found
 
 
@@ -656,8 +772,10 @@ def read_registry(config_dir):
     entries = []
     for path in glob.glob(os.path.join(config_dir, "sessions", "*.json")):
         try:
+            if os.lstat(path).st_size > REGISTRY_MAX_BYTES:
+                continue
             d = read_json(path)
-        except (OSError, ValueError):
+        except (OSError, ValueError, RecursionError):
             continue
         if not isinstance(d, dict):
             continue
@@ -719,30 +837,30 @@ def current_window(meter, now):
 
 
 def account_windows(accounts, now):
-    """label -> (start, end, source) for each labelled account: its own 5h window when the readings have one with
-    a future reset (source "meter"), else the last 5 hours ("rolling"), the rule current_window applies to the main
-    account. Each account's quota is its own, so a session's share is measured against its own account's window."""
+    """fp -> (start, end, source) for each account other than the main one: its own 5h window when the readings
+    have one with a future reset (source "meter"), else the last 5 hours ("rolling"), the rule current_window
+    applies to the main account. Each account's quota is its own, so a session's share is measured against its own
+    account's window."""
     out = {}
-    for ent in (accounts or {}).values():
-        lab = ent.get("label")
-        if not lab:
-            continue
+    for fp, ent in (accounts or {}).items():
         five = ent.get("fiveHour")
         if five and now < five["windowEnd"] <= now + WINDOW_S + 60:
-            out[lab] = (five["windowStart"], five["windowEnd"], "meter")
+            out[fp] = (five["windowStart"], five["windowEnd"], "meter")
         else:
             ws, we = rolling_bounds(now, WINDOW_S // 3600)
-            out[lab] = (ws, we, "rolling")
+            out[fp] = (ws, we, "rolling")
     return out
 
 
-def summarize(state, meter, reg, now, labels=None, accounts=None):
-    labels = labels or {}
+def summarize(state, meter, reg, now, accounts=None, names=None):
+    names = names or {}
     sessions = {}
     midnight = datetime.fromtimestamp(now).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
     for fs in state["files"].values():
         s = sessions.setdefault(fs["sid"], {"b": {}, "ctx": [], "comp": 0, "name": None, "ep": None,
-                                            "proj": fs.get("proj"), "last": 0, "lastMain": 0, "lastWork": 0})
+                                            "proj": fs.get("proj"), "last": 0, "lastMain": 0, "lastWork": 0,
+                                            "accts": set()})
+        s["accts"].add(fs.get("acct"))
         for bk, fams in fs["b"].items():
             bt = int(bk)
             dst = s["b"].setdefault(bt, {})
@@ -768,10 +886,13 @@ def summarize(state, meter, reg, now, labels=None, accounts=None):
     burn_from = burn_to - 3 * BUCKET_S
 
     rows = []
-    totals = {}  # account label (None: the main account) -> tokens in that account's window
+    totals = {}  # account key (None: the main account) -> tokens in that account's window
     trial_total = [0] * len(trial)
     for sid, s in sessions.items():
-        grp = labels.get(sid)
+        # A session id found under two accounts counts as the main account's when the main dir has it (a copied
+        # or planted log in another dir must not move a main session out of the main account's totals); else the
+        # first account by key.
+        grp = None if None in s["accts"] else sorted(s["accts"])[0]
         gws, gwe, _ = windows.get(grp) or rolling_default_window(now)
         tok = opus = sub = calls = burn = 0
         tok_h = [0] * len(trial)
@@ -821,12 +942,13 @@ def summarize(state, meter, reg, now, labels=None, accounts=None):
             "_tokH": tok_h,
         })
         if grp:
-            rows[-1]["acct"] = grp  # additive: only a session of a labelled account carries the field
+            rows[-1]["acct"] = acct_name(grp, names)  # additive: only a session of another account carries it
+            rows[-1]["_grp"] = grp
         totals[grp] = totals.get(grp, 0) + tok
         for i, v in enumerate(tok_h):
             trial_total[i] += v
     for row in rows:
-        gt = totals.get(row.get("acct"), 0)
+        gt = totals.get(row.get("_grp"), 0)
         row["share"] = round(row["tok"] / gt, 2) if gt else 0
         tok_h = row.pop("_tokH")
         if trial:
@@ -877,7 +999,7 @@ def alert_of(r, src, level, why):
            "kind": r["kind"] if r else None, "addr": bool(r and r["addr"]),
            "src": src, "level": level, "why": why}
     if r and r.get("acct"):
-        out["acct"] = r["acct"]  # additive: the labelled account the session runs on; absent for the main account
+        out["acct"] = r["acct"]  # additive: the other account the session runs on; absent for the main account
     return out
 
 
@@ -906,13 +1028,13 @@ def pace_alerts(meter, now):
     return out
 
 
-def build_summary(state, meter, reg, now, health, cache_ctx_min=CACHE_CTX_MIN, labels=None, accounts=None):
-    rows, totals, ws, we, wsrc, windows = summarize(state, meter, reg, now, labels, accounts)
-    total = totals.get(None, 0)  # the main account's window; a labelled account's total is under `accounts`
+def build_summary(state, meter, reg, now, health, cache_ctx_min=CACHE_CTX_MIN, accounts=None, names=None):
+    rows, totals, ws, we, wsrc, windows = summarize(state, meter, reg, now, accounts, names)
+    total = totals.get(None, 0)  # the main account's window; another account's total is under `accounts`
     prev = set(state.get("warnSids", []))
     warn_now = []
     for row in rows:
-        level, why, warn_line = classify(row, totals.get(row.get("acct"), 0), row["sid"] in prev)
+        level, why, warn_line = classify(row, totals.get(row.get("_grp"), 0), row["sid"] in prev)
         row["level"] = level
         row["_why"] = why
         if warn_line:
@@ -973,6 +1095,7 @@ def build_summary(state, meter, reg, now, health, cache_ctx_min=CACHE_CTX_MIN, l
         r.pop("active", None)
         r.pop("_lastMain", None)
         r.pop("_lastWork", None)
+        r.pop("_grp", None)
 
     hdr_meter = None
     if meter:
@@ -985,7 +1108,7 @@ def build_summary(state, meter, reg, now, health, cache_ctx_min=CACHE_CTX_MIN, l
             hdr_meter["five_hour" if k == "five" else "seven_day"] = (
                 {"pct": w["pct"], "resetsAt": iso(w["resetsAt"]), "projectedEndPct": proj, "paceState": pstate}
                 if w else None)
-    acct_out = accounts_header(totals, windows, accounts, now)
+    acct_out = accounts_header(totals, windows, accounts, names, now)
     opus_total = sum(int(r["tok"] * r["opus"]) for r in rows if not r.get("acct"))
     return {
         "v": VERSION, "generatedAt": iso(now), "staleAfterS": STALE_AFTER_S,
@@ -1003,13 +1126,15 @@ def build_summary(state, meter, reg, now, health, cache_ctx_min=CACHE_CTX_MIN, l
     }
 
 
-def accounts_header(totals, windows, accounts, now):
-    """The summary's `accounts`: one entry per labelled account (AIT_ACCOUNT) with its own meter and window.
-    The main account stays under `meter` and `window`, so a reader of those is unchanged. Empty without any."""
-    labs = set(l for l in totals if l) | set(e["label"] for e in (accounts or {}).values() if e.get("label"))
+def accounts_header(totals, windows, accounts, names, now):
+    """The summary's `accounts`: one entry per account other than the main one, with its own meter and window.
+    `fp` is the account's fingerprint (UNKNOWN_ACCT for a config dir that names no account) and `name` what the
+    row `acct` fields show for it. The main account stays under `meter` and `window`, so a reader of those is
+    unchanged. Empty without any other account."""
+    keys = set(k for k in totals if k) | set(accounts or {})
     out = []
-    for lab in sorted(labs):
-        ent = next((e for e in (accounts or {}).values() if e.get("label") == lab), None) or {}
+    for key in sorted(keys):
+        ent = (accounts or {}).get(key) or {}
         five, week = ent.get("fiveHour"), ent.get("sevenDay")
 
         def win(w):
@@ -1017,10 +1142,11 @@ def accounts_header(totals, windows, accounts, now):
                 return None
             return {"pct": w["used"], "resetsAt": iso(w["windowEnd"]), "projectedEndPct": w["projectedEndPct"],
                     "paceState": w["state"]}
-        ws, we, src = windows.get(lab) or rolling_default_window(now)
-        out.append({"label": lab, "fresh": bool(five and five["fresh"]), "weekFresh": bool(week and week["fresh"]),
+        ws, we, src = windows.get(key) or rolling_default_window(now)
+        out.append({"fp": key, "name": acct_name(key, names or {}), "fresh": bool(five and five["fresh"]),
+                    "weekFresh": bool(week and week["fresh"]),
                     "five_hour": win(five), "seven_day": win(week),
-                    "window": {"start": iso(ws), "end": iso(we), "source": src, "tokens": totals.get(lab, 0)}})
+                    "window": {"start": iso(ws), "end": iso(we), "source": src, "tokens": totals.get(key, 0)}})
     return out
 
 
@@ -1254,27 +1380,60 @@ def run(args):
         state = load_state(state_path)
         health = {"applied": 0, "parsed": 0, "candidates": 0, "probe": 0, "corrupt": 0}
         t0 = time.monotonic()
-        scan(args.config_dir, state, now, health)
+        conf = read_accounts_conf(args.accounts_file)
+        last_fp = state.get("mainFp") if FP_RE.fullmatch(str(state.get("mainFp"))) else None
+        saved = state.get("dirFps") if isinstance(state.get("dirFps"), dict) else {}
+        dir_fps = {k: v for k, v in saved.items() if isinstance(k, str) and isinstance(v, str) and FP_RE.fullmatch(v)}
+        dirs, main_fp = account_dirs(args.config_dir, args.home, conf, last_fp, dir_fps)
+        if main_fp:
+            state["mainFp"] = main_fp
+        state["dirFps"] = {d: dir_fps[d] for d, _ in dirs if d in dir_fps}
+        for cdir, acct in dirs:
+            if cdir == args.config_dir:
+                scan(cdir, state, now, health, acct)
+                continue
+            try:
+                scan(cdir, state, now, health, acct, strict=True)
+            except Exception as e:  # another account's dir must not blind the run; class name only
+                err("scanning a config dir failed: %s" % e.__class__.__name__)
+        # A dir that is no longer scanned (refused, or gone from the config) stops counting at once, not in 24 h.
+        # Its dedupe keys go with it, as on a truncation: a dir that comes back is read again from the start and
+        # must find its keys free, or every record would look like a copy and count for nothing.
+        bases = tuple(os.path.join(cdir, "projects") + os.sep for cdir, _ in dirs)
+        for path in [p for p in state["files"] if not p.startswith(bases)]:
+            gone = state["files"].pop(path)["fid"]
+            for k in [k for k, v in state["keys"].items() if v[5] == gone]:
+                del state["keys"][k]
         if (health["candidates"] or health["probe"]) and not health["parsed"]:
             state["noUsageRuns"] = state.get("noUsageRuns", 0) + 1
         else:
             state["noUsageRuns"] = 0
         health["status"] = "degraded" if state.get("noUsageRuns", 0) >= DEGRADED_RUNS else "ok"
-        meter = read_meter(args.spool, now, args.meter_fp)
+        readings = os.path.join(args.statusline_dir, "limits")
+        meter = read_meter(readings, now, main_fp)
         log_meter_history(out_dir, meter)
         try:
-            accounts = read_accounts(out_dir, args.spool, now)
+            accounts = read_accounts(readings, now, conf["names"])
         except Exception as e:  # class name only
             err("reading the account windows failed: %s" % e.__class__.__name__)
             accounts = {}
         write_meters(out_dir, accounts, now)
-        try:
-            labels = read_labels(out_dir, now)
-        except Exception as e:
-            err("reading the account labels failed: %s" % e.__class__.__name__)
-            labels = {}
-        reg = read_registry(args.config_dir)
-        summary = build_summary(state, meter, reg, now, health, args.cache_ctx_min, labels, accounts)
+        reg = {}
+        for cdir, _ in reversed(dirs):  # the main dir last, so on a shared session id its entry wins
+            try:
+                got = read_registry(cdir)
+                if cdir != args.config_dir:
+                    # ListAgents shows only the manager's own sessions, and a name is unique only among those: no
+                    # session of another dir is addressable, whatever its name.
+                    for e in got.values():
+                        e["exact"] = False
+                reg.update(got)
+            except Exception as e:  # another account's dir must not blind the run; class name only
+                if cdir == args.config_dir:
+                    raise
+                err("reading a config dir's sessions failed: %s" % e.__class__.__name__)
+        others = {fp: e for fp, e in accounts.items() if fp != main_fp}
+        summary = build_summary(state, meter, reg, now, health, args.cache_ctx_min, others, conf["names"])
         state_data = dump_state(state, now)
         if state_data is None:
             err("state.json would exceed cap; dropping it so the next run rebuilds")
@@ -1308,15 +1467,19 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--config-dir", default=os.path.expanduser("~/.claude"))
     ap.add_argument("--out-dir", default=os.path.expanduser("~/.local/state/usage-watcher"))
-    ap.add_argument("--spool", default=os.environ.get("AGENT_DISPATCH_SPOOL") or os.path.expanduser("~/.agent-dispatch/spool"),
-                    help="optional spool, read only when present, for limits/personal-windows-*.json")
-    ap.add_argument("--meter-fp", default=None, help="personal-windows fingerprint to use when several exist")
+    ap.add_argument("--statusline-dir",
+                    default=os.environ.get("USAGE_WATCHER_DIR") or os.path.expanduser("~/.local/state/claude-statusline"),
+                    help="the status line's folder, whose limits/readings-<fp>.json files are read")
+    ap.add_argument("--accounts-file", default=None,
+                    help="local account config (names by fingerprint, extra config dirs); default "
+                         "~/.config/usage-watcher/accounts.json")
+    ap.add_argument("--home", default=os.path.expanduser("~"), help=argparse.SUPPRESS)
     ap.add_argument("--cache-ctx-min", type=int, default=CACHE_CTX_MIN,
                     help="smallest ctxNow listed in cacheExpiring, in tokens")
     ap.add_argument("--now", type=float, default=None, help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
-    if args.meter_fp is not None and not re.match(r"^[0-9a-f]{6,64}$", args.meter_fp):
-        ap.error("--meter-fp must be hex")
+    if args.accounts_file is None:
+        args.accounts_file = os.path.join(args.home, ".config", "usage-watcher", "accounts.json")
     if not 1 <= args.cache_ctx_min <= USAGE_FIELD_MAX:
         ap.error("--cache-ctx-min must be 1..%d" % USAGE_FIELD_MAX)
     try:
