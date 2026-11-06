@@ -1176,9 +1176,19 @@ class WatchTest(unittest.TestCase):
         self.assertIsNone(watch.account_fp(os.path.join(self.root, "missing.json")))
         os.symlink(os.path.join(self.home, ".claude.json"), os.path.join(self.root, "link.json"))
         self.assertIsNone(watch.account_fp(os.path.join(self.root, "link.json")), "a link is not followed")
-        self.write_claude_json(p, raw=json.dumps({"pad": "x" * (watch.CLAUDE_JSON_MAX_BYTES + 1),
-                                                  "accountUuid": SECOND_UUID}))
+        self.addCleanup(setattr, watch, "CLAUDE_JSON_MAX_BYTES", watch.CLAUDE_JSON_MAX_BYTES)
+        watch.CLAUDE_JSON_MAX_BYTES = 4096
+        self.write_claude_json(p, raw=json.dumps({"pad": "x" * 5000, "accountUuid": SECOND_UUID}))
         self.assertIsNone(watch.account_fp(p), "over the cap")
+
+    def test_the_account_is_found_anywhere_in_a_large_claude_json_and_across_a_chunk_boundary(self):
+        p = os.path.join(self.root, "big.json")
+        field = '"accountUuid": "%s"' % SECOND_UUID
+        for pad in (3 * watch.CLAUDE_JSON_CHUNK + 17, watch.CLAUDE_JSON_CHUNK - 5, watch.CLAUDE_JSON_CHUNK - len(field) // 2):
+            self.write_claude_json(p, raw='{"pad":"' + "x" * pad + '",' + field + "}")
+            self.assertEqual(watch.account_fp(p), fp_of(SECOND_UUID), pad)
+        self.write_claude_json(p, raw='{"a":' + field + ',"b":"accountUuid\": \"x"}')
+        self.assertEqual(watch.account_fp(p), fp_of(SECOND_UUID), "the first match, as the status line takes it")
 
     def test_a_claude_json_of_someone_else_names_no_account(self):
         real = watch.my_uid
@@ -1238,13 +1248,13 @@ class WatchTest(unittest.TestCase):
     def test_account_names_are_allowlisted_bounded_and_unique(self):
         a, b, c, d = (fp_of(u) for u in ("1", "2", "3", "4"))
         self.write_names({"names": {a: "work", b: "work", c: "bad/name\n<x>" + "y" * 40, d: 5, "nothex": "z",
-                                    "A" * 12: "upper"}})
+                                    "A" * 12: "upper", fp_of("5"): "0123456789ab", fp_of("6"): "unknown"}})
         names = watch.read_accounts_conf(os.path.join(self.home, ".config", "usage-watcher", "accounts.json"))["names"]
         self.assertEqual(names.get(a), "work", "the first fingerprint keeps a name")
         self.assertNotIn(b, names, "a second account with the same name is shown by its fingerprint")
         self.assertRegex(names[c], r"^[A-Za-z0-9 _.-]{1,24}$")
         self.assertNotIn(d, names)
-        self.assertEqual(sorted(names), sorted([a, c]), "a non-hex or upper-case key is not a fingerprint")
+        self.assertEqual(sorted(names), sorted([a, c]), "a non-hex key, a fingerprint-shaped name and 'unknown' are not accepted")
 
     def test_an_unusable_local_config_reads_as_none(self):
         stderr = io.StringIO()
@@ -1360,7 +1370,8 @@ class WatchTest(unittest.TestCase):
 
     def test_alerts_cache_and_compact_soon_name_the_account_of_another_accounts_session(self):
         self.register("MAIN")
-        self.append(asst("a1", "q1", cr=300_000, out=500, when=-120))
+        self.write_meter(95, observed_ago=60)  # a main-account alert beside the other account's
+        self.append(asst("a1", "q1", cr=300_000, out=500, when=-25 * 60))
         cfg = self.make_account()
         with open(os.path.join(cfg, "sessions", "%d.json" % os.getppid()), "w") as f:
             json.dump({"sessionId": self.SID2, "pid": os.getppid(), "name": "SECOND", "kind": "interactive",
@@ -1370,14 +1381,25 @@ class WatchTest(unittest.TestCase):
                     asst("c2", "r2", cr=300_000, out=3, when=-45 * 60, sid=self.SID2),
                     asst("c3", "r3", cr=300_000, out=500, when=-30, sid=self.SID2),
                     path=os.path.join(cfg, "projects", "-Users-x-Code-demo", self.SID2 + ".jsonl"))
+        sleeper = subprocess.Popen(["/bin/sleep", "60"])  # a third live pid
+        self.addCleanup(sleeper.wait)
+        self.addCleanup(sleeper.kill)
+        with open(os.path.join(cfg, "sessions", "%d.json" % sleeper.pid), "w") as f:
+            json.dump({"sessionId": self.SID3, "pid": sleeper.pid, "name": "THIRD", "kind": "interactive",
+                       "entrypoint": "cli", "cwd": "/Users/x/Code/repo-a"}, f)
+        self.append(asst("d1", "t1", cr=300_000, out=500, when=-25 * 60, sid=self.SID3),
+                    path=os.path.join(cfg, "projects", "-Users-x-Code-demo", self.SID3 + ".jsonl"))
         self.write_names({"names": {fp_of(SECOND_UUID): "second"}})
         s = self.run_watch()
         second = [a for a in s["alerts"] if a["sid"] == self.SID2]
         self.assertTrue(second and all(a["acct"] == "second" for a in second))
         self.assertEqual([c["acct"] for c in s["compactSoon"] if c["sid"] == self.SID2], ["second"])
-        self.assertTrue(all("acct" not in c for c in s["compactSoon"] if c["sid"] == SID),
-                        "the main account's entry is unchanged")
-        self.assertTrue(all("acct" not in a for a in s["alerts"] if a["sid"] != self.SID2))
+        self.assertEqual([c["acct"] for c in s["cacheExpiring"] if c["sid"] == self.SID3], ["second"])
+        main_entries = [c for c in s["compactSoon"] + s["cacheExpiring"] if c["sid"] == SID]
+        self.assertTrue(main_entries and all("acct" not in c for c in main_entries),
+                        "the main account's entries are unchanged")
+        other_alerts = [a for a in s["alerts"] if a["sid"] != self.SID2]
+        self.assertTrue(other_alerts and all("acct" not in a for a in other_alerts))
 
     def test_the_raw_account_id_and_the_rest_of_claude_json_never_reach_an_output(self):
         cfg = self.make_account()
@@ -1410,13 +1432,14 @@ class WatchTest(unittest.TestCase):
         os.symlink(os.path.join(self.root, "outside", ".claude-second"), os.path.join(self.home, ".claude-evil"))
         s = self.run_watch()
         self.assertIsNone(self.row(s, self.SID2))
-        self.assertIn("outside the home folder", read(os.path.join(self.out, "watch.err")))
+        self.assertIn("skipped: not a plain directory", read(os.path.join(self.out, "watch.err")), "the parent is a link")
 
     def test_a_listed_dir_outside_home_is_not_scanned(self):
         outside = self.make_account(under=os.path.join(self.root, "outside"))
         self.account_session(outside, self.SID2)
         self.write_names({"dirs": [outside]})
         self.assertIsNone(self.row(self.run_watch(), self.SID2))
+        self.assertIn("skipped: outside the home folder", read(os.path.join(self.out, "watch.err")))
 
     def test_a_config_dir_of_someone_else_is_not_scanned(self):
         cfg = self.make_account()
@@ -1451,6 +1474,14 @@ class WatchTest(unittest.TestCase):
         shutil.move(real, moved)
         os.symlink(moved, real)
         self.assertIsNone(self.row(self.run_watch(), self.SID2))
+        os.unlink(real)
+        shutil.move(moved, real)
+        self.assertIsNotNone(self.row(self.run_watch(), self.SID2))
+        sessions = os.path.join(cfg, "sessions")
+        moved = os.path.join(self.root, "moved-sessions")
+        shutil.move(sessions, moved)
+        os.symlink(moved, sessions)
+        self.assertIsNone(self.row(self.run_watch(), self.SID2), "a linked sessions folder is refused too")
 
     def test_a_claude_json_that_is_a_link_makes_the_account_unknown_not_the_linked_one(self):
         cfg = self.make_account(claude_json=False)
@@ -1461,7 +1492,8 @@ class WatchTest(unittest.TestCase):
     def test_no_more_than_the_cap_of_config_dirs_are_scanned(self):
         for i in range(watch.ACCOUNT_DIRS_MAX + 3):
             self.make_account(name="a%02d" % i, uuid="00000000-0000-4000-8000-0000000001%02d" % i)
-        dirs, _ = watch.account_dirs(self.cfg, self.home, {"names": {}, "dirs": []})
+        with contextlib.redirect_stderr(io.StringIO()):
+            dirs, _ = watch.account_dirs(self.cfg, self.home, {"names": {}, "dirs": []})
         self.assertEqual(len(dirs), watch.ACCOUNT_DIRS_MAX)
         self.assertEqual(dirs[0], (self.cfg, None))
 
@@ -1490,6 +1522,147 @@ class WatchTest(unittest.TestCase):
         s = self.run_watch()
         self.assertEqual(self.row(s)["tok"], 3000)
         self.assertIn("scanning a config dir failed: ValueError", read(os.path.join(self.out, "watch.err")))
+
+    def test_a_dir_that_stops_being_scanned_and_comes_back_keeps_its_history(self):
+        self.append(*self.burst(3, out=1000))
+        cfg = self.make_account()
+        self.account_session(cfg, self.SID2)
+        before = self.row(self.run_watch(), self.SID2)["tok"]
+        self.assertGreater(before, 0)
+        os.chmod(cfg, 0o777)
+        self.run_watch()
+        os.chmod(cfg, 0o700)
+        after = self.row(self.run_watch(), self.SID2)
+        self.assertEqual(after["tok"], before, "its records are read again, not mistaken for copies")
+        self.assertGreater(after["calls"], 0)
+
+    def test_a_session_id_in_two_accounts_counts_as_the_main_accounts(self):
+        self.register("MAIN")
+        self.append(*self.burst(3, out=1000))
+        cfg = self.make_account()
+        other = os.path.join(cfg, "projects", "-Users-x-Code-demo", SID + ".jsonl")
+        open(other, "w").close()  # a copied or planted log of a main session, in another account's dir
+        s = self.run_watch()
+        self.assertNotIn("acct", self.row(s), "an empty log elsewhere does not move a main session")
+        self.assertEqual(s["window"]["tokens"], self.row(s)["tok"])
+        self.append(*self.burst(1, out=500), path=other)
+        self.assertNotIn("acct", self.row(self.run_watch()), "nor a copy with records")
+
+    def test_a_bad_sessions_file_in_another_dir_does_not_fail_the_run(self):
+        self.append(*self.burst(3, out=1000))
+        cfg = self.make_account()
+        with open(os.path.join(cfg, "sessions", "1.json"), "w") as f:
+            f.write("[" * 30000)
+        with open(os.path.join(cfg, "sessions", "2.json"), "w") as f:
+            f.write('{"pad":"' + "x" * (watch.REGISTRY_MAX_BYTES + 1) + '"}')
+        self.assertEqual(self.row(self.run_watch())["tok"], 3000)
+
+    def test_the_main_account_unreadable_one_run_keeps_the_last_one_seen(self):
+        self.write_meter(40, observed_ago=60)
+        cfg = self.make_account(uuid=MAIN_UUID)  # the same login in a second place: the main account
+        self.account_session(cfg, self.SID2)
+        self.assertEqual(self.run_watch()["meter"]["five_hour"]["pct"], 40)
+        real = os.path.join(self.home, ".claude.json")
+        moved = os.path.join(self.root, "claude.json.away")
+        shutil.move(real, moved)
+        os.symlink(moved, real)  # a link is not read, as a half-rewritten file might not be
+        s = self.run_watch()
+        self.assertEqual(s["meter"]["five_hour"]["pct"], 40, "the last known fingerprint stands in")
+        self.assertNotIn("accounts", s, "the second dir stays the main account, and the main readings are not 'another'")
+        self.assertIn("using the last one seen", read(os.path.join(self.out, "watch.err")))
+
+    def test_a_main_account_that_was_never_named_says_so_in_the_log(self):
+        self.write_claude_json(os.path.join(self.home, ".claude.json"), raw="{}")
+        self.run_watch()
+        self.assertIn("no main meter", read(os.path.join(self.out, "watch.err")))
+
+    def test_a_skipped_listed_dir_is_logged_and_listed_dirs_win_the_cap(self):
+        for i in range(watch.ACCOUNT_DIRS_MAX + 2):
+            self.make_account(name="a%02d" % i, uuid="00000000-0000-4000-8000-0000000002%02d" % i)
+        listed = os.path.join(self.home, "listed")
+        os.makedirs(os.path.join(listed, "projects"))
+        self.write_claude_json(os.path.join(listed, ".claude.json"), THIRD_UUID)
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            dirs, _ = watch.account_dirs(self.cfg, self.home, {"names": {}, "dirs": [listed, os.path.join(self.home, "gone")]})
+        self.assertEqual(dirs[1][0], listed)
+        self.assertIn("skipped: missing", stderr.getvalue())
+        self.assertIn("are not scanned", stderr.getvalue())
+
+    def test_a_dir_name_cannot_forge_a_log_line(self):
+        evil = os.path.join(self.home, ".claude-x\n2026-11-06T00:00:00 forged line", "config")
+        os.makedirs(evil, mode=0o777)
+        os.chmod(evil, 0o777)
+        self.run_watch()
+        err = read(os.path.join(self.out, "watch.err"))
+        self.assertIn("skipped: writable by group or others", err)
+        self.assertFalse([ln for ln in err.splitlines() if ln.startswith("2026-11-06T00:00:00 ")])
+
+    def test_an_unencodable_dir_in_the_local_config_does_not_fail_the_run(self):
+        self.write_names('{"dirs": ["/\\ud800", "/\\ud800/x"]}')
+        self.append(*self.burst(3, out=1000))
+        self.assertEqual(self.row(self.run_watch())["tok"], 3000)
+
+    def test_another_dirs_links_below_projects_are_not_followed(self):
+        outside = os.path.join(self.root, "outside-logs")
+        os.makedirs(outside)
+        self.append(*[asst("o%d" % i, "p%d" % i, out=900, when=prev_bucket(), sid=self.SID3) for i in range(3)],
+                    path=os.path.join(outside, self.SID3 + ".jsonl"))
+        cfg = self.make_account()
+        os.symlink(outside, os.path.join(cfg, "projects", "-Users-x-linked"))
+        self.account_session(cfg, self.SID2)
+        sub = os.path.join(cfg, "projects", "-Users-x-Code-demo", self.SID2, "subagents")
+        os.makedirs(sub)
+        os.symlink(outside, os.path.join(sub, "a"))
+        s = self.run_watch()
+        self.assertIsNone(self.row(s, self.SID3), "a linked project folder is not read")
+        self.assertIsNotNone(self.row(s, self.SID2))
+
+    def test_the_subagent_walk_finds_logs_at_any_depth_and_does_not_loop(self):
+        sub = os.path.join(self.proj, SID, "subagents", "deep", "er")
+        os.makedirs(sub)
+        os.symlink(os.path.join(self.proj, SID, "subagents"), os.path.join(sub, "back"))
+        self.append(*[asst("g%d" % i, "h%d" % i, out=700, when=prev_bucket(), side=True) for i in range(3)],
+                    path=os.path.join(sub, "agent-1.jsonl"))
+        self.assertEqual(self.row(self.run_watch())["tok"], 2100)
+
+    def test_a_config_dir_whose_parent_or_subfolder_others_can_write_is_not_scanned(self):
+        cfg = self.make_account()
+        self.account_session(cfg, self.SID2)
+        for victim in (os.path.dirname(cfg), os.path.join(cfg, "sessions"), os.path.join(cfg, "projects")):
+            mode = os.stat(victim).st_mode & 0o777
+            os.chmod(victim, 0o777)
+            self.assertIsNone(self.row(self.run_watch(), self.SID2), victim)
+            os.chmod(victim, mode)
+            self.assertIsNotNone(self.row(self.run_watch(), self.SID2), victim)
+
+    def test_many_accounts_keep_the_summary_under_the_cap_and_say_what_was_cut(self):
+        self.write_meter(40, observed_ago=60, week_observed_ago=60)
+        for i in range(watch.ACCOUNT_DIRS_MAX - 1):
+            u = "00000000-0000-4000-8000-0000000003%02d" % i
+            cfg = self.make_account(name="m%02d" % i, uuid=u)
+            self.account_session(cfg, "77777777-aaaa-bbbb-cccc-0000000000%02d" % i, out=500 + i)
+            self.write_reading(fp_of(u), five=(10 + i, 3600, 60), week=(8, 86400, 60))
+        self.append(*self.burst(3, out=1000))
+        self.register("MAIN")
+        raw = self.run_watch()
+        data = read(os.path.join(self.out, "usage-summary.json"))
+        self.assertLessEqual(len(data.encode()), watch.SUMMARY_MAX_BYTES)
+        self.assertEqual(raw["meter"]["five_hour"]["pct"], 40, "the main meter is never dropped")
+
+    def test_an_old_state_without_accounts_still_loads_and_counts_as_main(self):
+        self.append(*self.burst(3, out=1000))
+        self.run_watch()
+        path = os.path.join(self.out, "state.json")
+        st = json.loads(read(path))
+        for fs in st["files"].values():
+            fs.pop("acct", None)
+        st.pop("mainFp", None)
+        with open(path, "w") as f:
+            json.dump(st, f)
+        s = self.run_watch()
+        self.assertEqual(self.row(s)["tok"], 3000)
+        self.assertNotIn("acct", self.row(s))
 
     def over_cap_summary(self, **extra):
         s = {"v": 5, "meter": {"fresh": True}, "window": {"tokens": 1}, "accounts": [{"fp": "0123456789ab"}],

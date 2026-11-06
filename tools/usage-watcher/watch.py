@@ -2,8 +2,11 @@
 """Runaway-session usage watcher.
 
 Run every ~5 min by launchd. Reads only usage metadata appended to Claude Code session
-logs since the last run and atomically writes one bounded usage-summary.json. It never
-reads message text, never messages a session, and never writes outside its output dir.
+logs since the last run (in every account's config dir), one value of each account's
+.claude.json (its accountUuid, hashed to a fingerprint at once), the status line's readings
+files and the person's optional account config, and atomically writes one bounded
+usage-summary.json. It never reads message text, never messages a session, and never writes
+outside its output dir.
 Built from a design spec and its review (see README.md).
 
 Python 3.9 stdlib only (the pinned /usr/bin/python3 on macOS).
@@ -47,9 +50,14 @@ METERS_ACCOUNTS_MAX = 8
 ACCOUNT_DIRS_MAX = METERS_ACCOUNTS_MAX  # config dirs scanned, the main one included
 ACCOUNTS_CONF_MAX_BYTES = 65536
 ACCOUNT_NAMES_MAX = 64
-CLAUDE_JSON_MAX_BYTES = 16 * 1024 * 1024  # a heavy user's ~/.claude.json is a few MB at most
+CLAUDE_JSON_MAX_BYTES = 256 * 1024 * 1024  # read in chunks, so this bounds time, not memory
+CLAUDE_JSON_CHUNK = 1 << 20
 UNKNOWN_ACCT = "unknown"  # the account of a session whose config dir names no account
-UUID_RE = re.compile(rb'"accountUuid" *: *"([^"]*)"')  # the field statusline.sh greps out, first match
+# The field statusline.sh greps out (its first match), with the value and the gap bounded so a match can be found
+# across a chunk boundary: a real account id is 36 characters.
+UUID_RE = re.compile(rb'"accountUuid" {0,64}: {0,64}"([^"]{0,256})"')
+UUID_OVERLAP = 1024
+REGISTRY_MAX_BYTES = 65536
 FP_RE = re.compile(r"[0-9a-f]{6,64}")
 READING_MAX_BYTES = 65536
 READING_SRCS = ("statusline", "mod", "probe")
@@ -353,14 +361,28 @@ def prune_file(fs, now):
     fs["ctx"] = [c for c in fs["ctx"] if c[0] >= bcut]
 
 
-def scan(config_dir, state, now, health, acct=None):
+def log_paths(base, strict):
+    """The session logs under <config dir>/projects: <project>/<sid>.jsonl and every .jsonl below
+    <project>/<sid>/subagents, found without following a link below `subagents`. With `strict` (a dir other than
+    the main one) a project folder that is a link is skipped too."""
+    paths = []
+    for proj in glob.glob(os.path.join(glob.escape(base), "*")):
+        if strict and os.path.islink(proj):
+            continue
+        paths += glob.glob(os.path.join(glob.escape(proj), "*.jsonl"))
+        for sub in glob.glob(os.path.join(glob.escape(proj), "*", "subagents")):
+            for dirpath, _, names in os.walk(sub, followlinks=False):
+                paths += [os.path.join(dirpath, n) for n in names if n.endswith(".jsonl")]
+    return paths
+
+
+def scan(config_dir, state, now, health, acct=None, strict=False):
     """Read a config dir's session logs into state. `acct` is the dir's account key (None: the main account); every
     file read here is stamped with it, so the summary can split the sessions by account."""
     files = state["files"]
     keys = state["keys"]
     base = os.path.join(config_dir, "projects")
-    paths = glob.glob(os.path.join(base, "*", "*.jsonl"))
-    paths += glob.glob(os.path.join(base, "*", "*", "subagents", "**", "*.jsonl"), recursive=True)
+    paths = log_paths(base, strict)
     stats = []
     for path in paths:
         try:
@@ -412,23 +434,29 @@ def my_uid():
 def account_fp(claude_json):
     """The account fingerprint of a .claude.json: the first 12 hex of sha256 of its accountUuid, as ai-toolkit's
     statusline.sh computes it (its first `"accountUuid": "..."` match). Only that one value is taken: the file is
-    read as bytes, matched, and dropped, and neither the uuid nor anything else from it is logged, printed or
-    stored. None when the file is missing, not a regular file of ours, over the cap, or names no account."""
+    read as bytes in chunks, matched, and dropped, and neither the uuid nor anything else from it is logged,
+    printed or stored. None when the file is missing, not a regular file of ours, over the cap, or names no
+    account."""
     try:
         fd = open_regular(claude_json)
         with os.fdopen(fd, "rb") as f:
             if os.fstat(f.fileno()).st_uid != my_uid():
                 return None
-            raw = f.read(CLAUDE_JSON_MAX_BYTES + 1)
+            tail, total = b"", 0
+            while True:
+                chunk = f.read(CLAUDE_JSON_CHUNK)
+                if not chunk:
+                    return None
+                total += len(chunk)
+                if total > CLAUDE_JSON_MAX_BYTES:
+                    return None
+                buf = tail + chunk
+                m = UUID_RE.search(buf)
+                if m:
+                    return hashlib.sha256(m.group(1)).hexdigest()[:12] if m.group(1) else None
+                tail = buf[-UUID_OVERLAP:]
     except OSError:
         return None
-    if len(raw) > CLAUDE_JSON_MAX_BYTES:
-        return None
-    m = UUID_RE.search(raw)
-    del raw
-    if not m or not m.group(1):
-        return None
-    return hashlib.sha256(m.group(1)).hexdigest()[:12]
 
 
 def claude_json_of(config_dir, home):
@@ -439,11 +467,20 @@ def claude_json_of(config_dir, home):
     return os.path.join(config_dir, ".claude.json")
 
 
+def encodable(p):
+    try:
+        os.fsencode(p)
+        return True
+    except ValueError:
+        return False
+
+
 def read_accounts_conf(path):
     """The person's local account config, if there is one: {"names": {"<fp>": "<name>"}, "dirs": ["<abs path>"]}.
     Never in the repo, and read only. A regular file of ours, not writable by group or others, small. Anything
     else, or anything malformed, reads as no config. Names are reduced to [A-Za-z0-9 _.-] (24 characters); a name
-    already taken by an earlier fingerprint is dropped, so one name is never two accounts."""
+    already taken by an earlier fingerprint is dropped, so one name is never two accounts, and a name that looks
+    like a fingerprint or is "unknown" is dropped, so a row's `acct` is never mistaken for another account's key."""
     empty = {"names": {}, "dirs": []}
     try:
         fd = open_regular(path)
@@ -468,52 +505,73 @@ def read_accounts_conf(path):
     raw_names = d.get("names") if isinstance(d.get("names"), dict) else {}
     for fp in sorted(raw_names)[:ACCOUNT_NAMES_MAX]:
         name = safe(raw_names[fp])
-        if isinstance(fp, str) and FP_RE.fullmatch(fp) and name and name not in taken:
+        if (isinstance(fp, str) and FP_RE.fullmatch(fp) and name and name not in taken
+                and name != UNKNOWN_ACCT and not FP_RE.fullmatch(name)):
             names[fp] = name
             taken.add(name)
     dirs = [p for p in (d.get("dirs") if isinstance(d.get("dirs"), list) else [])
-            if isinstance(p, str) and os.path.isabs(p) and "\0" not in p][:ACCOUNT_DIRS_MAX]
+            if isinstance(p, str) and os.path.isabs(p) and "\0" not in p and encodable(p)][:ACCOUNT_DIRS_MAX]
     return {"names": names, "dirs": dirs}
 
 
+def plain_dir_of_ours(path):
+    """None when `path` is a real directory (not a link) that we own and group and others cannot write, else the
+    reason it is not."""
+    st = os.lstat(path)
+    if not stat.S_ISDIR(st.st_mode):
+        return "not a plain directory"
+    if st.st_uid != my_uid():
+        return "owned by someone else"
+    if stat.S_IMODE(st.st_mode) & 0o022:
+        return "writable by group or others"
+    return None
+
+
 def account_dir_ok(path, home):
-    """True when a config dir other than the main one may be scanned: a real directory (not a link), owned by us,
-    not writable by group or others, whose real path stays inside the home folder, and whose `projects` and
-    `sessions` are not links. A dir that fails is skipped and logged by its reason only."""
+    """True when a config dir other than the main one may be scanned: a plain directory owned by us and not
+    writable by group or others, as are its parent and its `projects` and `sessions` (when they exist), whose real
+    path stays inside the home folder. A dir that fails is skipped and logged by its reason only."""
+    reason = None
     try:
-        st = os.lstat(path)
-        if not stat.S_ISDIR(st.st_mode):
-            reason = "not a plain directory"
-        elif st.st_uid != my_uid():
-            reason = "owned by someone else"
-        elif stat.S_IMODE(st.st_mode) & 0o022:
-            reason = "writable by group or others"
-        else:
+        reason = plain_dir_of_ours(path) or plain_dir_of_ours(os.path.dirname(path))
+        if reason is None:
             home_real = os.path.realpath(home)
-            real = os.path.realpath(path)
-            if not real.startswith(home_real.rstrip(os.sep) + os.sep):
+            if not os.path.realpath(path).startswith(home_real.rstrip(os.sep) + os.sep):
                 reason = "outside the home folder"
-            elif any(os.path.islink(os.path.join(path, sub)) for sub in ("projects", "sessions")):
-                reason = "projects or sessions is a link"
-            else:
-                return True
-    except OSError:
-        return False
-    err("account config dir %s skipped: %s" % (os.path.basename(os.path.dirname(path)) + "/" + os.path.basename(path),
-                                               reason))
+        for sub in ("projects", "sessions"):
+            if reason is None and os.path.lexists(os.path.join(path, sub)):
+                reason = plain_dir_of_ours(os.path.join(path, sub))
+                if reason:
+                    reason = sub + ": " + reason
+    except FileNotFoundError:
+        reason = "missing"
+    except (OSError, ValueError):
+        reason = "unreadable"
+    if reason is None:
+        return True
+    err("account config dir %s skipped: %s" % (safe(os.path.basename(os.path.dirname(path)) + "/" +
+                                                    os.path.basename(path), 48) or "?", reason))
     return False
 
 
-def account_dirs(main_dir, home, conf):
-    """[(config dir, account key)] to scan, the main account's dir first. The key is None for the main account,
-    the account's fingerprint for another, or UNKNOWN_ACCT for a dir whose .claude.json names no account. The
-    other dirs are ~/.claude-*/config plus the `dirs` of the local config, each one checked by account_dir_ok.
-    A dir whose account is the main account's (the same login, kept in a second place) counts as the main one."""
+def account_dirs(main_dir, home, conf, fallback_fp=None):
+    """([(config dir, account key)], main account fingerprint): the dirs to scan, the main account's dir first. The
+    key is None for the main account, the account's fingerprint for another, or UNKNOWN_ACCT for a dir whose
+    .claude.json names no account. The other dirs are the `dirs` of the local config plus every
+    ~/.claude-*/config, each one checked by account_dir_ok (the person's listed dirs come first, so the cap cuts
+    the globbed ones). A dir whose account is the main account's (the same login, kept in a second place) counts as
+    the main one. When the main account's .claude.json cannot be read this run (it is rewritten often),
+    `fallback_fp`, the last one seen, stands in, so a second dir does not flip accounts for a run."""
     main_fp = account_fp(claude_json_of(main_dir, home))
+    if main_fp is None:
+        main_fp = fallback_fp
+        err("the main account is not named in its .claude.json this run" +
+            ("; using the last one seen" if fallback_fp else ": no main meter"))
     out, seen = [(main_dir, None)], {os.path.realpath(main_dir)}
-    cands = sorted(glob.glob(os.path.join(home, ".claude-*", "config"))) + conf["dirs"]
-    for path in cands:
+    cands = list(conf["dirs"]) + sorted(glob.glob(os.path.join(glob.escape(home), ".claude-*", "config")))
+    for i, path in enumerate(cands):
         if len(out) >= ACCOUNT_DIRS_MAX:
+            err("more than %d config dirs: the last %d are not scanned" % (ACCOUNT_DIRS_MAX, len(cands) - i))
             break
         path = os.path.normpath(path)
         if os.path.realpath(path) in seen or not account_dir_ok(path, home):
@@ -705,8 +763,10 @@ def read_registry(config_dir):
     entries = []
     for path in glob.glob(os.path.join(config_dir, "sessions", "*.json")):
         try:
+            if os.lstat(path).st_size > REGISTRY_MAX_BYTES:
+                continue
             d = read_json(path)
-        except (OSError, ValueError):
+        except (OSError, ValueError, RecursionError):
             continue
         if not isinstance(d, dict):
             continue
@@ -790,8 +850,8 @@ def summarize(state, meter, reg, now, accounts=None, names=None):
     for fs in state["files"].values():
         s = sessions.setdefault(fs["sid"], {"b": {}, "ctx": [], "comp": 0, "name": None, "ep": None,
                                             "proj": fs.get("proj"), "last": 0, "lastMain": 0, "lastWork": 0,
-                                            "acct": None})
-        s["acct"] = fs.get("acct") or s["acct"]
+                                            "accts": set()})
+        s["accts"].add(fs.get("acct"))
         for bk, fams in fs["b"].items():
             bt = int(bk)
             dst = s["b"].setdefault(bt, {})
@@ -820,7 +880,10 @@ def summarize(state, meter, reg, now, accounts=None, names=None):
     totals = {}  # account key (None: the main account) -> tokens in that account's window
     trial_total = [0] * len(trial)
     for sid, s in sessions.items():
-        grp = s["acct"]
+        # A session id found under two accounts counts as the main account's when the main dir has it (a copied
+        # or planted log in another dir must not move a main session out of the main account's totals); else the
+        # first account by key.
+        grp = None if None in s["accts"] else sorted(s["accts"])[0]
         gws, gwe, _ = windows.get(grp) or rolling_default_window(now)
         tok = opus = sub = calls = burn = 0
         tok_h = [0] * len(trial)
@@ -1309,19 +1372,26 @@ def run(args):
         health = {"applied": 0, "parsed": 0, "candidates": 0, "probe": 0, "corrupt": 0}
         t0 = time.monotonic()
         conf = read_accounts_conf(args.accounts_file)
-        dirs, main_fp = account_dirs(args.config_dir, args.home, conf)
+        last_fp = state.get("mainFp") if FP_RE.fullmatch(str(state.get("mainFp"))) else None
+        dirs, main_fp = account_dirs(args.config_dir, args.home, conf, last_fp)
+        if main_fp:
+            state["mainFp"] = main_fp
         for cdir, acct in dirs:
             if cdir == args.config_dir:
                 scan(cdir, state, now, health, acct)
                 continue
             try:
-                scan(cdir, state, now, health, acct)
+                scan(cdir, state, now, health, acct, strict=True)
             except Exception as e:  # another account's dir must not blind the run; class name only
                 err("scanning a config dir failed: %s" % e.__class__.__name__)
         # A dir that is no longer scanned (refused, or gone from the config) stops counting at once, not in 24 h.
+        # Its dedupe keys go with it, as on a truncation: a dir that comes back is read again from the start and
+        # must find its keys free, or every record would look like a copy and count for nothing.
         bases = tuple(os.path.join(cdir, "projects") + os.sep for cdir, _ in dirs)
         for path in [p for p in state["files"] if not p.startswith(bases)]:
-            del state["files"][path]
+            gone = state["files"].pop(path)["fid"]
+            for k in [k for k, v in state["keys"].items() if v[5] == gone]:
+                del state["keys"][k]
         if (health["candidates"] or health["probe"]) and not health["parsed"]:
             state["noUsageRuns"] = state.get("noUsageRuns", 0) + 1
         else:
@@ -1338,7 +1408,12 @@ def run(args):
         write_meters(out_dir, accounts, now)
         reg = {}
         for cdir, _ in reversed(dirs):  # the main dir last, so on a shared session id its entry wins
-            reg.update(read_registry(cdir))
+            try:
+                reg.update(read_registry(cdir))
+            except Exception as e:  # another account's dir must not blind the run; class name only
+                if cdir == args.config_dir:
+                    raise
+                err("reading a config dir's sessions failed: %s" % e.__class__.__name__)
         others = {fp: e for fp, e in accounts.items() if fp != main_fp}
         summary = build_summary(state, meter, reg, now, health, args.cache_ctx_min, others, conf["names"])
         state_data = dump_state(state, now)

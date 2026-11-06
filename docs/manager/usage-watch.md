@@ -20,7 +20,8 @@ one.
 - `generatedAt` older than `staleAfterS`, or the file gone from a directory that holds other watcher output: report
   "usage watcher stale since <generatedAt>" (or "since unknown") and act on nothing in it.
 - **Malformed:** report "usage summary malformed" and act on nothing in it when any of these holds:
-  - a `name`, `kind`, `entrypoint`, `project`, `nameSrc` or `host` outside `[A-Za-z0-9 _.-]` or over 24 characters;
+  - a `name`, `kind`, `entrypoint`, `project`, `nameSrc`, `host` or `acct` (also an `accounts[].name`) outside
+    `[A-Za-z0-9 _.-]` or over 24 characters, or an `accounts[].fp` that is neither 6 to 64 hex characters nor `unknown`;
   - a `sid` that isn't 36 characters of `[0-9a-f-]`, or a `sid8` that isn't its first 8;
   - a timestamp that isn't ISO 8601;
   - a `due` other than `ping` or `checkpoint`;
@@ -60,8 +61,9 @@ The watcher measures; you ask; the person decides.
 
 Log these as "Don't send (standing pref)" and mention them in your report, without an AskUserQuestion:
 - a `warn` whose only `why` is `compToday`, on a session busy with work the person assigned this window;
-- a `burnH` `warn` on a session running on another account (`acct` set) and doing assigned major work. Still report
-  that account's own meters when they run hot.
+- a `burnH` `warn` on a session running on an account the person has named (`acct` set to a name: not a 12-character
+  hex fingerprint and not `unknown`) and doing assigned major work. Still report that account's own meters when they
+  run hot. A session on an unnamed account is asked about like a main-account one.
 
 Still ask when burn rate, context size or a meter is among the triggers on the main account, when the session has no
 assigned work, and on any `runaway`-level alert.

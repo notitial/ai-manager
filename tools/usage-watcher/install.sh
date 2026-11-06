@@ -388,7 +388,7 @@ plan_file() {
 note_retired_stamp() {
   if [ -e "$RETIRED_STAMP" ] || [ -L "$RETIRED_STAMP" ]; then
     say "  - note: account-stamp.sh is retired and a copy is still at $RETIRED_STAMP. Remove its SessionStart entry from"
-    say "    $CONFIG_DIR/settings.json by hand, then delete the copy (--uninstall --apply removes it, along with the job)."
+    say "    $CONFIG_DIR/settings.json by hand, then delete that one file (--uninstall --apply also removes it, but removes the job too)."
   fi
 }
 
