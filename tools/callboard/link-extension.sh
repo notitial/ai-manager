@@ -71,6 +71,7 @@ try:
 except (OSError, ValueError, RecursionError):
     pass
 '
+[ -x /usr/bin/python3 ] || die "/usr/bin/python3 is needed to read extension/package.json"
 field() { /usr/bin/python3 -I -c "$FIELDSRC" "$1" "$MANIFEST" 2>/dev/null || true; }
 [ "$(field publisher)" = notitial ] || die "extension/package.json publisher must be notitial"
 [ "$(field name)" = callboard-panels ] || die "extension/package.json name must be callboard-panels"

@@ -1,6 +1,9 @@
 # The checks a PR must not break: the suites of tools/test-all.sh that run on Linux. usage-watcher-install is left out
 # on purpose: it needs macOS (launchd, plutil and its own Darwin gate), so run it by hand on a Mac. No secrets and
-# read-only, so it is safe on a fork's PR. The claude CLI is installed from npm at an exact version and never logs in.
+# read-only. The claude CLI is installed from npm at an exact version and never logs in. A fork's PR runs its own copy
+# of this file, so what keeps a secret or a write token from it is the repo's fork-PR settings, not this file; keep
+# "Send secrets" and "Send write tokens" to fork PR workflows off. Keep this job on GitHub-hosted runners: it runs PR
+# code and must never share a runner with claude-review.yml.
 name: CI
 
 on:
@@ -9,6 +12,10 @@ on:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   checks:
@@ -29,10 +36,14 @@ jobs:
         run: npm install --global @anthropic-ai/claude-code@2.1.319
       - name: Run the test suites
         shell: bash
+        env:
+          DISABLE_AUTOUPDATER: '1'
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1'
         run: |
-          bash tools/test-all.sh callboard usage-watcher session-peers | tee "$RUNNER_TEMP/test-all.out"
+          set -- callboard usage-watcher session-peers
+          bash tools/test-all.sh "$@" | tee "$RUNNER_TEMP/test-all.out"
           passed=$(grep -cE '^[a-z-]+ +pass ' "$RUNNER_TEMP/test-all.out" || true)
-          if [ "$passed" != 3 ]; then
-            echo "::error::Expected 3 suites to pass, got $passed. A suite that shows skip does not count."
+          if [ "$passed" != "$#" ]; then
+            echo "::error::Expected $# suites to pass, got $passed. A suite that shows skip does not count."
             exit 1
           fi

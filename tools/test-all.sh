@@ -3,7 +3,7 @@
 #   bash tools/test-all.sh                run all suites
 #   bash tools/test-all.sh --quick        skip the slow ones (callboard, about 3 min)
 #   bash tools/test-all.sh NAME [NAME…]   run only the named suites (names are the first column)
-# A suite whose tool is missing (node, claude, jq, plutil) shows as skip, never as pass. Exit 1 if any suite fails,
+# A suite whose tool is missing (node, claude, python3, jq, plutil) shows as skip, never as pass. Exit 1 if any suite fails,
 # 2 on an unknown option or suite name (checked before anything runs).
 # Adding a suite: add one `suite` line below and the same name to the Build / Test list in CLAUDE.md.
 
