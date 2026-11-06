@@ -2070,16 +2070,19 @@ export function liveCheckout(root: unknown): string | undefined {
   const base = root.slice(0, -LIVE_MOD_SUFFIX.length)
   return base.length > 1 && !/[\u0000-\u001f\u007f]/.test(base) ? base : undefined
 }
-export type LiveHead = { kind: 'main' } | { kind: 'branch'; name: string } | { kind: 'detached' } | { kind: 'unknown' }
-// A .git/HEAD text: `ref: refs/heads/<branch>` or a 40-hex commit, one line. Anything else (an empty or cut file, another ref kind, a branch name with an
-// unusual character, which is never shown) is unknown.
+export type LiveHead = { kind: 'main' } | { kind: 'branch'; name?: string } | { kind: 'detached' } | { kind: 'unknown' }
+// A .git/HEAD text, one line (LF or CRLF): `ref: refs/heads/<branch>` or a 40- or 64-hex commit. Any branch other than main warns; its name is shown only
+// when it passes a strict check (else the toast says "another branch"). Anything else (an empty or cut file, another ref kind) is unknown.
 export function parseLiveHead(text: unknown): LiveHead {
   if (typeof text !== 'string' || text.length > LIVE_HEAD_MAX) return { kind: 'unknown' }
-  const line = text.endsWith('\n') ? text.slice(0, -1) : text
+  const line = text.endsWith('\r\n') ? text.slice(0, -2) : text.endsWith('\n') ? text.slice(0, -1) : text
   if (line === 'ref: refs/heads/main') return { kind: 'main' }
-  if (/^[0-9a-f]{40}$/.test(line)) return { kind: 'detached' }
-  const m = /^ref: refs\/heads\/([A-Za-z0-9][A-Za-z0-9._\/-]{0,99})$/.exec(line)
-  return m && !m[1].includes('..') && !m[1].endsWith('/') ? { kind: 'branch', name: m[1] } : { kind: 'unknown' }
+  if (/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(line)) return { kind: 'detached' }
+  if (!line.startsWith('ref: refs/heads/')) return { kind: 'unknown' }
+  const ref = line.slice('ref: refs/heads/'.length)
+  if (!ref || /[\u0000-\u001f\u007f]/.test(ref)) return { kind: 'unknown' }
+  const shown = /^[A-Za-z0-9][A-Za-z0-9._\/-]{0,99}$/.test(ref) && !ref.includes('..') && !ref.endsWith('/')
+  return shown ? { kind: 'branch', name: ref } : { kind: 'branch' }
 }
-export const liveCheckoutToast = (checkout: string, head: { kind: 'branch'; name: string } | { kind: 'detached' }): string =>
-  `Callboard loads from ${checkout}, which is not on main (it is on ${head.kind === 'branch' ? `branch ${head.name}` : 'a detached commit'}). Whatever is checked out there is live in every session.`
+export const liveCheckoutToast = (checkout: string, head: { kind: 'branch'; name?: string } | { kind: 'detached' }): string =>
+  `Callboard loads from ${checkout}, which is not on main (it is on ${head.kind === 'detached' ? 'a detached commit' : head.name !== undefined ? `branch ${head.name}` : 'another branch'}). Whatever is checked out there is live in every session.`

@@ -1012,8 +1012,17 @@ test('a detached live checkout warns too, and says so', async ($, on) => {
   expect(warns(stdins)).toEqual(['live-checkout-not-main'])
 })
 
+test('a branch whose name fails the strict check still warns, without the name', async ($, on) => {
+  const stdins: string[] = []
+  await started($, on, stdins, { seed: () => { liveHead = 'ref: refs/heads/fix+é\r\n' } })
+  expect(liveToasts().length).toBe(1)
+  expect(liveToasts()[0]).toMatch(/, which is not on main \(it is on another branch\)\. Whatever is checked out there is live in every session\.$/)
+  expect(liveToasts()[0]).not.toContain('fix+')
+  expect(warns(stdins)).toEqual(['live-checkout-not-main'])
+})
+
 // One engine per test, so each odd HEAD is a test of its own.
-for (const [label, odd] of [['unreadable', undefined], ['empty', ''], ['a newline', '\n'], ['a tag ref', 'ref: refs/tags/v1\n'], ['a branch with a space', 'ref: refs/heads/a b\n'], ['garbage', 'garbage'], ['41 hex', `${'a'.repeat(41)}\n`], ['two lines', 'ref: refs/heads/main\nextra\n']] as const) {
+for (const [label, odd] of [['unreadable', undefined], ['empty', ''], ['a newline', '\n'], ['a tag ref', 'ref: refs/tags/v1\n'], ['an empty branch name', 'ref: refs/heads/\n'], ['garbage', 'garbage'], ['41 hex', `${'a'.repeat(41)}\n`], ['two lines', 'ref: refs/heads/main\nextra\n']] as const) {
   test(`${label} HEAD logs live-checkout-unknown and shows no toast`, async ($, on) => {
     const stdins: string[] = []
     await started($, on, stdins, { seed: () => { liveHead = odd } })

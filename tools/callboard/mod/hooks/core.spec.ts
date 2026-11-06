@@ -2239,7 +2239,7 @@ test('liveCheckout names the checkout only for a mod folder at <checkout>/tools/
   }
 })
 
-test('parseLiveHead: main, a branch, a detached commit; anything else is unknown', () => {
+test('parseLiveHead: main, any other branch, a detached commit; anything else is unknown', () => {
   const sha = 'a'.repeat(40)
   assert.deepEqual(c.parseLiveHead('ref: refs/heads/main\n'), { kind: 'main' })
   assert.deepEqual(c.parseLiveHead('ref: refs/heads/main'), { kind: 'main' })
@@ -2248,9 +2248,17 @@ test('parseLiveHead: main, a branch, a detached commit; anything else is unknown
   assert.deepEqual(c.parseLiveHead('ref: refs/heads/Main\n'), { kind: 'branch', name: 'Main' })
   assert.deepEqual(c.parseLiveHead(`${sha}\n`), { kind: 'detached' })
   assert.deepEqual(c.parseLiveHead(sha), { kind: 'detached' })
-  for (const bad of [undefined, null, 7, '', '\n', 'ref: refs/heads/\n', 'ref: refs/heads/main\nref: refs/heads/x\n', 'ref: refs/heads/main\n\n', 'ref: refs/heads/main ', ' ref: refs/heads/main\n',
-    'ref: refs/remotes/origin/main\n', 'ref: refs/heads/a..b\n', 'ref: refs/heads/a/\n', 'ref: refs/heads/-x\n', 'ref: refs/heads/a b\n', 'ref: refs/heads/a$(x)\n', 'ref: refs/heads/é\n',
-    `${'a'.repeat(39)}\n`, `${'a'.repeat(41)}\n`, `${'A'.repeat(40)}\n`, `${sha}\n${sha}\n`, `ref: refs/heads/${'a'.repeat(101)}\n`, 'x'.repeat(300)]) {
+  assert.deepEqual(c.parseLiveHead('ref: refs/heads/main\r\n'), { kind: 'main' })
+  assert.deepEqual(c.parseLiveHead('ref: refs/heads/feat/x\r\n'), { kind: 'branch', name: 'feat/x' })
+  assert.deepEqual(c.parseLiveHead(`${'b'.repeat(64)}\n`), { kind: 'detached' })
+  // Not main, but a name that is never shown: it still warns, as "another branch".
+  for (const odd of ['ref: refs/heads/main ', 'ref: refs/heads/a..b\n', 'ref: refs/heads/a/\n', 'ref: refs/heads/-x\n', 'ref: refs/heads/a b\n', 'ref: refs/heads/a$(x)\n',
+    'ref: refs/heads/é\n', 'ref: refs/heads/fix+1\n', `ref: refs/heads/${'a'.repeat(101)}\n`]) {
+    assert.deepEqual(c.parseLiveHead(odd), { kind: 'branch' }, JSON.stringify(odd))
+  }
+  for (const bad of [undefined, null, 7, '', '\n', 'ref: refs/heads/\n', 'ref: refs/heads/main\nref: refs/heads/x\n', 'ref: refs/heads/main\n\n', ' ref: refs/heads/main\n',
+    'ref: refs/remotes/origin/main\n', 'ref: refs/heads/a\tb\n', 'ref: refs/heads/a\rb\n',
+    `${'a'.repeat(39)}\n`, `${'a'.repeat(41)}\n`, `${'A'.repeat(40)}\n`, `${'a'.repeat(63)}\n`, `${sha}\n${sha}\n`, 'x'.repeat(300)]) {
     assert.deepEqual(c.parseLiveHead(bad), { kind: 'unknown' }, JSON.stringify(bad))
   }
 })
@@ -2258,4 +2266,5 @@ test('parseLiveHead: main, a branch, a detached commit; anything else is unknown
 test('liveCheckoutToast says where the mod loads from and what it is on', () => {
   assert.equal(c.liveCheckoutToast('/Users/x/ai-manager', { kind: 'branch', name: 'feat/x' }), 'Callboard loads from /Users/x/ai-manager, which is not on main (it is on branch feat/x). Whatever is checked out there is live in every session.')
   assert.equal(c.liveCheckoutToast('/Users/x/ai-manager', { kind: 'detached' }), 'Callboard loads from /Users/x/ai-manager, which is not on main (it is on a detached commit). Whatever is checked out there is live in every session.')
+  assert.equal(c.liveCheckoutToast('/Users/x/ai-manager', { kind: 'branch' }), 'Callboard loads from /Users/x/ai-manager, which is not on main (it is on another branch). Whatever is checked out there is live in every session.')
 })

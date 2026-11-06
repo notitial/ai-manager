@@ -741,7 +741,11 @@ function toast($: any, text: string) {
 // worktree), an unreadable or odd HEAD: `warn live-checkout-unknown`, no toast. It only warns: the mod loads and nothing is blocked. No path enters a log line.
 async function liveCheckoutCheck($: any, sid: string): Promise<void> {
   try {
-    const checkout = c.liveCheckout($.plugin.root)
+    let root: unknown
+    try {
+      root = $.plugin.root
+    } catch {}
+    const checkout = c.liveCheckout(root)
     let head: c.LiveHead = { kind: 'unknown' }
     if (checkout) {
       const r = await run($, [HEAD, '-c', String(c.LIVE_HEAD_MAX + 1), '--', `${checkout}/.git/HEAD`]).catch(() => undefined)
@@ -4704,8 +4708,6 @@ export const register: Register = (on) => {
     } catch {
       await log($, me, 'error', 'command-register')
     }
-    // v15.2: once per session start, before anything slow; it only warns.
-    await liveCheckoutCheck($, me)
     // v13.5: what a retired /callboard on left, after /callboard is registered, so a slow store cannot hold the command up.
     await onLeftovers($, me)
     try {
@@ -4765,6 +4767,8 @@ export const register: Register = (on) => {
       rebindName.delete(me)
     }
     ensureTimer($)
+    // v15.2: once per session start, after the restores and the timer, so a slow read delays none of them; it only warns.
+    await liveCheckoutCheck($, me)
     return next(e)
   }).catch(($, e, next) => next(e))
 
