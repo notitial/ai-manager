@@ -35,7 +35,7 @@ session() {  # session <dir> <file-stem> <pid> <procStart> <name> <socket>
 }
 
 A="$T/home/.claude"
-B="$T/home/.claude-conductor/config"
+B="$T/home/.claude-other/config"
 mksock "$S/a1.sock"
 mksock "$S/b1.sock"
 mksock "$O/outside.sock"

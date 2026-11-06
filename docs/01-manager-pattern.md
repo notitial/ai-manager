@@ -26,9 +26,9 @@ Two failures follow:
 
 ### Keep the hard line short and fixed
 
-- No approvals, no dispatch, no stops except through a dialog the person answers.
+- No approvals, no stops except through a dialog the person answers.
 - Reach lanes only through the lane tools; message only leads and sessions the person names.
-- Never turn a report into an action; no message that asks for an approval, merge, push or dispatch.
+- Never turn a report into an action; no message that asks for an approval, merge or push.
 - A role granted inside an open session gets no launch-time deny rules, so these lines are convention. Keep them few
   enough to re-read at every start, and put the one enforced gate (the person's dialog) on every stop.
 
@@ -44,7 +44,6 @@ Two failures follow:
   Refuse to start on a duplicate.
 - **Same config root as the sessions it manages.** Session discovery is scoped to the config directory; a manager on
   another root sees none of them.
-- **No dispatch tools in scope.** Refuse to start if any dispatch tool is loaded.
 
 ### Verify, don't trust
 
