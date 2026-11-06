@@ -41,5 +41,6 @@ jobs:
           CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1'
         run: |
           bash tools/callboard/test.sh > "$RUNNER_TEMP/cb.log" 2>&1 || true
-          grep -vE '^\s*(ok [0-9]+|✔|\(pass\))' "$RUNNER_TEMP/cb.log" | tail -n 200
+          grep '^(pass)' "$RUNNER_TEMP/cb.log" | sed -E 's/^(.*)\[([0-9.]+)ms\]$/\2 \1/' | sort -rn | head -10 | cut -c1-110
+          grep -vE '^\s*(ok [0-9]+|✔|\(pass\))' "$RUNNER_TEMP/cb.log" | tail -n 60
           exit 1
