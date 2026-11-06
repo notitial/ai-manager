@@ -25,7 +25,7 @@ enforces.
 ## Starting and resuming
 
 - The person starts the manager: a plain session in this checkout, on Opus (`/model opus`), then
-  `/callboard manager [NAME]`. The grant lives in memory, so every start and resume needs the command again.
+  `/callboard manager [NAME]`. The grant lives in memory, and your yes also saves it: when the same conversation starts or resumes, a dialog asks whether to restore the manager (Manager or Cancel; a compaction keeps the grant and asks nothing). Type the command again only after a Cancel, a `/callboard off` or an unanswered dialog that you do not want to answer.
 - **Name.** `MANAGER`, or a name reserved on this machine with `/callboard reserve NAME`. A manager on another machine
   reserves a different name there the same way (Remote Control lists every machine's sessions, so two of the same name
   make a bare-name message ambiguous).
