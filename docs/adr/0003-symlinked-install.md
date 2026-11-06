@@ -48,8 +48,9 @@ For the root `lanes.json`, which only `install.sh --lanes` could write:
 - **No root lanes.** The mod and the extension read lanes only from the store. The uid-0 file check, its parent-chain
   check, its refusal codes and the `root-lane` refusals of `lane_remove` and `lane_park` are gone. Every other
   ownership check, against the person's own uid, stays.
-- **Permission rules** come from ai-toolkit's `/setup-claude`. It writes `Edit(//<live checkout>/tools/callboard/**)`
-  into `permissions.deny` from the real path. The existing callboard store and list-file denies stay.
+- **Permission rules** are ai-manager's, added by hand like the existing callboard store and list-file denies
+  (ai-toolkit carries nothing about callboard): `Edit(/<live checkout>/tools/callboard/**)` and the same with
+  `Write`, from the real path, so each starts with `//`.
 - **Deferred:** a guard that keeps the mod off, or warns, when the live checkout is not a clean `main`. The person
   chose to add it once development settles.
 
@@ -58,8 +59,9 @@ For the root `lanes.json`, which only `install.sh --lanes` could write:
 - An update needs no sudo, no fetch and no hashes, and it works while the repo is private.
 - **Accepted risk.** A shell write to a live checkout file is not an Edit, so no permission rule stops it. Examples
   are `sed -i` on a mod file, or a `git checkout` in the live clone. It takes effect at the next window reload or
-  session start. It needs a hijacked agent. ADR 0002's statement that "no agent can edit" the mod's files no longer
-  holds.
+  session start. An honest slip is enough, not only a hijacked agent: leads, lanes and the manager run with the live
+  checkout as their working folder, so a habitual `git checkout -b`, a `git stash` or a git call that leaves out its
+  `path` lands there. ADR 0002's statement that "no agent can edit" the mod's files no longer holds.
 - A pull of an unread commit goes live, so the person reads the incoming diff before pulling.
 - The live checkout must stay on `main`. Nothing enforces that until the deferred guard lands.
 - A lane that existed only in a root `lanes.json` has to be made again with `lane_create`.

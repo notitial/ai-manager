@@ -29,7 +29,7 @@ L="$E/notitial.callboard-panels-1.2.3"
 run "$C" --ext-dir "$E"
 check "dry run exits 0" [ $? -eq 0 ]
 check "dry run makes nothing" [ ! -e "$E" ]
-check "dry run names the link" grep -qF "DRY: /bin/ln -s -- $SRC $L" "$T/out"
+check "dry run names the link" grep -qF "DRY: /bin/ln -s -n -- $SRC $L" "$T/out"
 
 run "$C" --ext-dir "$E" --apply
 check "apply exits 0" [ $? -eq 0 ]
@@ -90,12 +90,20 @@ run "$C" --ext-dir relative/dir
 check "a relative --ext-dir is a usage error" [ $? -eq 2 ]
 run "$C" --bogus
 check "an unknown option is a usage error" [ $? -eq 2 ]
+/bin/mkdir -p "$E/Notitial.Callboard-Panels-0.1.0"
+run "$C" --ext-dir "$E" --apply
+check "an old copy in another letter case refuses" [ $? -ne 0 ]
+/bin/rm -rf "$E/Notitial.Callboard-Panels-0.1.0"
+
+run "$C" --ext-dir
+check "--ext-dir with no folder is a usage error" [ $? -eq 2 ]
+
 /bin/ln -s "$E" "$T/ext-link"
 run "$C" --ext-dir "$T/ext-link" --apply
 check "an extensions folder that is a link refuses" [ $? -ne 0 ]
 
 bash "$SCRIPT" --ext-dir "$T/real" > "$T/out" 2>&1
-check "the real script reads its own package.json" grep -qE "DRY: /bin/ln -s -- .*/extension $T/real/notitial.callboard-panels-[0-9]+\.[0-9]+\.[0-9]+$" "$T/out"
+check "the real script reads its own package.json" grep -qE "DRY: /bin/ln -s -n -- .*/extension $T/real/notitial.callboard-panels-[0-9]+\.[0-9]+\.[0-9]+$" "$T/out"
 
 echo "1..$n"
 [ "$fails" = 0 ] || { echo "$fails failed" >&2; exit 1; }

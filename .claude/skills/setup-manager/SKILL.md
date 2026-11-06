@@ -19,7 +19,8 @@ first; it is the source for every step here, and wins where the two differ.
   Removing the earlier root-owned install needs sudo, so it needs a terminal anyway.
 - **Never open `~/.claude/settings.json`** with Read, `cat` or anything that prints it: it can hold secrets. The
   checks below use `jq -e` and print only `true` or `false`.
-- Fill in `<checkout>` with the person's live checkout (`pwd -P` in a session started there). Callboard loads from
+- Fill in `<checkout>` with the person's live checkout (`pwd -P` in a session started there). It must match
+  `^/[A-Za-z0-9._/-]+$`; otherwise build no command with it, and stop. Callboard loads from
   it, so it must stay on `main` and move only with `git pull --ff-only`: never pull, check out or edit there
   yourself. For the usage watcher, `<commit>` is `git -C <checkout> rev-parse HEAD`; ask the person to confirm it is
   a commit of `main` they have read.
@@ -41,8 +42,9 @@ first; it is the source for every step here, and wins where the two differ.
    - The earlier root-owned install: run `ls -d /usr/local/libexec/callboard`. If it exists, give the person
      `sudo rm -rf /usr/local/libexec/callboard`, to run in a terminal, and say step 3 replaces its `env` value.
    - The extension link: run the dry run `bash <checkout>/tools/callboard/link-extension.sh` and show it. If it
-     refuses an entry it names, under `~/.vscode/extensions/notitial.callboard-panels-*` (an old copy, or a link
-     elsewhere), show it and give the person `rm -rf '<that path>'`; any other path: build no command, and stop.
+     refuses an entry it names, show it. Only when the entry is `~/.vscode/extensions/<name>` with `<name>` matching
+     `^notitial\.callboard-panels-[A-Za-z0-9._-]+$` (any letter case), give the person `rm -rf '<that path>'`;
+     anything else: build no command, and stop.
      Then run the dry run again.
    - Give the person `bash <checkout>/tools/callboard/link-extension.sh --apply`. After they paste the output, run
      `ls -l ~/.vscode/extensions | grep callboard-panels`: one link, to `<checkout>/tools/callboard/extension`.
@@ -64,7 +66,8 @@ first; it is the source for every step here, and wins where the two differ.
    every callboard setting on this Mac back to its default, not only ping. If the model-run one applied, say so
    plainly: report it.
 5. **Deny lines.** For each of the four lines in docs/setup.md (Manager setup: keep agents off the list file and the
-   store (by hand)), and for `Edit(//<checkout>/tools/callboard/**)` (Keep agents off the live mod; ai-toolkit's
+   store (by hand)), and for `Edit(/<checkout>/tools/callboard/**)` and `Write(/<checkout>/tools/callboard/**)` (Keep agents off the
+   live mod, also by hand; `<checkout>` starts with `/`, so each string starts with `//`; ai-toolkit's
    `/setup-claude` writes it), run
    `jq -e --arg r '<line>' '(.permissions.deny // []) | index($r) != null' ~/.claude/settings.json`. For any `false`,
    show the person the missing lines to add to `permissions.deny` by hand. If they run a conductor repo, give them

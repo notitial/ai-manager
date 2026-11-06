@@ -52,8 +52,12 @@ sudo rm -rf /usr/local/libexec/callboard
 rm -rf ~/.vscode/extensions/notitial.callboard-panels-1.0.0
 ```
 
+The earlier installer only ever wrote version 1.0.0. If `link-extension.sh` below names another real folder, remove
+that one the same way.
+
 - In the next steps, the `CLAUDE_CODE_PLUGIN_DIRS` value **replaces** `/usr/local/libexec/callboard/mod`. Never add a
-  second folder: two folders holding a `callboard` mod would both load.
+  second folder: two folders holding a `callboard` mod would both load. Until you replace it, a session that starts
+  finds no mod, so do the whole section in one go and then restart every session.
 - The root-owned `lanes.json` goes with that folder. Lanes now come only from the lane store, where `lane_create`
   writes them; a lane that was only in the root file has to be made again.
 - The `claude-callboard` terminal wrapper goes too: the `env` line below loads the mod in terminal sessions as well.
@@ -126,10 +130,18 @@ conductor repo: for each conductor repo, add the absolute form too
 
 ### Keep agents off the live mod
 
-ai-toolkit's `/setup-claude` adds `Edit(//<checkout>/tools/callboard/**)` to `permissions.deny`, written from your
-checkout's real path, so an agent's Edit tool can't change the mod every session loads. Agents never need it: they
-edit in `/tmp` clones. If your ai-toolkit predates that rule, add the line by hand. Like the lines above, it does not
-stop a shell write ([ADR 0003](adr/0003-symlinked-install.md), Consequences).
+By hand too: ai-toolkit carries nothing about callboard. Add these two lines to `permissions.deny` in your global
+`~/.claude/settings.json`, with `/<checkout>` written as your checkout's real path. `<checkout>` starts with `/`, so
+each rule starts with `//`, as in `Edit(//Users/x/ai-manager/tools/callboard/**)`:
+
+```json
+"Edit(/<checkout>/tools/callboard/**)",
+"Write(/<checkout>/tools/callboard/**)"
+```
+
+They keep an agent's Edit and Write tools off the mod and the extension every session loads. Agents never need them:
+they edit in `/tmp` clones. Like the lines above, they do not stop a shell write
+([ADR 0003](adr/0003-symlinked-install.md), Consequences).
 
 If you run a conductor repo: callboard refuses its `.claude` folder as unsafe when group or other may write it (as
 under umask 002). Run this once:
@@ -252,7 +264,7 @@ lane or a live lead carries cannot be reserved. Details: callboard README, The m
 | Default load | type `! echo $CLAUDE_CODE_PLUGIN_DIRS` in a new session | `<checkout>/tools/callboard/mod` |
 | Mod loaded | type `/callboard status` in a session | it answers `Lane: NONE. Lead: OFF.` or similar |
 | Reserved names | type `/callboard reserve` | the manager's name, when it is not `MANAGER`, is listed |
-| Deny lines | read `permissions.deny` in `~/.claude/settings.json` | the four lines and the live-mod line are there |
+| Deny lines | read `permissions.deny` in `~/.claude/settings.json` | the four lines and the two live-mod lines are there |
 | Usage watcher | `bash tools/usage-watcher/install.sh --status --ref <commit>` | exit 0, the job loaded |
 | Summary | `ls -l ~/.local/state/usage-watcher/usage-summary.json` | written in the last 5 minutes |
 | SessionStart hook | read `hooks.SessionStart` in `~/.claude/settings.json` | the `account-stamp.sh` entry is there |
