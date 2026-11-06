@@ -1,0 +1,38 @@
+# The checks a PR must not break: the suites of tools/test-all.sh that run on Linux. usage-watcher-install is left out
+# on purpose: it needs macOS (launchd, plutil and its own Darwin gate), so run it by hand on a Mac. No secrets and
+# read-only, so it is safe on a fork's PR. The claude CLI is installed from npm at an exact version and never logs in.
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Repo Checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: '22.18.0'
+          package-manager-cache: false
+      - name: Install the claude CLI
+        run: npm install --global @anthropic-ai/claude-code@2.1.319
+      - name: Run the test suites
+        shell: bash
+        run: |
+          bash tools/test-all.sh callboard usage-watcher session-peers | tee "$RUNNER_TEMP/test-all.out"
+          passed=$(grep -cE '^[a-z-]+ +pass ' "$RUNNER_TEMP/test-all.out" || true)
+          if [ "$passed" != 3 ]; then
+            echo "::error::Expected 3 suites to pass, got $passed. A suite that shows skip does not count."
+            exit 1
+          fi

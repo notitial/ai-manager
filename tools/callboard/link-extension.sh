@@ -54,7 +54,24 @@ HERE="$(CDPATH= cd -P -- "$(/usr/bin/dirname -- "$0")" && pwd -P)"
 SRC="$HERE/extension"
 MANIFEST="$SRC/package.json"
 [ -f "$MANIFEST" ] && [ ! -L "$MANIFEST" ] || die "$MANIFEST is missing or not a regular file"
-field() { /usr/bin/plutil -extract "$1" raw -o - "$MANIFEST" 2>/dev/null || true; }
+# field <key>: a top-level string in package.json, printed; anything else (a missing key, a non-string, a file that is not
+# valid JSON) prints nothing, which the checks below refuse.
+FIELDSRC='
+import json, sys
+
+def no_constants(c):
+    raise ValueError(c)
+
+try:
+    with open(sys.argv[2], "rb") as f:
+        data = json.loads(f.read().decode("utf-8"), parse_constant=no_constants)
+    value = data.get(sys.argv[1]) if isinstance(data, dict) else None
+    if isinstance(value, str):
+        print(value)
+except (OSError, ValueError, RecursionError):
+    pass
+'
+field() { /usr/bin/python3 -I -c "$FIELDSRC" "$1" "$MANIFEST" 2>/dev/null || true; }
 [ "$(field publisher)" = notitial ] || die "extension/package.json publisher must be notitial"
 [ "$(field name)" = callboard-panels ] || die "extension/package.json name must be callboard-panels"
 VER="$(field version)"

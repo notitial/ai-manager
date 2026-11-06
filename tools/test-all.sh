@@ -45,11 +45,11 @@ suite() {  # suite <name> <slow:0|1> <needs> <command>; needs is one or more com
   fi
 }
 
-# callboard needs node 22.18 or later, the claude CLI (claude plugin validate, claude plugin test) and macOS (plutil,
-# for link-extension.sh).
+# callboard needs node 22.18 or later, the claude CLI (claude plugin validate, claude plugin test) and
+# /usr/bin/python3 (for link-extension.sh).
 # usage-watcher-install needs macOS (plutil), the Command Line Tools and /usr/bin/python3 3.9 or later.
 suites() {
-  suite callboard              1 'node claude plutil'       'bash tools/callboard/test.sh'
+  suite callboard              1 'node claude /usr/bin/python3' 'bash tools/callboard/test.sh'
   suite usage-watcher          0 /usr/bin/python3           '/usr/bin/python3 -I tools/usage-watcher/test_watch.py'
   suite usage-watcher-install  0 'plutil /usr/bin/python3'  'bash tools/usage-watcher/test-install.sh'
   suite session-peers          0 'jq python3'               'bash tools/session-peers/test-peers.sh'
