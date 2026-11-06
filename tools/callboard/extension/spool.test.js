@@ -201,7 +201,10 @@ function gitDir(repo) {
 }
 
 function storeWorld() {
-  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cb-repo-')))
+  // Four path parts at least, or pinRefusal calls it too broad: on Linux os.tmpdir() is /tmp, so the repo sits two folders below the temp folder.
+  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cb-repo-')))
+  fs.mkdirSync(path.join(base, 'work', 'repo'), { recursive: true })
+  const repo = path.join(base, 'work', 'repo')
   fs.mkdirSync(path.join(repo, 'api'))
   gitDir(repo)
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cb-stores-')))

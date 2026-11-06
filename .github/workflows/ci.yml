@@ -1,0 +1,55 @@
+# The checks a PR must not break: the suites of tools/test-all.sh that run on Linux. usage-watcher-install is left out
+# on purpose: it needs macOS (launchd, plutil and its own Darwin gate), so run it by hand on a Mac. No secrets and
+# read-only. The claude CLI is installed from npm at an exact version and never logs in. The callboard suite runs here
+# without `claude plugin test mod` (CALLBOARD_SKIP_MOD_TESTS): those tests are timing-sensitive on this runner, so run
+# them locally before any mod PR. A fork's PR runs its own copy
+# of this file, so what keeps a secret or a write token from it is the repo's fork-PR settings, not this file; keep
+# "Send secrets" and "Send write tokens" to fork PR workflows off. Keep this job on GitHub-hosted runners: it runs PR
+# code and must never share a runner with claude-review.yml.
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Repo Checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: '22.18.0'
+          package-manager-cache: false
+      - name: Install the claude CLI
+        run: npm install --global @anthropic-ai/claude-code@2.1.319
+      - name: Say which tests this job skips
+        run: |
+          echo "::warning title=Mod tests skipped::CI does not run 'claude plugin test mod': those tests are timing-sensitive on this runner. Run 'bash tools/callboard/test.sh' on your own machine before any PR that touches tools/callboard/mod."
+      - name: Run the test suites
+        shell: bash
+        env:
+          CALLBOARD_SKIP_MOD_TESTS: '1'
+          DISABLE_AUTOUPDATER: '1'
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1'
+        run: |
+          set -- callboard usage-watcher session-peers
+          bash tools/test-all.sh "$@" | tee "$RUNNER_TEMP/test-all.out"
+          passed=$(grep -cE '^[a-z-]+ +pass ' "$RUNNER_TEMP/test-all.out" || true)
+          if [ "$passed" != "$#" ]; then
+            echo "::error::Expected $# suites to pass, got $passed. A suite that shows skip does not count."
+            exit 1
+          fi

@@ -3,7 +3,7 @@
 #   bash tools/test-all.sh                run all suites
 #   bash tools/test-all.sh --quick        skip the slow ones (callboard, about 3 min)
 #   bash tools/test-all.sh NAME [NAME…]   run only the named suites (names are the first column)
-# A suite whose tool is missing (node, claude, jq, plutil) shows as skip, never as pass. Exit 1 if any suite fails,
+# A suite whose tool is missing (node, claude, python3, jq, plutil) shows as skip, never as pass. Exit 1 if any suite fails,
 # 2 on an unknown option or suite name (checked before anything runs).
 # Adding a suite: add one `suite` line below and the same name to the Build / Test list in CLAUDE.md.
 
@@ -45,11 +45,13 @@ suite() {  # suite <name> <slow:0|1> <needs> <command>; needs is one or more com
   fi
 }
 
-# callboard needs node 22.18 or later, the claude CLI (claude plugin validate, claude plugin test) and macOS (plutil,
-# for link-extension.sh).
+# callboard needs node 22.18 or later, the claude CLI (claude plugin validate, claude plugin test) and
+# /usr/bin/python3 (for link-extension.sh). CI sets CALLBOARD_SKIP_MOD_TESTS=1, which skips `claude plugin test mod`
+# inside the callboard suite (timing-sensitive on the CI runner); the row still shows pass, so run this without it
+# before any change to tools/callboard/mod.
 # usage-watcher-install needs macOS (plutil), the Command Line Tools and /usr/bin/python3 3.9 or later.
 suites() {
-  suite callboard              1 'node claude plutil'       'bash tools/callboard/test.sh'
+  suite callboard              1 'node claude /usr/bin/python3' 'bash tools/callboard/test.sh'
   suite usage-watcher          0 /usr/bin/python3           '/usr/bin/python3 -I tools/usage-watcher/test_watch.py'
   suite usage-watcher-install  0 'plutil /usr/bin/python3'  'bash tools/usage-watcher/test-install.sh'
   suite session-peers          0 'jq python3'               'bash tools/session-peers/test-peers.sh'
