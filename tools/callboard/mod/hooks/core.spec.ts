@@ -714,7 +714,7 @@ test('recOk: a missing hash is never accepted', () => {
 })
 
 test('every refusal code of the wording table has text, and the lead sees code and text', () => {
-  const codes = ['rate-limit', 'no-request', 'context-floor', 'not-idle', 'draft-in-box', 'background-work', 'start-done', 'not-empty', 'too-old', 'record-changed', 'wrong-folder', 'not-bound', 'not-eligible', 'brief-file', 'brief-path', 'unknown-lane', 'name-in-use', 'user-named', 'already-bound', 'stale', 'grammar', 'other', 'other-repo', 'brief-chars', 'brief-missing', 'brief-outside', 'bind-turns-mismatch', 'registry-unreadable', 'submit-failed', 'timeout', 'cue-busy', 'report-stale', 'report-unknown', 'report-not-done', 'report-missing', 'report-file', 'report-path', 'report-old', 'report-no-start', 'session-changed', 'session-duplicate', 'background-unknown', 'bad-task', 'brief-path-long', 'brief-exists', 'archive-unsafe', 'brief-write']
+  const codes = ['rate-limit', 'no-request', 'context-floor', 'not-idle', 'draft-in-box', 'background-work', 'start-done', 'not-empty', 'too-old', 'record-changed', 'wrong-folder', 'not-bound', 'not-eligible', 'brief-file', 'brief-path', 'unknown-lane', 'name-in-use', 'user-named', 'already-bound', 'stale', 'grammar', 'other', 'other-repo', 'brief-chars', 'brief-missing', 'brief-outside', 'bind-turns-mismatch', 'registry-unreadable', 'submit-failed', 'timeout', 'cue-busy', 'report-stale', 'report-unknown', 'report-not-done', 'report-missing', 'report-file', 'report-path', 'report-old', 'report-no-start', 'session-changed', 'session-duplicate', 'background-unknown', 'bad-task', 'brief-path-long', 'brief-exists', 'archive-unsafe', 'brief-write', 'abandoned']
   for (const code of codes) {
     assert.equal(c.hasText(code), true, code)
     assert.ok(c.REASON_TEXT[code].length > 10, code)
@@ -2371,4 +2371,24 @@ test('v15.3 the stop texts', () => {
   assert.equal(c.stoppedText('retire', 'API', 4242, 'kept'), 'lane API retired: SIGTERM sent to process 4242. The record stays: a lane a session joined keeps it.')
   assert.equal(c.stoppedText('terminate', 'API', 4242, { unremoved: 'changed' }), 'lane API terminated: SIGTERM sent to process 4242. Its record could not be removed (changed); call lane_terminate again to remove it.')
   assert.equal(c.removedNoSessionText('retire', 'API'), 'lane API retired and removed: it had no live session. Its .archive/API/ folder and report stay.')
+})
+
+test('v15.4 afterSignalFailedText says the signal went out and the record is not known, for each stop verb', () => {
+  for (const verb of ['retire', 'park', 'terminate'] as const) {
+    const t = c.afterSignalFailedText(verb, 'API', 4500)
+    assert.ok(t.includes('SIGTERM sent to process 4500'))
+    assert.ok(t.includes('not known'))
+    assert.ok(verb === 'park' ? t.includes('lane_unpark') && !t.includes('lane_park again') : t.includes(`lane_${verb} again`))
+    assert.ok(!t.includes('failed closed'))
+  }
+})
+
+// v15.4 (2026-11-06): a hook has 10 s of its own time per dispatch and a $.clock.sleep counts against it (a $ call does not), so every wait inside a tool call
+// goes through pause() (/bin/sleep by process.run). Only the two timers below stay: each is raced against a $ call (a dialog, a lock), not a wait of its own.
+test('v15.4 register.ts waits only through pause(): the only $.clock.sleep left are the two timers raced against a $ call', () => {
+  const src = readFileSync(new URL('./register.ts', import.meta.url), 'utf8')
+  // Any spelling of the call: `clock.sleep`, `clock . sleep`, `clock['sleep']`, or `sleep` taken out of `$.clock`.
+  const hits = src.split('\n').filter((l) => /clock\s*(\.\s*|\[\s*['"])sleep|\{[^}]*\bsleep\b[^}]*\}\s*=\s*\$\.clock/.test(l) && !l.trim().startsWith('//'))
+  assert.equal(hits.length, 2)
+  assert.ok(hits.every((l) => l.includes('Promise.race(')), hits.join('\n'))
 })

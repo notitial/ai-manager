@@ -909,6 +909,12 @@ export function stoppedText(verb: 'retire' | 'terminate', name: string, pid: num
   if (outcome === 'kept') return `lane ${name} ${done}: SIGTERM sent to process ${pid}. The record stays: a lane a session joined keeps it.`
   return `lane ${name} ${done}: SIGTERM sent to process ${pid}. Its record could not be removed (${outcome.unremoved}); call lane_${verb} again to remove it.`
 }
+// v15.4 (2026-11-06): something failed after the signal went out (the code is in the log): the session was told to stop, and what became of its record is not known.
+export const afterSignalFailedText = (verb: 'retire' | 'park' | 'terminate', name: string, pid: number): string =>
+  `lane ${name}: SIGTERM sent to process ${pid}, but the call failed afterwards, so what became of its record is not known. ` +
+  (verb === 'park'
+    ? 'Call lane_list: a parked lane shows as parked; if it does not, lane_unpark can still reopen it by its saved session.'
+    : `Call lane_list, then lane_${verb} again if the lane is still listed.`)
 export const removedNoSessionText = (verb: 'retire' | 'terminate', name: string): string => `lane ${name} ${verb === 'retire' ? 'retired' : 'terminated'} and removed: it had no live session. Its .archive/${name}/ folder and report stay.`
 
 // The report's last line is the signature: `status: done <session id of the writer>`. Older reports of earlier sessions
@@ -1266,6 +1272,8 @@ export const REASON_TEXT: Record<string, string> = {
   // v14 (2026-11-04): the manager level.
   busy: 'another callboard question is open in this session. Retry once it is answered.',
   'grant-changed': "this session's grant changed while the question was open. No signal was sent.",
+  // v15.4 (2026-11-06): the call was cut off while it waited (its time ran out, or the person interrupted).
+  abandoned: 'the call was cut off while it waited, so it stopped. No signal was sent. Retry once.',
   // v14.1 (2026-11-04): and remove (with no live session, after a dialog).
   'manager-tool': 'the manager may only list, resume, compact, force stop and retire lanes.',
   'lane-or-lead': 'a lane and a live lead both carry that name, so it is not clear which one is meant. Nothing was sent.',
