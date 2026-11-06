@@ -1,6 +1,6 @@
 'use strict'
 // Open requests from a lead session (ADR 0002). The lead's lane_open tool writes <LANE>.open into
-// ~/.claude/callboard/open; this window opens the lane's panel when the lane is in the root-owned lanes.json and its
+// ~/.claude/callboard/open; this window opens the lane's panel when the lane is in a lane store and its
 // folder is a workspace folder of this window, then writes <LANE>.result (`ok <sid>` or `error <code>`).
 // Every file is a filter: any process of the same user can write here, so the limits below do not rely on the file.
 
@@ -25,23 +25,6 @@ const STORE_MAX_BYTES = 16_384
 const STORE_MAX_LANES = 16
 
 const clean = (p) => typeof p === 'string' && /^\/[\x21-\x7e]*$/.test(p) && !p.split('/').some((s) => s === '..' || s === '.') && p.length < 512 && !p.includes('//')
-
-// The root-owned lanes file, read the way the mod reads it: a plain file owned by ownerUid, not group or other writable,
-// in directories that are too, from its folder up to stopAt.
-async function readLanes(file, { ownerUid = 0, stopAt = '/' } = {}) {
-  const st = await fsp.lstat(file)
-  if (!st.isFile() || st.uid !== ownerUid || st.nlink !== 1 || (st.mode & 0o022) !== 0) throw new Error('lanes-file')
-  let dir = file
-  for (;;) {
-    dir = path.dirname(dir)
-    const d = await fsp.lstat(dir)
-    if (!d.isDirectory() || d.uid !== ownerUid || (d.mode & 0o022) !== 0) throw new Error('lanes-parent')
-    if (dir === stopAt || dir === '/') break
-  }
-  const j = JSON.parse(await fsp.readFile(file, 'utf8'))
-  if (!j || !Array.isArray(j.lanes)) throw new Error('lanes-shape')
-  return j.lanes.filter((l) => l && NAME_RE.test(l.name) && !reservedHit(l.name) && clean(l.folder)).map((l) => ({ name: l.name, folder: l.folder }))
-}
 
 // Whether a folder is a git repo root, by the mod's rule (register.ts gitRoot): `.git`, not followed if it is a link, is a folder holding a plain HEAD file,
 // or a plain file of this user's, not group or other writable, whose text starts `gitdir: ` (a worktree or submodule). An empty `.git` folder, a
@@ -125,19 +108,13 @@ async function readStores(dir, { uid = process.getuid(), home = os.homedir() } =
   return out
 }
 
-// The root-owned file when there is one (a missing file is no root lanes; an unsafe one still throws), plus the lead-made lanes. A root lane wins a name clash.
-async function allLanes({ rootFile, storeDir, ownerUid = 0, stopAt = '/', uid, home } = {}) {
-  let root = []
-  try {
-    root = await readLanes(rootFile, { ownerUid, stopAt })
-  } catch (e) {
-    if (!(e && e.code === 'ENOENT')) throw e
-  }
-  const out = [...root]
+// The lanes the leads made, from the stores. A lane whose name is in more than one store is dropped.
+async function allLanes({ storeDir, uid, home } = {}) {
+  const out = []
   const stores = await readStores(storeDir, { uid, home })
   const stored = new Map()
   for (const l of stores) stored.set(l.name, new Set([...(stored.get(l.name) ?? []), l.store]))
-  for (const l of stores) if (stored.get(l.name).size === 1 && !out.some((x) => x.name === l.name)) out.push({ name: l.name, folder: l.folder, repo: l.repo, ...(l.sid !== undefined ? { sid: l.sid } : {}) })
+  for (const l of stores) if (stored.get(l.name).size === 1) out.push({ name: l.name, folder: l.folder, repo: l.repo, ...(l.sid !== undefined ? { sid: l.sid } : {}) })
   return out
 }
 
@@ -298,7 +275,7 @@ function createSpool({ dir, uid = process.getuid(), loadLanes, openLane, closeLa
   }
 
   // v13: a reopen request, <LANE>.reopen, written by lane_unpark: one line, the session id of the lane's saved conversation. The lane's store record must name
-  // that very id (a root lane has none), and the window must hold the lane folder as its first folder. The same rate limits as an open; answered on
+  // that very id, and the window must hold the lane folder as its first folder. The same rate limits as an open; answered on
   // <LANE>.result with `ok <sid>` or `error <code>`.
   async function handleReopen(name) {
     const file = path.join(dir, `${name}.reopen`)
@@ -420,4 +397,4 @@ function createSpool({ dir, uid = process.getuid(), loadLanes, openLane, closeLa
   return { scan, handle, handleClose, handleReopen, start }
 }
 
-module.exports = { createSpool, readLanes, readStores, allLanes, NAME_RE, REQUEST_TEXT }
+module.exports = { createSpool, readStores, allLanes, NAME_RE, REQUEST_TEXT }

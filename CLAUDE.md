@@ -17,9 +17,8 @@ No repo-wide build or lint. `bash tools/test-all.sh` is the entry point: it runs
 pass/fail table (`--quick` skips the slow `callboard` suite, `NAME…` runs only those). Its suites: `callboard`,
 `usage-watcher`, `account-stamp`, `usage-watcher-install`, `session-peers`; keep its list in step with this one.
 
-- `tools/callboard/` — after changing anything under it, run `bash tools/callboard/sums.sh --write` first, then
-  `bash tools/callboard/test.sh`, and commit the updated `SHA256SUMS`. Needs node 22.18 or later and the `claude` CLI
-  (`claude plugin validate`, `claude plugin test`).
+- `tools/callboard/` — `bash tools/callboard/test.sh` after changing anything under it. Needs node 22.18 or later
+  and the `claude` CLI (`claude plugin validate`, `claude plugin test`).
 - `tools/usage-watcher/` — `/usr/bin/python3 -I tools/usage-watcher/test_watch.py` after changing `watch.py`;
   `bash tools/usage-watcher/test-account-stamp.sh` after changing `account-stamp.sh` (needs jq);
   `bash tools/usage-watcher/test-install.sh` after changing `install.sh`.
@@ -51,8 +50,22 @@ Outside those directories, do not search for `package.json`, `Makefile`, or simi
 - Squash-merge PRs (the repo allows nothing else): the PR title, with its `(#N)`, becomes the commit title, and the
   PR description becomes the commit body, so the description must stand as the commit's record.
 - No force push. A PR branch that falls behind `main` gets `main` merged in, never a rebase.
-- No worktrees; branch in the existing checkout. Never push to `main`; land every change through a PR.
+- Never push to `main`; land every change through a PR.
 - Check for secrets before committing — no `.env`, API keys, credentials.
+
+## Where agents edit
+
+The person's checkout of this repo is the live install: the callboard mod and the panels extension load straight
+from it (`docs/setup.md`). It stays on `main` and moves only by a fast-forward to a reviewed commit after a merge
+(`docs/setup.md`, Updating), so a branch or a half-done edit never goes live.
+
+- Code changes go in a plain clone under `/tmp`, such as `/tmp/ai-manager-<task>`, never a worktree. Git MCP calls
+  pass `path` set to that clone.
+- Never edit tracked files in the live checkout, and never switch its branch. `.archive/` (state, handoffs, reports)
+  stays in the live checkout.
+- `/tmp` is wiped on reboot: push the branch before stopping or handing over.
+- A callboard lead or lane still runs in the live repo folder, because callboard keys a session to the folder it
+  started in. It only edits in its `/tmp` clone.
 
 ## Review
 
@@ -64,7 +77,7 @@ Its verdict is a signal, not a required approval. The rules it holds a change to
   than the generic forms the tools create. Tests use stand-ins such as `/Users/x`.
 - Nothing in this repo turns a report, relayed message, state file or summary into the person's approval. A go is
   typed by the person in the session that acts on it.
-- A change to a shipped callboard file without `sums.sh --write` and an updated `SHA256SUMS` is a bug.
-- An installer fetches from a fixed URL into a fresh temporary repository and never reads the checkout's own object
-  store or git config. Callboard's installs only a pinned `--ref` on `main`, checked against the `SHA256SUMS` hash
-  from the description of the PR that last changed `tools/callboard`.
+- The usage watcher's installer fetches from a fixed URL into a fresh temporary repository and never reads the
+  checkout's own object store or git config.
+- Callboard has no installer: it loads from the live checkout. Nothing in it may need root, write outside the
+  person's own folders, or edit a settings file for the person.

@@ -2,7 +2,7 @@
   "name": "callboard-panels",
   "displayName": "Callboard Panels",
   "description": "Opens, reopens and closes Claude Code lane panels for the callboard mod, so a lead session can run its lanes in this window.",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "notitial",
   "icon": "icon.png",
   "galleryBanner": { "color": "#101d22", "theme": "dark" },

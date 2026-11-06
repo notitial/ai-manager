@@ -25,4 +25,5 @@ repo's.
 | # | Title | Status | Date |
 |---|-------|--------|------|
 | 0001 | The manager role (`0001-manager-role.md`) | accepted, amended | 2026-10-21 |
-| 0002 | Callboard (`0002-callboard.md`) | accepted | 2026-10-24 |
+| 0002 | Callboard (`0002-callboard.md`) | accepted, amended | 2026-10-24 |
+| 0003 | Callboard loads from a live checkout (`0003-symlinked-install.md`) | accepted | 2026-11-06 |

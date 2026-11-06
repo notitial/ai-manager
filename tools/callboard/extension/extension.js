@@ -35,7 +35,7 @@ function activate(context) {
   reg('callboard.close', (sid) => lanes.close(sid))
   const spool = createSpool({
     dir: path.join(os.homedir(), '.claude', 'callboard', 'open'),
-    loadLanes: () => allLanes({ rootFile: '/usr/local/libexec/callboard/lanes.json', storeDir: path.join(os.homedir(), '.claude', 'callboard', 'lanes') }),
+    loadLanes: () => allLanes({ storeDir: path.join(os.homedir(), '.claude', 'callboard', 'lanes') }),
     openLane: (folder) => lanes.open(folder, { timeoutMs: SPOOL_OPEN_MS, refuseUnnamed: true }),
     closeLane: ({ sid, pid, name }) => lanes.adopt(sid, { name, pid }),
     reopenLane: (sid) => lanes.reopen(sid, { timeoutMs: SPOOL_OPEN_MS }),

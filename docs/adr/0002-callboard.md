@@ -106,6 +106,10 @@ A fixed lead briefing reaches the lead twice: a `callboard:lead` system-prompt s
 
 ### Install
 
+**Amended 2026-11-06 ([ADR 0003](0003-symlinked-install.md)):** superseded. Callboard now loads from a live checkout
+that agents never edit, and `install.sh`, `SHA256SUMS`, `/usr/local/libexec/callboard` and the root-owned
+`lanes.json` are gone. The text below records the earlier design.
+
 - `install.sh --terminal|--vscode|--all --ref <40-hex commit on main> --sums-sha <64-hex> --apply`, run as the person (it refuses root and calls `/usr/bin/sudo` itself). It never installs from the working tree: as the person it reads `SHA256SUMS` of `tools/callboard` at the pinned commit, requires it to hash to `--sums-sha` from the description of the pull request that last changed `tools/callboard`, then streams each listed file from git into a root-owned 0700 staging folder (mode 0644, no archive, no file the person can write in between), checks the staging folder and every staged file, copies to the root-owned prefix `/usr/local/libexec/callboard`, and checks the installed files again. `--lanes <file> --lanes-sha <64-hex>` pins the root lane file the same way and runs the mod's own parser on it first. The installer prints its own hash; the person compares it with the review, since an installer cannot verify itself.
 - **Source.** The commit comes from a fresh fetch of `main` from the fixed URL `https://github.com/notitial/ai-manager.git` over HTTPS, as the person and before any sudo, into a temporary bare repository; `--ref` must be a 40-hex commit on `main`. A dry run fetches too. Every git call runs under `env -i` with no system or global config, no hooks, no credential helpers and no redirects. The checkout's `.git` and its config are never read, and a failed fetch (as while the repository is private) installs nothing.
 - **It never edits settings.** The person adds one line to the `env` block of `~/.claude/settings.json` (`CLAUDE_CODE_PLUGIN_DIRS=/usr/local/libexec/callboard/mod`), which loads the mod into every session Claude Code starts. Without `--apply` the installer only shows what it would do.

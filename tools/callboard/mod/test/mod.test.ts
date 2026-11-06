@@ -36,18 +36,23 @@ let askHang: Promise<string> | undefined
 let askScript: ((question: string, opts: string[]) => string | Promise<string>) | undefined
 let restoreHang: Promise<string> | undefined
 let restoreAnswer = YES
-let lanesText: string | undefined
 let sessions: Record<string, string> = {}
 // A process always has a registry entry of its own (the lock owner is named from it); a test that has none gets this one, unless it turns it off.
 let ownEntryAuto = true
 // kind interactive (v13.2): the engine writes it for a panel or a terminal; the nudge needs it on the session's own row.
-const AUTO_OWN = JSON.stringify({ sessionId: '0a1b2c3d-0000-4000-8000-123456789abc', cwd: '/work/lab', status: 'idle', pid: 4999, procStart: 'Tue Oct 27 20:37:50 2026', kind: 'interactive' })
+const AUTO_OWN = JSON.stringify({ sessionId: '0a1b2c3d-0000-4000-8000-123456789abc', cwd: '/data/x/work/lab', status: 'idle', pid: 4999, procStart: 'Tue Oct 27 20:37:50 2026', kind: 'interactive' })
 const regFiles = (): Record<string, string> => (!ownEntryAuto || Object.values(sessions).some((t) => t.includes('"sessionId":"0a1b2c3d-0000-4000-8000-123456789abc"')) ? sessions : { ...sessions, '4999.json': AUTO_OWN })
-let callerCwd = '/work/lab'
+let callerCwd = '/data/x/work/lab'
 // The session's project root ($.session.root()): where it started; a shell cd moves only callerCwd. Unset: the same as callerCwd.
 let callerRoot: string | undefined
 let reportGrown: string | undefined
 let headFails = false
+// v15.2: what the live checkout's .git/HEAD holds when the mod reads it at session start (undefined: the read fails). Default: on main, which warns nothing.
+const MAIN_HEAD = 'ref: refs/heads/main\n'
+let liveHead: string | undefined = MAIN_HEAD
+let liveHeadReads = 0
+// The path and the byte count of the last HEAD read; under the test engine $.plugin.root is the mod folder itself, so the checkout is the clone the suite runs in.
+let liveHeadAsked: { path: string; bytes: string } | undefined
 let sessionsUnsafe = false
 let composeStale = false
 let appendRows: any[] = []
@@ -60,6 +65,35 @@ let leadsStatRejects = false
 let composeCalls = 0
 const LANESDIR = '/Users/x/.claude/callboard/lanes'
 const storeFiles = new Map<string, string>()
+// Lanes a test seeds are store lanes, as a lead's lane_create leaves them. `laneSeed.text` takes a list of (name, folder, brief, repo?) and writes one store
+// file per repo (a lane with no repo goes in /data/x/work), with that repo's .git; undefined takes the files it wrote away again.
+const SEED_KEY = (repo: string) => (repo === '/Users/x/code/app2' ? 'b' : repo === '/Users/x/code/cond' ? 'c' : repo === '/data/x/work' ? 'd' : 'a').repeat(64)
+let laneSeedText: string | undefined
+let laneSeedWrote = new Map<string, string>()
+const laneSeed = {
+  get text(): string | undefined {
+    return laneSeedText
+  },
+  set text(v: string | undefined) {
+    for (const f of laneSeedWrote.keys()) storeFiles.delete(f)
+    laneSeedWrote = new Map()
+    laneSeedText = v
+    if (v === undefined) return
+    const byRepo = new Map<string, unknown[]>()
+    for (const l of JSON.parse(v).lanes as { name: string; folder: string; brief: string; repo?: string }[]) {
+      const repo = l.repo ?? '/data/x/work'
+      byRepo.set(repo, [...(byRepo.get(repo) ?? []), { name: l.name, folder: l.folder, brief: l.brief, createdAt: 1 }])
+    }
+    for (const [repo, lanes] of byRepo) {
+      const f = `${LANESDIR}/${SEED_KEY(repo)}.json`
+      if (storeFiles.has(f) && !laneSeedWrote.has(f)) throw new Error(`laneSeed: ${f} is taken`)
+      const t = JSON.stringify({ repo, lanes, creates: [] })
+      storeFiles.set(f, t)
+      laneSeedWrote.set(f, t)
+      extraStat.set(`${repo}/.git`, '501 755 8 Directory 6 256 1700000000\n')
+    }
+  },
+}
 const teeTexts = new Map<string, string>()
 const extraStat = new Map<string, string>()
 // Lane briefs lane_create wrote (<folder>/.archive/<NAME>/BRIEF.md), by path: the text renamed into place. mkdir -p of a .archive/<NAME> folder makes both
@@ -78,7 +112,6 @@ const condStat = new Map<string, string>()
 let condWriteHook: ((tmp: string) => void) | undefined
 const realMap = new Map<string, string>()
 let storeStatOverride: string | undefined
-let rootStatFail = false
 const headArgs: string[] = []
 const SESSIONS = '/Users/x/.claude/sessions'
 // v13.3: the registry of a session that runs under CLAUDE_CONFIG_DIR (its own row lives there), the environment the mod reads, and the stat the folder answers.
@@ -148,7 +181,7 @@ const realFails = new Map<string, { n: number; err: string }>()
 const gitFiles = new Map<string, string>()
 let psEnv: Record<string, string> | undefined
 let psArgsOut = '/x/native-binary/claude --output-format stream-json\n'
-const REPORT = '/work/.archive/LABLANE/REPORT.md'
+const REPORT = '/data/x/work/.archive/LABLANE/REPORT.md'
 // v13 harness: the report path the mock serves (a store lane's report sits in its repo), a one-shot hook on a lane-record hash, and a store write that hangs.
 let reportAt = REPORT
 // Called at the first record hash of LABLANE; a promise it returns holds that hash until it settles.
@@ -250,6 +283,9 @@ function engine(on: any, argvSeen: string[][], stdins: string[] = [], clk = fals
   mvHook = undefined
   reportGrown = undefined
   headFails = false
+  liveHead = MAIN_HEAD
+  liveHeadReads = 0
+  liveHeadAsked = undefined
   sessionsUnsafe = false
   envVars = {}
   ownSessions = {}
@@ -275,7 +311,10 @@ function engine(on: any, argvSeen: string[][], stdins: string[] = [], clk = fals
   condWriteHook = undefined
   realMap.clear()
   storeStatOverride = undefined
-  rootStatFail = false
+  // The files were just cleared; a list a test seeded before the engine started is written again.
+  const seededBefore = laneSeed.text
+  laneSeedWrote = new Map()
+  laneSeed.text = seededBefore
   headArgs.length = 0
   openResult = undefined
   psOut = 'Tue Oct 27 20:37:50 2026\n'
@@ -373,7 +412,7 @@ function engine(on: any, argvSeen: string[][], stdins: string[] = [], clk = fals
   resultIno = 88
   resultSwap = undefined
   nowMs = T0
-  callerCwd = '/work/lab'
+  callerCwd = '/data/x/work/lab'
   callerRoot = undefined
   ownEntryAuto = true
   store = new Map()
@@ -534,7 +573,6 @@ function engine(on: any, argvSeen: string[][], stdins: string[] = [], clk = fals
   on('session.model', () => ({ value: modelNow }))
   on('env.get', (_: any, e: any) => ({ value: envHook ? envHook(e.name) : envVars[e.name] }))
   on('fs.read', (_: any, e: any) => {
-    if (e.path === '/usr/local/libexec/callboard/lanes.json' && lanesText !== undefined) return { value: lanesText }
     if (e.path === reportAt && reportFile) return { value: reportFile.text }
     if (e.path === OPEN_RESULT && openResult !== undefined) return { value: openResult }
     if (e.path.startsWith(`${SESSIONS}/`)) fsReads.push(e.path)
@@ -563,7 +601,7 @@ function engine(on: any, argvSeen: string[][], stdins: string[] = [], clk = fals
       if (held instanceof Promise) return held.then(() => procRun(_, e))
     }
     if (a[0] === '/usr/bin/shasum' && recShaFails && typeof e.init?.stdin === 'string' && e.init.stdin.startsWith('LABLANE\n')) return ok('', 1)
-    if (a[0] === '/usr/bin/shasum') return ok(`${typeof e.init?.stdin === 'string' && (e.init.stdin.startsWith('LABLANE\n') || /^(ok|bad|absent)\n/.test(e.init.stdin) || e.init.stdin.includes('\nadopted\n')) ? fakeSha(e.init.stdin) : e.init?.stdin === '/Users/x/code/app2' ? 'b'.repeat(64) : e.init?.stdin === '/Users/x/code/cond' ? 'c'.repeat(64) : 'a'.repeat(64)}  -\n`)
+    if (a[0] === '/usr/bin/shasum') return ok(`${typeof e.init?.stdin === 'string' && (e.init.stdin.startsWith('LABLANE\n') || /^(ok|bad|absent)\n/.test(e.init.stdin) || e.init.stdin.includes('\nadopted\n')) ? fakeSha(e.init.stdin) : e.init?.stdin === '/Users/x/code/app2' ? 'b'.repeat(64) : e.init?.stdin === '/Users/x/code/cond' ? 'c'.repeat(64) : e.init?.stdin === '/data/x/work' ? 'd'.repeat(64) : 'a'.repeat(64)}  -\n`)
     if (a[0] === '/usr/bin/install') installed.add(a[a.length - 1])
     if (a[0] === '/usr/bin/tee' && a[1] === '--' && typeof e.init?.stdin === 'string') teeTexts.set(a[2], e.init.stdin)
     const last = a[a.length - 1]
@@ -589,6 +627,12 @@ function engine(on: any, argvSeen: string[][], stdins: string[] = [], clk = fals
       return ok('')
     }
     if (a[0] === '/usr/bin/stat' && condFiles.has(last)) return ok(condStat.get(last) ?? `501 644 1 Regular File 19 ${condFiles.get(last)!.length} 1700000000\n`)
+    // v15.2: the live checkout's HEAD, read with a bound at session start.
+    if (a[0] === '/usr/bin/head' && a[1] === '-c' && a[2] === '257' && a[3] === '--' && /\/\.git\/HEAD$/.test(last)) {
+      liveHeadReads++
+      liveHeadAsked = { path: last, bytes: a[2] }
+      return liveHead === undefined ? ok('', 1, `head: ${last}: No such file or directory`) : ok(liveHead.slice(0, Number(a[2])))
+    }
     if (a[0] === '/usr/bin/head' && condFiles.has(last)) {
       condHeads++
       return ok(condFiles.get(last)!)
@@ -802,7 +846,6 @@ function engine(on: any, argvSeen: string[][], stdins: string[] = [], clk = fals
     }
     if (a[0] === '/usr/bin/head' && storeFiles.has(a[a.length - 1])) return ok(lockState.held && storeReads.length > 0 ? storeReads.shift()! : storeFiles.get(a[a.length - 1])!)
     if (a[0] === '/usr/bin/stat' && statErr.has(last)) return ok('', 1, statErr.get(last)!)
-    if (a[0] === '/usr/bin/stat' && rootStatFail && a[a.length - 1] === '/usr/local/libexec/callboard/lanes.json') return ok('', 1, 'stat: Operation timed out')
     if (a[0] === '/usr/bin/stat' && storeFiles.has(a[a.length - 1])) return ok(storeStatOverride ?? `501 600 1 Regular File 77 ${storeFiles.get(a[a.length - 1])!.length} 1700000000\n`)
     if (a[0] === '/usr/bin/stat' && extraStat.has(a[a.length - 1])) return ok(extraStat.get(a[a.length - 1])!)
     if (a[0] === '/usr/bin/head' && gitFiles.has(last)) return ok(gitFiles.get(last)!)
@@ -898,8 +941,6 @@ function engine(on: any, argvSeen: string[][], stdins: string[] = [], clk = fals
     }
     if (a[0] === '/usr/bin/stat') {
       const path = a[a.length - 1]
-      if (lanesText !== undefined && path === '/usr/local/libexec/callboard/lanes.json') return ok('0 644 1 Regular File 20 99 1700000000\n')
-      if (lanesText !== undefined && ['/usr/local/libexec/callboard', '/usr/local/libexec', '/usr/local', '/usr', '/'].includes(path)) return ok('0 755 5 Directory 21 64 1700000000\n')
       if (path === SESSIONS && !sessionsUnsafe) return ok('501 700 2 Directory 13 64 1700000000\n')
       if (path === OWNDIR) return ownDirStat !== undefined ? ok(ownDirStat) : ok('501 700 2 Directory 14 64 1700000000\n')
       if (path.endsWith('/callboard') || path.endsWith('/lanes') || path.endsWith('/log') || path.endsWith('/cue') || path.endsWith('/open') || path.endsWith('/result') || path.endsWith('/leads')) return ok('501 700 2 Directory 11 64 1700000000\n')
@@ -930,6 +971,66 @@ test('a valid request is queued and logged with fixed fields only', async ($, on
   expect(JSON.parse(lines[0])).toEqual({ t: '2023-11-14T22:13:20.000Z', event: 'requested', reason: 'on-cue' })
   expect(stdins.join('')).not.toContain('keep the plan')
 })
+
+// v15.2 (ADR 0003): the live checkout's HEAD is read once at session start. Main says nothing; any other branch or a detached commit warns with one toast
+// and `warn live-checkout-not-main`; an unreadable or odd HEAD logs `warn live-checkout-unknown` and shows nothing. Nothing is ever refused.
+const warns = (stdins: string[]) => allEvents(stdins).filter((e) => e.event === 'warn').map((e) => e.reason)
+const liveToasts = () => toasts.filter((t) => t.startsWith('Callboard loads from '))
+
+test('a live checkout on main starts silently: one bounded read of .git/HEAD, no toast, no warn line', async ($, on) => {
+  const stdins: string[] = []
+  await started($, on, stdins)
+  expect(liveHeadReads).toBe(1)
+  expect(liveHeadAsked?.path).toMatch(/^\/.+\/\.git\/HEAD$/)
+  expect(liveHeadAsked?.bytes).toBe('257')
+  expect(liveToasts()).toEqual([])
+  expect(warns(stdins)).toEqual([])
+})
+
+test('a live checkout on another branch warns once with a toast and a log line, and nothing is blocked', async ($, on) => {
+  const stdins: string[] = []
+  await started($, on, stdins, { seed: () => { liveHead = 'ref: refs/heads/feat/symlink-install\n' } })
+  const checkout = liveHeadAsked!.path.slice(0, -'/.git/HEAD'.length)
+  expect(liveToasts()).toEqual([`Callboard loads from ${checkout}, which is not on main (it is on branch feat/symlink-install). Whatever is checked out there is live in every session.`])
+  expect(warns(stdins)).toEqual(['live-checkout-not-main'])
+  expect(allEvents(stdins).find((e) => e.event === 'warn')).toEqual({ t: '2023-11-14T22:13:20.000Z', event: 'warn', reason: 'live-checkout-not-main' })
+  expect(stdins.filter((x) => x.includes('live-checkout')).join('')).not.toContain(checkout)
+  expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Lead: OFF.')
+  await $.tool.call(GOOD as any)
+  await $.prompt.submit({ text: 'hello' } as any)
+  expect(liveHeadReads).toBe(1)
+  expect(liveToasts().length).toBe(1)
+  expect(warns(stdins)).toEqual(['live-checkout-not-main'])
+})
+
+test('a detached live checkout warns too, and says so', async ($, on) => {
+  const stdins: string[] = []
+  await started($, on, stdins, { seed: () => { liveHead = `${'0123abcd'.repeat(5)}\n` } })
+  expect(liveToasts().length).toBe(1)
+  expect(liveToasts()[0]).toMatch(/, which is not on main \(it is on a detached commit\)\. Whatever is checked out there is live in every session\.$/)
+  expect(liveToasts()[0]).not.toContain('0123abcd')
+  expect(warns(stdins)).toEqual(['live-checkout-not-main'])
+})
+
+test('a branch whose name fails the strict check still warns, without the name', async ($, on) => {
+  const stdins: string[] = []
+  await started($, on, stdins, { seed: () => { liveHead = 'ref: refs/heads/fix+é\r\n' } })
+  expect(liveToasts().length).toBe(1)
+  expect(liveToasts()[0]).toMatch(/, which is not on main \(it is on another branch\)\. Whatever is checked out there is live in every session\.$/)
+  expect(liveToasts()[0]).not.toContain('fix+')
+  expect(warns(stdins)).toEqual(['live-checkout-not-main'])
+})
+
+// One engine per test, so each odd HEAD is a test of its own.
+for (const [label, odd] of [['unreadable', undefined], ['empty', ''], ['a newline', '\n'], ['a tag ref', 'ref: refs/tags/v1\n'], ['an empty branch name', 'ref: refs/heads/\n'], ['garbage', 'garbage'], ['41 hex', `${'a'.repeat(41)}\n`], ['two lines', 'ref: refs/heads/main\nextra\n']] as const) {
+  test(`${label} HEAD logs live-checkout-unknown and shows no toast`, async ($, on) => {
+    const stdins: string[] = []
+    await started($, on, stdins, { seed: () => { liveHead = odd } })
+    expect(liveHeadReads).toBe(1)
+    expect(liveToasts()).toEqual([])
+    expect(warns(stdins)).toEqual(['live-checkout-unknown'])
+  })
+}
 
 test('every process call uses a fixed absolute executable and no shell', async ($, on) => {
   const argv: string[][] = []
@@ -979,12 +1080,12 @@ async function started($: any, on: any, stdins: string[], opts: { bound?: boolea
   })
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: opts.interactive ?? true })
   if (opts.bound) {
-    const had = lanesText
-    lanesText ??= LANES
+    const had = laneSeed.text
+    laneSeed.text ??= LANES
     const h = (store.get(`sess:${SID}`) ?? { counters: {}, savedAt: nowMs }) as Record<string, unknown>
     store.set(`sess:${SID}`, { ...h, lane: { name: 'LABLANE', at: 1 } })
     expect((await $.command.run(lane('lane'))).text).toBe(reboundToast('LABLANE'))
-    lanesText = had
+    laneSeed.text = had
     askCount = 0
     lastQuestion = undefined
     askedOptions = []
@@ -1062,7 +1163,7 @@ test('v13.6: /callboard on from any origin gets the usage line: no dialog, no st
 test('each dialog offers its own exact button pair', async ($, on) => {
   const hint = { lane: { name: 'LABLANE', at: 1 }, counters: {}, savedAt: T0 }
   try {
-    await started($, on, [], { seed: () => { lanesText = LANES; store.set(`sess:${SID}`, hint) } })
+    await started($, on, [], { seed: () => { laneSeed.text = LANES; store.set(`sess:${SID}`, hint) } })
     askAnswer = YES
     restoreAnswer = YES
     await $.command.run(lane('lane'))
@@ -1075,7 +1176,7 @@ test('each dialog offers its own exact button pair', async ($, on) => {
     await $.command.run(lane('off', { kind: 'plugin', name: 'x' }))
     expect(askedOptions).toEqual([[OFF_YES, OFF_NO]])
   } finally {
-    lanesText = undefined
+    laneSeed.text = undefined
   }
 })
 
@@ -1095,18 +1196,18 @@ test('a session that is not a lane writes no hint and no saved on; a lane writes
   await $.command.run(lane('on'))
   await $.command.run(lane('off'))
   expect([...store.keys()]).toEqual([])
-  lanesText = LANES
+  laneSeed.text = LANES
   try {
     store.set(`sess:${SID}`, { lane: { name: 'LABLANE', at: 1 }, counters: {}, savedAt: T0 })
     await $.command.run(lane('lane'))
     expect([...store.keys()]).toEqual([`sess:${SID}`])
     expect(Object.keys(store.get(`sess:${SID}`) as any).sort()).toEqual(['counters', 'lane', 'savedAt'])
   } finally {
-    lanesText = undefined
+    laneSeed.text = undefined
   }
 })
 
-test('a forged hint cannot bind on its own, and without lanes.json nothing is restored', async ($, on) => {
+test('a forged hint cannot bind on its own, and with no lane in a store nothing is restored', async ($, on) => {
   const stdins: string[] = []
   const forged = { lane: { name: 'EVIL', at: 1, turns: 0 }, counters: { startDone: false }, savedAt: 1_700_000_000_000 }
   await started($, on, stdins, { seed: () => store.set(`sess:${SID}`, forged) })
@@ -1134,12 +1235,12 @@ test('session start drops malformed, expired and foreign-looking hints and leave
   expect([...store.keys()].sort()).toEqual(['other', 'sess:33333333-3333-4333-8333-333333333333'])
 })
 
-const LANES = JSON.stringify({ lanes: [{ name: 'LABLANE', folder: '/work/lab', brief: '/work/lab/BRIEF.md' }] })
+const LANES = JSON.stringify({ lanes: [{ name: 'LABLANE', folder: '/data/x/work/lab', brief: '/data/x/work/lab/BRIEF.md' }] })
 
 test('a restored binding can never start: turns -1, startDone, its own named question, and off unbinds it', async ($, on) => {
   const stdins: string[] = []
   const hint = { lane: { name: 'LABLANE', at: 1, turns: 0 }, counters: { startDone: false, lastCompactMs: 5 }, savedAt: 1_700_000_000_000 }
-  await started($, on, stdins, { seed: () => { lanesText = LANES; store.set(`sess:${SID}`, hint) } })
+  await started($, on, stdins, { seed: () => { laneSeed.text = LANES; store.set(`sess:${SID}`, hint) } })
   expect((await $.command.run(lane('lane'))).text).toBe(reboundToast('LABLANE'))
   expect(lastQuestion).toBe("Restore this session as lane LABLANE?\nOnly if it was that lane's session.")
   expect((await $.command.run(lane('status'))).text).toContain('Lane: LABLANE. Lead: OFF.')
@@ -1149,14 +1250,14 @@ test('a restored binding can never start: turns -1, startDone, its own named que
   expect((await $.command.run(lane('off'))).text).toBe(`This session is no longer lane LABLANE.${STOPPABLE_BY_NAME('LABLANE')}`)
   expect(store.has(`sess:${SID}`)).toBe(false)
   expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Lead: OFF.')
-  lanesText = undefined
+  laneSeed.text = undefined
 })
 
 test('declining the restore question binds no lane and goes on to the Join path', async ($, on) => {
   const stdins: string[] = []
   const hint = { lane: { name: 'LABLANE', at: 1 }, counters: {}, savedAt: 1_700_000_000_000 }
   try {
-    await started($, on, stdins, { seed: () => { lanesText = LANES; store.set(`sess:${SID}`, hint) } })
+    await started($, on, stdins, { seed: () => { laneSeed.text = LANES; store.set(`sess:${SID}`, hint) } })
     restoreAnswer = NO
     const r = await $.command.run(lane('lane'))
     expect(r.text).not.toBe(reboundToast('LABLANE'))
@@ -1164,7 +1265,7 @@ test('declining the restore question binds no lane and goes on to the Join path'
     expect(logged(stdins).filter((x) => x.startsWith('refused:') && x !== 'refused:restore-not-confirmed').length).toBe(1)
     expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Lead: OFF.')
   } finally {
-    lanesText = undefined
+    laneSeed.text = undefined
   }
 })
 
@@ -1179,7 +1280,7 @@ test('off drops a pending request, and says so', async ($, on) => {
 test('an off that arrives while the restore dialog is open wins: /callboard lane stops and no second question opens', async ($, on) => {
   const hint = { lane: { name: 'LABLANE', at: 1 }, counters: {}, savedAt: 1_700_000_000_000 }
   try {
-    await started($, on, [], { seed: () => { lanesText = LANES; store.set(`sess:${SID}`, hint) } })
+    await started($, on, [], { seed: () => { laneSeed.text = LANES; store.set(`sess:${SID}`, hint) } })
     let release: (a: string) => void = () => undefined
     restoreHang = new Promise<string>((r) => (release = r))
     const first = $.command.run(lane('lane'))
@@ -1193,26 +1294,26 @@ test('an off that arrives while the restore dialog is open wins: /callboard lane
     expect(askCount).toBe(asked)
     expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Lead: OFF.')
   } finally {
-    lanesText = undefined
+    laneSeed.text = undefined
   }
 })
 
 test('a restore merges the hint counters with the live ones and keeps the later compaction and every resume', async ($, on) => {
   const hint = { lane: { name: 'LABLANE', at: 1 }, counters: { lastCompactMs: T0 - 5000, resumeTimes: [T0 - 3000, T0 - 2000] }, savedAt: T0 }
   try {
-    await started($, on, [], { seed: () => { lanesText = LANES; store.set(`sess:${SID}`, hint) } })
+    await started($, on, [], { seed: () => { laneSeed.text = LANES; store.set(`sess:${SID}`, hint) } })
     await $.command.run(lane('lane'))
     const saved = (store.get(`sess:${SID}`) as any).counters
     expect(saved).toEqual({ lastCompactMs: T0 - 5000, startDone: true, resumeTimes: [T0 - 3000, T0 - 2000] })
   } finally {
-    lanesText = undefined
+    laneSeed.text = undefined
   }
 })
 
 test('a restore dialog that is dismissed is not a decision: the next /callboard lane asks again; a decline is final', async ($, on) => {
   const hint = { lane: { name: 'LABLANE', at: 1 }, counters: {}, savedAt: T0 }
   try {
-    await started($, on, [], { seed: () => { lanesText = LANES; store.set(`sess:${SID}`, hint) } })
+    await started($, on, [], { seed: () => { laneSeed.text = LANES; store.set(`sess:${SID}`, hint) } })
     restoreAnswer = 'Something else'
     await $.command.run(lane('lane'))
     expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Lead: OFF.')
@@ -1222,14 +1323,14 @@ test('a restore dialog that is dismissed is not a decision: the next /callboard 
     await $.command.run(lane('off'))
     expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Lead: OFF.')
   } finally {
-    lanesText = undefined
+    laneSeed.text = undefined
   }
 })
 
 test('a declined restore is not asked again in the same session', async ($, on) => {
   const hint = { lane: { name: 'LABLANE', at: 1 }, counters: {}, savedAt: T0 }
   try {
-    await started($, on, [], { seed: () => { lanesText = LANES; store.set(`sess:${SID}`, hint) } })
+    await started($, on, [], { seed: () => { laneSeed.text = LANES; store.set(`sess:${SID}`, hint) } })
     restoreAnswer = NO
     await $.command.run(lane('lane'))
     restoreAnswer = YES
@@ -1238,7 +1339,7 @@ test('a declined restore is not asked again in the same session', async ($, on) 
     expect(askedOptions.some((o) => o[0] === RESTORE_YES)).toBe(false)
     expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Lead: OFF.')
   } finally {
-    lanesText = undefined
+    laneSeed.text = undefined
   }
 })
 
@@ -1253,7 +1354,7 @@ test('mergeCounters never loosens: no duplicate resumes, the later compaction wi
 test('a decline after a dismissed dialog is final: the hint stays as it was, and is not offered again', async ($, on) => {
   const hint = { lane: { name: 'LABLANE', at: 1 }, counters: {}, savedAt: T0 }
   try {
-    await started($, on, [], { seed: () => { lanesText = LANES; store.set(`sess:${SID}`, hint) } })
+    await started($, on, [], { seed: () => { laneSeed.text = LANES; store.set(`sess:${SID}`, hint) } })
     restoreAnswer = 'Something else'
     await $.command.run(lane('lane'))
     restoreAnswer = NO
@@ -1264,7 +1365,7 @@ test('a decline after a dismissed dialog is final: the hint stays as it was, and
     await $.command.run(lane('lane'))
     expect(askedOptions.some((o) => o[0] === RESTORE_YES)).toBe(false)
   } finally {
-    lanesText = undefined
+    laneSeed.text = undefined
   }
 })
 
@@ -1283,24 +1384,30 @@ test('requestExpired: a compacting request expires from when the compaction star
 
 // ---- lead tools (/callboard lead) ----
 const OTHER = '1a1b2c3d-0000-4000-8000-123456789abc'
-const LEAD_LANES = (repo: string) => JSON.stringify({ lanes: [{ name: 'LABLANE', folder: '/work/lab', brief: '/work/lab/BRIEF.md', repo }] })
+const LEAD_LANES = (repo: string) => JSON.stringify({ lanes: [{ name: 'LABLANE', folder: '/data/x/work/lab', brief: '/data/x/work/lab/BRIEF.md', repo }] })
 const leadCall = (verb: string, input: Record<string, unknown> = { lane: 'LABLANE' }) => ({ tool: `mcp__callboard__lane_${verb}`, ...input }) as any
-const cueSession = (id: string, name: string | undefined, cwd = '/work/lab', extra: Record<string, unknown> = {}) => ({
+const cueSession = (id: string, name: string | undefined, cwd = '/data/x/work/lab', extra: Record<string, unknown> = {}) => ({
   [`${extra.pid ?? 4242}.json`]: JSON.stringify({ sessionId: id, ...(name ? { name } : {}), cwd, status: 'idle', pid: 4242, procStart: 'Tue Oct 27 20:37:50 2026', startedAt: T0 - 3_600_000, statusUpdatedAt: T0 - 60_000, ...extra }),
 })
 
 async function lead($: any, on: any, stdins: string[], opts: { repo?: string; sess?: Record<string, string>; argv?: string[][]; clock?: boolean } = {}) {
-  lanesText = LEAD_LANES(opts.repo ?? '/work')
+  laneSeed.text = LEAD_LANES(opts.repo ?? '/data/x/work')
   sessions = opts.sess ?? cueSession(OTHER, 'LABLANE')
   await started($, on, stdins, { argv: opts.argv, clock: opts.clock })
   askAnswer = YES
+  // A lane in a store is reached only by a lead pinned at its repo, so the grant is made there; the session goes back to the lane folder after.
+  const was = callerCwd
+  callerCwd = opts.repo ?? '/data/x/work'
   await $.command.run(lane('lead'))
+  callerCwd = was
 }
 
+// A lane in a store is reached only by a lead pinned at its repo: a grant asked from the lane folder is made at the repo, and the session stays where it was.
 async function grantAt($: any, cwd: string) {
-  callerCwd = cwd
+  callerCwd = cwd === '/data/x/work/lab' ? '/data/x/work' : cwd
   askAnswer = YES
   await $.command.run(lane('lead'))
+  callerCwd = cwd
 }
 
 test('the lead scope is the cwd at the grant, not the live cwd', async ($, on) => {
@@ -1309,19 +1416,19 @@ test('the lead scope is the cwd at the grant, not the live cwd', async ($, on) =
   expect((await $.tool.call(leadCall('start'))).result).toContain('cue start acted')
   await grantAt($, '/elsewhere')
   expect(JSON.stringify(await $.tool.call(leadCall('start')))).toContain('other-repo')
-  callerCwd = '/work/lab'
+  callerCwd = '/data/x/work/lab'
   expect(JSON.stringify(await $.tool.call(leadCall('start')))).toContain('other-repo')
 })
 
 test('the lead question names the folder; a re-grant from a plugin keeps the first folder, one from the prompt or phone moves it', async ($, on) => {
   await lead($, on, [])
-  expect(lastQuestion).toContain('lanes in lab?')
-  expect(lastQuestion).not.toContain('/work')
+  expect(lastQuestion).toContain('lanes in work?')
+  expect(lastQuestion).not.toContain('/data/x/work')
   callerCwd = '/elsewhere'
   const plugin = { kind: 'plugin', name: 'x' }
   askAnswer = YES
   await $.command.run(lane('lead', plugin))
-  expect(lastQuestion).toBe('Asked from another plugin. Let this session lead the lanes in lab?\nIt can create, start, resume, compact, park, stop and retire them.\nOnly a force stop asks you.\nLead stays on after a restart until you run /callboard off.')
+  expect(lastQuestion).toBe('Asked from another plugin. Let this session lead the lanes in work?\nIt can create, start, resume, compact, park, stop and retire them.\nOnly a force stop asks you.\nLead stays on after a restart until you run /callboard off.')
   expect((await $.tool.call(leadCall('start'))).result).toContain('cue start acted')
   await $.command.run(lane('lead', { kind: 'bridge' }))
   expect(lastQuestion).toContain('lanes in elsewhere?')
@@ -1338,12 +1445,11 @@ test('a registry directory that is not private to the user is not read', async (
 
 test('lead tools refuse before the grant and after lead off', async ($, on) => {
   const stdins: string[] = []
-  lanesText = LEAD_LANES('/work')
+  laneSeed.text = LEAD_LANES('/data/x/work')
   sessions = cueSession(OTHER, 'LABLANE')
   await started($, on, stdins)
   expect(JSON.stringify(await $.tool.call(leadCall('start')))).toContain('lead tools are off')
-  askAnswer = YES
-  await $.command.run(lane('lead'))
+  await grantAt($, '/data/x/work/lab')
   expect((await $.tool.call(leadCall('start'))).result).toContain('cue start acted')
   expect((await $.command.run(lane('off'))).text).toContain('off')
   expect(JSON.stringify(await $.tool.call(leadCall('start')))).toContain('lead tools are off')
@@ -1369,7 +1475,7 @@ test('the dialog names a non-person origin, stays plain for the prompt and the p
 
 test('off from the prompt or phone needs no dialog; off from anything else asks and changes nothing unless allowed', async ($, on) => {
   const stdins: string[] = []
-  lanesText = LEAD_LANES('/work')
+  laneSeed.text = LEAD_LANES('/data/x/work')
   sessions = cueSession(OTHER, 'LABLANE')
   await started($, on, stdins)
   await $.command.run(lane('lead'))
@@ -1393,7 +1499,7 @@ test('off from the prompt or phone needs no dialog; off from anything else asks 
 
 test('a lead request from a non-person origin that times out or is dismissed keeps the grant; an explicit Deny clears it', async ($, on) => {
   const stdins: string[] = []
-  lanesText = LEAD_LANES('/work')
+  laneSeed.text = LEAD_LANES('/data/x/work')
   sessions = cueSession(OTHER, 'LABLANE')
   await started($, on, stdins)
   await $.command.run(lane('lead'))
@@ -1407,7 +1513,7 @@ test('a lead request from a non-person origin that times out or is dismissed kee
 
 test('a second lead or off while a question is open is refused busy, not queued; on answers its fixed text', async ($, on) => {
   const stdins: string[] = []
-  lanesText = LEAD_LANES('/work')
+  laneSeed.text = LEAD_LANES('/data/x/work')
   sessions = cueSession(OTHER, 'LABLANE')
   await started($, on, stdins)
   let release: (a: string) => void = () => undefined
@@ -1432,7 +1538,7 @@ test('a second lead or off while a question is open is refused busy, not queued;
 
 test('the lead grant runs from any origin and needs the named answer', async ($, on) => {
   const stdins: string[] = []
-  lanesText = LEAD_LANES('/work')
+  laneSeed.text = LEAD_LANES('/data/x/work')
   sessions = cueSession(OTHER, 'LABLANE')
   await started($, on, stdins)
   for (const origin of [{ kind: 'plugin', name: 'x' }, { kind: 'peer' }, { kind: 'bridge' }, null]) {
@@ -1462,25 +1568,23 @@ test('a lead cue is written as a 0600 temp file and renamed into the target cue 
 
 const mvCue = (argv: string[][]) => argv.some((a) => a[0] === '/bin/mv' && a.some((x) => x.endsWith('.cue')))
 
-test('a lead cue refuses a lead outside the lane repo, a lane without a repo, an unknown lane and a bad name', async ($, on) => {
+test('a lead cue refuses a lead outside the lane repo, an unknown lane and a bad name', async ($, on) => {
   const argv: string[][] = []
   await lead($, on, [], { argv })
-  const noRepo = JSON.stringify({ lanes: [{ name: 'LABLANE', folder: '/work/lab', brief: '/work/lab/BRIEF.md' }] })
   const cases: [string, string, string, string][] = [
-    [LEAD_LANES('/work'), '/elsewhere', 'LABLANE', 'other-repo'],
-    [LEAD_LANES('/work/lab'), '/work/other', 'LABLANE', 'other-repo'],
-    [noRepo, '/work/lab', 'LABLANE', 'lane-no-repo'],
-    [LEAD_LANES('/work'), '/work/lab', 'NOLANE', 'unknown-lane'],
-    [LEAD_LANES('/work'), '/work/lab', '../x', 'bad-lane'],
+    [LEAD_LANES('/data/x/work'), '/elsewhere', 'LABLANE', 'other-repo'],
+    [LEAD_LANES('/data/x/work/lab'), '/data/x/work/other', 'LABLANE', 'other-repo'],
+    [LEAD_LANES('/data/x/work'), '/data/x/work/lab', 'NOLANE', 'unknown-lane'],
+    [LEAD_LANES('/data/x/work'), '/data/x/work/lab', '../x', 'bad-lane'],
   ]
   for (const [text, cwd, name, why] of cases) {
-    lanesText = text
+    laneSeed.text = text
     await grantAt($, cwd)
     expect(JSON.stringify(await $.tool.call(leadCall('start', { lane: name })))).toContain(why)
   }
   expect(mvCue(argv)).toBe(false)
-  lanesText = LEAD_LANES('/work')
-  await grantAt($, '/work/lab')
+  laneSeed.text = LEAD_LANES('/data/x/work')
+  await grantAt($, '/data/x/work/lab')
   expect((await $.tool.call(leadCall('start'))).result).toContain('cue start acted')
 })
 
@@ -1491,9 +1595,9 @@ test('a lead cue refuses itself, an ambiguous name, a missing session and a sess
   await lead($, on, [], { argv, clock: true })
   const cases: [Record<string, string>, string][] = [
     [cueSession(SELF, 'LABLANE'), 'self'],
-    [{ ...cueSession(OTHER, 'LABLANE'), ...cueSession(OTHER2, 'LABLANE', '/work/lab', { pid: 4243 }) }, 'ambiguous'],
+    [{ ...cueSession(OTHER, 'LABLANE'), ...cueSession(OTHER2, 'LABLANE', '/data/x/work/lab', { pid: 4243 }) }, 'ambiguous'],
     [cueSession(OTHER, 'ELSE'), 'no-live-session'],
-    [cueSession(OTHER, 'LABLANE', '/work/elsewhere'), 'wrong-folder'],
+    [cueSession(OTHER, 'LABLANE', '/data/x/work/elsewhere'), 'wrong-folder'],
   ]
   for (const [sess, why] of cases) {
     sessions = sess
@@ -1531,8 +1635,7 @@ test('Deny on the lead dialog turns an earlier grant off, and off clears it even
   askAnswer = NO
   expect((await $.command.run(lane('lead'))).text).toContain('Lead is now off')
   expect(JSON.stringify(await $.tool.call(leadCall('start')))).toContain('lead tools are off')
-  askAnswer = YES
-  await $.command.run(lane('lead'))
+  await grantAt($, '/data/x/work/lab')
   expect((await $.tool.call(leadCall('start'))).result).toContain('cue start acted')
   await $.command.run(lane('off'))
   expect(JSON.stringify(await $.tool.call(leadCall('start')))).toContain('lead tools are off')
@@ -1545,9 +1648,9 @@ test('lane_rename names the session by id, which must sit in the lane folder and
   expect(JSON.stringify(await $.tool.call(leadCall('rename', { lane: 'LABLANE' })))).toContain('bad-sid')
   expect((await $.tool.call(leadCall('rename', { lane: 'LABLANE', sid: OTHER }))).result).toContain('cue rename acted')
   expect(stdins).toContain(`rename LABLANE ${SID}\n`)
-  sessions = cueSession(OTHER, undefined, '/work/other')
+  sessions = cueSession(OTHER, undefined, '/data/x/work/other')
   expect(JSON.stringify(await $.tool.call(leadCall('rename', { lane: 'LABLANE', sid: OTHER })))).toContain('wrong-folder')
-  sessions = { ...cueSession(OTHER, undefined), ...cueSession('3a1b2c3d-0000-4000-8000-123456789abc', 'LABLANE', '/work/lab', { pid: 4243 }) }
+  sessions = { ...cueSession(OTHER, undefined), ...cueSession('3a1b2c3d-0000-4000-8000-123456789abc', 'LABLANE', '/data/x/work/lab', { pid: 4243 }) }
   expect(JSON.stringify(await $.tool.call(leadCall('rename', { lane: 'LABLANE', sid: OTHER })))).toContain('name-in-use')
 })
 
@@ -1560,15 +1663,15 @@ test('the lead tools are for the main agent only', async ($, on) => {
 // ---- the cue path through the real tick: rename ----
 // The session's own registry file, named by its pid as the engine names it.
 const REGFILE = '4310.json'
-const REG = (extra: Record<string, unknown> = {}) => JSON.stringify({ sessionId: SID, cwd: '/work/lab', status: 'idle', nameSource: 'auto', pid: 4310, procStart: 'Tue Oct 27 20:37:50 2026', kind: 'interactive', ...extra })
+const REG = (extra: Record<string, unknown> = {}) => JSON.stringify({ sessionId: SID, cwd: '/data/x/work/lab', status: 'idle', nameSource: 'auto', pid: 4310, procStart: 'Tue Oct 27 20:37:50 2026', kind: 'interactive', ...extra })
 
 async function renameThroughTick($: any, on: any, stdins: string[], added: number, trace?: Trace, before?: () => Promise<void>, argv: string[][] = []) {
-  lanesText = LEAD_LANES('/work')
+  laneSeed.text = LEAD_LANES('/data/x/work')
   sessions = { [REGFILE]: REG() }
   turnsAddedByRename = added
   engine(on, argv, stdins, true, trace)
   on('tool.call', () => ({ result: {} }))
-  await $.session.start({ cwd: '/work/lab', surface: 'vscode', isInteractive: true })
+  await $.session.start({ cwd: '/data/x/work/lab', surface: 'vscode', isInteractive: true })
   await $.command.run(lane('status'))
   await before?.()
   cueFile = { ino: 42, text: 'rename LABLANE\n', present: true }
@@ -1652,9 +1755,9 @@ test('lane_terminate: a click after /callboard off does not stop the session', a
 test('lane_terminate: a lane that was removed or detached during the dialog is not stopped', async ($, on) => {
   const argv: string[][] = []
   await lead($, on, [], { argv })
-  expect(await terminateDuring($, () => { lanesText = JSON.stringify({ lanes: [] }) })).toContain('unknown-lane')
+  expect(await terminateDuring($, () => { laneSeed.text = JSON.stringify({ lanes: [] }) })).toContain('unknown-lane')
   expect(killed(argv).length).toBe(0)
-  lanesText = LEAD_LANES('/work')
+  laneSeed.text = LEAD_LANES('/data/x/work')
   expect((await $.tool.call(leadCall('terminate'))).result).toContain('SIGTERM sent to process 4242')
   expect(killed(argv).length).toBe(1)
 })
@@ -1679,11 +1782,11 @@ test('lane_terminate: a /clear during the dialog (same pid and start time, new s
 test('lane_terminate: a pid, a start time or a second registry entry that changed during the dialog is not stopped', async ($, on) => {
   const argv: string[][] = []
   await lead($, on, [], { argv })
-  expect(await terminateDuring($, () => { sessions = cueSession(OTHER, 'LABLANE', '/work/lab', { pid: 4243 }) })).toContain('session-changed')
+  expect(await terminateDuring($, () => { sessions = cueSession(OTHER, 'LABLANE', '/data/x/work/lab', { pid: 4243 }) })).toContain('session-changed')
   sessions = cueSession(OTHER, 'LABLANE')
-  expect(await terminateDuring($, () => { sessions = cueSession(OTHER, 'LABLANE', '/work/lab', { procStart: 'Wed Oct 28 01:00:00 2026' }) })).toContain('session-changed')
+  expect(await terminateDuring($, () => { sessions = cueSession(OTHER, 'LABLANE', '/data/x/work/lab', { procStart: 'Wed Oct 28 01:00:00 2026' }) })).toContain('session-changed')
   sessions = cueSession(OTHER, 'LABLANE')
-  expect(await terminateDuring($, () => { sessions = { ...cueSession(OTHER, 'LABLANE'), ...cueSession(OTHER, 'ELSEWHERE', '/work/lab', { pid: 4244 }) } })).toContain('session-changed')
+  expect(await terminateDuring($, () => { sessions = { ...cueSession(OTHER, 'LABLANE'), ...cueSession(OTHER, 'ELSEWHERE', '/data/x/work/lab', { pid: 4244 }) } })).toContain('session-changed')
   sessions = cueSession(OTHER, 'LABLANE')
   expect(await terminateDuring($, () => { sessions = {} })).toContain('no-live-session')
   sessions = cueSession(OTHER, 'LABLANE')
@@ -1696,7 +1799,7 @@ test('lane_terminate: a doubled session id or a pid that is not a live claude pr
   const stdins: string[] = []
   await lead($, on, stdins, { argv })
   const before = askCount
-  sessions = { ...cueSession(OTHER, 'LABLANE'), ...cueSession(OTHER, 'ELSEWHERE', '/work/lab', { pid: 4244 }) }
+  sessions = { ...cueSession(OTHER, 'LABLANE'), ...cueSession(OTHER, 'ELSEWHERE', '/data/x/work/lab', { pid: 4244 }) }
   const dup = JSON.stringify(await $.tool.call(leadCall('terminate')))
   expect(dup).toContain('session-duplicate')
   expect(dup).toContain('No signal was sent')
@@ -1716,7 +1819,7 @@ test('lane_retire: a doubled session id is refused before the cue is sent', asyn
   const stdins: string[] = []
   await lead($, on, stdins, { argv })
   reportFile = REPORT_OK()
-  sessions = { ...cueSession(OTHER, 'LABLANE'), ...cueSession(OTHER, 'ELSEWHERE', '/work/lab', { pid: 4244 }) }
+  sessions = { ...cueSession(OTHER, 'LABLANE'), ...cueSession(OTHER, 'ELSEWHERE', '/data/x/work/lab', { pid: 4244 }) }
   expect(JSON.stringify(await $.tool.call(leadCall('retire')))).toContain('session-duplicate')
   expect(stdins).not.toContain('retire\n')
   expect(killed(argv).length).toBe(0)
@@ -1727,7 +1830,7 @@ test('lane_terminate: a refused click toasts the code; Cancel and a good click t
   expect(await terminateDuring($, async () => { await $.command.run(lane('off')) })).toContain('lead tools are off')
   expect(toasts).toContain('Force stop not sent: off')
   toasts.length = 0
-  await grantAt($, '/work/lab')
+  await grantAt($, '/data/x/work/lab')
   expect(await terminateDuring($, () => { sessions = cueSession('2a1b2c3d-0000-4000-8000-123456789abc', 'LABLANE') })).toContain('session-changed')
   expect(toasts).toContain('Force stop not sent: session-changed')
   toasts.length = 0
@@ -1800,8 +1903,8 @@ test('lane_terminate refuses the same targets as the cue tools', async ($, on) =
   askAnswer = 'Force stop'
   await grantAt($, '/elsewhere')
   expect(JSON.stringify(await $.tool.call(leadCall('terminate')))).toContain('other-repo')
-  await grantAt($, '/work/lab')
-  sessions = { ...cueSession(OTHER, 'LABLANE'), ...cueSession('2a1b2c3d-0000-4000-8000-123456789abc', 'LABLANE', '/work/lab', { pid: 4243 }) }
+  await grantAt($, '/data/x/work/lab')
+  sessions = { ...cueSession(OTHER, 'LABLANE'), ...cueSession('2a1b2c3d-0000-4000-8000-123456789abc', 'LABLANE', '/data/x/work/lab', { pid: 4243 }) }
   expect(JSON.stringify(await $.tool.call(leadCall('terminate')))).toContain('ambiguous')
   expect(JSON.stringify(await $.tool.call({ ...leadCall('terminate'), agentId: 'a1' }))).toContain('main agent only')
   expect(killed(argv).length).toBe(0)
@@ -1820,10 +1923,10 @@ test('lane_retire does nothing unless the session is idle and has signed its rep
     ['report-file', () => { reportFile = REPORT_OK(); reportGrown = 'x'.repeat(1_048_577) }],
     ['report-file', () => { reportFile = REPORT_OK(); headFails = true }],
     ['report-old', () => { reportFile = { ...REPORT_OK(), mtimeSec: (T0 - 7_200_000) / 1000 } }],
-    ['not-idle', () => { reportFile = REPORT_OK(); sessions = cueSession(OTHER, 'LABLANE', '/work/lab', { status: 'busy' }) }],
-    ['not-idle', () => { sessions = cueSession(OTHER, 'LABLANE', '/work/lab', { waitingFor: 'input' }) }],
-    ['not-idle', () => { sessions = cueSession(OTHER, 'LABLANE', '/work/lab', { status: 'waiting' }) }],
-    ['not-idle', () => { sessions = cueSession(OTHER, 'LABLANE', '/work/lab', { statusUpdatedAt: T0 - 5000 }) }],
+    ['not-idle', () => { reportFile = REPORT_OK(); sessions = cueSession(OTHER, 'LABLANE', '/data/x/work/lab', { status: 'busy' }) }],
+    ['not-idle', () => { sessions = cueSession(OTHER, 'LABLANE', '/data/x/work/lab', { waitingFor: 'input' }) }],
+    ['not-idle', () => { sessions = cueSession(OTHER, 'LABLANE', '/data/x/work/lab', { status: 'waiting' }) }],
+    ['not-idle', () => { sessions = cueSession(OTHER, 'LABLANE', '/data/x/work/lab', { statusUpdatedAt: T0 - 5000 }) }],
     ['pid-changed', () => { sessions = cueSession(OTHER, 'LABLANE'); psOut = 'Wed Oct 28 01:00:00 2026\n' }],
     // A file whose pid is not its own name is not a session's entry: it is skipped, so nothing carries the lane.
     ['no-live-session', () => { psOut = 'Tue Oct 27 20:37:50 2026\n'; sessions = { '9999.json': cueSession(OTHER, 'LABLANE')['4242.json'] } }],
@@ -1849,21 +1952,18 @@ test('lane_retire does nothing unless the session is idle and has signed its rep
   expect(events(stdins).map((e) => `${e.event}:${e.reason}`)).toContain('retiring:LABLANE')
 })
 
-test('lane_retire needs the lead in the lane repo and the lane repo path for the report', async ($, on) => {
+test('lane_retire needs the lead in the lane repo', async ($, on) => {
   const argv: string[][] = []
   await lead($, on, [], { argv })
   reportFile = REPORT_OK()
   await grantAt($, '/elsewhere')
   expect(JSON.stringify(await $.tool.call(leadCall('retire')))).toContain('other-repo')
-  await grantAt($, '/work/lab')
-  lanesText = JSON.stringify({ lanes: [{ name: 'LABLANE', folder: '/work/lab', brief: '/work/lab/BRIEF.md' }] })
-  expect(JSON.stringify(await $.tool.call(leadCall('retire')))).toContain('lane-no-repo')
   expect(killed(argv).length).toBe(0)
 })
 
 
 // ---- retire is confirmed by the target, then the lead signals ----
-const retireOk = (extra: Record<string, unknown> = {}) => cueSession(OTHER, 'LABLANE', '/work/lab', extra)
+const retireOk = (extra: Record<string, unknown> = {}) => cueSession(OTHER, 'LABLANE', '/data/x/work/lab', extra)
 
 test('lane_retire sends a retire cue first and signals once, only on the target\'s ok', async ($, on) => {
   const argv: string[][] = []
@@ -1950,7 +2050,7 @@ test('lane_retire: an ok for a registry that changed meanwhile signals nothing',
     expect(out, what).toContain(why)
     sessions = retireOk()
   }
-  cueWriteHook = () => { sessions = cueSession('2a1b2c3d-0000-4000-8000-123456789abc', 'LABLANE', '/work/lab', { pid: 4242 }) }
+  cueWriteHook = () => { sessions = cueSession('2a1b2c3d-0000-4000-8000-123456789abc', 'LABLANE', '/data/x/work/lab', { pid: 4242 }) }
   expect(JSON.stringify(await $.tool.call(leadCall('retire')))).toContain('session-changed')
   sessions = retireOk()
   cueWriteHook = () => { sessions = {} }
@@ -1966,7 +2066,7 @@ test('lane_retire: two registry entries carrying the session id after the ok giv
   const argv: string[][] = []
   await lead($, on, [], { argv })
   reportFile = REPORT_OK()
-  cueWriteHook = () => { sessions = { ...retireOk(), ...cueSession(OTHER, 'ELSEWHERE', '/work/lab', { pid: 4243 }) } }
+  cueWriteHook = () => { sessions = { ...retireOk(), ...cueSession(OTHER, 'ELSEWHERE', '/data/x/work/lab', { pid: 4243 }) } }
   expect(JSON.stringify(await $.tool.call(leadCall('retire')))).toContain('session-changed')
   sessions = retireOk()
   // A copy of the entry under another pid's name is skipped (its pid is not its name): the re-check finds no session, and still sends nothing.
@@ -2323,9 +2423,9 @@ test('a retire cue needs the session\'s own signature and a readable report', as
 
 test('a retire cue passes the same gates as resume: the record, the lane and, for an attached lane, a lead', async ($, on) => {
   await retireTarget($, on)
-  lanesText = JSON.stringify({ lanes: [{ name: 'LABLANE', folder: '/work/lab', brief: '/work/lab/OTHER.md', repo: '/work' }] })
+  laneSeed.text = JSON.stringify({ lanes: [{ name: 'LABLANE', folder: '/data/x/work/lab', brief: '/data/x/work/lab/OTHER.md', repo: '/data/x/work' }] })
   expect(await retireCue(106)).toBe('retire refused record-changed 106\n')
-  lanesText = LEAD_LANES('/work')
+  laneSeed.text = LEAD_LANES('/data/x/work')
   expect(await retireCue(107)).toBe('retire ok - 107\n')
 })
 
@@ -2362,16 +2462,13 @@ test('lane_open writes a request, waits for the window answer and returns the ne
   expect(events(stdins).map((e) => `${e.event}:${e.reason}`)).toEqual(expect.arrayContaining(['open-requested:LABLANE', 'opened:LABLANE']))
 })
 
-test('lane_open refuses a lane that already has a live session, another repo and a lane without a repo', async ($, on) => {
+test('lane_open refuses a lane that already has a live session and another repo', async ($, on) => {
   const argv: string[][] = []
   await lead($, on, [], { argv, clock: true })
   expect(JSON.stringify(await $.tool.call(leadCall('open')))).toContain('already carries')
   sessions = {}
   await grantAt($, '/elsewhere')
   expect(JSON.stringify(await $.tool.call(leadCall('open')))).toContain('other-repo')
-  await grantAt($, '/work/lab')
-  lanesText = JSON.stringify({ lanes: [{ name: 'LABLANE', folder: '/work/lab', brief: '/work/lab/BRIEF.md' }] })
-  expect(JSON.stringify(await $.tool.call(leadCall('open')))).toContain('lane-no-repo')
   expect(argv.some((a) => a[0] === '/bin/mv' && a.some((x) => x.endsWith('.open')))).toBe(false)
 })
 
@@ -2691,7 +2788,7 @@ test('a store file that is not named by the hash of its repo, or is not private,
   expect(JSON.stringify(await $.tool.call(leadCall('start', { lane: 'API' })))).toContain('unknown-lane')
 })
 
-test('lane_remove drops a store lane, refuses a root lane and a lane that has a live session', async ($, on) => {
+test('lane_remove drops a store lane, refuses a lane of another repo and a lane that has a live session', async ($, on) => {
   await creator($, on)
   await callCreate($)
   sessions = cueSession(OTHER, 'API', `${PIN}/api`)
@@ -2713,13 +2810,13 @@ test('a session renamed under one lane record refuses start and resume when the 
   const stdins: string[] = []
   await renameThroughTick($, on, stdins, 1)
   expect(allEvents(stdins).map((e) => e.event)).toContain('renamed')
-  lanesText = JSON.stringify({ lanes: [{ name: 'LABLANE', folder: '/work/lab', brief: '/work/lab/OTHER.md', repo: '/work' }] })
+  laneSeed.text = JSON.stringify({ lanes: [{ name: 'LABLANE', folder: '/data/x/work/lab', brief: '/data/x/work/lab/OTHER.md', repo: '/data/x/work' }] })
   cueFile = { ino: 43, text: 'start\n', present: true }
   await clock!.advance(2000)
   await clock!.advance(2000)
   expect(allEvents(stdins).map((e) => `${e.event}:${e.reason}`)).toContain('refused:record-changed')
-  lanesText = LEAD_LANES('/work')
-  callerCwd = '/work/elsewhere'
+  laneSeed.text = LEAD_LANES('/data/x/work')
+  callerCwd = '/data/x/work/elsewhere'
   cueFile = { ino: 44, text: 'resume\n', present: true }
   await clock!.advance(2000)
   await clock!.advance(2000)
@@ -2780,13 +2877,6 @@ test('two lane_create calls at once both end up in the store', async ($, on) => 
   expect(storeLaneNames().sort()).toEqual(['L1', 'L2', 'L3'])
 })
 
-test('a root lanes.json that cannot be statted refuses; only a missing one means no root lanes', async ($, on) => {
-  await creator($, on)
-  rootStatFail = true
-  expect(JSON.stringify(await callCreate($))).toContain('lanes-file')
-  expect(JSON.stringify(await $.tool.call(leadCall('start')))).toContain('lanes-file')
-})
-
 test('a store whose repo is too broad or has no .git is not loaded, and a store lane needs the lead pinned at its repo', async ($, on) => {
   await creator($, on)
   await callCreate($)
@@ -2828,7 +2918,7 @@ test('lane_create refuses letter look-alikes of a reserved name, a brief with od
 test('start refuses a brief that is bigger than 64 KB', async ($, on) => {
   const stdins: string[] = []
   await renameThroughTick($, on, stdins, 1)
-  extraStat.set('/work/lab/BRIEF.md', '501 644 1 Regular File 7 70000 1700000000\n')
+  extraStat.set('/data/x/work/lab/BRIEF.md', '501 644 1 Regular File 7 70000 1700000000\n')
   cueFile = { ino: 50, text: 'start\n', present: true }
   await clock!.advance(2000)
   await clock!.advance(2000)
@@ -2860,11 +2950,11 @@ test('the target answers a cue with its outcome and the inode of the cue file it
   const stdins: string[] = []
   await renameThroughTick($, on, stdins, 1)
   expect(resultFiles.get(RESULT)).toBe('rename ok - 42\n')
-  lanesText = JSON.stringify({ lanes: [{ name: 'LABLANE', folder: '/work/lab', brief: '/work/lab/OTHER.md', repo: '/work' }] })
+  laneSeed.text = JSON.stringify({ lanes: [{ name: 'LABLANE', folder: '/data/x/work/lab', brief: '/data/x/work/lab/OTHER.md', repo: '/data/x/work' }] })
   cueFile = { ino: 43, text: 'start\n', present: true }
   await tickTwice()
   expect(resultFiles.get(RESULT)).toBe('start refused record-changed 43\n')
-  lanesText = LEAD_LANES('/work')
+  laneSeed.text = LEAD_LANES('/data/x/work')
   sessions = { [REGFILE]: REG({ status: 'busy' }) }
   cueFile = { ino: 44, text: 'resume\n', present: true }
   await tickTwice()
@@ -2975,7 +3065,7 @@ test('a file already at the claim name is never taken for the cue: refused (othe
 
 test('the start brief check is answered too', async ($, on) => {
   await renameThroughTick($, on, [], 1)
-  extraStat.set('/work/lab/BRIEF.md', '501 644 1 Regular File 7 70000 1700000000\n')
+  extraStat.set('/data/x/work/lab/BRIEF.md', '501 644 1 Regular File 7 70000 1700000000\n')
   cueFile = { ino: 50, text: 'start\n', present: true }
   await tickTwice()
   expect(resultFiles.get(RESULT)).toBe('start refused brief-file 50\n')
@@ -3129,7 +3219,7 @@ const unanswered = async (p: Promise<any>) => {
 test('a question nobody answers in 90 seconds is not a decision: it says so, logs timed-out and toasts', async ($, on) => {
   const stdins: string[] = []
   const argv: string[][] = []
-  lanesText = LEAD_LANES('/work')
+  laneSeed.text = LEAD_LANES('/data/x/work')
   sessions = cueSession(OTHER, 'LABLANE')
   await started($, on, stdins, { clock: true, argv })
   const plugin = { kind: 'plugin', name: 'x' }
@@ -3137,7 +3227,7 @@ test('a question nobody answers in 90 seconds is not a decision: it says so, log
   expect((await unanswered($.command.run(lane('lead', plugin)))).text).toBe('Lead stays off. The question timed out.')
   expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Lead: OFF.')
   askHang = undefined
-  await $.command.run(lane('lead'))
+  await grantAt($, '/data/x/work/lab')
   askHang = new Promise<string>(() => undefined)
   expect((await unanswered($.command.run(lane('lead', plugin)))).text).toBe('Lead stays on. The question timed out.')
   expect((await unanswered($.command.run(lane('off', plugin)))).text).toBe('Nothing changed: the question timed out.')
@@ -3154,7 +3244,7 @@ test('a restore question that times out stays pending: the next /callboard lane 
   const hint = { lane: { name: 'LABLANE', at: 1 }, counters: {}, savedAt: T0 }
   try {
     sessions = {}
-    await started($, on, [], { clock: true, seed: () => { lanesText = LANES; store.set(`sess:${SID}`, hint) } })
+    await started($, on, [], { clock: true, seed: () => { laneSeed.text = LANES; store.set(`sess:${SID}`, hint) } })
     restoreHang = new Promise<string>(() => undefined)
     const before = askCount
     // v13.5 review: a question nobody answered ends /callboard lane; it does not go on to Join.
@@ -3168,7 +3258,7 @@ test('a restore question that times out stays pending: the next /callboard lane 
     expect(askCount).toBe(asks + 1)
     expect((await $.command.run(lane('status'))).text).toContain('Lane: LABLANE')
   } finally {
-    lanesText = undefined
+    laneSeed.text = undefined
   }
 })
 
@@ -3304,12 +3394,12 @@ test('a restore that times out is logged as restore-timed-out', async ($, on) =>
   const stdins: string[] = []
   try {
     sessions = {}
-    await started($, on, stdins, { clock: true, seed: () => { lanesText = LANES; store.set(`sess:${SID}`, hint) } })
+    await started($, on, stdins, { clock: true, seed: () => { laneSeed.text = LANES; store.set(`sess:${SID}`, hint) } })
     restoreHang = new Promise<string>(() => undefined)
     await unanswered($.command.run(lane('lane')))
     expect(allEvents(stdins).map((e) => `${e.event}:${e.reason}`)).toContain('refused:restore-timed-out')
   } finally {
-    lanesText = undefined
+    laneSeed.text = undefined
   }
 })
 
@@ -3421,9 +3511,9 @@ const doLane = ($: any, args = 'lane', origin: unknown = PERSON) => $.command.ru
 const storeJson = () => JSON.parse(storeFiles.get(STOREFILE)!)
 const logged = (stdins: string[]) => allEvents(stdins).map((e) => `${e.event}:${e.reason}`)
 
-// A session in SVC with a user-given name by default, a live lead for PIN with a fresh presence file, no root lanes.
+// A session in SVC with a user-given name by default, a live lead for PIN with a fresh presence file, no lanes.
 async function attacher($: any, on: any, stdins: string[] = [], opts: { clock?: boolean; own?: Record<string, unknown>; lead?: boolean; argv?: string[][]; trace?: Trace } = {}) {
-  lanesText = undefined
+  laneSeed.text = undefined
   sessions = { ...leadReg(), ...ownReg(opts.own) }
   await started($, on, stdins, { clock: opts.clock, argv: opts.argv, trace: opts.trace })
   callerCwd = SVC
@@ -3552,15 +3642,16 @@ test('lane refuses a session that is already a lane, one that holds a lead grant
 test('lane takes a name only if it is a plain, unreserved name nobody else has', async ($, on) => {
   await attacher($, on, [], { own: { name: 'has space' } })
   const none = async (args: string, code: string) => {
+    const before = storeFiles.get(STOREFILE)
     expect((await doLane($, args)).text).toBe(refusalText(code))
     expect(askCount).toBe(0)
-    expect(storeFiles.has(STOREFILE)).toBe(false)
+    expect(storeFiles.get(STOREFILE)).toBe(before)
   }
   await none('lane', 'own-name-bad')
   for (const n of ['MANAGER', 'manager', 'MANAG3R', 'rnANAGER', 'MANAGER_']) await none(`lane ${n}`, 'name-reserved')
-  lanesText = JSON.stringify({ lanes: [{ name: 'LABLANE', folder: `${PIN}/lab`, brief: `${PIN}/lab/BRIEF.md`, repo: PIN }] })
+  laneSeed.text = JSON.stringify({ lanes: [{ name: 'LABLANE', folder: `${PIN}/lab`, brief: `${PIN}/lab/BRIEF.md`, repo: PIN }] })
   await none('lane LABLANE', 'name-taken')
-  lanesText = undefined
+  laneSeed.text = undefined
   storeFiles.set(`${LANESDIR}/${'b'.repeat(64)}.json`, JSON.stringify({ repo: '/Users/x/code/app2', lanes: [{ name: 'API', folder: '/Users/x/code/app2/api', brief: '/Users/x/code/app2/api/B.md', createdAt: 1 }], creates: [] }))
   extraStat.set('/Users/x/code/app2/.git', dirStat)
   await none('lane API', 'name-taken')
@@ -3571,11 +3662,8 @@ test('lane takes a name only if it is a plain, unreserved name nobody else has',
   expect((await doLane($, 'lane svc-api')).text).toBe(`${ATTACHED()}${RENAMING}`)
 })
 
-test('lane may keep the name this very session already carries, and refuses the name of a root lane or of a lane in the same repo store', async ($, on) => {
+test('lane may keep the name this very session already carries, and refuses the name of a lane in the same repo store', async ($, on) => {
   await attacher($, on, [], { own: { name: 'LABLANE' } })
-  lanesText = JSON.stringify({ lanes: [{ name: 'LABLANE', folder: `${PIN}/lab`, brief: `${PIN}/lab/BRIEF.md`, repo: PIN }] })
-  expect((await doLane($, 'lane')).text).toBe(refusalText('name-taken'))
-  lanesText = undefined
   expect((await doLane($, 'lane')).text).toBe(ATTACHED('LABLANE'))
   await doLane($, 'lane off')
   storeFiles.set(STOREFILE, JSON.stringify({ repo: PIN, lanes: [{ name: 'LABLANE', folder: `${PIN}/api`, brief: `${PIN}/api/B.md`, createdAt: 1 }], creates: [] }))
@@ -3979,7 +4067,7 @@ test('a session bound by a birth rename is unbound by off too, and its record st
   expect((await $.command.run(lane('off'))).text).toBe(`This session is no longer lane LABLANE.${STOPPABLE_BY_NAME('LABLANE')}`)
   expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Lead: OFF.')
   expect(store.has(`sess:${SID}`)).toBe(false)
-  expect(lanesText).toBe(LEAD_LANES('/work'))
+  expect(laneSeed.text).toBe(LEAD_LANES('/data/x/work'))
   cueFile = { ino: 43, text: 'resume\n', present: true }
   await clock!.advance(2000)
   await clock!.advance(2000)
@@ -4067,7 +4155,7 @@ test('a restore of an attached lane is refused when the record is no longer atta
 const SELFPATH = `${ROOT}/leads/${SID}.json`
 const leadSelfReg = (over: Record<string, unknown> = {}) => ({ '4400.json': JSON.stringify({ sessionId: SID, name: 'LEAD', cwd: PIN, status: 'idle', pid: 4400, procStart: LEADPS, startedAt: T0 - 3_600_000, statusUpdatedAt: T0 - 60_000, kind: 'interactive', ...over }) })
 async function leadAt($: any, on: any, stdins: string[] = [], opts: { clock?: boolean; sess?: Record<string, string>; argv?: string[][]; seed?: () => void; trace?: Trace } = {}) {
-  lanesText = undefined
+  laneSeed.text = undefined
   sessions = opts.sess ?? leadSelfReg()
   await started($, on, stdins, { clock: opts.clock, argv: opts.argv, seed: opts.seed, trace: opts.trace })
   extraStat.set(`${PIN}/.git`, dirStat)
@@ -4153,34 +4241,30 @@ const ANY = '**Any lead** · ~/code/app'
 const mdBox = (head: string, rows: string[][]) => ['> ' + head, '>', rows[0].length === 4 ? '> | Lane | Folder | Session | Waiting |' : '> | Lane | Session | Waiting |', rows[0].length === 4 ? '> |---|---|---|---|' : '> |---|---|---|', ...rows.map((r) => `> | ${r.join(' | ')} |`)].join('\n')
 const noNote = (t: string) => t.replace(`\n\n${LANES_CHANGED_NOTE}`, '').replace(` ${LANES_CHANGED_NOTE}`, '')
 
-test('lane_list gives one fixed line per lane of this repo: root lanes of the repo, lanes the lead made, attached lanes, and whether a session carries the name', async ($, on) => {
+test('lane_list gives one fixed line per lane of this repo: lanes the lead made, attached lanes, and whether a session carries the name', async ($, on) => {
   await leadAt($, on, [], { sess: { ...leadSelfReg(), ...cueSession(OTHER, 'API', `${PIN}/api`, { pid: 4500 }) } })
-  lanesText = JSON.stringify({ lanes: [{ name: 'ROOTL', folder: `${PIN}/lab`, brief: `${PIN}/lab/B.md`, repo: PIN }, { name: 'ELSE', folder: '/work/lab', brief: '/work/lab/B.md', repo: '/work' }] })
+  laneSeed.text = JSON.stringify({ lanes: [{ name: 'ELSE', folder: '/data/x/work/lab', brief: '/data/x/work/lab/B.md', repo: '/data/x/work' }] })
   extraStat.set(`${PIN}/api`, dirStat)
-  putStore([{ name: 'API', folder: `${PIN}/api`, brief: `${PIN}/api/BRIEF.md`, createdAt: 1 }, attRec(SID)])
+  putStore([{ name: 'LAB', folder: `${PIN}/lab`, brief: `${PIN}/lab/B.md`, createdAt: 1 }, { name: 'API', folder: `${PIN}/api`, brief: `${PIN}/api/BRIEF.md`, createdAt: 1 }, attRec(SID)])
   storeFiles.set(`${LANESDIR}/${'b'.repeat(64)}.json`, JSON.stringify({ repo: '/Users/x/code/app2', lanes: [{ name: 'FOREIGN', folder: '/Users/x/code/app2/x', brief: '/Users/x/code/app2/x/B.md', createdAt: 1 }], creates: [] }))
   extraStat.set('/Users/x/code/app2/.git', dirStat)
   const bare = noNote
-  expect(bare(await listed($))).toBe(mdBox(ANY, [['ROOTL', 'lab', 'none', '–'], ['API', 'api', 'live', '–'], ['ATT', 'svc', 'none', '–']]))
-  lanesText = undefined
+  expect(bare(await listed($))).toBe(mdBox(ANY, [['LAB', 'lab', 'none', '–'], ['API', 'api', 'live', '–'], ['ATT', 'svc', 'none', '–']]))
+  laneSeed.text = undefined
   storeFiles.clear()
   expect(bare(await listed($))).toBe('no lanes in this repo')
 })
 
-test('/callboard lanes prints the lane_list table to the person; with lead off it says so; with an unreadable lanes file it gives the short reason', async ($, on) => {
+test('/callboard lanes prints the lane_list table to the person; with lead off it says so', async ($, on) => {
   await leadAt($, on, [], { sess: { ...leadSelfReg(), ...cueSession(OTHER, 'API', `${PIN}/api`, { pid: 4500 }) } })
-  lanesText = JSON.stringify({ lanes: [{ name: 'ROOTL', folder: `${PIN}/lab`, brief: `${PIN}/lab/B.md`, repo: PIN }] })
   extraStat.set(`${PIN}/api`, dirStat)
-  putStore([{ name: 'API', folder: `${PIN}/api`, brief: `${PIN}/api/BRIEF.md`, createdAt: 1 }, attRec(SID)])
+  putStore([{ name: 'LAB', folder: `${PIN}/lab`, brief: `${PIN}/lab/B.md`, createdAt: 1 }, { name: 'API', folder: `${PIN}/api`, brief: `${PIN}/api/BRIEF.md`, createdAt: 1 }, attRec(SID)])
   const bare = noNote
-  const table = mdBox(ANY, [['ROOTL', 'lab', 'none', '–'], ['API', 'api', 'live', '–'], ['ATT', 'svc', 'none', '–']])
+  const table = mdBox(ANY, [['LAB', 'lab', 'none', '–'], ['API', 'api', 'live', '–'], ['ATT', 'svc', 'none', '–']])
   expect((await $.command.run(lane('lanes'))).text).toBe(table)
   expect(bare(await listed($))).toBe(table)
-  lanesText = undefined
   storeFiles.clear()
   expect((await $.command.run(lane('lanes'))).text).toBe('no lanes in this repo')
-  rootStatFail = true
-  expect((await $.command.run(lane('lanes'))).text).toBe(`Lanes unavailable: ${'the root lane file is not safe to read.'}`)
   expect((await $.command.run(lane('off'))).text).toBe('Lead is now off.')
   expect((await $.command.run(lane('lanes'))).text).toBe('Lead is off in this session. Run /callboard lead first.')
 })
@@ -4242,7 +4326,7 @@ test('the lead briefing is one session-scope section while lead is on, names the
 test('no lead briefing before the grant or after off, and none for a request that offers no lane tools or is a teammate\'s render', async ($, on) => {
   await started($, on, [], {})
   expect(briefings(await $.prompt.compose(COMPOSE)).length).toBe(0)
-  lanesText = LEAD_LANES('/work')
+  laneSeed.text = LEAD_LANES('/data/x/work')
   askAnswer = YES
   await $.command.run(lane('lead'))
   expect(briefings(await $.prompt.compose(COMPOSE)).length).toBe(1)
@@ -4318,7 +4402,7 @@ test('the person moving the lead to another folder adds a note for that folder',
 
 test('a lead question that is cancelled appends no note', async ($, on) => {
   await started($, on, [], {})
-  lanesText = LEAD_LANES('/work')
+  laneSeed.text = LEAD_LANES('/data/x/work')
   askAnswer = NO
   await $.command.run(lane('lead'))
   expect(appendRows.length).toBe(0)
@@ -4344,7 +4428,7 @@ test('lane_list refuses a subagent, an unreadable registry and a lead that was t
   expect(JSON.stringify(await $.tool.call(listCall()))).toContain('lead tools are off')
 })
 
-test('lane_list shows another lead only its own repo: a lead pinned in a subfolder sees root lanes of the repo but no store lanes', async ($, on) => {
+test('lane_list shows another lead only its own repo: a lead pinned in a subfolder sees no store lanes of the repo', async ($, on) => {
   await leadAt($, on, [], { sess: leadSelfReg() })
   putStore([attRec(SID)])
   await grantAt($, SVC)
@@ -4378,7 +4462,7 @@ test('the lead is told once when the lane list of its repo changes: the first lo
 test('a lane list that is already there when the lead is granted is the baseline and gets no notice', async ($, on) => {
   await started($, on, [], { clock: true })
   sessions = leadSelfReg()
-  lanesText = undefined
+  laneSeed.text = undefined
   extraStat.set(`${PIN}/.git`, dirStat)
   storeFiles.set(STOREFILE, storeText(3))
   await grantAt($, PIN)
@@ -4859,13 +4943,6 @@ test('a restored lane the lead made keeps its record when the session is turned 
   expect((await $.command.run(lane('status'))).text).toContain('Lane: NONE')
 })
 
-
-test('lane refuses when the lane list cannot be read safely', async ($, on) => {
-  await attacher($, on)
-  rootStatFail = true
-  expect((await doLane($, 'lane svc-api')).text).toBe(refusalText('lanes-file'))
-  expect(askCount).toBe(0)
-})
 
 test('the 16-lane cap is judged again inside the lock, on the store as it is then', async ($, on) => {
   await attacher($, on)
@@ -5604,7 +5681,7 @@ test('a lone registry file whose process is gone does not hold its name; a ps th
 test('a stale twin carrying the lane name is dropped: terminate reaches the live session; with both alive it stays ambiguous', async ($, on) => {
   const argv: string[][] = []
   await lead($, on, [], { argv })
-  sessions = { ...cueSession(OTHER, 'LABLANE'), ...cueSession(TWIN, 'LABLANE', '/work/lab', { pid: 4243 }) }
+  sessions = { ...cueSession(OTHER, 'LABLANE'), ...cueSession(TWIN, 'LABLANE', '/data/x/work/lab', { pid: 4243 }) }
   expect(await terminateNow($)).toContain('ambiguous')
   psStartsGone.add('4243')
   expect(await terminateNow($)).toContain('SIGTERM sent to process 4242')
@@ -5614,7 +5691,7 @@ test('a stale twin carrying the lane name is dropped: terminate reaches the live
 test('a twin whose pid was reused by a process started later is stale too', async ($, on) => {
   const argv: string[][] = []
   await lead($, on, [], { argv })
-  sessions = { ...cueSession(OTHER, 'LABLANE'), ...cueSession(TWIN, 'LABLANE', '/work/lab', { pid: 4243 }) }
+  sessions = { ...cueSession(OTHER, 'LABLANE'), ...cueSession(TWIN, 'LABLANE', '/data/x/work/lab', { pid: 4243 }) }
   psStartsAt.set('4243', 'Sun Nov  1 00:48:56 2026')
   expect(await terminateNow($)).toContain('SIGTERM sent to process 4242')
 })
@@ -5623,7 +5700,7 @@ test('a session that crashed and was resumed: its old file is dropped, so no ses
   const argv: string[][] = []
   await lead($, on, [], { argv })
   reportFile = REPORT_OK()
-  sessions = { ...cueSession(OTHER, 'LABLANE'), ...cueSession(OTHER, 'ELSEWHERE', '/work/lab', { pid: 4244 }) }
+  sessions = { ...cueSession(OTHER, 'LABLANE'), ...cueSession(OTHER, 'ELSEWHERE', '/data/x/work/lab', { pid: 4244 }) }
   expect(await terminateNow($)).toContain('session-duplicate')
   expect(JSON.stringify(await $.tool.call(leadCall('retire')))).toContain('session-duplicate')
   psStartsGone.add('4244')
@@ -5632,7 +5709,7 @@ test('a session that crashed and was resumed: its old file is dropped, so no ses
 
 test('when dropping would take the caller own entry, ps is not trusted and nothing is dropped', async ($, on) => {
   await lead($, on, [])
-  sessions = { ...cueSession(OTHER, 'LABLANE'), ...cueSession(TWIN, 'LABLANE', '/work/lab', { pid: 4243 }) }
+  sessions = { ...cueSession(OTHER, 'LABLANE'), ...cueSession(TWIN, 'LABLANE', '/data/x/work/lab', { pid: 4243 }) }
   psStartsGone.add('4243')
   psStartsAt.set('4999', 'Wed Oct 28 01:00:00 2026')
   expect(await terminateNow($)).toContain('ambiguous')
@@ -5704,7 +5781,7 @@ test('a store is loaded, and a presence file written, only for a repo that passe
 
 for (const [why, make] of notGit) {
   test(`no presence file for a pin with ${why}`, async ($, on) => {
-    lanesText = undefined
+    laneSeed.text = undefined
     sessions = leadSelfReg()
     await started($, on, [], {})
     resetGit()
@@ -5798,7 +5875,7 @@ test('a bound lane that runs /callboard lead is refused before any dialog, and g
 })
 
 const laneTarget = async ($: any, on: any, stdins: string[], trace?: Trace) => {
-  lanesText = LEAD_LANES('/work')
+  laneSeed.text = LEAD_LANES('/data/x/work')
   sessions = { [REGFILE]: REG() }
   turnsAddedByRename = 1
   await started($, on, stdins, { clock: true, trace })
@@ -5891,7 +5968,7 @@ test('a pending restore is not taken while the session is a lead: refused, still
   const stdins: string[] = []
   const hint = { lane: { name: 'LABLANE', at: 1 }, counters: {}, savedAt: T0 }
   try {
-    await started($, on, stdins, { seed: () => { lanesText = LANES; store.set(`sess:${SID}`, hint) } })
+    await started($, on, stdins, { seed: () => { laneSeed.text = LANES; store.set(`sess:${SID}`, hint) } })
     askAnswer = YES
     restoreAnswer = 'Something else'
     await $.command.run(lane('lane'))
@@ -5906,7 +5983,7 @@ test('a pending restore is not taken while the session is a lead: refused, still
     await $.command.run(lane('lane'))
     expect((await $.command.run(lane('status'))).text).toContain('Lane: LABLANE. Lead: OFF.')
   } finally {
-    lanesText = undefined
+    laneSeed.text = undefined
   }
 })
 
@@ -5971,13 +6048,13 @@ test('a born lane gets exactly one lane section with its name, session, folder a
   const s = laneSections(r)
   expect(s.length).toBe(1)
   expect(s[0].scope).toBe('session')
-  expect(s[0].text.split('\n')[0]).toBe(`**Callboard lane.** You are lane \`LABLANE\`, session \`${SID}\`, working in \`/work/lab\`. Your lead is the lead session of this repo.`)
+  expect(s[0].text.split('\n')[0]).toBe(`**Callboard lane.** You are lane \`LABLANE\`, session \`${SID}\`, working in \`/data/x/work/lab\`. Your lead is the lead session of this repo.`)
   expect(s[0].text).toContain(`- Put questions and blockers in \`${REPORT}\`; your lead reads it.`)
   expect(s[0].text).toContain(`write what you did and what is left in \`${REPORT}\` (a plain file, not a link, at most 1 MB), append a new last line \`status: done ${SID}\``)
   expect(s[0].text).toContain('- Your brief holds your task.')
   expect(sectionIds(r)).toEqual(['intro', 'memory', 'callboard:lane'])
   expect(laneSections(await $.prompt.compose(LANE_COMPOSE)).length).toBe(1)
-  extraStat.set('/work/lab/BRIEF.md', fileStat)
+  extraStat.set('/data/x/work/lab/BRIEF.md', fileStat)
   cueFile = { ino: 43, text: 'start\n', present: true }
   await tickTwice()
   expect(resultFiles.get(RESULT)).toBe('start ok - 43\n')
@@ -5986,7 +6063,7 @@ test('a born lane gets exactly one lane section with its name, session, folder a
 
 test('a born lane names a lead the person named, found at bind time', async ($, on) => {
   const FOLDER = `${PIN}/lab`
-  lanesText = JSON.stringify({ lanes: [{ name: 'LABLANE', folder: FOLDER, brief: `${FOLDER}/BRIEF.md`, repo: PIN }] })
+  laneSeed.text = JSON.stringify({ lanes: [{ name: 'LABLANE', folder: FOLDER, brief: `${FOLDER}/BRIEF.md`, repo: PIN }] })
   sessions = { [REGFILE]: REG({ cwd: FOLDER }), ...leadReg({ nameSource: 'user' }) }
   turnsAddedByRename = 1
   engine(on, [], [], true)
@@ -6009,10 +6086,10 @@ test('a born lane names a lead the person named, found at bind time', async ($, 
 })
 
 // Two leads hold the repo: the rename cue names the lead that sent it, and only a live lead of the repo is taken from it.
-// storeLane (levels S2): the lane is a store record with these extra fields instead of a root lane.
+// storeLane (levels S2): the lane is a store record with these extra fields instead of the plain seeded one.
 async function bornWithTwoLeads($: any, on: any, cueText: string, storeLane?: Record<string, unknown>) {
   const FOLDER = `${PIN}/lab`
-  lanesText = storeLane ? undefined : JSON.stringify({ lanes: [{ name: 'LABLANE', folder: FOLDER, brief: `${FOLDER}/BRIEF.md`, repo: PIN }] })
+  laneSeed.text = storeLane ? undefined : JSON.stringify({ lanes: [{ name: 'LABLANE', folder: FOLDER, brief: `${FOLDER}/BRIEF.md`, repo: PIN }] })
   sessions = { [REGFILE]: REG({ cwd: FOLDER }), ...leadReg({ nameSource: 'user' }), '4243.json': leadReg({ sessionId: OTHERLEAD, pid: 4243, name: 'LEAD2', nameSource: 'user' })['4242.json'] }
   turnsAddedByRename = 1
   engine(on, [], [], true)
@@ -6119,26 +6196,26 @@ test('an attach whose binding write fails gives no note and no section', async (
 test('a restore whose binding write fails gives no note and no section', async ($, on) => {
   const hint = { lane: { name: 'LABLANE', at: 1, turns: 0 }, counters: {}, savedAt: T0 }
   const t2: Trace = { log: [], failCounters: false, failKeys: new Set(['lane']) }
-  await started($, on, [], { trace: t2, seed: () => { lanesText = LANES; store.set(`sess:${SID}`, hint) } })
+  await started($, on, [], { trace: t2, seed: () => { laneSeed.text = LANES; store.set(`sess:${SID}`, hint) } })
   await $.command.run(lane('lane'))
   expect(t2.log).toContain('lane')
   expect(appendRows.length).toBe(0)
   expect(laneSections(await $.prompt.compose(LANE_COMPOSE)).length).toBe(0)
-  lanesText = undefined
+  laneSeed.text = undefined
 })
 
-test('a restore appends one note: a born lane restored, with the report fallback when its record has no repo', async ($, on) => {
+test('a restore appends one note: a born lane restored, with the report path of its repo', async ($, on) => {
   const hint = { lane: { name: 'LABLANE', at: 1, turns: 0 }, counters: {}, savedAt: T0 }
-  await started($, on, [], { seed: () => { lanesText = LANES; store.set(`sess:${SID}`, hint) } })
+  await started($, on, [], { seed: () => { laneSeed.text = LANES; store.set(`sess:${SID}`, hint) } })
   await $.command.run(lane('lane'))
   expect((await $.command.run(lane('status'))).text).toContain('Lane: LABLANE')
   expect(appendRows.length).toBe(1)
   const note = appendRows[0].content[0].text as string
-  expect(note.startsWith(`${NOTE_OPENER}\n\n**Callboard lane.** You are lane \`LABLANE\`, session \`${SID}\`, working in \`/work/lab\`. Your lead is the lead session of this repo.\n`)).toBe(true)
-  expect(note).toContain(`- Put questions and blockers in ${LANE_FALLBACK('LABLANE')}; your lead reads it.`)
+  expect(note.startsWith(`${NOTE_OPENER}\n\n**Callboard lane.** You are lane \`LABLANE\`, session \`${SID}\`, working in \`/data/x/work/lab\`. Your lead is the lead session of this repo.\n`)).toBe(true)
+  expect(note).toContain('- Put questions and blockers in `/data/x/work/.archive/LABLANE/REPORT.md`; your lead reads it.')
   expect(note).toContain('- Your brief holds your task.')
   expect(laneSections(await $.prompt.compose(LANE_COMPOSE)).length).toBe(1)
-  lanesText = undefined
+  laneSeed.text = undefined
 })
 
 test('a refused note append is logged as lane-briefing and the attach still succeeds', async ($, on) => {
@@ -6179,7 +6256,7 @@ const waitFor = async (cond: () => boolean) => {
 test('a born lane does not name a lead pinned at a parent repo: the lead must hold a presence file for the lane repo', async ($, on) => {
   const PARENT = '/Users/x/code'
   const FOLDER = `${PIN}/lab`
-  lanesText = JSON.stringify({ lanes: [{ name: 'LABLANE', folder: FOLDER, brief: `${FOLDER}/BRIEF.md`, repo: PIN }] })
+  laneSeed.text = JSON.stringify({ lanes: [{ name: 'LABLANE', folder: FOLDER, brief: `${FOLDER}/BRIEF.md`, repo: PIN }] })
   sessions = { [REGFILE]: REG({ cwd: FOLDER }), '4243.json': leadReg({ sessionId: OTHERLEAD, pid: 4243, nameSource: 'user', cwd: PARENT })['4242.json'] }
   turnsAddedByRename = 1
   engine(on, [], [], true)
@@ -6223,7 +6300,7 @@ test('a lead lookup that throws keeps the base facts and logs lane-lead', async 
   expect(logged(stdins)).toContain('error:lane-lead')
   const s = laneSections(await $.prompt.compose(LANE_COMPOSE))
   expect(s.length).toBe(1)
-  expect(s[0].text.split('\n')[0]).toBe(`**Callboard lane.** You are lane \`LABLANE\`, session \`${SID}\`, working in \`/work/lab\`. Your lead is the lead session of this repo.`)
+  expect(s[0].text.split('\n')[0]).toBe(`**Callboard lane.** You are lane \`LABLANE\`, session \`${SID}\`, working in \`/data/x/work/lab\`. Your lead is the lead session of this repo.`)
   expect(s[0].text).toContain(`\`${REPORT}\``)
 })
 
@@ -6256,7 +6333,7 @@ test('an off that lands while a restore writes the binding unbinds it again and 
   const stdins: string[] = []
   const trace: Trace = { log: [], failCounters: false }
   const hint = { lane: { name: 'LABLANE', at: 1, turns: 0 }, counters: {}, savedAt: T0 }
-  await started($, on, stdins, { trace, seed: () => { lanesText = LANES; store.set(`sess:${SID}`, hint) } })
+  await started($, on, stdins, { trace, seed: () => { laneSeed.text = LANES; store.set(`sess:${SID}`, hint) } })
   let entered = false
   trace.setHook = async (key) => {
     if (key === 'lane' && !entered) {
@@ -6274,7 +6351,7 @@ test('an off that lands while a restore writes the binding unbinds it again and 
   expect(appendRows.length).toBe(0)
   expect(laneSections(await $.prompt.compose(LANE_COMPOSE)).length).toBe(0)
   expect(logged(stdins)).toContain('refused:off-meanwhile')
-  lanesText = undefined
+  laneSeed.text = undefined
 })
 
 test('a session end drops the kept facts', async ($, on) => {
@@ -6316,7 +6393,7 @@ test('the stop tools give the full text of a process refusal, still starting wit
   psArgsOut = '/usr/bin/vim /tmp/notes\n'
   expect(JSON.stringify(await $.tool.call(leadCall('terminate')))).toContain('lane_terminate refused: not-claude: the process behind that pid is not a Claude session. No signal was sent.')
   psArgsOut = '/x/native-binary/claude --output-format stream-json\n'
-  sessions = cueSession(OTHER, 'LABLANE', '/work/lab', { procStart: undefined })
+  sessions = cueSession(OTHER, 'LABLANE', '/data/x/work/lab', { procStart: undefined })
   expect(JSON.stringify(await $.tool.call(leadCall('terminate')))).toContain('lane_terminate refused: no-pid: the session list has no usable pid and start time for that session. No signal was sent.')
   sessions = cueSession(OTHER, 'LABLANE')
   const t0 = toasts.length
@@ -6329,7 +6406,7 @@ test('a row whose pid the table lacks is dropped only once ps -p agrees: alive w
   const stdins: string[] = []
   const argv: string[][] = []
   await lead($, on, stdins, { argv })
-  sessions = { ...cueSession(OTHER, 'LABLANE'), ...cueSession(TWIN, 'LABLANE', '/work/lab', { pid: 4243 }) }
+  sessions = { ...cueSession(OTHER, 'LABLANE'), ...cueSession(TWIN, 'LABLANE', '/data/x/work/lab', { pid: 4243 }) }
   psStartsGone.add('4243')
   psConfirmOut = ' 4243 Tue Oct 27 20:37:50 2026\n'
   expect(await terminateNow($)).toContain('ambiguous')
@@ -6343,7 +6420,7 @@ test('a row whose pid the table lacks is dropped only once ps -p agrees: alive w
 test('a ps -p that throws, fails or prints a half line keeps every row and says so; the next read asks again', async ($, on) => {
   const stdins: string[] = []
   await lead($, on, stdins)
-  sessions = { ...cueSession(OTHER, 'LABLANE'), ...cueSession(TWIN, 'LABLANE', '/work/lab', { pid: 4243 }) }
+  sessions = { ...cueSession(OTHER, 'LABLANE'), ...cueSession(TWIN, 'LABLANE', '/data/x/work/lab', { pid: 4243 }) }
   psStartsGone.add('4243')
   for (const doubt of [() => { psConfirmFails = 'throw' }, () => { psConfirmFails = 'exit' }, () => { psConfirmOut = ' 4243 Tue Oct' }]) {
     psConfirmFails = undefined
@@ -6358,14 +6435,14 @@ test('a ps -p that throws, fails or prints a half line keeps every row and says 
 
 test('a row confirmed gone is not asked about again; a row with no start time is asked every time', async ($, on) => {
   await lead($, on, [])
-  sessions = { ...cueSession(OTHER, 'LABLANE'), ...cueSession(TWIN, 'OLD', '/work/lab', { pid: 4243 }) }
+  sessions = { ...cueSession(OTHER, 'LABLANE'), ...cueSession(TWIN, 'OLD', '/data/x/work/lab', { pid: 4243 }) }
   psStartsGone.add('4243')
   await $.tool.call(leadCall('list'))
   expect(psConfirmCalls).toEqual(['4243'])
   await $.tool.call(leadCall('list'))
   await $.tool.call(leadCall('list'))
   expect(psConfirmCalls).toEqual(['4243'])
-  sessions = { ...cueSession(OTHER, 'LABLANE'), ...cueSession(TWIN, 'OLD', '/work/lab', { pid: 4244, procStart: undefined }) }
+  sessions = { ...cueSession(OTHER, 'LABLANE'), ...cueSession(TWIN, 'OLD', '/data/x/work/lab', { pid: 4244, procStart: undefined }) }
   psStartsGone.add('4244')
   await $.tool.call(leadCall('list'))
   await $.tool.call(leadCall('list'))
@@ -6406,7 +6483,7 @@ test('two registry rows of this session: no presence file is written for its lea
 test('a session-list row with no usable pid, kept while the dead-process filter is off, is refused with the full no-pid text', async ($, on) => {
   const argv: string[][] = []
   await lead($, on, [], { argv })
-  sessions = cueSession(OTHER, 'LABLANE', '/work/lab', { pid: 'abc' })
+  sessions = cueSession(OTHER, 'LABLANE', '/data/x/work/lab', { pid: 'abc' })
   psStartsFails = 'exit'
   expect(JSON.stringify(await $.tool.call(leadCall('terminate')))).toContain('lane_terminate refused: no-pid: the session list has no usable pid and start time for that session. No signal was sent.')
   psStartsFails = undefined
@@ -6571,14 +6648,14 @@ test('a lead grant whose tool registration throws releases the lead mark: a rena
 test('a ps -p refused for a pid it cannot take keeps every row; a file name that is no possible pid is dropped without asking', async ($, on) => {
   const stdins: string[] = []
   await lead($, on, stdins)
-  sessions = { ...cueSession(OTHER, 'LABLANE'), ...cueSession(TWIN, 'LABLANE', '/work/lab', { pid: 4243 }) }
+  sessions = { ...cueSession(OTHER, 'LABLANE'), ...cueSession(TWIN, 'LABLANE', '/data/x/work/lab', { pid: 4243 }) }
   psStartsGone.add('4243')
   psConfirmFails = 'stderr'
   expect(await terminateNow($)).toContain('ambiguous')
   expect(logged(stdins)).toContain('error:registry-ps-confirm')
   psConfirmFails = undefined
   psConfirmCalls.length = 0
-  sessions = { ...cueSession(OTHER, 'LABLANE'), ...cueSession(TWIN, 'LABLANE', '/work/lab', { pid: 100000 }) }
+  sessions = { ...cueSession(OTHER, 'LABLANE'), ...cueSession(TWIN, 'LABLANE', '/data/x/work/lab', { pid: 100000 }) }
   psStartsGone.add('100000')
   expect(await terminateNow($)).toContain('SIGTERM sent to process 4242')
   expect(psConfirmCalls).toEqual([])
@@ -6690,7 +6767,7 @@ const nudges = () => submitted.filter((t) => t.startsWith('[callboard] Your '))
 const SELF_PS = `${PS_TABLE} 4999     1 /x/native-binary/claude\n`
 async function person($: any, on: any, stdins: string[] = [], trace?: Trace, bound = false) {
   sessions = {}
-  lanesText = undefined
+  laneSeed.text = undefined
   await started($, on, stdins, { clock: true, trace, bound })
   psTable = SELF_PS
 }
@@ -6807,7 +6884,7 @@ for (const [what, setup] of [
 test('a lead is nudged by its own level only at 400k, idle or not, with the 400k text; nothing is recorded below it (2026-11-02)', async ($, on) => {
   const stdins: string[] = []
   await person($, on, stdins)
-  lanesText = LEAD_LANES('/work')
+  laneSeed.text = LEAD_LANES('/data/x/work')
   askAnswer = YES
   await $.command.run(lane('lead'))
   await $.turn.complete(TURN as any)
@@ -7211,7 +7288,7 @@ test('a turn-end level check never replaces a lead nudge recorded while it ran',
 test('a granted session that is not a lane refuses every cue: rename by the birth checks, the others as not-eligible; on-cue is never armed', async ($, on) => {
   const trace = await granted($, on)
   // A lane record in this folder and a fresh unnamed panel row: only the turns the session has had keep it from a birth rename.
-  lanesText = JSON.stringify({ lanes: [{ name: 'LABLANE', folder: '/work/lab', brief: '/work/lab/BRIEF.md', repo: '/work' }] })
+  laneSeed.text = JSON.stringify({ lanes: [{ name: 'LABLANE', folder: '/data/x/work/lab', brief: '/data/x/work/lab/BRIEF.md', repo: '/data/x/work' }] })
   sessions = { [REGFILE]: REG() }
   turnsNow = 5
   cueFile = { ino: 120, text: 'rename LABLANE\n', present: true }
@@ -7297,7 +7374,7 @@ test('a lead nudge to a lane session that is not interactive is refused not-inte
 // ---- the lane model: a lead-made record with a model is switched with /model at its start ----
 const MFOLDER = `${PIN}/lab`
 async function modelLane($: any, on: any, stdins: string[], model: string | undefined, opts: { trace?: Trace; brief?: boolean; mode?: 'ok' | 'stay' | 'throw' | 'hang'; now?: string } = {}) {
-  lanesText = undefined
+  laneSeed.text = undefined
   sessions = { [REGFILE]: REG({ cwd: MFOLDER }) }
   turnsAddedByRename = 1
   engine(on, [], stdins, true, opts.trace)
@@ -7343,16 +7420,6 @@ test('start runs no /model for a lead-made record without a model', async ($, on
   expect(submitted.length).toBe(1)
 })
 
-test('start runs no /model for a root lane', async ($, on) => {
-  const stdins: string[] = []
-  await renameThroughTick($, on, stdins, 1)
-  extraStat.set('/work/lab/BRIEF.md', fileStat)
-  cueFile = { ino: 43, text: 'start\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('start ok - 43\n')
-  expect(modelRuns).toEqual([])
-})
-
 for (const [why, mode] of [['the session reports another model', 'stay'], ['/model throws', 'throw']] as const) {
   test(`start refuses model-failed when ${why}: no start text, startDone not set`, async ($, on) => {
     const stdins: string[] = []
@@ -7390,7 +7457,7 @@ const recOf = (name = 'LABLANE') => (storeJson().lanes as any[]).find((l) => l.n
 const storeMvs = (argv: string[][]) => argv.filter((a) => a[0] === '/bin/mv' && a[a.length - 1].startsWith(`${LANESDIR}/`)).length
 // A lane the lead made (a store record), born through a rename cue on the first tick; the second tick runs the sid sync.
 async function bornStore($: any, on: any, stdins: string[], opts: { trace?: Trace; argv?: string[][]; added?: number; rec?: Record<string, unknown> } = {}) {
-  lanesText = undefined
+  laneSeed.text = undefined
   sessions = { [REGFILE]: REG({ cwd: MFOLDER }) }
   turnsAddedByRename = opts.added ?? 1
   engine(on, opts.argv ?? [], stdins, true, opts.trace)
@@ -7434,15 +7501,6 @@ test('a restore through the dialog writes the id; a record that names another si
   await tickTwice()
   expect(storeJson().lanes).toEqual([{ ...ATT_REC, sid: SID }])
   expect(logged(stdins)).toContain('sid-healed:')
-})
-
-test('a root lane is never written by the sync', async ($, on) => {
-  const stdins: string[] = []
-  const argv: string[][] = []
-  await renameThroughTick($, on, stdins, 1, undefined, undefined, argv)
-  await tickTwice()
-  expect(storeMvs(argv)).toBe(0)
-  expect(logged(stdins).some((x) => x.startsWith('sid-heal'))).toBe(false)
 })
 
 test('the sync runs once per binding: one store write over several ticks; a new binding of the same session runs it again', async ($, on) => {
@@ -7540,15 +7598,6 @@ for (const cmd of ['off', 'lane off']) {
   })
 }
 
-test('a lanes read that fails in detach counts as a session id not cleared', async ($, on) => {
-  const stdins: string[] = []
-  await bornStore($, on, stdins)
-  rootStatFail = true
-  const r = await $.command.run(lane('lane off'))
-  expect(r.text.endsWith(SID_KEPT('LABLANE'))).toBe(true)
-  expect(logged(stdins)).toContain('sid-uncleared:')
-})
-
 test('a failed removal of an attached record gives DETACH_INCOMPLETE; its session id is then cleared instead, and the restart sentence comes only when that fails too', async ($, on) => {
   const stdins: string[] = []
   await attacher($, on, stdins)
@@ -7602,7 +7651,7 @@ test('lane_park sends a park cue and signals once on the target\'s ok; no report
   const argv: string[][] = []
   const stdins: string[] = []
   await parker($, on, stdins, argv)
-  expect(toolDefs.filter((d) => d.includes('"lane_park"')).at(-1)).toContain("Park the lane's session: stop it and close its tab, but keep the conversation. lane_unpark reopens it later. The session must confirm first: idle for 30 seconds, an empty prompt box, no background agents or shells. No report is needed. Works for lanes you made and lanes a session joined, not for lanes from the root-owned lanes.json. lane: the lane name.")
+  expect(toolDefs.filter((d) => d.includes('"lane_park"')).at(-1)).toContain("Park the lane's session: stop it and close its tab, but keep the conversation. lane_unpark reopens it later. The session must confirm first: idle for 30 seconds, an empty prompt box, no background agents or shells. No report is needed. Works for lanes you made and lanes a session joined. lane: the lane name.")
   const r = await park($)
   expect(r.result.startsWith('lane API parked: SIGTERM sent to process 4500. The tab closes and the conversation is kept. lane_unpark API reopens it.')).toBe(true)
   expect(stdins).toContain('park\n')
@@ -7645,12 +7694,12 @@ test('lane_park marks the record only after a kill that exited 0', async ($, on)
 test('lane_park: the mark re-checks the lane after the signal; refused, the session is stopped and the result says so', async ($, on) => {
   const stdins: string[] = []
   await parker($, on, stdins)
-  // The lane list cannot be read once the signal went out (the close request is written between the signal and the mark).
-  mvHook = (to) => { if (to.endsWith('/API.close')) rootStatFail = true }
+  // The lane is removed once the signal went out (the close request is written between the signal and the mark).
+  mvHook = (to) => { if (to.endsWith('/API.close')) storeFiles.set(STOREFILE, JSON.stringify({ ...JSON.parse(storeFiles.get(STOREFILE)!), lanes: [] })) }
   const r = await park($)
   expect(r.result.startsWith('lane API stopped: SIGTERM sent to process 4500. The conversation is kept, but the lane could not be marked parked, so lane_list shows no session for it. lane_unpark API still reopens it.')).toBe(true)
-  expect(recOf('API')).toEqual(PARK_API({ sid: OTHER }))
-  expect(logged(stdins)).toContain('park-unmarked:lanes-file')
+  expect(JSON.parse(storeFiles.get(STOREFILE)!).lanes).toEqual([])
+  expect(logged(stdins)).toContain('park-unmarked:unknown-lane')
 })
 
 test('lane_park: a record without sid gets it before the signal; a failed write refuses the park and sends no signal', async ($, on) => {
@@ -7676,13 +7725,6 @@ test('lane_park: a mark that fails after the signal still leaves the session id 
   expect(logged(stdins)).toContain('park-unmarked:write-failed')
 })
 
-test('lane_park refuses a root lane before any cue', async ($, on) => {
-  const stdins: string[] = []
-  await lead($, on, stdins)
-  expect(JSON.stringify(await $.tool.call(leadCall('park')))).toContain('lane_park refused: root-lane: that lane is from the root-owned lanes.json. Only lanes you made or a session joined can be parked and reopened.')
-  expect(stdins).not.toContain('park\n')
-})
-
 test('lane_park parks an attached lane: the record gets sid and parked and keeps adopted and lead', async ($, on) => {
   const argv: string[][] = []
   await leadAt($, on, [], { sess: { ...leadSelfReg(), ...ATTSESS() }, argv })
@@ -7691,7 +7733,7 @@ test('lane_park parks an attached lane: the record gets sid and parked and keeps
   expect(recOf('ATT')).toEqual(attRec(OTHERLEAD, 'ATT', { sid: OTHER, parked: T0 }))
 })
 
-// The target side: a born root lane, its own registry row (pid 4300) and no report at all.
+// The target side: a born lane, its own registry row (pid 4300) and no report at all.
 async function parkTarget($: any, on: any, stdins: string[] = []) {
   await renameThroughTick($, on, stdins, 1)
   sessions = SELFREG()
@@ -7781,11 +7823,8 @@ test('lane_unpark writes <LANE>.reopen with the record\'s sid, waits for ok, and
   expect(toasts).toContain('Lane LABLANE reopened')
 })
 
-test('lane_unpark refuses a root lane, a record with no saved session, and an answer for another session', async ($, on) => {
+test('lane_unpark refuses a record with no saved session and an answer for another session', async ($, on) => {
   await unparker($, on, [], [], { sid: undefined, parked: undefined })
-  lanesText = JSON.stringify({ lanes: [{ name: 'ROOTL', folder: `${PIN}/lab`, brief: `${PIN}/lab/B.md`, repo: PIN }] })
-  expect(JSON.stringify(await $.tool.call(leadCall('unpark', { lane: 'ROOTL' })))).toContain('lane_unpark refused: root-lane:')
-  lanesText = undefined
   expect(JSON.stringify(await $.tool.call(leadCall('unpark')))).toContain('lane_unpark refused: no-saved-session: that lane has no saved conversation. Use lane_open for a new session.')
   putStore([UNPARK()])
   windowAnswers(`ok ${NEWSID}\n`)
@@ -7892,7 +7931,7 @@ test('after a park mark and an unpark clear, /callboard lane off in the attached
 // A session whose store record names its id, at start. Its dialogs answer yes, the Restore question waits on restoreHang when a test sets it.
 const rebindAsks: string[] = []
 async function rebinder($: any, on: any, stdins: string[], opts: { rec?: Record<string, unknown>; sess?: Record<string, string>; hint?: unknown; argv?: string[][]; trace?: Trace; cwd?: string; interactive?: boolean } = {}) {
-  lanesText = undefined
+  laneSeed.text = undefined
   sessions = opts.sess ?? { [REGFILE]: REG({ cwd: MFOLDER }) }
   engine(on, opts.argv ?? [], stdins, true, opts.trace)
   rebindAsks.length = 0
@@ -8040,7 +8079,7 @@ test('a session that no store record names makes no registry read and is not loo
   await rebinder($, on, stdins, { argv, rec: { sid: OTHER } })
   await ticks(3)
   expect(argv.filter((a) => a[0] === '/usr/bin/head' && a[a.length - 1].startsWith(`${SESSIONS}/`)).length).toBe(0)
-  const lanesReads = () => argv.filter((a) => a[0] === '/usr/bin/stat' && a[a.length - 1] === '/usr/local/libexec/callboard/lanes.json').length
+  const lanesReads = () => argv.filter((a) => a[0] === '/usr/bin/stat' && a[a.length - 1] === STOREFILE).length
   expect(lanesReads()).toBe(1)
   await ticks(2)
   expect(lanesReads()).toBe(1)
@@ -8114,7 +8153,7 @@ test('/callboard off in a born lane, then the session starts again: no rebind', 
 const LEADKEY = `lead:${SID}`
 // A session that starts with a saved lead grant for PIN (or opts.pin), its own registry row in PIN.
 async function leadRestarter($: any, on: any, stdins: string[], opts: { pin?: string; cwd?: string; savedAt?: number; raw?: unknown; trace?: Trace; argv?: string[][]; seed?: () => void; noStart?: boolean; interactive?: boolean } = {}) {
-  lanesText = undefined
+  laneSeed.text = undefined
   sessions = leadSelfReg()
   const start = started($, on, stdins, {
     clock: true,
@@ -8571,7 +8610,7 @@ test('/callboard off while a restored grant is being saved: the key the save wro
 
 test('v13.5 review: off in a session that is not a lead removes a saved lead grant left behind, and says so', async ($, on) => {
   await started($, on, [])
-  store.set(`lead:${SID}`, { pin: '/work', savedAt: T0 })
+  store.set(`lead:${SID}`, { pin: '/data/x/work', savedAt: T0 })
   expect((await $.command.run(lane('off'))).text).toBe('Its saved lead grant was removed.')
   expect(store.has(`lead:${SID}`)).toBe(false)
   expect((await $.command.run(lane('off'))).text).toBe(OFF_NOTHING)
@@ -8665,13 +8704,13 @@ test('v13.5: an enabled state and a saved on left from before are cleared at sta
   const stdins: string[] = []
   const trace: Trace = { log: [], failCounters: false }
   sessions = {}
-  lanesText = undefined
+  laneSeed.text = undefined
   await started($, on, stdins, {
     clock: true,
     trace,
     seed: () => {
       trace.st!.set('enabled', { value: { at: T0 - 1000 }, version: 1 })
-      store.set(ONKEY, { pin: '/work/lab', savedAt: T0 - 60_000 })
+      store.set(ONKEY, { pin: '/data/x/work/lab', savedAt: T0 - 60_000 })
     },
   })
   psTable = SELF_PS
@@ -8700,7 +8739,7 @@ test('v13.5: a start with nothing left writes nothing and logs no clear; a saved
   await started($, on, stdins, { trace })
   expect(trace.log.filter((k) => k.startsWith('enabled'))).toEqual([])
   expect(logged(stdins).some((x) => x.startsWith('on-cleared'))).toBe(false)
-  store.set(ONKEY, { pin: '/work/lab', savedAt: T0 })
+  store.set(ONKEY, { pin: '/data/x/work/lab', savedAt: T0 })
   storeDeleteFails = true
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   storeDeleteFails = false
@@ -8959,7 +8998,7 @@ test('v13.2 keepalive: a lead is pinged (D4)', async ($, on) => {
   const stdins: string[] = []
   await person($, on, stdins)
   await $.command.run(lane('off'))
-  lanesText = LEAD_LANES('/work')
+  laneSeed.text = LEAD_LANES('/data/x/work')
   await $.command.run(lane('lead'))
   expect((await $.command.run(lane('status'))).text).toContain('Lane: NONE. Lead: ON.')
   sessions = KA_ROW()
@@ -9053,7 +9092,7 @@ test('v13.2 keepalive: the lanes-changed turn is not real work either (A)', asyn
 test('v13.2 keepalive: a lane a lead started (its start text is real work) and then left idle is pinged', async ($, on) => {
   const stdins: string[] = []
   await renameThroughTick($, on, stdins, 1)
-  extraStat.set('/work/lab/BRIEF.md', fileStat)
+  extraStat.set('/data/x/work/lab/BRIEF.md', fileStat)
   cueFile = { ino: 43, text: 'start\n', present: true }
   await tickTwice()
   expect(resultFiles.get(RESULT)).toBe('start ok - 43\n')
@@ -9301,7 +9340,7 @@ test('v13.2 config: a lead is nudged by its own level only at the configured wor
   const stdins: string[] = []
   await person($, on, stdins)
   await $.command.run(lane('config working 450'))
-  lanesText = LEAD_LANES('/work')
+  laneSeed.text = LEAD_LANES('/data/x/work')
   await $.command.run(lane('lead'))
   tokensNow = 449_999
   await $.turn.complete(TURN as any)
@@ -9876,7 +9915,7 @@ test('S2b: with two leads in the repo, each born store lane names its own lead i
 
 // A session in PIN about to run /callboard lead, beside another live lead of PIN (its presence file and registry row with these fields) unless other is undefined.
 async function beside($: any, on: any, me: Record<string, string>, other: Record<string, unknown> | undefined, stdins: string[] = [], clock = false) {
-  lanesText = undefined
+  laneSeed.text = undefined
   sessions = { ...me, ...(other ? { '4243.json': leadReg({ sessionId: OTHERLEAD, pid: 4243, ...other })['4242.json'] } : {}) }
   await started($, on, stdins, { clock, seed: () => (other ? leadFiles.set(OTHERPATH, { text: leadFileText({ sid: OTHERLEAD, pid: 4243 }) }) : undefined) })
   extraStat.set(`${PIN}/.git`, dirStat)
@@ -10104,7 +10143,7 @@ test('v13.5: /callboard lane from anything but the person restores nothing and a
   const stdins: string[] = []
   const hint = { lane: { name: 'LABLANE', at: 1 }, counters: {}, savedAt: T0 }
   try {
-    await started($, on, stdins, { seed: () => { lanesText = LANES; store.set(`sess:${SID}`, hint) } })
+    await started($, on, stdins, { seed: () => { laneSeed.text = LANES; store.set(`sess:${SID}`, hint) } })
     for (const origin of [{ kind: 'plugin', name: 'x' }, { kind: 'peer' }, null]) expect((await $.command.run(lane('lane', origin))).text).toBe(refusalText('lane-origin'))
     expect(askCount).toBe(0)
     expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Lead: OFF.')
@@ -10114,7 +10153,7 @@ test('v13.5: /callboard lane from anything but the person restores nothing and a
     expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Lead: OFF.')
     expect(logged(stdins)).not.toContain('restored:')
   } finally {
-    lanesText = undefined
+    laneSeed.text = undefined
   }
 })
 
@@ -10131,7 +10170,7 @@ test('v13.5: /callboard lane with a hint whose restore is refused goes on to the
 test('v13.5: /callboard lane with a hint whose Restore is declined goes on to the Join question', async ($, on) => {
   const stdins: string[] = []
   await attacher($, on, stdins)
-  lanesText = JSON.stringify({ lanes: [{ name: 'OLD', folder: SVC, brief: `${SVC}/B.md` }] })
+  laneSeed.text = JSON.stringify({ lanes: [{ name: 'OLD', folder: SVC, brief: `${SVC}/B.md`, repo: PIN }] })
   try {
     store.set(`sess:${SID}`, { lane: { name: 'OLD', at: 1 }, counters: {}, savedAt: T0 })
     restoreAnswer = NO
@@ -10141,7 +10180,7 @@ test('v13.5: /callboard lane with a hint whose Restore is declined goes on to th
     expect(askedOptions[1]).toEqual([ATTACH_YES, ATTACH_NO])
     expect(r.text).toBe(ATTACHED())
   } finally {
-    lanesText = undefined
+    laneSeed.text = undefined
   }
 })
 
@@ -10151,7 +10190,7 @@ const OWN_ROW = (over: Record<string, unknown> = {}): Record<string, string> => 
 // A person's session that runs under CLAUDE_CONFIG_DIR=env (unset: undefined), its own row in the config-root registry (rows), none in the default one.
 async function configRoot($: any, on: any, stdins: string[], env: string | undefined, rows: Record<string, string>, argv: string[][] = [], opts: { bound?: boolean; interactive?: boolean; before?: () => void } = {}) {
   sessions = {}
-  lanesText = undefined
+  laneSeed.text = undefined
   await started($, on, stdins, {
     clock: true,
     argv,
@@ -10319,7 +10358,7 @@ for (const [what, env, inDefault] of [
   ['the row is only in the config registry', CONFIG_ROOT, false],
 ] as const) {
   test(`v13.3 CLAUDE_CONFIG_DIR set: a rename cue is answered from the default registry alone (${what})`, async ($, on) => {
-    lanesText = LEAD_LANES('/work')
+    laneSeed.text = LEAD_LANES('/data/x/work')
     const stdins: string[] = []
     engine(on, [], stdins, true)
     on('tool.call', () => ({ result: {} }))
@@ -10330,7 +10369,7 @@ for (const [what, env, inDefault] of [
       ownEntryAuto = false
       ownSessions = { [REGFILE]: REG() }
     }
-    await $.session.start({ cwd: '/work/lab', surface: 'vscode', isInteractive: true })
+    await $.session.start({ cwd: '/data/x/work/lab', surface: 'vscode', isInteractive: true })
     cueFile = { ino: 42, text: 'rename LABLANE\n', present: true }
     await tickTwice()
     if (inDefault) expect(resultFiles.get(RESULT)).toBe('rename ok - 42\n')
@@ -10383,12 +10422,12 @@ for (const [what, plain, own, expected] of [
   ['the plain row is a person', 'interactive', 'background', 'compact held nudged 150\n'],
 ] as const) {
   test(`v13.3 CLAUDE_CONFIG_DIR set: a lead's compact cue reads the default registry alone (${what})`, async ($, on) => {
-    lanesText = LEAD_LANES('/work')
+    laneSeed.text = LEAD_LANES('/data/x/work')
     sessions = { [REGFILE]: REG() }
     engine(on, [], [], true)
     on('tool.call', () => ({ result: {} }))
     envVars.CLAUDE_CONFIG_DIR = CONFIG_ROOT
-    await $.session.start({ cwd: '/work/lab', surface: 'vscode', isInteractive: true })
+    await $.session.start({ cwd: '/data/x/work/lab', surface: 'vscode', isInteractive: true })
     cueFile = { ino: 42, text: 'rename LABLANE\n', present: true }
     await tickTwice()
     expect(resultFiles.get(RESULT)).toBe('rename ok - 42\n')
@@ -10468,12 +10507,11 @@ test('v13.6 check-in: a lane whose session is gone is told', async ($, on) => {
   await idleFor(24 * MIN)
   expect(checkins()).toEqual([ckText('`API` (session gone, report not signed done)')])
 })
-test('v13.6 check-in: a lane signed done is not told, quiet or gone; a parked lane and a root-file lane never seen live are never gone', async ($, on) => {
-  await ckLead($, on, [], {}, [ckLane(), { ...madeLane('PARKED'), sid: OTHERLEAD, parked: 5 }])
-  lanesText = JSON.stringify({ lanes: [{ name: 'ROOTL', folder: `${PIN}/lab`, brief: `${PIN}/lab/B.md`, repo: PIN }] })
+test('v13.6 check-in: a lane signed done is not told, quiet or gone; a parked lane and a lane with no saved session never seen live are never gone', async ($, on) => {
+  await ckLead($, on, [], {}, [{ name: 'LAB', folder: `${PIN}/lab`, brief: `${PIN}/lab/B.md`, createdAt: 1 }, ckLane(), { ...madeLane('PARKED'), sid: OTHERLEAD, parked: 5 }])
   reportFile = { text: `notes\nstatus: done ${OTHER}\n`, mtimeSec: T0 / 1000 }
   await idleFor(36 * MIN)
-  expect((await bareList($)).split('\n').filter((l) => l.startsWith('> | ') && !l.startsWith('> | Lane')).map((l) => l.split(' | ')[1])).toEqual(['ROOTL', 'API', 'PARKED'])
+  expect((await bareList($)).split('\n').filter((l) => l.startsWith('> | ') && !l.startsWith('> | Lane')).map((l) => l.split(' | ')[1])).toEqual(['LAB', 'API', 'PARKED'])
   sessions = leadSelfReg()
   await idleFor(20 * MIN)
   expect(checkins()).toEqual([])
@@ -10692,10 +10730,10 @@ test('v13.6 check-in: a status change after only 10 min of quiet starts the quie
 // ---- v14 (live 2026-11-03/04): the manager level, its five tools, the compact cue to leads, manager check-ins, soft/hard nudges ----
 const APISID = '8a1b2c3d-0000-4000-8000-123456789abc'
 const OTHERMGR = `${ROOT}/leads/${OTHERLEAD}.json`
-// The manager (SID, pid 4400) and two lanes in two repos: LABLANE from the root file in /work (session OTHER, pid 4600), API from the store of PIN (APISID).
-const MGR_SESS = (over: Record<string, unknown> = {}) => ({ ...leadSelfReg(over), ...cueSession(OTHER, 'LABLANE', '/work/lab', { pid: 4600 }), ...cueSession(APISID, 'API', `${PIN}/api`, { pid: 4500 }) })
+// The manager (SID, pid 4400) and two lanes in two repos: LABLANE from the store of /data/x/work (session OTHER, pid 4600), API from the store of PIN (APISID).
+const MGR_SESS = (over: Record<string, unknown> = {}) => ({ ...leadSelfReg(over), ...cueSession(OTHER, 'LABLANE', '/data/x/work/lab', { pid: 4600 }), ...cueSession(APISID, 'API', `${PIN}/api`, { pid: 4500 }) })
 async function mgrAt($: any, on: any, stdins: string[] = [], opts: { clock?: boolean; sess?: Record<string, string>; argv?: string[][]; args?: string; seed?: () => void } = {}) {
-  lanesText = LEAD_LANES('/work')
+  laneSeed.text = LEAD_LANES('/data/x/work')
   sessions = opts.sess ?? MGR_SESS()
   await started($, on, stdins, { clock: opts.clock, argv: opts.argv, seed: () => { putStore([ckLane({ sid: APISID })]); opts.seed?.() } })
   extraStat.set(`${PIN}/.git`, dirStat)
@@ -10860,7 +10898,7 @@ test('v14 manager tools: lane_list and lane_resume reach lanes in every repo; ev
   await mgrAt($, on, [], { argv })
   const list = (await $.tool.call(listCall())).result as string
   expect(list.startsWith('> **Manager MANAGER** · live\n>\n> > **Any lead** · ')).toBe(true)
-  expect(list).toContain('· /work\n> >')
+  expect(list).toContain('· /data/x/work\n> >')
   expect(list).toContain('· ~/code/app\n> >')
   expect(list).toContain('> > | LABLANE | ')
   expect(list).toContain('> > | API | ')
@@ -10879,7 +10917,7 @@ test('v14 manager lane_terminate: the dialog names the repo; a second stop while
   const n = askCount
   const first = $.tool.call(mgrCall('terminate', 'LABLANE'))
   for (let i = 0; i < 400 && askCount === n; i++) await new Promise((r) => setTimeout(r, 5))
-  expect(lastQuestion).toBe(terminateQuestion('LABLANE', OTHER, 4600, '/work'))
+  expect(lastQuestion).toBe(terminateQuestion('LABLANE', OTHER, 4600, '/data/x/work'))
   expect(lastQuestion).toContain("Force stop lane LABLANE's session in work (")
   expect(JSON.stringify(await $.tool.call(mgrCall('terminate', 'API')))).toContain('lane_terminate refused: busy')
   // Review c1 (W4): a retire that passes its early checks (signed report) reaches its own dialog and is refused busy there.
@@ -10915,7 +10953,7 @@ test('v14 manager lane_retire: asks once naming the repo; Cancel sends no cue; R
   reportFile = REPORT_OK()
   askAnswer = NO
   expect(JSON.stringify(await $.tool.call(mgrCall('retire', 'LABLANE')))).toContain('did not confirm')
-  expect(lastQuestion).toBe(retireQuestion('LABLANE', '/work'))
+  expect(lastQuestion).toBe(retireQuestion('LABLANE', '/data/x/work'))
   expect(lastQuestion).toBe('Retire lane LABLANE in work?')
   expect(stdins).not.toContain('retire\n')
   expect(argv.some((a) => a[0] === '/bin/mv' && a[a.length - 1].startsWith(`${ROOT}/cue/`))).toBe(false)
@@ -10926,10 +10964,10 @@ test('v14 manager lane_retire: asks once naming the repo; Cancel sends no cue; R
 })
 
 // ---- v14.1 (2026-11-04): the manager's lane_remove, for lanes no live session carries, every call asked ----
-// The manager (cwd /) and LABLANE (root file, live); API, the store lane of PIN (another repo), has no live session.
+// The manager (cwd /) and LABLANE (store of /data/x/work, live); API, the store lane of PIN (another repo), has no live session.
 // v14.1 (2026-11-04, audit, L2): the home folder the mod finds from its paths (ROOT less /.claude/callboard).
 const HOME = ROOT.slice(0, -'/.claude/callboard'.length)
-const MGR_NOAPI = (over: Record<string, unknown> = {}) => ({ ...leadSelfReg(over), ...cueSession(OTHER, 'LABLANE', '/work/lab', { pid: 4600 }) })
+const MGR_NOAPI = (over: Record<string, unknown> = {}) => ({ ...leadSelfReg(over), ...cueSession(OTHER, 'LABLANE', '/data/x/work/lab', { pid: 4600 }) })
 const storeNames = () => (JSON.parse(storeFiles.get(STOREFILE)!).lanes as { name: string }[]).map((l) => l.name)
 // APISID live under another name, holding a lead presence file.
 const apiAsLead = () => {
@@ -10966,12 +11004,10 @@ test('v14.1 manager lane_remove: a parked lane\'s question carries the parked se
   expect(storeNames()).toEqual(['API'])
 })
 
-test('v14.1 manager lane_remove: refused before any dialog: a root-file lane, a lane a live session carries, a lane whose session holds a live presence file', async ($, on) => {
+test('v14.1 manager lane_remove: refused before any dialog: a lane a live session carries, a lane whose session holds a live presence file', async ($, on) => {
   const stdins: string[] = []
   await mgrAt($, on, stdins, { sess: leadSelfReg() })
   const asked = askCount
-  // LABLANE is from the root file (and here has no live session).
-  expect(JSON.stringify(await $.tool.call(mgrCall('remove', 'LABLANE')))).toContain('lane_remove refused: root-lane: lane LABLANE: ')
   // API's session (APISID) is live.
   sessions = MGR_SESS()
   expect(JSON.stringify(await $.tool.call(mgrCall('remove', 'API')))).toContain(`lane_remove refused: name-in-use: lane API: ${REASON_TEXT['name-in-use']}`)
@@ -11057,7 +11093,6 @@ test('v14.1 manager lane_remove lanes: lanes of two repos are refused mixed-repo
   askAnswer = YES
   sessions = { ...MGR_NOAPI(), ...cueSession(NEWSID, 'B', SVC, { pid: 4700 }) }
   expect(JSON.stringify(await $.tool.call(mgrRemove({ lanes: ['API', 'B'] })))).toContain('lane_remove refused: name-in-use: lane B: ')
-  expect(JSON.stringify(await $.tool.call(mgrRemove({ lanes: ['API', 'LABLANE'] })))).toContain('lane_remove refused: root-lane: lane LABLANE: ')
   expect(JSON.stringify(await $.tool.call(mgrRemove({ lanes: ['API', 'NOPE'] })))).toContain('lane_remove refused: unknown-lane: lane NOPE: ')
   expect(askCount).toBe(asked + 1)
   expect(storeNames()).toEqual(['API', 'B'])
@@ -11572,11 +11607,11 @@ test('v14 review c2: a session that was the manager is refused /callboard lane b
 const COND = '/Users/x/code/cond'
 const CONDFILE = `${COND}/.claude/callboard-conductor.json`
 const APP2 = '/Users/x/code/app2'
-const FAR = '/Users/x/work/elsewhere/far-repo'
+const FAR = '/Users/x/data/x/work/elsewhere/far-repo'
 const CONDSTORE = `${LANESDIR}/${'c'.repeat(64)}.json`
 const condSelf = (over: Record<string, unknown> = {}) => leadSelfReg({ cwd: COND, name: 'COND', ...over })
 async function condAt($: any, on: any, stdins: string[] = [], opts: { clock?: boolean; sess?: Record<string, string>; seed?: () => void; argv?: string[][]; trace?: Trace } = {}) {
-  lanesText = undefined
+  laneSeed.text = undefined
   sessions = opts.sess ?? condSelf()
   await started($, on, stdins, {
     clock: opts.clock,
@@ -11638,7 +11673,7 @@ test('v15 S6a (6, 16e): the add dialog names the resolved repo, never the typed 
   await condRun($, `add ${APP2}`)
   expect(lastQuestion).toBe('Let conductors in cond reach the lanes of ../app2? The list would then be: ../app, ../app2 (2 repos).')
   await condRun($, `add ${FAR}`)
-  expect(lastQuestion).toBe('Let conductors in cond reach the lanes of ~/work/elsewhere/far-repo (not next to cond)? The list would then be: ../app, ~/work/elsewhere/far-repo (not next to cond) (2 repos).')
+  expect(lastQuestion).toBe('Let conductors in cond reach the lanes of ~/data/x/work/elsewhere/far-repo (not next to cond)? The list would then be: ../app, ~/data/x/work/elsewhere/far-repo (not next to cond) (2 repos).')
   await condRun($, `add ${far}`)
   expect(far.length).toBeGreaterThanOrEqual(120)
   expect(lastQuestion).toContain(`reach the lanes of ~${far.slice(CHOME.length)} (not next to cond)?`)
@@ -11845,8 +11880,8 @@ const until = async (f: () => boolean) => {
 }
 const condStatus = async ($: any) => (await $.command.run(lane('status'))).text as string
 const condSections = (r: any) => (r.sections as { id: string; text: string }[]).filter((x) => x.id === 'callboard:conductor')
-// The conductor (SID in COND) with lane API in PIN's store (session APISID) and LABLANE of /work (session OTHER), granted over ../app and ../app2.
-const CSESS = (over: Record<string, unknown> = {}) => ({ ...condSelf(over), ...cueSession(APISID, 'API', `${PIN}/api`, { pid: 4500 }), ...cueSession(OTHER, 'LABLANE', '/work/lab', { pid: 4600 }) })
+// The conductor (SID in COND) with lane API in PIN's store (session APISID) and LABLANE of /data/x/work (session OTHER), granted over ../app and ../app2.
+const CSESS = (over: Record<string, unknown> = {}) => ({ ...condSelf(over), ...cueSession(APISID, 'API', `${PIN}/api`, { pid: 4500 }), ...cueSession(OTHER, 'LABLANE', '/data/x/work/lab', { pid: 4600 }) })
 async function condOn($: any, on: any, stdins: string[] = [], opts: { clock?: boolean; sess?: Record<string, string>; seed?: () => void; argv?: string[][]; trace?: Trace; repos?: string[] } = {}) {
   await condAt($, on, stdins, {
     clock: opts.clock,
@@ -11860,13 +11895,13 @@ async function condOn($: any, on: any, stdins: string[] = [], opts: { clock?: bo
       opts.seed?.()
     },
   })
-  lanesText = LEAD_LANES('/work')
+  laneSeed.text = LEAD_LANES('/data/x/work')
   putCond(opts.repos ?? ['../app', '../app2'])
   return condRun($, '')
 }
 // A session that starts with a saved conductor grant (approved: repos) and the list file `file`.
 async function condRestarter($: any, on: any, stdins: string[], opts: { repos?: string[]; file?: string[]; cwd?: string; sess?: Record<string, string>; seed?: () => void; noStart?: boolean; argv?: string[][]; raw?: unknown } = {}) {
-  lanesText = undefined
+  laneSeed.text = undefined
   sessions = opts.sess ?? condSelf()
   const start = started($, on, stdins, {
     clock: true,
@@ -11893,7 +11928,7 @@ test('v15 S6b (17): /callboard conductor asks once with every repo and the resta
   const r = await condRun($, '')
   expect(r.text).toBe(`${CONDUCTOR_ON_TEXT} Out of reach: ../gone (not found).`)
   expect(lastQuestion).toBe(conductorQuestion(COND, [PIN, APP2, FAR], CHOME))
-  expect(lastQuestion).toBe('Make this session a conductor for these repos? ../app, ../app2, ~/work/elsewhere/far-repo (not next to cond). It can list their lanes, compact their leads, and force stop a lane: every stop asks you. It stays a conductor after a restart until you run /callboard off.')
+  expect(lastQuestion).toBe('Make this session a conductor for these repos? ../app, ../app2, ~/data/x/work/elsewhere/far-repo (not next to cond). It can list their lanes, compact their leads, and force stop a lane: every stop asks you. It stays a conductor after a restart until you run /callboard off.')
   expect(lastHeader).toBe('Conductor')
   expect(askedOptions).toEqual([['Conductor', 'Cancel']])
   const names = toolDefs.slice(defs0).map((d) => JSON.parse(d).name).filter((n: string) => n.startsWith('lane_'))
@@ -11908,7 +11943,7 @@ test('v15 S6b (17): /callboard conductor asks once with every repo and the resta
   expect(await condStatus($)).toBe('Lane: NONE. Conductor: ON (3 repos).')
   expect(logged(stdins)).toContain('conductor-on:prompt')
   // Again with nothing new: no dialog, the reach.
-  expect((await condRun($, '')).text).toBe('Conductor is on for ../app, ../app2, ~/work/elsewhere/far-repo (not next to cond). Out of reach: ../gone (not found).')
+  expect((await condRun($, '')).text).toBe('Conductor is on for ../app, ../app2, ~/data/x/work/elsewhere/far-repo (not next to cond). Out of reach: ../gone (not found).')
   expect(askCount).toBe(1)
 })
 
@@ -12426,9 +12461,9 @@ test('v15 S6c (46): the manager\'s list nests a live conductor\'s repos in a Con
   expect(lines).toContain('> > **Conductor CONDX** · live')
   expect(lines).toContain('> > > **Any lead** · ~/code/app')
   expect(lines.some((l) => l.startsWith('> > > | API | '))).toBe(true)
-  expect(lines).toContain('> > **Any lead** · /work')
+  expect(lines).toContain('> > **Any lead** · /data/x/work')
   expect(lines.indexOf('> > **Conductor CONDX** · live')).toBeLessThan(lines.indexOf('> > > **Any lead** · ~/code/app'))
-  expect(lines.indexOf('> > > **Any lead** · ~/code/app')).toBeLessThan(lines.indexOf('> > **Any lead** · /work'))
+  expect(lines.indexOf('> > > **Any lead** · ~/code/app')).toBeLessThan(lines.indexOf('> > **Any lead** · /data/x/work'))
 })
 
 test('v15 S6c (47): a repo listed by two conductors appears once, under the first, with an also note; the other conductor shows no lanes in its repos', async ($, on) => {

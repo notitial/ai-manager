@@ -9,6 +9,5 @@ step "sender" node --test send/callboard-send.test.mjs
 step "extension" node --test extension/lanes.test.js extension/spool.test.js extension/registry.test.js
 step "mod validate" claude plugin validate mod
 step "mod tests" claude plugin test mod
-step "checksums" bash sums.sh --check
-step "installer" bash test-install.sh
+step "extension link" bash test-link-extension.sh
 exit "$rc"

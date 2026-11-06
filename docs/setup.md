@@ -1,25 +1,28 @@
 # Setup
 
-From nothing to a working manager setup on one Mac: callboard installed and loaded in every session, the settings
+From nothing to a working manager setup on one Mac: callboard loaded from your checkout in every session, the settings
 that keep agents off its files, the usage watcher running, and the callboard rule linked.
 
 You run every install step yourself. An agent never edits settings or permissions: where a step changes
 `~/.claude/settings.json`, you make the edit. The `setup-manager` skill walks through the same steps (see
 [The guided way](#the-guided-way)).
 
-`<checkout>` below is your checkout of this repo, on an up-to-date `main`, and `<commit>` a full 40-character commit
-of `main` you have read. For callboard it is the squash commit of the pull request that last changed `tools/callboard`.
+`<checkout>` below is your live checkout of this repo: the absolute path of one clone that stays on `main` and moves
+only by a fast-forward to a reviewed commit of `main` after a merge ([Updating](#updating)). Callboard loads straight
+from it, so that update is callboard's install. Agents never edit it: they work in their own clones under `/tmp`
+(CLAUDE.md, Where agents edit).
+`<commit>` is a full 40-character commit of `main` you have read, for the usage watcher.
 
-Both installers fetch `main` from the fixed URL `https://github.com/notitial/ai-manager.git` over HTTPS, without
-credentials, into a fresh temporary repository, and install from the commit there, never from your working tree or the
-checkout's git store. So callboard and the usage watcher install only once the repo is public: while it is private
-both fetches fail and nothing is installed. The deny lines (step 1) and the rule link (step 3) work either way.
+The usage watcher's installer fetches `main` from the fixed URL `https://github.com/notitial/ai-manager.git` over
+HTTPS, without credentials, into a fresh temporary repository, and installs from the commit there, never from your
+working tree or the checkout's git store. So it installs only once the repo is public: while it is private the fetch
+fails and nothing is installed. Callboard (step 1) and the rule link (step 3) work either way.
 
 ## Prerequisites
 
 - macOS.
-- The repo is public on GitHub, for the two installers (see above), and the Mac has network access: a dry run fetches
-  too.
+- The repo is public on GitHub, for the usage watcher's installer (see above), and the Mac has network access: its
+  dry run fetches too.
 - [ai-toolkit](https://github.com/notitial/ai-toolkit) installed as the base (`/setup-claude`). Its status line
   writes the meter the usage watcher reads.
 - node 22.18 or later, the `claude` CLI, `/usr/bin/python3` 3.9 or later (from the Command Line Tools) and `jq`.
@@ -31,56 +34,68 @@ node --version && claude --version && /usr/bin/python3 --version && jq --version
 
 ## 1. Callboard
 
-Details: [tools/callboard/README.md](../tools/callboard/README.md), Install. Design: [ADR 0002](adr/0002-callboard.md).
+Details: [tools/callboard/README.md](../tools/callboard/README.md), Install. Design: [ADR 0002](adr/0002-callboard.md)
+and [ADR 0003](adr/0003-symlinked-install.md).
 
-- **Only once the repo is public.** The installer fetches `main` from the fixed URL, with no credentials, into a
-  fresh temporary repository. While the repo is private it stops with "fetching main ... failed" and installs nothing.
+Callboard has no installer. The mod loads from `<checkout>/tools/callboard/mod`, and the panels extension is a link
+to `<checkout>/tools/callboard/extension`. Nothing needs sudo, and nothing is fetched.
 
-### Check the installer
+### Switching from the root-owned install
 
-The installer installs from a pinned commit of `main`, never from the working tree. Take three values from the
-description of the pull request that last changed `tools/callboard`, which lists them: its squash commit
-(`<commit>`), the SHA-256 of `SHA256SUMS` at that commit (`--sums-sha`) and the SHA-256 of `install.sh`. The
-installer checks `SHA256SUMS` against `--sums-sha` itself, in the commit it fetched. It cannot verify itself, so
-check its hash before you run it: with the checkout on an up-to-date `main`, this must print the `install.sh` value
-from that description. If it differs, stop.
+Skip this unless `/usr/local/libexec/callboard` exists: callboard's earlier installer made it. Remove it and the
+extension folder that installer copied:
 
 ```
-shasum -a 256 <checkout>/tools/callboard/install.sh
-```
-
-### Dry run, then apply
-
-Run it as your user, never with `sudo`: the script calls sudo itself for the root-owned parts and refuses to run as
-root. Without `--apply` it only shows what it would do. It prints its own hash first: compare it again.
-`<sha256 of SHA256SUMS>` is the `--sums-sha` value from the pull request's description.
-
-```
-cd <checkout> && bash tools/callboard/install.sh --all --ref <commit> --sums-sha <sha256 of SHA256SUMS>
+sudo rm -rf /usr/local/libexec/callboard
 ```
 
 ```
-cd <checkout> && bash tools/callboard/install.sh --all --ref <commit> --sums-sha <sha256 of SHA256SUMS> --apply
+rm -rf ~/.vscode/extensions/notitial.callboard-panels-1.0.0
 ```
 
-- `--all` installs the mod (root-owned, in `/usr/local/libexec/callboard/mod`), the terminal wrapper
-  `claude-callboard` and the VS Code panels extension. `--terminal` or `--vscode` installs one route only.
-- `--lanes FILE --lanes-sha <sha256 of the file you reviewed>` also installs a root-owned `lanes.json`. Optional;
-  it needs node on the PATH of the shell you install from (callboard README, Install).
-- Reload open VS Code windows to load the panels extension.
-- The installer ends by saying that settings ask rules do not gate the mod's tools. Add none.
+The earlier installer only ever wrote version 1.0.0. If `link-extension.sh` below names another real folder, or a
+copy under the extension's earlier id `local.callboard-panels-*` (it would open every lane twice), remove that one the
+same way.
+
+- In the next steps, the `CLAUDE_CODE_PLUGIN_DIRS` value **replaces** `/usr/local/libexec/callboard/mod`. Never add a
+  second folder: two folders holding a `callboard` mod would both load. Until you replace it, a session that starts
+  finds no mod, so do the whole section in one go and then restart every session.
+- The root-owned `lanes.json` goes with that folder. Lanes now come only from the lane store, where `lane_create`
+  writes them; a lane that was only in the root file has to be made again.
+- The `claude-callboard` terminal wrapper goes too: the `env` line below loads the mod in terminal sessions as well.
+
+### Link the panels extension (VS Code)
+
+Dry run, then apply:
+
+```
+bash <checkout>/tools/callboard/link-extension.sh
+```
+
+```
+bash <checkout>/tools/callboard/link-extension.sh --apply
+```
+
+- It links `~/.vscode/extensions/notitial.callboard-panels-<version>` to `<checkout>/tools/callboard/extension`,
+  with the version from `extension/package.json`. Run it again after a version bump: it makes the new link and
+  removes the old one.
+- It refuses, and names the entry, when a real folder or a link to anywhere else sits under a
+  `notitial.callboard-panels-*` name: an old copy would shadow the link. Remove that entry yourself and run it again.
+- `--remove --apply` takes the links off again.
+- Reload open VS Code windows to load the extension.
 
 ### Load it in every session
 
-Once `/usr/local/libexec/callboard/mod/.claude-plugin/plugin.json` exists, add this line to the `env` block of
-`~/.claude/settings.json`:
+Add this line to the `env` block of `~/.claude/settings.json`, with `<checkout>` written as an absolute path:
 
 ```json
-"CLAUDE_CODE_PLUGIN_DIRS": "/usr/local/libexec/callboard/mod"
+"CLAUDE_CODE_PLUGIN_DIRS": "<checkout>/tools/callboard/mod"
 ```
 
 - Claude Code applies it to every session it starts: VS Code opened from the Dock, any terminal `claude`, peers and
   background workers.
+- Settings ask rules do not gate the mod's tools, so add none: their own checks are the gate, and `lane_terminate`
+  asks for itself.
 - If `env.CLAUDE_CODE_PLUGIN_DIRS` already holds another value, keep it and decide by hand. Callboard should be the
   only plugin on this variable: another plugin loaded in a session can run `/callboard` and may answer its dialogs
   (ADR 0002, Consequences).
@@ -100,20 +115,40 @@ Why, and what these lines do not cover: [callboard README, Manager setup: keep a
 store (by hand)](../tools/callboard/README.md#manager-setup-keep-agents-off-the-list-file-and-the-store-by-hand). Do it
 now, by hand: an agent must not edit permission settings, and the `/setup-claude` templates do not carry these lines.
 
-Add these four lines to `permissions.deny` in your global `~/.claude/settings.json`:
+Add these two lines to `permissions.deny` in your global `~/.claude/settings.json` (an `Edit` rule covers the
+Write tool too, so no `Write` line is needed; adding one only draws a warning):
 
 ```json
 "Edit(**/.claude/callboard-conductor.json)",
-"Write(**/.claude/callboard-conductor.json)",
-"Edit(~/.claude/plugins/store/callboard_*.json)",
-"Write(~/.claude/plugins/store/callboard_*.json)"
+"Edit(~/.claude/plugins/store/callboard_*.json)"
 ```
 
 They keep an agent's Edit and Write tools off a conductor repo's list file and off the mod's store file, which holds
 the saved grants and this machine's reserved names; they do not stop a shell write. A pattern without a leading `/`,
 `~/` or `//` is relative to the session's folder, so the `**/` lines cover only sessions started in or above the
 conductor repo: for each conductor repo, add the absolute form too
-(`Edit(//Users/x/cond/.claude/callboard-conductor.json)` and the same with `Write`).
+(`Edit(//Users/x/cond/.claude/callboard-conductor.json)`).
+
+### Keep agents off the live checkout
+
+By hand too: ai-toolkit carries nothing about callboard. Add these six lines to `permissions.deny` in your global
+`~/.claude/settings.json`, with `/<checkout>` written as your checkout's real path. `<checkout>` starts with `/`, so
+each rule starts with `//`, as in `Edit(//Users/x/ai-manager/tools/**)`:
+
+```json
+"Edit(/<checkout>/tools/**)",
+"Edit(/<checkout>/rules/**)",
+"Edit(/<checkout>/.claude/**)",
+"Edit(/<checkout>/docs/**)",
+"Edit(/<checkout>/CLAUDE.md)",
+"Edit(/<checkout>/.git/**)"
+```
+
+The live checkout feeds every session more than the mod: the extension, the always-on rule `rules/callboard.md`,
+`CLAUDE.md`, the skills under `.claude/` and the manager's `docs/`. Its `.git/` decides what a pull brings and what
+git runs. These lines keep an agent's Edit and Write tools off all of it; `.archive/` stays writable. Agents never
+need the rest: they edit in `/tmp` clones. Like the lines above, they do not stop a shell write
+([ADR 0003](adr/0003-symlinked-install.md), Consequences).
 
 If you run a conductor repo: callboard refuses its `.claude` folder as unsafe when group or other may write it (as
 under umask 002). Run this once:
@@ -200,8 +235,9 @@ ai-toolkit's `/setup-claude` and `/cleanup-claude` leave everything in this guid
   `ln -s` again.
 - **Settings.** `/setup-claude` never alters an `env` key outside its template and never removes a deny entry or a
   custom hook. `/cleanup-claude` removes only entries its template lists. So the `CLAUDE_CODE_PLUGIN_DIRS` line, the
-  four deny lines and the SessionStart hook survive both.
-- **Installed files.** Neither touches `/usr/local/libexec/callboard` or the usage-watcher job.
+  deny lines and the SessionStart hook survive both.
+- **Installed files.** Neither touches the panels extension link or the usage-watcher job. `link-extension.sh
+  --remove --apply` takes the link off.
 
 ## 4. Start the manager
 
@@ -229,12 +265,14 @@ lane or a live lead carries cannot be reserved. Details: callboard README, The m
 
 | Part | Check | Good when |
 |---|---|---|
-| Callboard installed | `ls -l /usr/local/libexec/callboard/mod/.claude-plugin/plugin.json` | the file exists, owned by root |
-| Panels extension | `ls ~/.vscode/extensions/notitial.callboard-panels-1.0.0` | the folder exists (`--vscode` or `--all`) |
-| Default load | type `! echo $CLAUDE_CODE_PLUGIN_DIRS` in a new session | `/usr/local/libexec/callboard/mod` |
+| Live checkout | `git -C <checkout> --no-pager -c core.hooksPath=/dev/null -c core.fsmonitor=false status -sb` | `## main...origin/main` and nothing else |
+| Origin | `git -C <checkout> remote get-url origin` | `https://github.com/notitial/ai-manager.git` |
+| Old install gone | `ls /usr/local/libexec/callboard` | No such file or directory |
+| Panels extension | `ls -l ~/.vscode/extensions \| grep callboard-panels` | one link, to `<checkout>/tools/callboard/extension` |
+| Default load | type `! echo $CLAUDE_CODE_PLUGIN_DIRS` in a new session | `<checkout>/tools/callboard/mod` |
 | Mod loaded | type `/callboard status` in a session | it answers `Lane: NONE. Lead: OFF.` or similar |
 | Reserved names | type `/callboard reserve` | the manager's name, when it is not `MANAGER`, is listed |
-| Deny lines | read `permissions.deny` in `~/.claude/settings.json` | all four lines are there |
+| Deny lines | read `permissions.deny` in `~/.claude/settings.json` | the two store and list-file lines and the six live-checkout lines are there |
 | Usage watcher | `bash tools/usage-watcher/install.sh --status --ref <commit>` | exit 0, the job loaded |
 | Summary | `ls -l ~/.local/state/usage-watcher/usage-summary.json` | written in the last 5 minutes |
 | SessionStart hook | read `hooks.SessionStart` in `~/.claude/settings.json` | the `account-stamp.sh` entry is there |
@@ -244,10 +282,42 @@ lane or a live lead carries cannot be reserved. Details: callboard README, The m
 
 ## Updating
 
-Pull, read the new commit, and run the same installers with the new `--ref` (for callboard, the new `--ref`,
-`--sums-sha` and installer hash from the description of the pull request that last changed `tools/callboard`).
-Restart every session after a callboard update. The rule link follows the checkout by itself, so a change to
-`rules/` is a change to a rule every session loads: read the incoming diff before you pull.
+First check where it pulls from: this must print `https://github.com/notitial/ai-manager.git`. Anything else: stop.
+
+```
+git -C <checkout> remote get-url origin
+```
+
+Then fetch `main` from the fixed URL, not from whatever the checkout's config names, and print the commit it
+brought:
+
+```
+git -C <checkout> -c core.hooksPath=/dev/null -c core.fsmonitor=false -c credential.helper= fetch https://github.com/notitial/ai-manager.git +refs/heads/main:refs/remotes/origin/main
+```
+
+```
+git -C <checkout> rev-parse refs/remotes/origin/main
+```
+
+That 40-character commit is `<commit>` below. It must be the merge commit GitHub shows for the pull request you are
+installing; anything else: stop. Read exactly that diff, then fast-forward to exactly that commit, with no second
+fetch. The flags keep git from running a hook, a file-system monitor, a pager, a diff driver or a credential helper
+that a changed `.git/config` could name:
+
+```
+git -C <checkout> --no-pager -c core.hooksPath=/dev/null -c core.fsmonitor=false log -p --no-textconv --no-ext-diff HEAD..<commit> | less
+```
+
+```
+git -C <checkout> -c core.hooksPath=/dev/null -c core.fsmonitor=false merge --ff-only <commit>
+```
+
+Other settings in the checkout's own config still apply (for example a `url.<base>.insteadOf` that rewrites the
+fetch), which is why the commit check and the read diff are the guard. The merge is callboard's update, and the rule
+link follows the checkout too, so a change to `tools/callboard/` or `rules/` reaches every session: never install a
+commit you haven't read. After a callboard update, run `link-extension.sh --apply` when
+the extension's version changed, reload the VS Code windows and restart every session. For the usage watcher, run
+its installer again with the new `--ref`.
 
 ## The guided way
 
