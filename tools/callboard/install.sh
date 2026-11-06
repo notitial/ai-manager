@@ -196,6 +196,21 @@ check_against() {
 check_against "$STAGE" || die "staged files differ from SHA256SUMS"
 say "verified: commit $REF, SHA256SUMS $SUMS_SHA, staged files"
 
+# The extension folder is VS Code's <publisher>.<name>-<version>. The staged manifest must say the same, or VS Code would see a different
+# extension; checked here, before anything is installed.
+# A link at the install folder is refused here too, so a dry run and --apply agree and nothing is written first.
+if [ "$WANT_CODE" = 1 ]; then
+  case "${HOME:-}" in /*) ;; *) die "HOME must be an absolute path" ;; esac
+  EXT_DIR="$HOME/.vscode/extensions"
+  EXT_ID=notitial.callboard-panels EXT_VER=1.0.0
+  EXT="$EXT_DIR/$EXT_ID-$EXT_VER"
+  [ ! -L "$EXT" ] || die "$EXT is a link; remove it and run the installer again"
+  manifest="$(rr /bin/cat "$STAGE/extension/package.json")" || die "extension/package.json is not in SHA256SUMS"
+  for want in '"name": "callboard-panels"' '"publisher": "notitial"' "\"version\": \"$EXT_VER\""; do
+    printf '%s\n' "$manifest" | /usr/bin/grep -qF "$want" || die "extension/package.json must say $want (exactly, one space after the colon) to match $EXT_ID-$EXT_VER"
+  done
+fi
+
 # --lanes is checked by the mod's own parser, before anything is installed: the mod rejects a bad file whole, and every lane with it.
 # node runs as the user from the caller's PATH, on a hash-checked copy of core.ts; the check is advisory (the mod parses the root copy again).
 if [ -n "$LANES" ]; then
@@ -263,14 +278,16 @@ if [ "$WANT_TERM" = 1 ]; then
   say "terminal: start lanes with $PREFIX/claude-callboard (it runs the 'claude' found on your PATH); no ~/.claude file was changed"
 fi
 if [ "$WANT_CODE" = 1 ]; then
-  EXT="$HOME/.vscode/extensions/local.callboard-panels-0.1.0"
   if [ "$APPLY" = 1 ]; then
+    [ ! -L "$EXT" ] || die "$EXT is a link; remove it and run the installer again"
+    # A copy left half-written by an earlier run, or files an earlier build of this version had, go first.
+    if [ -d "$EXT" ]; then /bin/rm -rf "$EXT"; fi
     /bin/mkdir -p "$EXT"
     for f in "${FILES[@]}"; do
       case "$f" in extension/*) rr /bin/cat "$STAGE/$f" > "$EXT/${f#extension/}" ;; esac
     done
     while read -r h f; do
-      case "$f" in extension/*) [ "$(/usr/bin/shasum -a 256 "$EXT/${f#extension/}" | /usr/bin/cut -d' ' -f1)" = "$h" ] || die "copied extension file differs: $f" ;; esac
+      case "$f" in extension/*) [ "$(/usr/bin/shasum -a 256 "$EXT/${f#extension/}" | /usr/bin/cut -d' ' -f1)" = "$h" ] || die "copied extension file differs: $f; run the installer again before reloading VS Code" ;; esac
     done <<< "$SUMS"
   else
     say "DRY: copy extension/ files to $EXT"

@@ -1,19 +1,33 @@
 {
   "name": "callboard-panels",
-  "displayName": "callboard panels",
-  "description": "Opens, reopens and closes Claude Code lane panels and reports each panel's session id.",
-  "version": "0.1.0",
-  "publisher": "local",
+  "displayName": "Callboard Panels",
+  "description": "Opens, reopens and closes Claude Code lane panels for the callboard mod, so a lead session can run its lanes in this window.",
+  "version": "1.0.0",
+  "publisher": "notitial",
+  "icon": "icon.png",
+  "galleryBanner": { "color": "#101d22", "theme": "dark" },
+  "categories": ["Other"],
+  "keywords": ["claude", "claude code", "callboard", "lanes", "agents"],
+  "repository": { "type": "git", "url": "https://github.com/notitial/ai-manager" },
+  "bugs": { "url": "https://github.com/notitial/ai-manager/issues" },
+  "homepage": "https://github.com/notitial/ai-manager#readme",
   "engines": { "vscode": "^1.90.0" },
   "main": "./extension.js",
   "activationEvents": ["onStartupFinished"],
   "extensionDependencies": ["anthropic.claude-code"],
   "contributes": {
     "commands": [
-      { "command": "callboard.open", "title": "Callboard: open lane panel" },
-      { "command": "callboard.reopen", "title": "Callboard: reopen lane panel by session id" },
-      { "command": "callboard.close", "title": "Callboard: close lane panel by session id" }
-    ]
+      { "command": "callboard.open", "category": "Callboard", "title": "Open lane panel" },
+      { "command": "callboard.reopen", "category": "Callboard", "title": "Reopen lane panel by session id" },
+      { "command": "callboard.close", "category": "Callboard", "title": "Close lane panel by session id" }
+    ],
+    "menus": {
+      "commandPalette": [
+        { "command": "callboard.open", "when": "false" },
+        { "command": "callboard.reopen", "when": "false" },
+        { "command": "callboard.close", "when": "false" }
+      ]
+    }
   },
   "type": "commonjs"
 }
