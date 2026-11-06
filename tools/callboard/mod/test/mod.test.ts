@@ -4740,7 +4740,7 @@ test('a change that lands after the notice is still news to the next lane tool c
 })
 
 const OTHERLEAD = '6a1b2c3d-0000-4000-8000-123456789abc'
-const ATTSESS =() => cueSession(OTHER, 'ATT', SVC, { pid: 4500 })
+const ATTSESS = () => cueSession(OTHER, 'ATT', SVC, { pid: 4500 })
 
 test('a lead tool serves an attached lane whichever lead it joined: the lead field is information; lane_open still refuses it', async ($, on) => {
   const argv: string[][] = []

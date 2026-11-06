@@ -1178,8 +1178,9 @@ const regEntry = (r: RegRow): c.RegEntry => ({ sessionId: r.j.sessionId as strin
 // pid's own file for that session with the same start time, and ps agrees; the repo is one lane_create would accept; the asking folder is in it.
 // v14 (2026-11-04): cwd undefined skips the folder check (the manager's lane_compact looks a lead up by name, in any repo).
 // v14 (2026-11-04, review c2, CR3): errs, when given, is set when the presence check could not be made (a lead not clearly gone).
-async function leadFileOk($: any, p: { uid: number; root: string }, live: RegRow[], sid: string, cwd: string | undefined, errs?: { error: boolean }): Promise<c.LeadFile | undefined> {
-  const lf = await presenceFileOk($, p, live, sid, (f) => f.level === 'lead' && (cwd === undefined || cwd === f.repo || c.within(f.repo, cwd)), errs)
+// only: a filter on the file's repo that runs before any process is asked about it (the list of a conductor reads only the leads of its repos).
+async function leadFileOk($: any, p: { uid: number; root: string }, live: RegRow[], sid: string, cwd: string | undefined, errs?: { error: boolean }, only?: (repo: string) => boolean): Promise<c.LeadFile | undefined> {
+  const lf = await presenceFileOk($, p, live, sid, (f) => f.level === 'lead' && (cwd === undefined || cwd === f.repo || c.within(f.repo, cwd)) && (only === undefined || only(f.repo)), errs)
   if (lf?.level !== 'lead') return undefined
   if (c.pinRefusal(lf.repo, homeOf(p)) !== undefined || (await real($, lf.repo)) !== lf.repo || (await gitRoot($, lf.repo)) !== 'yes') return undefined
   return lf
@@ -1319,14 +1320,14 @@ async function leadsDirOk($: any): Promise<{ uid: number; root: string } | undef
 // Every live lead whose repo holds this folder. The list is cut to the fresh files before the cap, so a pile of old files cannot push a live one out of it.
 // v14: cwd undefined, every live lead in any repo. Review c2 (CR3): with errs, the folder and its list fail closed (presenceNames), and errs is set when they,
 // or a lead's check, could not be made.
-async function leadsFor($: any, live: RegRow[], cwd: string | undefined, repo?: string, errs?: { error: boolean }): Promise<c.LeadFile[]> {
+async function leadsFor($: any, live: RegRow[], cwd: string | undefined, repo?: string, errs?: { error: boolean }, only?: (repo: string) => boolean): Promise<c.LeadFile[]> {
   const d = errs ? await presenceNames($) : await leadsDirOk($).then(async (p) => (p ? { p, names: await freshPresence($, p) } : ('none' as const)))
   if (d === 'error') errs!.error = true
   if (typeof d === 'string') return []
   const p = d.p
   const found: c.LeadFile[] = []
   for (const s of d.names) {
-    const lf = await leadFileOk($, p, live, s, cwd, errs)
+    const lf = await leadFileOk($, p, live, s, cwd, errs, only)
     if (lf && (repo === undefined || lf.repo === repo)) found.push(lf)
   }
   return found
@@ -3212,9 +3213,9 @@ async function leadsInReach($: any, live: RegRow[], g: c.Grant): Promise<c.LiveL
   if (g.level === 'lead') return []
   const rows = live.map((r) => r.j)
   const out: c.LiveLead[] = []
-  for (const lf of await leadsFor($, live, undefined)) {
+  for (const lf of await leadsFor($, live, undefined, undefined, undefined, g.level === 'manager' ? undefined : (r) => g.pins.includes(r))) {
     const name = c.leadNameOf(rows, lf.sid)
-    if (name !== undefined && (g.level === 'manager' || g.pins.includes(lf.repo))) out.push({ name, repo: lf.repo })
+    if (name !== undefined) out.push({ name, repo: lf.repo })
   }
   return out
 }
