@@ -4712,8 +4712,35 @@ test('the next lane tool result says once that the lanes changed since the last 
   expect(JSON.stringify(await $.tool.call(leadCall('start', { lane: 'NOPE' })))).not.toContain(LANES_CHANGED_NOTE)
 })
 
+// The notice tells the lead the list changed, so the lane_list it makes in answer is not told again; the footer is for a change the lead has not been told about.
+test('a notice counts as telling the lead: the lane_list made in answer has no footer, for a lead with no lanes too', async ($, on) => {
+  await leadAt($, on, [], { clock: true })
+  expect(await listed($)).toBe('no lanes in this repo')
+  storeFiles.set(STOREFILE, storeText(1))
+  await tickTwice()
+  expect(notices()).toBe(1)
+  expect(await listed($)).toBe('no lanes in this repo')
+  expect(await listed($)).toBe('no lanes in this repo')
+  await tickTwice()
+  expect(notices()).toBe(1)
+  storeFiles.set(STOREFILE, storeText(2))
+  await tickTwice()
+  expect(notices()).toBe(2)
+  expect(await listed($)).toBe('no lanes in this repo')
+})
+
+test('a change that lands after the notice is still news to the next lane tool call', async ($, on) => {
+  await leadAt($, on, [], { clock: true })
+  storeFiles.set(STOREFILE, storeText(1))
+  await tickTwice()
+  expect(notices()).toBe(1)
+  storeFiles.set(STOREFILE, storeText(2))
+  expect((await listed($)).endsWith(LANES_CHANGED_NOTE)).toBe(true)
+  expect(await listed($)).toBe('no lanes in this repo')
+})
+
 const OTHERLEAD = '6a1b2c3d-0000-4000-8000-123456789abc'
-const ATTSESS = () => cueSession(OTHER, 'ATT', SVC, { pid: 4500 })
+const ATTSESS =() => cueSession(OTHER, 'ATT', SVC, { pid: 4500 })
 
 test('a lead tool serves an attached lane whichever lead it joined: the lead field is information; lane_open still refuses it', async ($, on) => {
   const argv: string[][] = []
@@ -5406,6 +5433,16 @@ test('a lane notice that could not be submitted is owed: it is sent again at the
   expect(notices()).toBe(2)
   await clock!.advance(2000)
   expect(notices()).toBe(2)
+})
+
+test('a lane notice that could not be submitted told the lead nothing: its next lane tool call still has the footer', async ($, on) => {
+  await leadAt($, on, [], { clock: true })
+  submitFails = true
+  storeFiles.set(STOREFILE, storeText(1))
+  await clock!.advance(2000)
+  expect(notices()).toBe(1)
+  expect((await listed($)).endsWith(LANES_CHANGED_NOTE)).toBe(true)
+  expect(await listed($)).toBe('no lanes in this repo')
 })
 
 test('a lane tool call that carries the news also settles the notice: nothing is sent for it afterwards', async ($, on) => {
@@ -12775,6 +12812,80 @@ test('v15 S6c (48): a conductor file that fails the check gives no box; a leads 
   expect(flat).toContain('> > **Any lead** · app')
   expect(flat.endsWith('>\n> (conductors could not be read)')).toBe(true)
 })
+
+// ---- laneless leads: a live lead with no lanes is in the manager's and a conductor's list ----
+const leadPresenceOf = (sid: string, pid: number, repo: string, over: Record<string, unknown> = {}, file: Record<string, unknown> = {}) =>
+  leadFiles.set(`${ROOT}/leads/${sid}.json`, { text: JSON.stringify({ sid, pid, procStart: LEADPS, repo, ...over }), ...file })
+
+test('laneless leads (manager): a live lead with no lanes gets a box under its repo, a lead in a repo with no lanes too; no lanes is said once', async ($, on) => {
+  await mgrAt($, on, [], {
+    sess: { ...MGR_SESS(), ...regAs(OTHERLEAD, 4243, 'LEAD-A'), ...regAs(COND2, 4244, 'LEAD-B') },
+    seed: () => {
+      extraStat.set(`${APP2}/.git`, dirStat)
+      leadPresenceOf(OTHERLEAD, 4243, PIN)
+      leadPresenceOf(COND2, 4244, APP2)
+    },
+  })
+  const t = (await $.tool.call(listCall())).result as string
+  expect(t.split('\n')[0]).toBe('> **Manager MANAGER** · live')
+  expect(t).toContain(`> > **Lead LEAD-A** · live · app\n> >\n> > no lanes`)
+  expect(t).toContain('> > **Lead LEAD-B** · live · app2\n> >\n> > no lanes')
+  expect(t).toContain('> > **Any lead** · app')
+  expect(t.split('no lanes').length).toBe(3)
+  expect((await $.command.run(lane('lanes'))).text).toBe(t)
+})
+
+test('laneless leads (manager): inside a live conductor\'s Conductor box when the conductor lists the lead\'s repo', async ($, on) => {
+  await mgrAt($, on, [], {
+    sess: { ...MGR_SESS(), ...regAs(OTHERLEAD, 4243, 'LEAD-A'), ...regAs(COND2, 4244, 'CONDX') },
+    seed: () => {
+      leadPresenceOf(OTHERLEAD, 4243, PIN)
+      condPresenceOf(COND2, 4244, 'CONDX', [PIN])
+    },
+  })
+  const t = (await $.tool.call(listCall())).result as string
+  expect(t).toContain(`> > > **Lead LEAD-A** · live · app\n> > >\n> > > no lanes`)
+  expect(t.indexOf('**Conductor CONDX**')).toBeLessThan(t.indexOf('**Lead LEAD-A**'))
+})
+
+test('laneless leads (conductor): a live lead of a listed repo is in the Conductor box, one of a repo it does not list is not; lane_list and /callboard lanes agree', async ($, on) => {
+  await condOn($, on, [], {
+    sess: { ...CSESS(), ...regAs(OTHERLEAD, 4243, 'LEAD-A'), ...regAs(COND2, 4244, 'LEAD-B') },
+    repos: ['../app'],
+    seed: () => {
+      extraStat.set(`${APP2}/.git`, dirStat)
+      leadPresenceOf(OTHERLEAD, 4243, PIN)
+      leadPresenceOf(COND2, 4244, APP2)
+    },
+  })
+  const t = (await $.tool.call(listCall())).result as string
+  expect(t.split('\n')[0]).toBe('> **Conductor COND** · live')
+  expect(t).toContain(`> > **Lead LEAD-A** · live · app\n> >\n> > no lanes`)
+  expect(t).not.toContain('LEAD-B')
+  expect((await $.command.run(lane('lanes'))).text).toBe(t)
+})
+
+test('laneless leads: a stale file, a lead without a registry row or without a name, and a lead the checks refuse are not shown', async ($, on) => {
+  await mgrAt($, on, [], {
+    sess: { ...MGR_SESS(), ...regAs(OTHERLEAD, 4243, 'LEAD-A'), ...regAs(COND2, 4244, 'LEAD-B'), '4245.json': leadReg({ sessionId: '9a1b2c3d-0000-4000-8000-123456789abc', pid: 4245, name: undefined })['4242.json'], ...regAs('ba1b2c3d-0000-4000-8000-123456789abc', 4247, 'LEAD-C') },
+    seed: () => {
+      leadPresenceOf(OTHERLEAD, 4243, PIN, {}, { mtimeSec: T0 / 1000 - 31 })
+      leadPresenceOf(COND2, 4244, PIN, { procStart: 'Wed Oct 28 01:00:00 2026' })
+      leadPresenceOf('9a1b2c3d-0000-4000-8000-123456789abc', 4245, PIN)
+      leadPresenceOf('aa1b2c3d-0000-4000-8000-123456789abc', 4246, PIN)
+      leadPresenceOf('ba1b2c3d-0000-4000-8000-123456789abc', 4247, '/Users/x')
+    },
+  })
+  const t = (await $.tool.call(listCall())).result as string
+  expect(t).not.toContain('**Lead ')
+  expect(t).not.toContain('no lanes')
+})
+
+test('laneless leads: a lead\'s own list does not show the other leads of its repo', async ($, on) => {
+  await leadAt($, on, [], { sess: { ...selfAs('LEAD-A'), ...regAs(OTHERLEAD, 4243, 'LEAD-B') }, seed: () => leadPresenceOf(OTHERLEAD, 4243, PIN) })
+  expect(await listed($)).toBe('no lanes in this repo')
+})
+
 // ---- v15 S7: a lead takes a compact cue from its conductor ----
 // A lead in PIN; another session (OTHERLEAD, pid 4243, CONDX) is a conductor in COND listing ../app, with its saved grant and its list file.
 const trustSeed = (over: Record<string, unknown> = {}) => () => {

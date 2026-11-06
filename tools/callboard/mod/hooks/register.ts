@@ -1494,13 +1494,16 @@ async function watchTick($: any, sid: string) {
   if ((await idleCheck($, sid)) !== undefined) return
   if (submits !== submitsAt) return
   const before = w.told
-  w.told = w.cur
+  const seenBefore = w.seen
+  // The notice is the telling: seen moves with told, so the lane_list the lead makes in answer carries no footer for the same change.
+  w.told = w.seen = w.cur
   cappedLogged.delete(sid)
   laneNotices.set(sid, [...times.filter((t) => t <= now && now - t < c.HOUR_MS), now])
-  // A notice that did not go out is still owed: told goes back (unless something moved it meanwhile).
+  // A notice that did not go out is still owed: told and seen go back (unless something moved them meanwhile).
   await submitOwn($, c.LANES_CHANGED_TEXT, false).catch(async () => {
     turnKind.delete(sid)
     if (w.told === w.cur) w.told = before
+    if (w.seen === w.cur) w.seen = seenBefore
     await log($, sid, 'notice-failed')
   })
 }
@@ -3202,13 +3205,28 @@ async function conductorsLive($: any, live: RegRow[], except: string): Promise<c
   return out
 }
 
+// Display only: the live leads a conductor (the repos it lists) or the manager (every repo) reaches, each with its registry name, so a lead with no lanes is listed.
+// Each presence file passes leadFileOk, the checks every lead lookup uses (fresh, registry row, start time, claude process, repo a git root); a lead without a
+// usable name is left out (no lane can name it either). A lead's own list never asks. Any read that fails leaves the leads out, as for a lead that is gone.
+async function leadsInReach($: any, live: RegRow[], g: c.Grant): Promise<c.LiveLead[]> {
+  if (g.level === 'lead') return []
+  const rows = live.map((r) => r.j)
+  const out: c.LiveLead[] = []
+  for (const lf of await leadsFor($, live, undefined)) {
+    const name = c.leadNameOf(rows, lf.sid)
+    if (name !== undefined && (g.level === 'manager' || g.pins.includes(lf.repo))) out.push({ name, repo: lf.repo })
+  }
+  return out
+}
+
 // The table behind both lane_list and `/callboard lanes`, so the two cannot drift.
 async function laneTable($: any, sid: string) {
   const base = await leadCore($, sid)
   if ('err' in base) return { err: base.err }
   // S6c (Q6): the manager's list puts each live conductor's repos inside its Conductor box.
   const conductors = base.g.level === 'manager' ? await conductorsLive($, base.live, sid).catch(() => 'error' as const) : undefined
-  return { text: c.laneListText(base.lanes.filter((l) => c.inReach(base.g, l)), base.live.map(regEntry), await $.clock.now(), { level: base.g.level, name: base.g.name, conductors }) }
+  const leads = await leadsInReach($, base.live, base.g).catch(() => [])
+  return { text: c.laneListText(base.lanes.filter((l) => c.inReach(base.g, l)), base.live.map(regEntry), await $.clock.now(), { level: base.g.level, name: base.g.name, conductors, leads }) }
 }
 
 // ---- v13.6 (live 2026-11-03): lead check-ins and the shared attention notice ----
