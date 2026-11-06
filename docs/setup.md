@@ -230,7 +230,7 @@ lane or a live lead carries cannot be reserved. Details: callboard README, The m
 | Part | Check | Good when |
 |---|---|---|
 | Callboard installed | `ls -l /usr/local/libexec/callboard/mod/.claude-plugin/plugin.json` | the file exists, owned by root |
-| Panels extension | `ls ~/.vscode/extensions/local.callboard-panels-0.1.0` | the folder exists (`--vscode` or `--all`) |
+| Panels extension | `ls ~/.vscode/extensions/notitial.callboard-panels-1.0.0` | the folder exists (`--vscode` or `--all`) |
 | Default load | type `! echo $CLAUDE_CODE_PLUGIN_DIRS` in a new session | `/usr/local/libexec/callboard/mod` |
 | Mod loaded | type `/callboard status` in a session | it answers `Lane: NONE. Lead: OFF.` or similar |
 | Reserved names | type `/callboard reserve` | the manager's name, when it is not `MANAGER`, is listed |

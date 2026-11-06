@@ -102,8 +102,22 @@ if [ -f "$P/mod/hooks/register.ts" ] && [ -f "$P/lanes.json" ] && [ -x "$P/claud
 if grep -q "CLAUDE_CODE_PLUGIN_DIRS=$P/mod" "$P/claude-callboard"; then ok "wrapper pins the plugin dir"; else bad "wrapper content"; fi
 if [ ! -e "$HOME/.vscode" ]; then ok "terminal-only leaves vscode alone"; else bad "vscode touched"; fi
 if [ -z "$(find "$P" -type f ! -name claude-callboard ! -perm 0644)" ] && [ -z "$(find "$P" -type d ! -perm 0755)" ] && [ "$(stat -f %Lp "$P/claude-callboard")" = 755 ] && [ -z "$(find "$P" -perm +7022)" ]; then ok "installed files 0644, folders and the wrapper 0755, nothing setuid or writable by others"; else bad "installed modes"; find "$P" -exec stat -f '%Sp %N' {} +; fi
+X="$HOME/.vscode/extensions"
+mkdir -p "$X/notitial.callboard-panels-0.9.0" "$X/other.extension-1.0.0"
+touch "$X/notitial.callboard-panels-0.9.0/extension.js"; echo keep > "$X/other.extension-1.0.0/keep"
+expect_pass "vscode dry run succeeds" "${base[@]}" --vscode --ref "$REF" --sums-sha "$SS"
+if [ ! -e "$X/notitial.callboard-panels-1.0.0" ]; then ok "vscode dry run writes nothing"; else bad "vscode dry run wrote the extension"; fi
 expect_pass "vscode install applies" "${base[@]}" --vscode --ref "$REF" --sums-sha "$SS" --apply
-if [ -f "$HOME/.vscode/extensions/local.callboard-panels-0.1.0/extension.js" ]; then ok "extension placed"; else bad "extension missing"; fi
+if [ -f "$X/notitial.callboard-panels-1.0.0/extension.js" ] && [ -f "$X/notitial.callboard-panels-1.0.0/icon.png" ] && [ -f "$X/notitial.callboard-panels-1.0.0/README.md" ]; then ok "extension placed with icon and README"; else bad "extension missing"; fi
+if cmp -s "$SRC/extension/icon.png" "$X/notitial.callboard-panels-1.0.0/icon.png"; then ok "icon copied byte for byte"; else bad "icon differs"; fi
+if [ -f "$X/notitial.callboard-panels-0.9.0/extension.js" ] && [ "$(cat "$X/other.extension-1.0.0/keep")" = keep ]; then ok "only its own folder is written; other folders untouched"; else bad "another folder changed"; fi
+touch "$X/notitial.callboard-panels-1.0.0/stale.js"
+expect_pass "vscode reinstall applies" "${base[@]}" --vscode --ref "$REF" --sums-sha "$SS" --apply
+if [ -f "$X/notitial.callboard-panels-1.0.0/extension.js" ] && [ ! -e "$X/notitial.callboard-panels-1.0.0/stale.js" ]; then ok "reinstall rewrites the current copy, stale files gone"; else bad "reinstall of the current copy"; fi
+mv "$X/notitial.callboard-panels-1.0.0" "$T/ext-real"; ln -s "$T/ext-real" "$X/notitial.callboard-panels-1.0.0"
+expect_fail "an install folder that is a link is refused" "is a link" "${base[@]}" --vscode --ref "$REF" --sums-sha "$SS" --apply
+expect_fail "a dry run refuses that link too" "is a link" "${base[@]}" --vscode --ref "$REF" --sums-sha "$SS"
+rm "$X/notitial.callboard-panels-1.0.0"; mv "$T/ext-real" "$X/notitial.callboard-panels-1.0.0"
 if [ ! -e "$HOME/.claude" ]; then ok "no ~/.claude change"; else bad "~/.claude touched"; fi
 SP="$T/pre fix"
 expect_pass "spaced prefix installs" bash "$I" --prefix "$SP" --no-sudo --all --ref "$REF" --sums-sha "$SS" --apply
@@ -194,6 +208,16 @@ if ! grep -q evil "$T/out"; then ok "hostile home: evil.git is never named"; els
 if [ ! -e "$T/EXEC-MARKER" ]; then ok "hostile GIT_EXEC_PATH: no fake helper ran"; else bad "hostile GIT_EXEC_PATH: the marker exists"; fi
 
 expect_fail "a relative TMPDIR is refused" "TMPDIR must be an absolute path" env TMPDIR=relative/tmp "${base[@]}" --terminal --ref "$REF" --sums-sha "$SS"
+
+# --- a manifest that does not match the install folder --------------------------------------------------------------
+sed -i '' 's/"version": "1.0.0"/"version": "1.0.1"/' "$W/tools/callboard/extension/package.json"
+bash "$W/tools/callboard/sums.sh" --write
+tg -C "$W" commit -q -am bump && push
+REFV="$(tg -C "$W" rev-parse HEAD)"; SSV="$(sums_at "$REFV")"
+expect_fail "manifest not matching the install folder refused" "must say \"version\": \"1.0.0\"" "${base[@]}" --all --ref "$REFV" --sums-sha "$SSV" --apply --prefix "$T/pv"
+if [ ! -e "$T/pv" ]; then ok "manifest refusal happens before any copy"; else bad "copied before the manifest check"; fi
+cp "$SRC/extension/package.json" "$W/tools/callboard/extension/package.json"; cp "$SRC/SHA256SUMS" "$W/tools/callboard/SHA256SUMS"
+tg -C "$W" commit -q -am unbump && push
 
 # --- commits on main that the sums refuse ----------------------------------------------------------------------------
 echo "// tampered" >> "$W/tools/callboard/mod/hooks/core.ts"

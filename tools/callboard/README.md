@@ -62,6 +62,10 @@ cp ~/.claude/settings.json ~/.claude/settings.json.bak-callboard && /usr/bin/pyt
 
 Sessions pick it up when they next start. The mod's files stay root-owned, so an agent still cannot edit them; the mod stays dormant in a session until `/callboard lead` or a lane binding, except the compaction nudge and the keepalive ping, which reach every interactive session (the ping since v13.5). A process running as you can repoint the variable by editing this file; a launcher's clean start (`env -i`, `--force-disable-user-env`) would not close that either. Checked live on 2026-11-01: VS Code opened from the Dock, `/callboard lead` worked with no launcher. The terminal wrapper `claude-callboard` stays installed and still works.
 
+### The panels extension (1.0.0, 2026-11-06)
+
+`--vscode` puts the extension at `~/.vscode/extensions/notitial.callboard-panels-1.0.0`. The installer refuses a staged `extension/package.json` whose name, publisher or version don't match that folder. It writes only that folder: a link there is refused, and a copy already there is replaced whole. A later version keeps the id and installs as an upgrade (VS Code runs the newest version of an id). Reload the VS Code windows afterwards. The extension's own page (icon, README, changelog) comes from `extension/README.md`, `extension/CHANGELOG.md` and `extension/icon.png`. Its three commands are hidden from the Command Palette, since the mod calls them. A version bump changes `EXT_VER` in `install.sh` and the manifest together.
+
 ## Tests
 
 ```bash
