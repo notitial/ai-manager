@@ -7826,7 +7826,11 @@ test('v15.3 a stop whose process is still running 10 seconds after the signal ke
   fastSleep = (ms) => void slept.push(ms)
   expect(stopText(await $.tool.call(leadCall('terminate', { lane: 'API' })))).toBe('lane API terminated: SIGTERM sent to process 4500, but the session was still running 10 seconds later, so its record stays. Call lane_terminate again if it does not end.')
   expect(slept.filter((ms) => ms === 500).length).toBe(20)
+  // The record stays but stops naming the stopped session (and is no longer parked), so a by-hand reopen of that conversation asks Restore.
   expect(recOf('API').name).toBe('API')
+  expect(recOf('API').sid).toBeUndefined()
+  expect(recOf('API').parked).toBeUndefined()
+  expect(logged(stdins)).toContain('sid-cleared:API')
   expect(logged(stdins)).not.toContain('lane-removed:API')
 })
 

@@ -5609,7 +5609,7 @@ export const register: Register = (on) => {
       }
       // v15.3 (2026-11-06): retire and force stop end the lane for good: once the session got its signal, its store record goes too (the .archive folder and the
       // report stay). A lane a session joined keeps its record, which stops naming the stopped session, as before. A failed removal is told, with its code; the call
-      // can be made again, since the record still names the session.
+      // can be made again: the record stops naming the stopped session, so a retry goes by name and a by-hand reopen of that conversation asks Restore.
       // The record goes only once the process (that pid and start time) has ended, polled up to c.STOP_POLLS times.
       const ended = async (): Promise<boolean> => {
         for (let i = 0; ; i++) {
@@ -5624,15 +5624,18 @@ export const register: Register = (on) => {
       if (prep.lane.src) {
         if (prep.lane.adopted) await sidClearAfterStop($, sid, prep.lane.src, prep.lane.name, victim.sessionId)
         else if (!(await ended())) {
-          // A session that survives its SIGTERM keeps its record, so the lead can still stop it by name.
+          // A session that survives its SIGTERM keeps its record, so the lead can still stop it by name; the record stops naming the session at once, so reopening
+          // that conversation by hand asks Restore again instead of making it the lane silently.
           outcome = 'alive'
           await log($, sid, 'error', 'lane-still-running').catch(() => undefined)
+          await sidClearAfterStop($, sid, prep.lane.src, prep.lane.name, victim.sessionId)
         } else {
           const gone = await removeRecord($, e, sid, prep.lane.src, prep.lane.name, { kind: 'stopped', victim: victim.sessionId })
           // A record that is gone already (another writer took it out meanwhile) is the outcome wanted.
           if ('no' in gone && gone.no !== 'unknown-lane') {
             outcome = { unremoved: gone.no }
             await log($, sid, 'error', `lane-unremoved ${gone.no}`).catch(() => undefined)
+            await sidClearAfterStop($, sid, prep.lane.src, prep.lane.name, victim.sessionId)
           } else {
             outcome = 'removed'
             await log($, sid, 'lane-removed', prep.lane.name)
