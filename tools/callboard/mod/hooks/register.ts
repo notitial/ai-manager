@@ -15,6 +15,7 @@ const REALPATH = '/bin/realpath'
 const HEAD = '/usr/bin/head'
 const PS = '/bin/ps'
 const KILL = '/bin/kill'
+const SLEEP = '/bin/sleep'
 const STAT_FMT = '%u %Lp %l %HT %i %z %m'
 const TICK_MS = 2000
 const ACTION_TIMEOUT_MS = 60_000
@@ -60,6 +61,18 @@ const HINT_DELETE_MAX = 50
 
 const run = ($: any, argv: string[], stdin?: string): Promise<R> =>
   $.process.run(argv, { timeoutMs: 5000, ...(stdin === undefined ? {} : { stdin }) })
+
+// v15.4: the stop calls (by session, verb and the lane as the lead typed it) whose process already got its signal, for the hook's .catch.
+const signalledCalls = new Map<string, { name: string; pid: number }>()
+const stopCallKey = (sid: string, verb: string, lane: unknown) => `${sid}\n${verb}\n${String(lane)}`
+// v15.4 (2026-11-06): a wait inside one tool call goes through a host process, never $.clock.sleep. A hook has 10 s of its own time per dispatch (HookBudget.ms),
+// and a $.clock.sleep counts against it while no $ call does; a hook past it is cut off, its .catch answers, and the code that was running goes on unseen.
+// false: the process did not run or failed, so the caller must not loop on it.
+async function pause($: any, ms: number): Promise<boolean> {
+  if (!Number.isFinite(ms) || ms <= 0) return false
+  const r = await $.process.run([SLEEP, String(ms / 1000)], { timeoutMs: ms + 5000 }).catch(() => undefined)
+  return r?.exitCode === 0
+}
 
 async function where($: any) {
   if (paths) return paths
@@ -343,7 +356,7 @@ async function lockDir($: any, p: { uid: number; root: string }, key: string): P
     const broke = await breakStale($, p, lock)
     const left = deadline - (await $.clock.now())
     if (left <= 0) return { no: 'store-busy' }
-    if (!broke) await $.clock.sleep(Math.min(c.LOCK_POLL_MS, left))
+    if (!broke && !(await pause($, Math.min(c.LOCK_POLL_MS, left)))) return { no: 'store-busy' }
   }
 }
 
@@ -1708,7 +1721,7 @@ async function removeRecord($: any, e: unknown, me: string, key: string, name: s
 // A retire or a force stop of a lane no live session carries (never opened, crashed, stale, parked): nothing runs, so the record is removed directly. A lane a
 // session joined keeps its record, so it is refused as it was. lane_retire needs no signed report here (nothing runs, so there is no session to sign) and, at
 // manager reach, asks as for a live lane; lane_terminate always asks the person (the remove question). Checked before the question and again after the click.
-async function stopNoSession($: any, e: unknown, sid: string, verb: 'retire' | 'terminate', level: string | undefined, prep: { lane: c.Lane }, no: (reason: string, why: string) => Promise<{ deny: string }>) {
+async function stopNoSession($: any, e: unknown, sid: string, verb: 'retire' | 'terminate', level: string | undefined, prep: { lane: c.Lane }, no: (reason: string, why: string) => Promise<{ deny: string }>, abandoned: () => boolean) {
   const l = prep.lane
   // A lane a session joined keeps its record (only /callboard lane off in that session detaches it); nothing else removes one.
   if (l.adopted) return no('adopted-record', c.reasonWhy('adopted-record'))
@@ -1729,6 +1742,8 @@ async function stopNoSession($: any, e: unknown, sid: string, verb: 'retire' | '
     if (r !== 'yes') return no('not-confirmed', 'the person did not confirm. Nothing was removed.')
   }
   if (!held()) return no('grant-changed', c.reasonWhy('grant-changed'))
+  // v15.4: a call the engine abandoned (its answer went out already) removes nothing.
+  if (abandoned()) return { deny: leadReason(verb, c.reasonWhy('abandoned')) }
   const w = await removeRecord($, e, sid, l.src, l.name, { kind: 'idle', sid: l.sid, parked: l.parked !== undefined, held })
   if ('no' in w) return no(w.no, w.why ?? c.reasonWhy(w.no))
   await log($, sid, 'lane-removed', l.name)
@@ -1878,7 +1893,7 @@ async function awaitResult($: any, path: string, uid: number, verb: c.Verb, ino:
       }
     }
     if ((await $.clock.now()) + pollMs > deadline) return undefined
-    await $.clock.sleep(pollMs)
+    if (!(await pause($, pollMs))) return undefined
   }
 }
 
@@ -5227,7 +5242,7 @@ export const register: Register = (on) => {
       if (verb === 'rename' && prep.lane.parked !== undefined) return no('parked', c.reasonWhy('parked'))
       let to = c.leadTarget(prep.entries, prep.lane, sid, verb, (e as { sid?: unknown }).sid)
       for (let i = 0; verb === 'start' && !to.ok && to.reason === 'no-live-session' && i < c.START_WAIT_TRIES; i++) {
-        await $.clock.sleep(c.START_WAIT_MS)
+        if (!(await pause($, c.START_WAIT_MS))) break
         const again = await leadPrep($, e, sid)
         if ('err' in again) return no(...again.err)
         prep = again
@@ -5350,7 +5365,7 @@ export const register: Register = (on) => {
     if ('err' in w) return no(w.err, w.err)
     await log($, sid, 'open-requested', prep.lane.name)
     for (let i = 0; i < c.OPEN_POLL_MAX && (await $.clock.now()) < openDeadline; i++) {
-      await $.clock.sleep(c.OPEN_POLL_MS)
+      if (!(await pause($, c.OPEN_POLL_MS))) break
       const a = await readAnswer($, result, p.uid, Math.max(c.OPEN_POLL_MS, Math.min(5000, openDeadline - (await $.clock.now()))))
       if (a.state === 'absent') continue
       if (a.state === 'bad') return no('result-file', 'result-file')
@@ -5393,7 +5408,7 @@ export const register: Register = (on) => {
     let live = await liveOf(prep.entries)
     // With no parked mark there is no park to wait for: one poll, so a process just stopped by a park whose mark failed is not taken for live (S5).
     for (let i = 0; i < (rec.parked === undefined ? 1 : 10) && live.some(stopped); i++) {
-      await $.clock.sleep(c.OPEN_POLL_MS)
+      if (!(await pause($, c.OPEN_POLL_MS))) break
       const again = await leadPrep($, e, sid)
       if ('err' in again) return no(...again.err)
       prep = again
@@ -5424,7 +5439,7 @@ export const register: Register = (on) => {
     if ('err' in w) return no(w.err, w.err)
     await log($, sid, 'reopen-requested', name)
     for (let i = 0; i < c.OPEN_POLL_MAX && (await $.clock.now()) < openDeadline; i++) {
-      await $.clock.sleep(c.OPEN_POLL_MS)
+      if (!(await pause($, c.OPEN_POLL_MS))) break
       const a = await readAnswer($, result, p.uid, Math.max(c.OPEN_POLL_MS, Math.min(5000, openDeadline - (await $.clock.now()))))
       if (a.state === 'absent') continue
       if (a.state === 'bad') return no('result-file', 'result-file')
@@ -5470,11 +5485,15 @@ export const register: Register = (on) => {
       // v15.3 (review): the grant is the same one, not only the same level (an off and a new grant meanwhile ends the call).
       const epoch = epochOf(sid)
       const heldNow = () => grantOf(sid)?.level === level && epochOf(sid) === epoch
+      // v15.4: the engine abandons the dispatch when its time ran out or the person interrupted (`next.signal` aborts: plugin-authoring reference, "Work that outlives a dispatch");
+      // the answer then went out already, so nothing may be signalled after it. An abandoned call answers nothing anyone reads, so it logs nothing and returns at once.
+      const abandoned = () => next?.signal?.aborted === true
+      const cut = () => ({ deny: leadReason(verb, c.reasonWhy('abandoned')) })
       let prep = await leadPrep($, e, sid)
       if ('err' in prep) return no(...prep.err)
       let one = c.laneSession(prep.entries, prep.lane, sid)
       // v15.3 (2026-11-06): a retire or a force stop of a lane no live session carries removes its record directly (stopNoSession); a park has nothing to stop.
-      if (!one.ok && one.reason === 'no-live-session' && verb !== 'park') return stopNoSession($, e, sid, verb, level, prep, no)
+      if (!one.ok && one.reason === 'no-live-session' && verb !== 'park') return stopNoSession($, e, sid, verb, level, prep, no, abandoned)
       if (!one.ok) return no(one.reason, c.reasonWhy(one.reason))
       // v15.3 (2026-11-06): a retire or park waits for the lane's idle time itself, up to c.IDLE_WAIT_MS, so a lead that calls it right after the lane's last turn
       // need not time it. Every poll reads the lane and the registry afresh (leadPrep, laneSession) and the grant again; the session must stay the same process.
@@ -5485,8 +5504,11 @@ export const register: Register = (on) => {
         for (;;) {
           const left = until - (await $.clock.now())
           if (left <= 0) break
-          await $.clock.sleep(Math.min(c.IDLE_POLL_MS, left))
+          // If the wait cannot run, the check below refuses naming the seconds left; looping on a failing wait would spin.
+          const waited = await pause($, Math.min(c.IDLE_POLL_MS, left))
+          if (abandoned()) return cut()
           if (!heldNow()) return no('grant-changed', c.reasonWhy('grant-changed'))
+          if (!waited) break
           const again = await leadPrep($, e, sid)
           // A read that fails now and then (the lane's own registry row is rewritten just as it turns idle) is polled again; the refusal comes at the deadline.
           if ('err' in again && ['registry-unreadable', 'store-unreadable', 'store-busy'].includes(again.err[0])) continue
@@ -5585,7 +5607,8 @@ export const register: Register = (on) => {
           if (r !== 'yes') return no('not-confirmed', 'the person did not confirm.')
           if (grantOf(sid)?.level !== level) return no('grant-changed', c.reasonWhy('grant-changed'))
         }
-        // The cue's answer is waited for from the cue write; a retire after a dialog gets its own full wait.
+        if (abandoned()) return cut()
+      // The cue's answer is waited for from the cue write; a retire after a dialog gets its own full wait.
         const sent = await cueExchange($, sid, prep.lane.name, target.sessionId, verb, verb === 'retire' && level === 'manager' ? (await $.clock.now()) + c.RESULT_DEADLINE_MS : deadline, no, true)
         if (sent) return sent
         // Before the signal, the record must name the session being parked (the sid sync normally did that while it was bound): lane_unpark reopens it by that
@@ -5603,66 +5626,95 @@ export const register: Register = (on) => {
       }
       await log($, sid, verb === 'terminate' ? 'terminating' : verb === 'retire' ? 'retiring' : 'parking', prep.lane.name)
       // v14 (2026-11-04, review c1, S8): the grant is read once more right before the signal (the process checks and the log line above awaited).
-      if (!heldNow()) {
-        const r = await no('grant-changed', c.reasonWhy('grant-changed'))
+      const stale = !heldNow() ? 'grant-changed' : abandoned() ? 'abandoned' : undefined
+      if (stale === 'abandoned') {
+        if (verb === 'terminate') toast($, 'Force stop not sent: abandoned')
+        return cut()
+      }
+      if (stale) {
+        const r = await no(stale, c.reasonWhy(stale))
         if (verb === 'terminate') toast($, `Force stop not sent: ${lastCode}`)
         return r
       }
       const k = await run($, [KILL, '-TERM', String(victim.pid)])
       if (k.exitCode !== 0) return no('kill-failed', 'the signal failed.')
-      // Ask the VS Code window to close the dead tab: the extension's sweep acts only once that pid is dead and no live session carries the name. Best effort.
-      const closeReq = await writeIn($, 'open', `${prep.lane.name}.close`, `${victim.sessionId}\n${victim.pid}\n${prep.lane.name}\n`).catch(() => ({ err: 'throw' }))
-      await log($, sid, 'err' in closeReq ? 'error' : 'close-requested', 'err' in closeReq ? 'close-request' : prep.lane.name)
-      if (verb === 'retire') toast($, `Lane ${prep.lane.name} retired (idle, report signed)`)
-      if (verb === 'park') {
-        // After the signal: the mark, only while the record still names the stopped session. It is a label (lane_list, lane_open); lane_unpark needs only sid.
-        const at = await $.clock.now()
-        const marked = await parkWrite($, e, sid, prep.lane.src!, prep.lane.name, (l) => ({ ...l, parked: at }), (l) => l.sid === victim.sessionId)
-        toast($, `Lane ${prep.lane.name} parked`)
-        if (marked) {
-          await log($, sid, 'park-unmarked', marked)
-          return { result: c.parkUnmarkedText(prep.lane.name, victim.pid as number) } as never
+      // The hook's .catch reads this: a call cut off from here on answers that the session was signalled, not "failed closed".
+      const callKey = stopCallKey(sid, verb, (e as { lane?: unknown }).lane)
+      signalledCalls.set(callKey, { name: prep.lane.name, pid: victim.pid as number })
+      // v15.4 (2026-11-06): from here the session has its signal, so a failure is answered as what it is: signalled, record unknown (code in the log), never "failed closed".
+      const afterSignal = async () => {
+        // Ask the VS Code window to close the dead tab: the extension's sweep acts only once that pid is dead and no live session carries the name. Best effort.
+        const closeReq = await writeIn($, 'open', `${prep.lane.name}.close`, `${victim.sessionId}\n${victim.pid}\n${prep.lane.name}\n`).catch(() => ({ err: 'throw' }))
+        await log($, sid, 'err' in closeReq ? 'error' : 'close-requested', 'err' in closeReq ? 'close-request' : prep.lane.name)
+        if (verb === 'retire') toast($, `Lane ${prep.lane.name} retired (idle, report signed)`)
+        if (verb === 'park') {
+          // After the signal: the mark, only while the record still names the stopped session. It is a label (lane_list, lane_open); lane_unpark needs only sid.
+          const at = await $.clock.now()
+          const marked = await parkWrite($, e, sid, prep.lane.src!, prep.lane.name, (l) => ({ ...l, parked: at }), (l) => l.sid === victim.sessionId)
+          toast($, `Lane ${prep.lane.name} parked`)
+          if (marked) {
+            await log($, sid, 'park-unmarked', marked)
+            return { result: c.parkUnmarkedText(prep.lane.name, victim.pid as number) } as never
+          }
+          await log($, sid, 'parked', prep.lane.name)
+          return { result: c.parkedText(prep.lane.name, victim.pid as number) } as never
         }
-        await log($, sid, 'parked', prep.lane.name)
-        return { result: c.parkedText(prep.lane.name, victim.pid as number) } as never
-      }
-      // v15.3 (2026-11-06): retire and force stop end the lane for good: once the session got its signal, its store record goes too (the .archive folder and the
-      // report stay). A lane a session joined keeps its record, which stops naming the stopped session, as before. A failed removal is told, with its code; the call
-      // can be made again: the record stops naming the stopped session, so a retry goes by name and a by-hand reopen of that conversation asks Restore.
-      // The record goes only once the process (that pid and start time) has ended, polled up to c.STOP_POLLS times.
-      const ended = async (): Promise<boolean> => {
-        for (let i = 0; ; i++) {
-          // Only ps's own "no such process" (or another start time at that pid) is an end; a ps that failed is no answer, so the record is kept.
-          const at = await psOne($, victim.pid, 'lstart=').catch((): 'error' => 'error')
-          if (at === 'gone' || (at !== 'error' && !c.sameStart(victim.procStart, at.out))) return true
-          if (i >= c.STOP_POLLS) return false
-          await $.clock.sleep(c.STOP_POLL_MS)
-        }
-      }
-      let outcome: 'removed' | 'kept' | 'alive' | { unremoved: string } = 'kept'
-      if (prep.lane.src) {
-        if (prep.lane.adopted) await sidClearAfterStop($, sid, prep.lane.src, prep.lane.name, victim.sessionId)
-        else if (!(await ended())) {
-          // A session that survives its SIGTERM keeps its record, so the lead can still stop it by name; the record stops naming the session at once, so reopening
-          // that conversation by hand asks Restore again instead of making it the lane silently.
-          outcome = 'alive'
-          await log($, sid, 'error', 'lane-still-running').catch(() => undefined)
-          await sidClearAfterStop($, sid, prep.lane.src, prep.lane.name, victim.sessionId)
-        } else {
-          const gone = await removeRecord($, e, sid, prep.lane.src, prep.lane.name, { kind: 'stopped', victim: victim.sessionId })
-          // A record that is gone already (another writer took it out meanwhile) is the outcome wanted.
-          if ('no' in gone && gone.no !== 'unknown-lane') {
-            outcome = { unremoved: gone.no }
-            await log($, sid, 'error', `lane-unremoved ${gone.no}`).catch(() => undefined)
-            await sidClearAfterStop($, sid, prep.lane.src, prep.lane.name, victim.sessionId)
-          } else {
-            outcome = 'removed'
-            await log($, sid, 'lane-removed', prep.lane.name)
+        // v15.3 (2026-11-06): retire and force stop end the lane for good: once the session got its signal, its store record goes too (the .archive folder and the
+        // report stay). A lane a session joined keeps its record, which stops naming the stopped session, as before. A failed removal is told, with its code; the call
+        // can be made again: the record stops naming the stopped session, so a retry goes by name and a by-hand reopen of that conversation asks Restore.
+        // The record goes only once the process (that pid and start time) has ended, polled up to c.STOP_POLLS times.
+        const ended = async (): Promise<boolean> => {
+          for (let i = 0; ; i++) {
+            // Only ps's own "no such process" (or another start time at that pid) is an end; a ps that failed is no answer, so the record is kept.
+            const at = await psOne($, victim.pid, 'lstart=').catch((): 'error' => 'error')
+            if (at === 'gone' || (at !== 'error' && !c.sameStart(victim.procStart, at.out))) return true
+            if (i >= c.STOP_POLLS) return false
+            // A wait that cannot run ends the call as signalled-with-unknown-record (afterSignal's catch), not as a session that is still running.
+            if (!(await pause($, c.STOP_POLL_MS))) throw new Error('pause-failed')
           }
         }
+        let outcome: 'removed' | 'kept' | 'alive' | { unremoved: string } = 'kept'
+        if (prep.lane.src) {
+          if (prep.lane.adopted) await sidClearAfterStop($, sid, prep.lane.src, prep.lane.name, victim.sessionId)
+          else if (!(await ended())) {
+            // A session that survives its SIGTERM keeps its record, so the lead can still stop it by name; the record stops naming the session at once, so reopening
+            // that conversation by hand asks Restore again instead of making it the lane silently.
+            outcome = 'alive'
+            await log($, sid, 'error', 'lane-still-running').catch(() => undefined)
+            await sidClearAfterStop($, sid, prep.lane.src, prep.lane.name, victim.sessionId)
+          } else {
+            const gone = await removeRecord($, e, sid, prep.lane.src, prep.lane.name, { kind: 'stopped', victim: victim.sessionId })
+            // A record that is gone already (another writer took it out meanwhile) is the outcome wanted.
+            if ('no' in gone && gone.no !== 'unknown-lane') {
+              outcome = { unremoved: gone.no }
+              await log($, sid, 'error', `lane-unremoved ${gone.no}`).catch(() => undefined)
+              await sidClearAfterStop($, sid, prep.lane.src, prep.lane.name, victim.sessionId)
+            } else {
+              outcome = 'removed'
+              await log($, sid, 'lane-removed', prep.lane.name)
+            }
+          }
+        }
+        return { result: c.stoppedText(verb as 'retire' | 'terminate', prep.lane.name, victim.pid as number, outcome) } as never
       }
-      return { result: c.stoppedText(verb as 'retire' | 'terminate', prep.lane.name, victim.pid as number, outcome) } as never
-    })).catch(() => ({ deny: `lane_${verb} failed closed.` }))
+      try {
+        return await afterSignal()
+      } catch {
+        await log($, sid, 'error', `after-signal-${verb}`).catch(() => undefined)
+        return { result: c.afterSignalFailedText(verb as 'retire' | 'park' | 'terminate', prep.lane.name, victim.pid as number) } as never
+      } finally {
+        signalledCalls.delete(callKey)
+      }
+    })).catch(async ($, e, next) => {
+      // v15.4 (2026-11-06): the kind of the failure goes to the log, never its text (it could hold a path): throw, or timeout (the hook outran its 10 s of own time;
+      // `next.error.kind`, HookFailure in the hook API). Before the signal nothing was done, and the run-on code stops at abandoned(). A call cut off after the signal
+      // answers what happened (signalledCalls), never "failed closed". Nothing here may throw: the answer is built first, the log is best effort.
+      const kind = next?.error?.kind === 'timeout' ? 'timeout' : 'throw'
+      const sid = await Promise.resolve($.session.id()).catch(() => undefined)
+      const sent = typeof sid === 'string' ? signalledCalls.get(stopCallKey(sid, verb, (e as { lane?: unknown }).lane)) : undefined
+      if (typeof sid === 'string') await log($, sid, 'error', `lane_${verb}-hook-${kind}${sent ? '-after-signal' : ''}`).catch(() => undefined)
+      return sent ? ({ result: c.afterSignalFailedText(verb as 'retire' | 'park' | 'terminate', sent.name, sent.pid) } as never) : { deny: `lane_${verb} failed closed.` }
+    })
   }
 
   // Best effort: a session that ends without it leaves a presence file that goes stale in 30 s.

@@ -41,6 +41,17 @@ let sessions: Record<string, string> = {}
 let ownEntryAuto = true
 // v15.3: when set, the test engine's clock.sleep (without the mock clock) returns at once and moves nowMs by the time asked, then runs this hook (what a retire or park waits on).
 let fastSleep: ((ms: number) => void | Promise<void>) | undefined
+// v15.4: what a hook has used of its 10 s of own time on $.clock.sleep (a $ call, such as /bin/sleep through process.run, costs it nothing), and a switch that makes /bin/sleep fail.
+let clockSlept = 0
+let sleepFails = false
+// With the mock clock, the /bin/sleep processes in flight: each ends once the test has advanced the clock past its time.
+const sleepWaits: { due: number; go: () => void }[] = []
+const releaseSleeps = () => {
+  for (const w of sleepWaits.splice(0)) if (w.due <= nowMs) w.go()
+    else sleepWaits.push(w)
+}
+// One read of the clock throws, as a failing engine call would.
+let nowThrowsOnce = false
 // kind interactive (v13.2): the engine writes it for a panel or a terminal; the nudge needs it on the session's own row.
 const AUTO_OWN = JSON.stringify({ sessionId: '0a1b2c3d-0000-4000-8000-123456789abc', cwd: '/data/x/work/lab', status: 'idle', pid: 4999, procStart: 'Tue Oct 27 20:37:50 2026', kind: 'interactive' })
 const regFiles = (): Record<string, string> => (!ownEntryAuto || Object.values(sessions).some((t) => t.includes('"sessionId":"0a1b2c3d-0000-4000-8000-123456789abc"')) ? sessions : { ...sessions, '4999.json': AUTO_OWN })
@@ -425,6 +436,10 @@ function engine(on: any, argvSeen: string[][], stdins: string[] = [], clk = fals
   callerRoot = undefined
   ownEntryAuto = true
   fastSleep = undefined
+  clockSlept = 0
+  sleepFails = false
+  nowThrowsOnce = false
+  sleepWaits.length = 0
   store = new Map()
   const installed = new Set<string>()
   on('session.start', (_: any, e: any) => ({ cwd: e.cwd }))
@@ -433,14 +448,33 @@ function engine(on: any, argvSeen: string[][], stdins: string[] = [], clk = fals
     // The timer's period is asked through timerHeld, so a test can hold it (sleepFor).
     const real = mock.clock((name: string, h: any) => on(name, name !== 'clock.every' ? h : (x: any, e: any, next: any) => (timerHeld ? timerHeld.then(() => h(x, e, next)) : h(x, e, next))), { now: T0 })
     clock = {
-      advance: async (ms: number) => { nowMs += ms; await real.advance(ms) },
-      set: async (ms: number) => { nowMs = ms; await real.set(ms) },
+      // The clock moves to each /bin/sleep's time in turn, so a chain of short sleeps (a poll loop) runs as far as the advance reaches, as chained clock.sleep waits do.
+      advance: async (ms: number) => {
+        const target = nowMs + ms
+        for (let guard = 0; guard < 100_000; guard++) {
+          const due = Math.min(target, ...sleepWaits.map((w) => w.due).filter((d) => d > nowMs))
+          const step = due - nowMs
+          nowMs = due
+          if (step > 0) await real.advance(step)
+          releaseSleeps()
+          await new Promise((r) => setTimeout(r, 0))
+          if (nowMs >= target && !sleepWaits.some((w) => w.due <= nowMs)) break
+        }
+      },
+      set: async (ms: number) => { nowMs = ms; releaseSleeps(); await real.set(ms) },
     }
   } else {
-    on('clock.now', () => ({ value: nowMs }))
+    on('clock.now', () => {
+      if (nowThrowsOnce) {
+        nowThrowsOnce = false
+        throw new Error('boom /Users/x/secret')
+      }
+      return { value: nowMs }
+    })
     on('clock.every', () => ({ value: undefined }))
     on('clock.sleep', async (_: any, e: any) => {
       const ms = Number(typeof e === 'number' ? e : e?.ms ?? e?.duration ?? 0)
+      if (ms <= 2000) clockSlept += ms
       // Only the short polls return (a dialog's or a call's time limit is a long sleep, and must not fire).
       if (!fastSleep || !(ms <= 2000)) return new Promise(() => undefined)
       nowMs += ms
@@ -610,6 +644,16 @@ function engine(on: any, argvSeen: string[][], stdins: string[] = [], clk = fals
     if (a[0] === '/bin/mv' && mvHook) mvHook(a[a.length - 1])
     const ok = (stdout: string, exitCode = 0, stderr = '') => ({ value: { exitCode, stdout, stderr: exitCode !== 0 && a[0] === '/usr/bin/stat' && stderr === '' ? `stat: ${a[a.length - 1]}: No such file or directory` : stderr, isStdoutTruncated: false, isStderrTruncated: false } })
     if (a[0] === '/usr/bin/id') return ok(a[1] === '-u' ? '501\n' : 'x\n')
+    // v15.4: a wait through a process: the test clock moves by the time asked, then the test's hook runs, as with the short polls of clock.sleep.
+    if (a[0] === '/bin/sleep') {
+      if (sleepFails) return ok('', 1, 'sleep: failed')
+      // With the mock clock a sleep process takes the clock's time: it ends when the test advances past it, as a held clock.sleep does.
+      if (clk) return new Promise((res) => sleepWaits.push({ due: nowMs + Math.round(Number(a[1]) * 1000), go: () => res(ok('')) }))
+      if (!fastSleep) return new Promise(() => undefined)
+      const ms = Math.round(Number(a[1]) * 1000)
+      nowMs += ms
+      return Promise.resolve(fastSleep(ms)).then(() => ok(''))
+    }
     if (leadsStatRejects && a[0] === '/usr/bin/stat' && a[a.length - 1] === `${ROOT}/leads`) return Promise.reject(new Error('stat'))
     if (a[0] === '/usr/bin/shasum' && shaHook && typeof e.init?.stdin === 'string' && e.init.stdin.startsWith('LABLANE\n')) {
       const h = shaHook
@@ -13402,4 +13446,107 @@ test('v15.3 manager restore: a saved grant that fails the parse is deleted with 
   expect(store.has(MGRKEY)).toBe(false)
   expect(store.has('manager:11111111-0000-4000-8000-123456789abc')).toBe(false)
   expect(mgrLogs(stdins)).toContain('manager-restore-rejected:invalid')
+})
+
+// v15.4 (2026-11-06): lane_retire and lane_park answered "failed closed" on a lane that was not yet idle for 30 s. A hook has 10 s of its own time per dispatch;
+// $.clock.sleep counts against it and a $ call (process.run) does not. The idle wait (up to 40 s) and the stop poll (10 s) slept with $.clock.sleep, so the engine
+// cut the hook off, its .catch answered, and the code went on unseen. The test engine does not enforce the budget, so these tests hold the cause itself: a wait
+// inside a tool call costs no $.clock.sleep time worth the budget, and goes through /bin/sleep.
+const HOOK_BUDGET_MS = 10_000
+const sleeps = (argv: string[][]) => argv.filter((a) => a[0] === '/bin/sleep')
+
+test('v15.4 lane_retire waits for the idle time through /bin/sleep, not $.clock.sleep (a hook has 10 s of its own time)', async ($, on) => {
+  const argv: string[][] = []
+  await lead($, on, [], { argv })
+  reportFile = REPORT_OK()
+  sessions = retireOk({ status: 'busy' })
+  fastSleep = () => undefined
+  clockSlept = 0
+  expect(JSON.stringify(await $.tool.call(leadCall('retire')))).toContain('not-idle')
+  expect(sleeps(argv).length).toBe(20)
+  expect(sleeps(argv).every((a) => a[1] === '2')).toBe(true)
+  expect(clockSlept).toBeLessThan(HOOK_BUDGET_MS / 2)
+  expect(killed(argv).length).toBe(0)
+})
+
+test('v15.4 lane_park waits for the idle time through /bin/sleep, not $.clock.sleep', async ($, on) => {
+  const argv: string[][] = []
+  await parker($, on, [], argv)
+  fastSleep = () => undefined
+  sessions = parkSess({ statusUpdatedAt: nowMs - 5000 })
+  clockSlept = 0
+  expect((await park($)).result).toContain('lane API parked')
+  expect(sleeps(argv).length).toBe(13)
+  expect(clockSlept).toBeLessThan(HOOK_BUDGET_MS / 2)
+  expect(killed(argv)).toEqual([['/bin/kill', '-TERM', '4500']])
+})
+
+test('v15.4 the stop poll after the signal waits through /bin/sleep too: 20 half-second waits, none on $.clock.sleep', async ($, on) => {
+  const argv: string[][] = []
+  await leadAt($, on, [], { sess: liveApi(), argv })
+  putStore([PARK_API({ sid: OTHER, parked: 3 })])
+  askAnswer = YES
+  survivesKill = true
+  fastSleep = () => undefined
+  clockSlept = 0
+  expect(stopText(await $.tool.call(leadCall('terminate', { lane: 'API' })))).toContain('still running 10 seconds later, so its record stays')
+  expect(sleeps(argv).length).toBe(20)
+  expect(sleeps(argv).every((a) => a[1] === '0.5')).toBe(true)
+  expect(clockSlept).toBeLessThan(HOOK_BUDGET_MS / 2)
+})
+
+test('v15.4 a wait that cannot run ends the idle wait with the refusal naming the seconds left, and does not spin', async ($, on) => {
+  const argv: string[][] = []
+  await lead($, on, [], { argv })
+  reportFile = REPORT_OK()
+  sessions = retireOk({ statusUpdatedAt: nowMs - 10_000 })
+  sleepFails = true
+  expect(JSON.stringify(await $.tool.call(leadCall('retire')))).toContain('not-idle: the session has been idle for 10 of the 30 seconds it needs. Retry once, in 20 s; do not loop.')
+  expect(sleeps(argv).length).toBe(1)
+  expect(killed(argv).length).toBe(0)
+})
+
+test('v15.4 a wait that fails after the signal answers signalled with the record unknown, never "failed closed", and logs the code', async ($, on) => {
+  const stdins: string[] = []
+  const argv: string[][] = []
+  await leadAt($, on, stdins, { sess: liveApi(), argv })
+  putStore([PARK_API({ sid: OTHER, parked: 3 })])
+  askAnswer = YES
+  survivesKill = true
+  sleepFails = true
+  const out = stopText(await $.tool.call(leadCall('terminate', { lane: 'API' })))
+  expect(out).toBe('lane API: SIGTERM sent to process 4500, but the call failed afterwards, so what became of its record is not known. Call lane_list, then lane_terminate again if the lane is still listed.')
+  expect(killed(argv).length).toBe(1)
+  expect(logged(stdins)).toContain('error:after-signal-terminate')
+})
+
+test('v15.4 a call that throws before any signal answers failed closed and logs the kind of the failure, never its text', async ($, on) => {
+  const stdins: string[] = []
+  const argv: string[][] = []
+  await lead($, on, stdins, { argv })
+  reportFile = REPORT_OK()
+  sessions = retireOk({ status: 'busy' })
+  fastSleep = () => void (nowThrowsOnce = true)
+  const out = JSON.stringify(await $.tool.call(leadCall('retire')))
+  expect(out).toContain('lane_retire failed closed.')
+  expect(logged(stdins)).toContain('error:lane_retire-hook-throw')
+  expect(JSON.stringify(allEvents(stdins))).not.toContain('secret')
+  expect(killed(argv).length).toBe(0)
+})
+
+test('v15.4 the retire cue waits for its answer through /bin/sleep: an answer 8 s after the cue lands, with no $.clock.sleep spent', async ($, on) => {
+  const argv: string[][] = []
+  await lead($, on, [], { argv })
+  reportFile = REPORT_OK()
+  autoAnswer = undefined
+  let total = 0
+  fastSleep = (ms) => {
+    total += ms
+    if (total >= 8000) resultFiles.set(`${ROOT}/result/${OTHER}.result`, 'retire ok - 12\n')
+  }
+  clockSlept = 0
+  expect((await $.tool.call(leadCall('retire'))).result).toContain('SIGTERM sent to process 4242')
+  expect(total).toBeGreaterThanOrEqual(8000)
+  expect(sleeps(argv).length).toBeGreaterThan(30)
+  expect(clockSlept).toBeLessThan(HOOK_BUDGET_MS / 2)
 })
