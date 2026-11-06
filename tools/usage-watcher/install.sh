@@ -1,5 +1,5 @@
 #!/bin/bash
-# Usage-watcher installer: installs watch.py, account-stamp.sh and the launchd job io.notitial.usage-watcher from a
+# Usage-watcher installer: installs watch.py and the launchd job io.notitial.usage-watcher from a
 # commit of https://github.com/notitial/ai-manager.git. It never reads the working tree it sits in.
 #
 #   bash tools/usage-watcher/install.sh [--ref <commit>]           dry run: fetch, then print what --apply would do
@@ -19,7 +19,6 @@
 #
 # What it writes (with --apply only):
 #   ~/.local/share/usage-watcher/watch.py           0444   the copy the job runs
-#   ~/.local/share/usage-watcher/account-stamp.sh   0555   the SessionStart hook
 #   ~/Library/LaunchAgents/io.notitial.usage-watcher.plist  0644, rendered from the commit's template, then refused
 #       unless it holds only the template's keys (Label, ProgramArguments, StartInterval, RunAtLoad, ProcessType, Nice,
 #       StandardOutPath, StandardErrorPath) with their expected values, and ProgramArguments is exactly
@@ -29,12 +28,14 @@
 # installing it runs the commit's own watcher tests in the temporary folder, on the same bytes it installs. It then
 # runs `launchctl bootout` (when loaded) and `launchctl bootstrap gui/<uid>`, and checks the loaded job runs the
 # installed watch.py. It refuses to run as root.
-# It prints, and never writes, the hook entry for settings.json. It never edits a settings file, never uses sudo,
-# never reads or sends a credential. --uninstall keeps the data folder.
+# It never edits a settings file, never uses sudo, never reads or sends a credential. --uninstall keeps the data
+# folder. account-stamp.sh, a SessionStart hook earlier versions installed, is retired: this installer no longer
+# writes it, tells you when a copy is still there (and that its settings.json entry is yours to remove), and
+# --uninstall removes the copy.
 #
 # Exit codes: 0 done (or nothing to do); 1 failed (fetch, tests, launchctl, verification, environment);
 #   2 usage error; 3 refused: unsafe state (symlink, owner, permissions, run as root);
-#   4 --status only: something is missing, not loaded, differs from --ref, or jq is missing.
+#   4 --status only: something is missing, not loaded, or differs from --ref.
 # Needs macOS, the Command Line Tools and /usr/bin/python3 3.9 or later. bash 3.2.
 # Tests: bash tools/usage-watcher/test-install.sh (it runs a copy whose two source lines point at a local fixture).
 
@@ -107,7 +108,7 @@ fi
 
 [ "$(/usr/bin/uname -s)" = Darwin ] || die 1 "the usage watcher runs on macOS only"
 
-# safe_value <name> <value>: an absolute path with no control character (a newline would split a plist or a hook line).
+# safe_value <name> <value>: an absolute path with no control character (a newline would split a plist).
 safe_value() {
   case $2 in
     /*) ;;
@@ -128,7 +129,7 @@ STATE=$HOME_DIR/.local/state/usage-watcher
 AGENTS=$HOME_DIR/Library/LaunchAgents
 PLIST=$AGENTS/$LABEL.plist
 WATCH=$SHARE/watch.py
-STAMP=$SHARE/account-stamp.sh
+RETIRED_STAMP=$SHARE/account-stamp.sh  # the retired SessionStart hook: only noted and, on --uninstall, removed
 # The directories on the install paths, parents first, so each is checked (and created) before what is inside it.
 # One per line (no path holds a newline: safe_value), read with `while read ... <<<`, so a space in a path is kept.
 DIRS="$HOME_DIR/.local
@@ -190,7 +191,7 @@ check_paths() {
   local d
   check_dir "$HOME_DIR" || die 1 "your home $HOME_DIR does not exist"
   while IFS= read -r d; do check_dir "$d" || true; done <<<"$DIRS"
-  for d in "$WATCH" "$STAMP" "$PLIST"; do check_file "$d" || true; done
+  for d in "$WATCH" "$RETIRED_STAMP" "$PLIST"; do check_file "$d" || true; done
   return 0
 }
 
@@ -383,16 +384,12 @@ plan_file() {
   fi
 }
 
-have_jq() { command -v jq >/dev/null 2>&1; }
-
-json_esc() { printf '%s' "$1" | /usr/bin/sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
-
-print_hook_line() {
-  say ""
-  say "By hand: register account-stamp.sh as a SessionStart hook in $CONFIG_DIR/settings.json (this installer never"
-  say "edits settings). Add this entry to the \"SessionStart\" list under \"hooks\" (no matcher), unless it is there:"
-  say ""
-  say "  {\"hooks\": [{\"type\": \"command\", \"command\": \"$(json_esc "$STAMP")\"}]}"
+# note_retired_stamp: say when the retired account-stamp.sh is still installed (never an error: it is harmless).
+note_retired_stamp() {
+  if [ -e "$RETIRED_STAMP" ] || [ -L "$RETIRED_STAMP" ]; then
+    say "  - note: account-stamp.sh is retired and a copy is still at $RETIRED_STAMP. Remove its SessionStart entry from"
+    say "    $CONFIG_DIR/settings.json by hand, then delete the copy (--uninstall --apply removes it, along with the job)."
+  fi
 }
 
 do_install() {
@@ -405,11 +402,9 @@ do_install() {
   [ "$APPLY" = 1 ] && say "usage-watcher install (--apply)" || say "usage-watcher install: DRY RUN, nothing changes (add --apply to install)"
   fetch_commit
   read_blob "$SRC_DIR/watch.py" "$WORK/watch.py"
-  read_blob "$SRC_DIR/account-stamp.sh" "$WORK/account-stamp.sh"
   read_blob "$SRC_DIR/$LABEL.plist" "$WORK/plist.in"
   render_plist "$WORK/plist.in" "$WORK/plist"
   say "  - python: $PY $pyv"
-  have_jq || say "  - WARNING: jq is not on your PATH, so account-stamp.sh will record nothing; install jq"
 
   if [ "$APPLY" = 1 ]; then
     say "  - run the watcher's tests at $COMMIT"
@@ -426,7 +421,6 @@ do_install() {
     fi
   done <<<"$DIRS"
   plan_file watch.py "$WORK/watch.py" 0444 "$WATCH"
-  plan_file account-stamp.sh "$WORK/account-stamp.sh" 0555 "$STAMP"
   if [ "$APPLY" != 1 ]; then
     if check_file "$PLIST"; then
       if ! /usr/bin/cmp -s "$WORK/plist" "$PLIST"; then
@@ -447,7 +441,7 @@ do_install() {
     verify_install
     say "installed from $COMMIT; the job is loaded and runs $WATCH every $INTERVAL s"
   fi
-  print_hook_line
+  note_retired_stamp
 }
 
 run_tests() {
@@ -458,8 +452,6 @@ run_tests() {
   # The tests must run on the bytes that get installed (an export-subst or a filter could make them differ).
   /usr/bin/cmp -s "$WORK/src/$SRC_DIR/watch.py" "$WORK/watch.py" ||
     die 1 "the tested watch.py differs from the one to install; nothing installed"
-  /usr/bin/cmp -s "$WORK/src/$SRC_DIR/account-stamp.sh" "$WORK/account-stamp.sh" ||
-    die 1 "the tested account-stamp.sh differs from the one to install; nothing installed"
   [ -f "$WORK/src/$SRC_DIR/test_watch.py" ] && [ ! -L "$WORK/src/$SRC_DIR/test_watch.py" ] ||
     die 1 "$SRC_DIR/test_watch.py is missing at $COMMIT; nothing installed"
   if ! out=$(cd "$WORK/src" && /usr/bin/env -i PATH=/usr/bin:/bin HOME="$WORK/home" TMPDIR="$WORK/tmp/" \
@@ -471,7 +463,6 @@ run_tests() {
 
 verify_install() {
   /usr/bin/cmp -s "$WORK/watch.py" "$WATCH" && [ "$(mode_of "$WATCH")" = 444 ] || die 1 "verify: $WATCH is not the commit's copy (mode 0444)"
-  /usr/bin/cmp -s "$WORK/account-stamp.sh" "$STAMP" && [ "$(mode_of "$STAMP")" = 555 ] || die 1 "verify: $STAMP is not the commit's copy (mode 0555)"
   /usr/bin/cmp -s "$WORK/plist" "$PLIST" && [ "$(mode_of "$PLIST")" = 644 ] || die 1 "verify: $PLIST is not the rendered plist (mode 0644)"
   [ "$(mode_of "$SHARE")" = 700 ] && [ "$(mode_of "$STATE")" = 700 ] || die 1 "verify: $SHARE or $STATE is not mode 0700"
   job_runs_watch || die 1 "verify: $SERVICE is not loaded with $WATCH"
@@ -513,16 +504,12 @@ do_status() {
   local out last
   say "usage-watcher status (job $SERVICE)"
   describe "$WATCH" file
-  describe "$STAMP" file
   describe "$PLIST" file
   if [ -f "$PLIST" ] && [ ! -L "$PLIST" ]; then
     [ "$(pl_get Label "$PLIST")" = "$LABEL" ] || { say "  WRONG    the plist's Label is not $LABEL"; ATTN=$((ATTN + 1)); }
   fi
   describe "$STATE" dir
-  if ! have_jq; then
-    say "  WARNING  jq is not on your PATH, so account-stamp.sh will record nothing; install jq"
-    ATTN=$((ATTN + 1))
-  fi
+  note_retired_stamp
   if out=$(command launchctl print "$SERVICE" 2>&1); then
     last=$(printf '%s\n' "$out" | /usr/bin/awk '/last exit code/ { sub(/^[ \t]+/, ""); print; exit }')
     say "  loaded   $SERVICE${last:+ ($last)}"
@@ -535,11 +522,9 @@ do_status() {
     /usr/bin/xcode-select -p >/dev/null 2>&1 || die 1 "the Command Line Tools are missing; run: xcode-select --install"
     fetch_commit
     read_blob "$SRC_DIR/watch.py" "$WORK/watch.py"
-    read_blob "$SRC_DIR/account-stamp.sh" "$WORK/account-stamp.sh"
     read_blob "$SRC_DIR/$LABEL.plist" "$WORK/plist.in"
     render_plist "$WORK/plist.in" "$WORK/plist"
     compare watch.py "$WORK/watch.py" "$WATCH"
-    compare account-stamp.sh "$WORK/account-stamp.sh" "$STAMP"
     compare plist "$WORK/plist" "$PLIST"
   fi
   if [ "$ATTN" -gt 0 ]; then
@@ -560,7 +545,7 @@ do_uninstall() {
   else
     say "  - the job is not loaded"
   fi
-  for f in "$PLIST" "$WATCH" "$STAMP"; do
+  for f in "$PLIST" "$WATCH" "$RETIRED_STAMP"; do
     if check_file "$f"; then act "remove $f" /bin/rm -f -- "$f"; fi
   done
   if check_dir "$SHARE"; then
@@ -571,8 +556,10 @@ do_uninstall() {
     fi
   fi
   say "  - keep the data folder $STATE"
-  say ""
-  say "By hand: remove the SessionStart hook entry for $STAMP from $CONFIG_DIR/settings.json."
+  if [ -e "$RETIRED_STAMP" ] || [ "$APPLY" = 1 ]; then
+    say ""
+    say "By hand: remove the retired SessionStart hook entry for $RETIRED_STAMP from $CONFIG_DIR/settings.json, if there is one."
+  fi
 }
 
 case $MODE in

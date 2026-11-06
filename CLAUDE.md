@@ -15,12 +15,11 @@ mod, a usage watcher, a session lister and the manager's project skills. ai-tool
 
 No repo-wide build or lint. `bash tools/test-all.sh` is the entry point: it runs every suite below and prints a
 pass/fail table (`--quick` skips the slow `callboard` suite, `NAME…` runs only those). Its suites: `callboard`,
-`usage-watcher`, `account-stamp`, `usage-watcher-install`, `session-peers`; keep its list in step with this one.
+`usage-watcher`, `usage-watcher-install`, `session-peers`; keep its list in step with this one.
 
 - `tools/callboard/` — `bash tools/callboard/test.sh` after changing anything under it. Needs node 22.18 or later
   and the `claude` CLI (`claude plugin validate`, `claude plugin test`).
 - `tools/usage-watcher/` — `/usr/bin/python3 -I tools/usage-watcher/test_watch.py` after changing `watch.py`;
-  `bash tools/usage-watcher/test-account-stamp.sh` after changing `account-stamp.sh` (needs jq);
   `bash tools/usage-watcher/test-install.sh` after changing `install.sh`.
 - `tools/session-peers/` — `bash tools/session-peers/test-peers.sh` after changing `peers.sh` (needs jq and python3).
 - `docs/`, `rules/` and `.claude/skills/` have no suite: check them by reading against the ADRs.

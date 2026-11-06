@@ -85,9 +85,10 @@ first; it is the source for every step here, and wins where the two differ.
    - Run the dry run and show it.
    - Give the person `bash tools/usage-watcher/install.sh --ref <commit> --apply`.
    - Then run `bash tools/usage-watcher/install.sh --status --ref <commit>` yourself and show the result.
-8. **SessionStart hook.** Run
+8. **Retired SessionStart hook.** Run
    `jq -e '[.hooks.SessionStart[]?.hooks[]?.command] | any(endswith("/usage-watcher/account-stamp.sh"))' ~/.claude/settings.json`.
-   `false`: show the person the entry the installer printed, to add under `hooks.SessionStart` by hand.
+   `true`: an earlier install registered a hook that is retired. Show the person the entry, to remove from
+   `hooks.SessionStart` by hand (never edit the settings file for them).
 9. **Rule link.** Run `ls -l ~/.claude/rules/callboard.md`. Missing: give the person
    `mkdir -p ~/.claude/rules && ln -s <checkout>/rules/callboard.md ~/.claude/rules/callboard.md`. A link to another
    path, or a plain file: show it and let the person decide. Mention that ai-toolkit's `/setup-claude` and
