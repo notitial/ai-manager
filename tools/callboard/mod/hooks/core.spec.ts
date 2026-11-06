@@ -73,47 +73,11 @@ test('sameFile detects a swap', () => {
   assert.ok(!c.sameFile(a, { ...a, mtimeMs: 6 }))
 })
 
-const lanes = JSON.stringify({ lanes: [{ name: 'api', folder: '/w/api', brief: '/w/api/.briefs/api.md' }] })
-
-test('parseLanes accepts a clean file', () => {
-  assert.deepEqual(c.parseLanes(lanes), { ok: true, lanes: [{ name: 'api', folder: '/w/api', brief: '/w/api/.briefs/api.md' }] })
-})
-
-test('parseLanes refuses reserved names, escapes, duplicates, bad shape', () => {
-  const mk = (l: object[]) => JSON.stringify({ lanes: l })
-  const L = { name: 'api', folder: '/w/api', brief: '/w/api/b.md' }
-  for (const n of ['MANAGER', 'manager', 'Manager_']) assert.equal(c.parseLanes(mk([{ ...L, name: n }])).ok, false)
-  assert.equal(c.parseLanes(mk([{ ...L, brief: '/w/other/b.md' }])).ok, false)
-  assert.equal(c.parseLanes(mk([{ ...L, brief: '/w/api/../x/b.md' }])).ok, false)
-  assert.equal(c.parseLanes(mk([{ ...L, folder: 'rel' }])).ok, false)
-  assert.equal(c.parseLanes(mk([{ ...L, brief: '/w/apiX/b.md' }])).ok, false)
-  assert.equal(c.parseLanes(mk([L, L])).ok, false)
-  assert.equal(c.parseLanes('{').ok, false)
-  assert.equal(c.parseLanes('{"lanes":5}').ok, false)
-})
-
-test('parseLanes takes an optional repo that must be a clean path containing the lane folder', () => {
-  const mk = (l: object[]) => JSON.stringify({ lanes: l })
-  const L = { name: 'api', folder: '/w/api/src', brief: '/w/api/src/b.md' }
-  assert.deepEqual(c.parseLanes(mk([{ ...L, repo: '/w/api' }])), { ok: true, lanes: [{ ...L, repo: '/w/api' }] })
-  assert.deepEqual(c.parseLanes(mk([{ ...L, repo: '/w/api/src' }])), { ok: true, lanes: [{ ...L, repo: '/w/api/src' }] })
-  assert.equal(c.parseLanes(mk([L])).ok, true)
-  const no = (repo: unknown) => assert.deepEqual(c.parseLanes(mk([{ ...L, repo }])), { ok: false, reason: 'lane-repo' })
-  for (const r of ['/w/other', '/w/apiX', '/w/api/src/deeper', '/', 'w/api', '/w/api/../api', '/w//api', 5, null, ['/w/api']]) no(r)
-})
-
 test('isCleanAbs and within', () => {
   assert.ok(c.isCleanAbs('/a/b'))
   for (const b of ['/', '/a b', '/a/', '/a//b', '/a/./b', '/a/../b', 'a/b']) if (b !== '/' && b !== '/a/') assert.ok(!c.isCleanAbs(b), b)
   assert.ok(c.within('/w/api', '/w/api/b.md'))
   assert.ok(!c.within('/w/api', '/w/apix/b.md'))
-})
-
-test('rootChainOk', () => {
-  assert.ok(c.rootChainOk([{ uid: 0, mode: 0o755 }, { uid: 0, mode: 0o755 }]))
-  assert.ok(!c.rootChainOk([{ uid: 0, mode: 0o775 }]))
-  assert.ok(!c.rootChainOk([{ uid: 501, mode: 0o755 }]))
-  assert.ok(!c.rootChainOk([]))
 })
 
 test('startTurnsOk accepts only the turn count read right after the rename', () => {
@@ -262,7 +226,7 @@ test('leadBriefing is the approved text with only the folder name filled in', ()
   assert.ok(!t.includes('a brief file you wrote'))
   assert.ok(t.includes('- A refusal reads `lane_<verb> refused: <reason>`, usually starting with a code.'))
   assert.ok(!t.includes('Every refusal'))
-  assert.ok(t.includes('- `lane_remove` deletes a lane you made or one a session joined (not one from the root-owned lanes.json), only while no live session carries its name.'))
+  assert.ok(t.includes('- `lane_remove` deletes a lane you made or one a session joined, only while no live session carries its name.'))
   assert.ok(!t.includes('deletes a lane you made,'))
   assert.equal(c.briefingFolder('/work/my `repo`_1.x - y'), 'my repo_1.x - y')
   assert.equal(c.briefingFolder('/work/```'), 'this repo')
@@ -742,12 +706,10 @@ test('recordText changes when any of the fields that matter changes', () => {
   assert.equal(recordText(l), recordText({ ...l, src: 'k' }))
 })
 
-test('recOk: a missing hash is accepted only for a root lane', () => {
-  const root = { name: 'A', folder: '/f', brief: '/f/b' }
-  assert.equal(recOk(undefined, root, 'h'), true)
-  assert.equal(recOk(undefined, { ...root, src: 'k' }, 'h'), false)
-  assert.equal(recOk('h', { ...root, src: 'k' }, 'h'), true)
-  assert.equal(recOk('x', root, 'h'), false)
+test('recOk: a missing hash is never accepted', () => {
+  assert.equal(recOk(undefined, 'h'), false)
+  assert.equal(recOk('h', 'h'), true)
+  assert.equal(recOk('x', 'h'), false)
 })
 
 test('every refusal code of the wording table has text, and the lead sees code and text', () => {
@@ -960,8 +922,8 @@ test('the new refusal codes each have fixed text, and the ones that may pass lat
   assert.equal(c.REASON_TEXT['lane-origin'], 'Type /callboard lane yourself. A plugin, session or script cannot run it.')
   assert.equal(c.refusalText('lane-origin'), c.REASON_TEXT['lane-origin'])
   assert.equal(c.refusalText('no-lead'), `Lane not changed: ${c.REASON_TEXT['no-lead']}`)
-  assert.equal(c.refusalText('lanes-parent'), 'Lane not changed: lanes-parent')
-  for (const code of ['lanes-file', 'unsafe-dir', 'store-repo']) {
+  assert.equal(c.refusalText('made-up-code'), 'Lane not changed: made-up-code')
+  for (const code of ['unsafe-dir', 'store-repo']) {
     assert.equal(c.hasText(code), true, code)
     assert.equal(c.refusalText(code), `Lane not changed: ${c.REASON_TEXT[code]}`)
     assert.ok(c.REASON_TEXT[code].length > 10 && c.REASON_TEXT[code].length < 70, code)
@@ -1523,7 +1485,6 @@ test('rebindRefusal: one store record names the session, it sits in the folder, 
   assert.deepEqual(c.rebindRefusal([{ ...l, parked: 3 }], V13_SID, '/w/api', [], undefined).ok, true)
   assert.deepEqual(c.rebindRefusal([{ ...l, sid: undefined }], V13_SID, '/w/api', [], undefined), { ok: false, reason: 'no-record' })
   assert.deepEqual(c.rebindRefusal([l, { ...l, name: 'API2' }], V13_SID, '/w/api', [], undefined), { ok: false, reason: 'ambiguous' })
-  assert.deepEqual(c.rebindRefusal([{ ...l, src: undefined }], V13_SID, '/w/api', [], undefined), { ok: false, reason: 'root-lane' })
   assert.deepEqual(c.rebindRefusal([l], V13_SID, '/w', [], undefined), { ok: false, reason: 'wrong-folder' })
   assert.deepEqual(c.rebindRefusal([l], V13_SID, '/w/api', ['API'], undefined), { ok: false, reason: 'name-in-use' })
   const hint = (lane?: Record<string, unknown>) => c.parseHint({ ...(lane ? { lane } : {}), counters: {}, savedAt: NOW }, NOW)
@@ -1574,7 +1535,6 @@ test('parseOpenResult with the reopen table keeps its own codes and maps anythin
 })
 
 test('the v13 refusal codes and results are the approved texts', () => {
-  assert.equal(c.reasonWhy('root-lane'), 'root-lane: that lane is from the root-owned lanes.json. Only lanes you made or a session joined can be parked and reopened.')
   assert.equal(c.reasonWhy('parked'), 'parked: that lane is parked. lane_unpark reopens its conversation. lane_remove deletes the lane.')
   assert.equal(c.reasonWhy('parked-lane'), 'parked-lane: that lane is parked, so a new session cannot take its name. lane_unpark reopens its conversation.')
   assert.equal(c.reasonWhy('no-saved-session'), 'no-saved-session: that lane has no saved conversation. Use lane_open for a new session.')
@@ -1667,7 +1627,6 @@ test('parseStore takes a valid leadName on any record and refuses a bad or reser
   assert.equal(none.ok && 'leadName' in none.store.lanes[0], false)
   assert.equal(none.ok && 'leadName' in c.storeLaneJson(none.store.lanes[0]), false)
   for (const bad of ['', 'a b', 'x'.repeat(41), 'MANAGER', 'manager_', 5, null]) assert.equal((parseStore(store({ ...lane, leadName: bad })) as any).reason, 'store-shape', JSON.stringify(bad))
-  assert.equal('leadName' in ((c.parseLanes(JSON.stringify({ lanes: [{ name: 'R', folder: '/w/r', brief: '/w/r/B.md', repo: '/w', leadName: 'LEADA' }] })) as any).lanes[0]), false, 'a root lane never carries it')
 })
 
 test('recordText: a record without leadName is byte-identical to before; leadName changes it (levels S2)', () => {
@@ -1935,12 +1894,9 @@ test('v13.6 observeLane: gone after 3 observations in a row, since the first; on
   o = c.observeLane(o, ckLane, [ck()], S3_SID, 300_000)
   assert.equal(o.goneN, 0)
   assert.equal(o.goneSince, undefined)
-  // A store lane without a sid (never bound, or stopped on purpose) is never gone; a root-file lane only once this lead saw it live.
+  // A store lane without a sid (never bound, or stopped on purpose) is never gone.
   const { sid: _s, ...noSid } = ckLane
   assert.equal(c.observeLane(undefined, noSid, [], S3_SID, 1).goneN, 0)
-  const rootLane = { name: 'API', folder: '/w/repo/api', brief: '/w/repo/api/B.md', repo: '/w/repo' }
-  assert.equal(c.observeLane(undefined, rootLane, [], S3_SID, 1).goneN, 0)
-  assert.equal(c.observeLane(c.observeLane(undefined, rootLane, [ck()], S3_SID, 1), rootLane, [], S3_SID, 2).goneN, 1)
   assert.deepEqual(c.observeLane(undefined, ckLane, [ck(), ck({ sessionId: S3_SID })], LEAD, 1), { seenLive: false, goneN: 0 })
   assert.deepEqual(c.observeLane(undefined, ckLane, [ck({ cwd: '/elsewhere' })], S3_SID, 1), { seenLive: false, goneN: 0 })
 })
@@ -2245,7 +2201,7 @@ test('v15.1 (2026-11-05): this machine\'s reserved names', () => {
     for (const n of ['BLUE', 'blue', 'BLUE_', 'BIUE']) assert.equal(reservedHit(n), true, n)
     assert.equal(reservedHit('BLUE-API'), false, 'letters around it')
     assert.equal(reservedHit('BLUE', []), false, 'a stored lane list is judged by the built-in name alone')
-    assert.equal(c.parseLanes(JSON.stringify({ lanes: [{ name: 'BLUE', folder: '/w/api', brief: '/w/api/b.md' }] })).ok, true, 'a reserved-later name never voids the lane list')
+    assert.equal(parseStore(JSON.stringify({ repo: '/w', lanes: [{ name: 'BLUE', folder: '/w/api', brief: '/w/api/b.md', createdAt: 1 }], creates: [] })).ok, true, 'a reserved-later name never voids the lane list')
     assert.equal(c.isManagerName('BLUE'), true)
     assert.equal(c.isManagerName('blue'), false, 'the manager carries it exactly as written')
     assert.equal(c.managerNameRefusal('BLUE'), undefined)

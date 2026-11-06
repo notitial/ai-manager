@@ -4,7 +4,7 @@ const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
-const { createSpool, readLanes } = require('./spool.js')
+const { createSpool } = require('./spool.js')
 
 const SID = '1a1b2c3d-0000-4000-8000-123456789abc'
 const FOLDER = '/work/repo/lab'
@@ -73,7 +73,7 @@ test('a request for a listed lane in this window opens its folder and answers th
   assert.deepEqual(fs.readdirSync(w.dir).filter((f) => f.startsWith('.')), [])
 })
 
-test('an unknown lane and an unreadable lanes file are answered with a fixed code and open nothing', async () => {
+test('an unknown lane and an unreadable lane list are answered with a fixed code and open nothing', async () => {
   const a = world()
   a.put('NOLANE')
   assert.deepEqual(await a.spool.scan(), [['NOLANE', 'unknown-lane']])
@@ -191,24 +191,6 @@ test('an unsafe spool folder (a symlink) is skipped', async () => {
   assert.equal(w.opened.length, 0)
 })
 
-test('readLanes needs the file owned by the right user, not writable by others, in safe folders', async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cb-lanes-'))
-  fs.chmodSync(root, 0o755)
-  const f = path.join(root, 'lanes.json')
-  fs.writeFileSync(f, JSON.stringify({ lanes: [{ name: 'LAB', folder: FOLDER, brief: '/x', repo: '/work' }, { name: 'bad name', folder: FOLDER }, { name: 'REL', folder: 'rel' }] }), { mode: 0o644 })
-  const me = process.getuid()
-  assert.deepEqual(await readLanes(f, { ownerUid: me, stopAt: root }), [{ name: 'LAB', folder: FOLDER }])
-  await assert.rejects(readLanes(f, { ownerUid: me + 1, stopAt: root }), /lanes-file/)
-  fs.chmodSync(f, 0o666)
-  await assert.rejects(readLanes(f, { ownerUid: me, stopAt: root }), /lanes-file/)
-  fs.chmodSync(f, 0o644)
-  fs.chmodSync(root, 0o777)
-  await assert.rejects(readLanes(f, { ownerUid: me, stopAt: root }), /lanes-parent/)
-  fs.chmodSync(root, 0o755)
-  fs.writeFileSync(f, '{"lanes":5}')
-  await assert.rejects(readLanes(f, { ownerUid: me, stopAt: root }), /lanes-shape/)
-})
-
 const crypto = require('node:crypto')
 const { readStores, allLanes } = require('./spool.js')
 const { reservedHit } = require('./reserved.js')
@@ -273,28 +255,16 @@ test('a lane folder that is a link is skipped', async () => {
   assert.deepEqual(await readStores(w.dir), [])
 })
 
-test('allLanes adds the stores to the root file, treats a missing root file as none, and lets a root lane win a name', async () => {
+test('allLanes reads the stores, and a missing store folder is no lanes', async () => {
   const w = storeWorld()
   w.put(w.good)
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cb-lanes-')))
-  fs.chmodSync(root, 0o755)
-  const me = process.getuid()
-  const opts = { rootFile: path.join(root, 'lanes.json'), storeDir: w.dir, ownerUid: me, stopAt: root }
-  assert.deepEqual(await allLanes(opts), [{ name: 'API', folder: `${w.repo}/api`, repo: w.repo }])
-  fs.writeFileSync(opts.rootFile, JSON.stringify({ lanes: [{ name: 'API', folder: '/root/api', brief: '/root/api/b' }, { name: 'OTHER', folder: '/o', brief: '/o/b' }] }), { mode: 0o644 })
-  assert.deepEqual(await allLanes(opts), [{ name: 'API', folder: '/root/api' }, { name: 'OTHER', folder: '/o' }])
-  fs.chmodSync(opts.rootFile, 0o666)
-  await assert.rejects(allLanes(opts), /lanes-file/)
+  assert.deepEqual(await allLanes({ storeDir: w.dir }), [{ name: 'API', folder: `${w.repo}/api`, repo: w.repo }])
+  assert.deepEqual(await allLanes({ storeDir: path.join(w.dir, 'nothere') }), [])
 })
 
-test('reserved names are matched by skeleton, also from the root file', async () => {
+test('reserved names are matched by skeleton', async () => {
   for (const n of ['MANAGER', 'manager_', 'MANAGER-2', 'MANAG3R', 'rnANAGER']) assert.equal(reservedHit(n), true, n)
   for (const n of ['LAB', 'API', 'HARBOR', 'MANAGER-API']) assert.equal(reservedHit(n), false, n)
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cb-lanes-')))
-  fs.chmodSync(root, 0o755)
-  const f = path.join(root, 'lanes.json')
-  fs.writeFileSync(f, JSON.stringify({ lanes: [{ name: 'MANAGER_', folder: '/m' }, { name: 'LAB', folder: '/l' }] }), { mode: 0o644 })
-  assert.deepEqual(await readLanes(f, { ownerUid: process.getuid(), stopAt: root }), [{ name: 'LAB', folder: '/l' }])
 })
 
 test('the spool opens at most six panels a minute', async () => {
@@ -386,9 +356,7 @@ test('a name that is in two stores is dropped from both', async () => {
   const other = JSON.stringify(b.good)
   fs.writeFileSync(path.join(a.dir, `${b.key}.json`), other, { mode: 0o600 })
   assert.equal((await readStores(a.dir)).length, 2)
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cb-lanes-')))
-  fs.chmodSync(root, 0o755)
-  assert.deepEqual(await allLanes({ rootFile: path.join(root, 'lanes.json'), storeDir: a.dir, ownerUid: process.getuid(), stopAt: root }), [])
+  assert.deepEqual(await allLanes({ storeDir: a.dir }), [])
 })
 
 test('the spool refuses to open a lead-made lane when its repo already has eight live sessions', async () => {
@@ -449,7 +417,7 @@ test('a close request for a listed lane in this window is handed to the sweep an
   assert.deepEqual(fs.readdirSync(w.dir).filter((x) => x.startsWith('.')), [])
 })
 
-test('a close request for a folder that is not this window\'s is left for another window; an unknown lane or an unreadable lanes file drops it', async () => {
+test('a close request for a folder that is not this window\'s is left for another window; an unknown lane or an unreadable lane list drops it', async () => {
   const a = world({ ws: ['/other'] })
   const f = a.putClose('LAB')
   assert.equal(await a.spool.handleClose('LAB'), 'not-mine')
@@ -564,7 +532,7 @@ test('a reopen request for a listed lane whose record names that sid reopens it 
   assert.deepEqual(fs.readdirSync(w.dir).filter((x) => x.startsWith('.')), [])
 })
 
-test('a reopen whose sid is not the record\'s, for a root lane, or with a bad body is answered with a fixed code and reopens nothing', async () => {
+test('a reopen whose sid is not the record\'s, for a lane with no saved session, or with a bad body is answered with a fixed code and reopens nothing', async () => {
   const other = '2a1b2c3d-0000-4000-8000-123456789abc'
   const cases = [
     [PARKED, `${other}\n`, 'sid-mismatch'],

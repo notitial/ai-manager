@@ -10,12 +10,12 @@ Callboard Panels is the VS Code side of **callboard**, the Claude Code mod that 
 - **Reopens a parked lane.** For `lane_unpark`, it reopens that exact conversation as a panel, but only when the lane's record names that session id.
 - **Closes finished panels.** After `lane_retire` or `lane_terminate`, it closes the lane's tab once that session has ended. It closes one matching tab only and never a panel with a reserved name. The conversation history stays.
 
-It doesn't touch the terminal, any setting or the network. It reads and writes request files under `~/.claude/callboard`, reads `~/.claude/sessions` and the root-owned lane list at `/usr/local/libexec/callboard/lanes.json`, and runs `/bin/ps` to check a session's process.
+It doesn't touch the terminal, any setting or the network. It reads and writes request files under `~/.claude/callboard`, reads `~/.claude/sessions` and the lane store under `~/.claude/callboard/lanes`, and runs `/bin/ps` to check a session's process.
 
 ## Requirements
 
 - The **Claude Code** extension (`anthropic.claude-code`). It's declared as a dependency.
-- The **callboard mod**, installed with callboard's `install.sh` (`--vscode` or `--all`). The installer also puts this extension in place. It isn't on the Marketplace.
+- The **callboard mod**, loaded from your checkout of the ai-manager repo. This extension is a link into the same checkout, made by callboard's `link-extension.sh`. It isn't on the Marketplace.
 
 ## Things to know
 
@@ -26,6 +26,6 @@ It doesn't touch the terminal, any setting or the network. It reads and writes r
 
 ## Updating
 
-Reinstall with callboard's `install.sh`, then reload the VS Code windows. A new version keeps the same id, so it installs as an upgrade.
+Pull the checkout, run callboard's `link-extension.sh --apply` when the version changed, then reload the VS Code windows. A new version keeps the same id, and the script removes the old version's link.
 
 More in the callboard README in the [ai-manager repo](https://github.com/notitial/ai-manager).

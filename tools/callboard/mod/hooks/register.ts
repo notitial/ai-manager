@@ -16,7 +16,6 @@ const HEAD = '/usr/bin/head'
 const PS = '/bin/ps'
 const KILL = '/bin/kill'
 const STAT_FMT = '%u %Lp %l %HT %i %z %m'
-const LANES_PATH = '/usr/local/libexec/callboard/lanes.json'
 const TICK_MS = 2000
 const ACTION_TIMEOUT_MS = 60_000
 const RESUME_TTL_MS = 120_000
@@ -112,7 +111,7 @@ async function dirOk($: any, path: string, uid: number): Promise<boolean> {
   return !!f && f.kind === 'dir' && f.uid === uid && f.mode === 0o700
 }
 
-// One log file per session id; fixed reason codes and lane names from lanes.json only.
+// One log file per session id; fixed reason codes and lane names from the lane stores only.
 // Repeated identical refusals (and capped notices) are logged once, so a stuck cue cannot fill the disk.
 async function log($: any, sid: string, event: string, reason = '') {
   if (!c.SID_RE.test(sid)) return
@@ -239,35 +238,13 @@ async function loadStores($: any): Promise<{ key: string; store: c.Store }[]> {
   return out
 }
 
-// The root-owned file (optional now: absent means no root lanes; present but unsafe still refuses) plus the lead-made lanes. A root lane wins a name clash;
-// a store lane whose name is taken is dropped.
+// The lanes the leads made, from the per-user stores. A store lane whose name is taken in another store is dropped.
 async function loadLanes($: any): Promise<c.Lane[] | string> {
-  let root: c.Lane[] = []
-  const st = await $.process.run([STAT, '-f', STAT_FMT, '--', LANES_PATH], { timeoutMs: 5000, env: { LC_ALL: 'C' } })
-  if (st.exitCode !== 0 && !/No such file or directory/.test(st.stderr)) return 'lanes-file'
-  const f = st.exitCode === 0 ? c.parseStat(st.stdout) : undefined
-  if (st.exitCode === 0 && !f) return 'lanes-file'
-  if (f) {
-    if (f.kind !== 'file' || f.uid !== 0 || f.nlink !== 1 || (f.mode & 0o022) !== 0) return 'lanes-file'
-    const chain: { uid: number; mode: number }[] = []
-    let dir = LANES_PATH
-    for (;;) {
-      dir = dir.slice(0, dir.lastIndexOf('/')) || '/'
-      const d = await facts($, dir)
-      if (!d || d.kind !== 'dir') return 'lanes-parent'
-      chain.push(d)
-      if (dir === '/') break
-    }
-    if (!c.rootChainOk(chain)) return 'lanes-parent'
-    const parsed = c.parseLanes(await $.fs.read(LANES_PATH))
-    if (!parsed.ok) return parsed.reason
-    root = parsed.lanes
-  }
   const stores = await loadStores($)
   const count = new Map<string, number>()
   for (const s of stores) for (const l of s.store.lanes) count.set(l.name, (count.get(l.name) ?? 0) + 1)
-  const out = [...root]
-  for (const s of stores) for (const l of s.store.lanes) if (count.get(l.name) === 1 && !out.some((x) => x.name === l.name)) out.push({ name: l.name, folder: l.folder, brief: l.brief, repo: l.repo, src: s.key, ...(l.adopted ? { adopted: true as const, lead: l.lead } : {}), ...(l.model ? { model: l.model } : {}), ...(l.sid !== undefined ? { sid: l.sid } : {}), ...(l.parked !== undefined ? { parked: l.parked } : {}), ...(l.leadName ? { leadName: l.leadName } : {}) })
+  const out: c.Lane[] = []
+  for (const s of stores) for (const l of s.store.lanes) if (count.get(l.name) === 1) out.push({ name: l.name, folder: l.folder, brief: l.brief, repo: l.repo, src: s.key, ...(l.adopted ? { adopted: true as const, lead: l.lead } : {}), ...(l.model ? { model: l.model } : {}), ...(l.sid !== undefined ? { sid: l.sid } : {}), ...(l.parked !== undefined ? { parked: l.parked } : {}), ...(l.leadName ? { leadName: l.leadName } : {}) })
   return out
 }
 
@@ -1526,10 +1503,10 @@ async function leadTools($: any, sid: string) {
       name: `lane_${verb}`,
       description:
         verb === 'rename'
-          ? 'Bind a brand-new session to a lane: writes a rename cue for the session with this id. sid: its session id. lane: the lane name from lanes.json. The session must be in the lane folder, empty and unnamed, and less than 2 minutes old.'
+          ? 'Bind a brand-new session to a lane: writes a rename cue for the session with this id. sid: its session id. lane: the lane name. The session must be in the lane folder, empty and unnamed, and less than 2 minutes old.'
           : verb === 'compact'
             ? "Ask the lane's session to compact. If it asked for that with request_compact on-cue, it compacts now; otherwise the plugin nudges it to save its notes and compact itself at the end of its turn. lane: the lane name."
-            : `Cue the lane's session to ${verb}. lane: the lane name from lanes.json. The session applies its own limits. A start only works within 2 minutes of the session opening.`,
+            : `Cue the lane's session to ${verb}. lane: the lane name. The session applies its own limits. A start only works within 2 minutes of the session opening.`,
       inputSchema: {
         type: 'object',
         properties: verb === 'rename' ? { sid: text, lane: text } : { lane: text },
@@ -1542,10 +1519,10 @@ async function leadTools($: any, sid: string) {
       name: `lane_${verb}`,
       description:
         verb === 'terminate'
-          ? "Stop the lane's session with SIGTERM, whatever it is doing. The person is asked to confirm every time. lane: the lane name from lanes.json."
+          ? "Stop the lane's session with SIGTERM, whatever it is doing. The person is asked to confirm every time. lane: the lane name."
           : verb === 'park'
-            ? "Park the lane's session: stop it and close its tab, but keep the conversation. lane_unpark reopens it later. The session must confirm first: idle for 30 seconds, an empty prompt box, no background agents or shells. No report is needed. Works for lanes you made and lanes a session joined, not for lanes from the root-owned lanes.json. lane: the lane name."
-            : "Stop the lane's session once it confirms it can end: idle, empty prompt box, no background agents or shells, and the last line of <repo>/.archive/<LANE>/REPORT.md reads `status: done <its session id>` in a file newer than its last prompt. Does nothing otherwise. Retire is final: the conversation cannot be reopened with lane_unpark. Use lane_park for a lane you may need again. lane: the lane name from lanes.json.",
+            ? "Park the lane's session: stop it and close its tab, but keep the conversation. lane_unpark reopens it later. The session must confirm first: idle for 30 seconds, an empty prompt box, no background agents or shells. No report is needed. Works for lanes you made and lanes a session joined. lane: the lane name."
+            : "Stop the lane's session once it confirms it can end: idle, empty prompt box, no background agents or shells, and the last line of <repo>/.archive/<LANE>/REPORT.md reads `status: done <its session id>` in a file newer than its last prompt. Does nothing otherwise. Retire is final: the conversation cannot be reopened with lane_unpark. Use lane_park for a lane you may need again. lane: the lane name.",
       inputSchema: { type: 'object', properties: { lane: text }, required: ['lane'] },
     })
   }
@@ -1557,13 +1534,13 @@ async function leadTools($: any, sid: string) {
   })
   await $.tool.register({
     name: 'lane_remove',
-    description: 'Remove a lane you created or one a session joined (not one from the root-owned lanes.json). Refused while a live session carries the lane name. lane: the lane name.',
+    description: 'Remove a lane you created or one a session joined. Refused while a live session carries the lane name. lane: the lane name.',
     inputSchema: { type: 'object', properties: { lane: text }, required: ['lane'] },
   })
   await $.tool.register({
     name: 'lane_open',
     description:
-      'Open a new panel in the lane folder (VS Code only) and return its session id. Then call lane_rename with that id and the lane, and lane_start. lane: the lane name from lanes.json. Refused when a live session already carries the lane name. Refused for a parked lane: use lane_unpark.',
+      'Open a new panel in the lane folder (VS Code only) and return its session id. Then call lane_rename with that id and the lane, and lane_start. lane: the lane name. Refused when a live session already carries the lane name. Refused for a parked lane: use lane_unpark.',
     inputSchema: { type: 'object', properties: { lane: text }, required: ['lane'] },
   })
   await $.tool.register({
@@ -1635,14 +1612,14 @@ async function managerTools($: any, sid: string) {
     ['lane_terminate', "Stop a lane's session with SIGTERM, whatever it is doing. Every stop asks the person: they confirm in a dialog that names the lane, its repo, the session and the pid. lane: the lane name.", lane],
     ['lane_retire', "Stop a lane's session once it confirms it can end: idle, empty prompt box, no background agents or shells, and its report signed done. Every stop asks the person: they confirm in a dialog first, then the lane must confirm. Retire is final. lane: the lane name.", lane],
     // v14.1 (2026-11-04): lanes left behind in a dead or closed repo can be cleared, one repo per call.
-    ['lane_remove', `Remove lanes that no live session carries (not ones from the root-owned lanes.json), only when the person asks. Pass lane (one name) or lanes (1 to ${c.REMOVE_MAX} names, all in one repo), not both. Every remove asks the person: they confirm in one dialog that names the lanes and their repo. If any lane is refused, none is removed.`, { type: 'object', properties: { lane: { type: 'string' }, lanes: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: c.REMOVE_MAX } } }],
+    ['lane_remove', `Remove lanes that no live session carries, only when the person asks. Pass lane (one name) or lanes (1 to ${c.REMOVE_MAX} names, all in one repo), not both. Every remove asks the person: they confirm in one dialog that names the lanes and their repo. If any lane is refused, none is removed.`, { type: 'object', properties: { lane: { type: 'string' }, lanes: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: c.REMOVE_MAX } } }],
   ]
   for (const [name, description, inputSchema] of tools) await $.tool.register({ name, description, inputSchema })
   managerDeclared.add(sid)
 }
 
 // v14.1 (2026-11-04): lane_remove at manager reach: one lane (lane) or 1 to 12 lanes of ONE repo (lanes), behind ONE dialog. Each lane must resolve at
-// manager reach, come from a store (not the root file), and all from the same store (mixed-repos); refused before the dialog, and each again after the click:
+// manager reach and all come from the same store (mixed-repos); refused before the dialog, and each again after the click:
 // a lane a live session carries (name-in-use), and one whose record names a session that holds a live presence file (target-is-lead, as the manager's stops).
 // Any refusal names its lane and removes none. After Remove the grant must still be the manager's of the same epoch, and every lane still in that store; then
 // one editStore write takes them all out. Wrapped in ownWrite as sidClearAfterStop: it marks only the manager's own session (which has no watch), so the
@@ -1673,7 +1650,6 @@ async function managerRemove($: any, e: unknown, sid: string, no: (reason: strin
     for (const n of names) {
       const pick = c.leadLane(base.lanes, base.g, n)
       if (!pick.ok) return named(pick.reason, n)
-      if (!pick.lane.src) return named('root-lane', n)
       lanes.push(pick.lane)
     }
     const k = key ?? lanes[0].src!
@@ -2535,7 +2511,7 @@ async function handle($: any, sid: string, cue: c.Cue, answer: Answer) {
     // A lead is never renamed into a lane: the two grants would hold one session.
     if (leadBusy(sid)) return refuse('lead-holder')
     if (laneBinding.has(sid)) return refuse('already-bound')
-    // v15.1 (security review): a record name that is reserved on this machine (a root lanes.json entry, or one written in the moment of a reserve) is never
+    // v15.1 (security review): a record name that is reserved on this machine (one written in the moment of a reserve) is never
     // taken by a rename.
     if (c.reservedHit(cue.name!)) return refuse('name-reserved')
     laneBinding.add(sid)
@@ -2642,7 +2618,7 @@ async function handle($: any, sid: string, cue: c.Cue, answer: Answer) {
   if (typeof lanes === 'string') return refuse(lanes)
   const l = lanes.find((x) => x.name === bound.name)
   if (!l) return refuse('unknown-lane')
-  if (!c.recOk(bound.rec, l, await sha($, c.recordText(l)))) return refuse('record-changed')
+  if (!c.recOk(bound.rec, await sha($, c.recordText(l)))) return refuse('record-changed')
   if ((await sessionRoot($)) !== l.folder) return refuse('wrong-folder')
   if (cue.verb === 'start' && bound.adopted) return refuse('adopted-record')
   const blocked = await idleCheck($, sid, reg)
@@ -2671,7 +2647,7 @@ async function handle($: any, sid: string, cue: c.Cue, answer: Answer) {
     const real = (await run($, [REALPATH, '--', l.brief])).stdout.trim()
     const realFolder = (await run($, [REALPATH, '--', l.folder])).stdout.trim()
     if (!real || !realFolder || !c.within(realFolder, real)) return refuse('brief-path')
-    // Only a record that carries a model is switched (a root lane or an older record is not). /model adds a turn, so a lane it fails on cannot be started later.
+    // Only a record that carries a model is switched (an older record is not). /model adds a turn, so a lane it fails on cannot be started later.
     if (l.model && !(await modelSet($, l.model))) return refuse('model-failed')
     await log($, sid, 'brief-sha256', await sha($, await $.fs.read(l.brief)))
     await bump($, (ct2) => ({ ...ct2, startDone: true }))
@@ -2823,8 +2799,7 @@ async function renameTick($: any, sid: string) {
 
 // v13: a bound session makes sure its own store record names it, once per binding (name, time and record hash): the record of a lane born through lane_rename,
 // one restored through the dialog, a rebind and every record written before v13. Run from the tick before the cue is claimed, under a time limit. The key is set
-// first, so a failure is not retried in this process (the next restart falls back to the Restore dialog, whose bind is followed by this sync). A root lane is
-// never written. The write re-checks the binding inside the store queue, so a /callboard off that cleared it meanwhile is not undone.
+// first, so a failure is not retried in this process (the next restart falls back to the Restore dialog, whose bind is followed by this sync). The write re-checks the binding inside the store queue, so a /callboard off that cleared it meanwhile is not undone.
 const sidSynced = new Map<string, string>()
 // The cheap part, every tick with no time limit (a state read): the binding the sync is due for, if any; its key is set here.
 async function sidSyncDue($: any, sid: string): Promise<Bound | undefined> {
@@ -2841,7 +2816,7 @@ async function sidSync($: any, sid: string, b: Bound & { name: string }) {
   if (typeof lanes === 'string') return failed(lanes)
   const l = lanes.find((x) => x.name === b.name)
   if (!l || !l.src) return
-  if (!c.recOk(b.rec, l, await sha($, c.recordText(l)))) return failed('record-changed')
+  if (!c.recOk(b.rec, await sha($, c.recordText(l)))) return failed('record-changed')
   if ((await sessionRoot($)) !== l.folder) return failed('wrong-folder')
   if (l.sid === sid && l.parked === undefined) return
   const same = async () => {
@@ -2856,7 +2831,7 @@ async function sidSync($: any, sid: string, b: Bound & { name: string }) {
     let done = false
     const lanes2: c.Store['lanes'] = []
     for (const x of parsed.store.lanes) {
-      if (x.name === b.name && c.recOk(b.rec, { ...x, src: l.src }, await sha($, c.recordText(x)))) {
+      if (x.name === b.name && c.recOk(b.rec, await sha($, c.recordText(x)))) {
         hit = true
         done = x.sid === sid && x.parked === undefined
         lanes2.push({ ...x, sid, parked: undefined })
@@ -3140,7 +3115,7 @@ async function tick($: any) {
   }
 }
 
-// The steps every lead tool shares: main agent, grant, lanes.json, the live registry.
+// The steps every lead tool shares: main agent, grant, the lane list, the live registry.
 const SUBAGENT = ['subagent', 'for the main agent only.'] as const
 async function leadBase($: any, e: unknown, sid: string) {
   if ((e as { agentId?: string }).agentId !== undefined) return { err: SUBAGENT }
@@ -3171,7 +3146,7 @@ async function leadCore($: any, sid: string) {
     if ('no' in reach) return { err: ['conductor-list', c.REASON_TEXT['conductor-list']] as const }
     g = { ...now, pins: reach.pins }
   }
-  // v13.6: a lane this read finds live counts as seen live for the check-in's gone (a root-file lane has no other mark).
+  // v13.6: a lane this read finds live counts as seen live for the check-in's gone.
   const seen = laneObs.get(sid)
   if (seen) {
     const entries = live.map(regEntry)
@@ -5192,8 +5167,7 @@ export const register: Register = (on) => {
     if ('err' in first) return no(...first.err)
     // v14.1: a grant that became the manager's during leadPrep never takes the lead path (it has no dialog).
     if (grantOf(sid)?.level === 'manager') return no('grant-changed', c.reasonWhy('grant-changed'))
-    const key = first.lane.src
-    if (!key) return no('root-lane', 'root-lane: that lane is from the root-owned lanes.json; only lanes made with lane_create or joined by a session can be removed.')
+    const key = first.lane.src!
     let gone = ''
     const w = await ownWrite($, sid, () => editStore(
       $,
@@ -5274,8 +5248,7 @@ export const register: Register = (on) => {
     let prep = await leadPrep($, e, sid)
     if ('err' in prep) return no(...prep.err)
     const rec = prep.lane
-    const key = rec.src
-    if (!key) return no('root-lane', c.reasonWhy('root-lane'))
+    const key = rec.src!
     if (rec.sid === undefined) return no('no-saved-session', c.reasonWhy('no-saved-session'))
     const want = rec.sid
     const name = rec.name
@@ -5364,8 +5337,6 @@ export const register: Register = (on) => {
       const level = grantOf(sid)?.level
       const prep = await leadPrep($, e, sid)
       if ('err' in prep) return no(...prep.err)
-      // A park marks the lane's store record; a lane from the root-owned file has none.
-      if (verb === 'park' && !prep.lane.src) return no('root-lane', c.reasonWhy('root-lane'))
       const one = c.laneSession(prep.entries, prep.lane, sid)
       if (!one.ok) return no(one.reason, c.reasonWhy(one.reason))
       const target = one.entry
