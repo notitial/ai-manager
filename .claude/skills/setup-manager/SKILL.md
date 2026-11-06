@@ -21,7 +21,7 @@ first; it is the source for every step here, and wins where the two differ.
   checks below use `jq -e` and print only `true` or `false`.
 - Fill in `<checkout>` with the person's live checkout (`pwd -P` in a session started there). It must match
   `^/[A-Za-z0-9._/-]+$`; otherwise build no command with it, and stop. Callboard loads from
-  it, so it must stay on `main` and move only with `git pull --ff-only`: never pull, check out or edit there
+  it, so it must stay on `main` and move only by a fast-forward to a reviewed commit (docs/setup.md, Updating): never pull, check out or edit there
   yourself. For the usage watcher, `<commit>` is `git -C <checkout> rev-parse HEAD`; ask the person to confirm it is
   a commit of `main` they have read.
 - The usage watcher's installer fetches `main` from a fixed URL without credentials, so it works only once the repo
@@ -39,8 +39,8 @@ first; it is the source for every step here, and wins where the two differ.
 2. **Callboard.**
    - The live checkout: run `git -C <checkout> remote get-url origin`; it must print
      `https://github.com/notitial/ai-manager.git`, else show it and stop. Then run
-     `git -C <checkout> -c core.hooksPath=/dev/null -c core.fsmonitor=false status -sb` (the flags keep git from running a hook or monitor a changed
-     `.git/config` could name). Good: `## main...origin/main` and nothing else. Another
+     `git -C <checkout> --no-pager -c core.hooksPath=/dev/null -c core.fsmonitor=false status -sb` (the flags keep git from running a pager, hook or
+     monitor a changed `.git/config` could name). Good: `## main...origin/main` and nothing else. Another
      branch, local changes or commits ahead: show it and stop; the person sorts it out (never you).
    - The earlier root-owned install: run `ls -d /usr/local/libexec/callboard`. If it exists, give the person
      `sudo rm -rf /usr/local/libexec/callboard`, to run in a terminal, and say step 3 replaces its `env` value.

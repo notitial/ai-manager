@@ -25,7 +25,7 @@ protection for normal use, and that the second guard can come from where agents 
 - **Load straight from the checkout agents work in.** It's cheap, but every branch switch and half-done edit goes
   live in every session at once.
 - **Load from a live checkout that agents never edit** (chosen). One clone stays on `main` and moves only with
-  `git pull --ff-only` after a merge. Agents edit in their own clones under `/tmp`.
+  a fast-forward to a reviewed commit of `main` after a merge. Agents edit in their own clones under `/tmp`.
 
 For the root `lanes.json`, which only `install.sh --lanes` could write:
 
@@ -53,9 +53,11 @@ For the root `lanes.json`, which only `install.sh --lanes` could write:
   `docs/**`, `CLAUDE.md` and `.git/**`, from the real path, so each starts with `//` (an `Edit` rule covers the Write
   tool too). The checkout feeds every session more than the mod (the always-on rule, CLAUDE.md, skills, the
   manager's docs), and its `.git/` decides what a pull brings. `.archive/` stays writable.
-- **The update path is hardened.** Before a pull the person checks `remote get-url origin` against the fixed URL,
-  and every status, fetch, log and pull the docs give runs with `-c core.hooksPath=/dev/null -c core.fsmonitor=false`,
-  so a changed `.git/config` can't run code or swap the source unseen.
+- **The update path is hardened.** The person checks `remote get-url origin` against the fixed URL, fetches `main`
+  from that URL, checks that the fetched commit is the pull request's merge commit on GitHub, reads exactly that diff
+  and fast-forwards to exactly that commit, with no second fetch. Those git calls run with hooks, the file-system
+  monitor, the pager, diff drivers and credential helpers turned off. Other repo-local config (such as
+  `url.<base>.insteadOf`) still applies, so the commit check and the read diff are the guard, not the flags.
 - **A minimal warning shipped (v15.2); a refusing guard stays deferred.** At session start the mod reads the live
   checkout's `.git/HEAD` as a plain file. It finds the checkout from the mod's own folder (three levels above `mod/`)
   and makes no git call, since a changed `.git/config` could run code. When HEAD is not `ref: refs/heads/main` it

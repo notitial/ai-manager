@@ -8,8 +8,9 @@ You run every install step yourself. An agent never edits settings or permission
 [The guided way](#the-guided-way)).
 
 `<checkout>` below is your live checkout of this repo: the absolute path of one clone that stays on `main` and moves
-only with `git -C <checkout> pull --ff-only` after a merge. Callboard loads straight from it, so a pull is
-callboard's install. Agents never edit it: they work in their own clones under `/tmp` (CLAUDE.md, Where agents edit).
+only by a fast-forward to a reviewed commit of `main` after a merge ([Updating](#updating)). Callboard loads straight
+from it, so that update is callboard's install. Agents never edit it: they work in their own clones under `/tmp`
+(CLAUDE.md, Where agents edit).
 `<commit>` is a full 40-character commit of `main` you have read, for the usage watcher.
 
 The usage watcher's installer fetches `main` from the fixed URL `https://github.com/notitial/ai-manager.git` over
@@ -264,7 +265,7 @@ lane or a live lead carries cannot be reserved. Details: callboard README, The m
 
 | Part | Check | Good when |
 |---|---|---|
-| Live checkout | `git -C <checkout> -c core.hooksPath=/dev/null -c core.fsmonitor=false status -sb` | `## main...origin/main` and nothing else |
+| Live checkout | `git -C <checkout> --no-pager -c core.hooksPath=/dev/null -c core.fsmonitor=false status -sb` | `## main...origin/main` and nothing else |
 | Origin | `git -C <checkout> remote get-url origin` | `https://github.com/notitial/ai-manager.git` |
 | Old install gone | `ls /usr/local/libexec/callboard` | No such file or directory |
 | Panels extension | `ls -l ~/.vscode/extensions \| grep callboard-panels` | one link, to `<checkout>/tools/callboard/extension` |
@@ -287,23 +288,34 @@ First check where it pulls from: this must print `https://github.com/notitial/ai
 git -C <checkout> remote get-url origin
 ```
 
-Then fetch, read the incoming diff, and pull. The `-c` flags keep git from running a hook or a file-system monitor
+Then fetch `main` from the fixed URL, not from whatever the checkout's config names, and print the commit it
+brought:
+
+```
+git -C <checkout> -c core.hooksPath=/dev/null -c core.fsmonitor=false -c credential.helper= fetch https://github.com/notitial/ai-manager.git +refs/heads/main:refs/remotes/origin/main
+```
+
+```
+git -C <checkout> rev-parse refs/remotes/origin/main
+```
+
+That 40-character commit is `<commit>` below. It must be the merge commit GitHub shows for the pull request you are
+installing; anything else: stop. Read exactly that diff, then fast-forward to exactly that commit, with no second
+fetch. The flags keep git from running a hook, a file-system monitor, a pager, a diff driver or a credential helper
 that a changed `.git/config` could name:
 
 ```
-git -C <checkout> -c core.hooksPath=/dev/null -c core.fsmonitor=false fetch
+git -C <checkout> --no-pager -c core.hooksPath=/dev/null -c core.fsmonitor=false log -p --no-textconv --no-ext-diff HEAD..<commit> | less
 ```
 
 ```
-git -C <checkout> -c core.hooksPath=/dev/null -c core.fsmonitor=false log -p HEAD..origin/main
+git -C <checkout> -c core.hooksPath=/dev/null -c core.fsmonitor=false merge --ff-only <commit>
 ```
 
-```
-git -C <checkout> -c core.hooksPath=/dev/null -c core.fsmonitor=false pull --ff-only
-```
-
-The pull is callboard's update, and the rule link follows the checkout too, so a change to `tools/callboard/` or `rules/` reaches
-every session: never pull a commit you haven't read. After a callboard update, run `link-extension.sh --apply` when
+Other settings in the checkout's own config still apply (for example a `url.<base>.insteadOf` that rewrites the
+fetch), which is why the commit check and the read diff are the guard. The merge is callboard's update, and the rule
+link follows the checkout too, so a change to `tools/callboard/` or `rules/` reaches every session: never install a
+commit you haven't read. After a callboard update, run `link-extension.sh --apply` when
 the extension's version changed, reload the VS Code windows and restart every session. For the usage watcher, run
 its installer again with the new `--ref`.
 

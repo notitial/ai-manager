@@ -56,8 +56,8 @@ Outside those directories, do not search for `package.json`, `Makefile`, or simi
 ## Where agents edit
 
 The person's checkout of this repo is the live install: the callboard mod and the panels extension load straight
-from it (`docs/setup.md`). It stays on `main` and moves only with `git pull --ff-only` after a merge, so a branch or
-a half-done edit never goes live.
+from it (`docs/setup.md`). It stays on `main` and moves only by a fast-forward to a reviewed commit after a merge
+(`docs/setup.md`, Updating), so a branch or a half-done edit never goes live.
 
 - Code changes go in a plain clone under `/tmp`, such as `/tmp/ai-manager-<task>`, never a worktree. Git MCP calls
   pass `path` set to that clone.
