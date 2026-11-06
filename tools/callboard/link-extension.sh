@@ -5,7 +5,8 @@
 #   link-extension.sh --remove [--apply]   remove every notitial.callboard-panels-* link into this checkout
 # The version comes from extension/package.json. A link into this checkout under another version's name (left by a
 # version bump) is removed. A real folder, or a link to anywhere else, under any notitial.callboard-panels-* name is
-# never touched: the script stops and names it, so an old copy can't shadow the link. Run it as your user: it refuses
+# never touched: the script stops and names it, so an old copy can't shadow the link. The same goes for anything under
+# the earlier id local.callboard-panels-*, which would answer lane_open as well. Run it as your user: it refuses
 # root, never uses sudo and changes no setting. Reload the VS Code windows afterwards.
 # --ext-dir is for the tests. Tests: bash tools/callboard/test-link-extension.sh
 set -euo pipefail
@@ -50,6 +51,8 @@ ours() { [ -L "$1" ] && [ "$(/usr/bin/readlink "$1")" = "$SRC" ]; }
 # Case-insensitive, as APFS and VS Code's extension ids are: an old copy in another letter case could shadow the link.
 shopt -s nullglob nocaseglob
 entries=("$EXT_DIR/$ID"-*)
+# The extension's earlier id (before 1.0.0). A copy left under it would answer lane_open too and open a lane twice.
+legacy=("$EXT_DIR/local.callboard-panels"-*)
 shopt -u nullglob nocaseglob
 
 if [ "$REMOVE" = 1 ]; then
@@ -57,6 +60,7 @@ if [ "$REMOVE" = 1 ]; then
   for e in ${entries[@]+"${entries[@]}"}; do
     if ours "$e"; then act /bin/rm -- "$e"; n=$((n + 1)); else say "left alone (not a link into this checkout): $e"; fi
   done
+  for e in ${legacy[@]+"${legacy[@]}"}; do say "left alone (the extension's earlier id): $e"; done
   if [ "$APPLY" = 1 ]; then
     say "removed $n link(s) into $SRC"
   else
@@ -69,6 +73,9 @@ fi
 # Check everything before changing anything, so a refusal leaves the folder as it was.
 stale=()
 already=0
+for e in ${legacy[@]+"${legacy[@]}"}; do
+  die "$e is a copy under the extension's earlier id and would open every lane twice; remove it yourself, then run this again"
+done
 for e in ${entries[@]+"${entries[@]}"}; do
   if ours "$e"; then
     if [ "$e" = "$TARGET" ]; then already=1; else stale+=("$e"); fi

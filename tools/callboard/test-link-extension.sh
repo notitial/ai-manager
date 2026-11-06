@@ -95,6 +95,15 @@ run "$C" --ext-dir "$E" --apply
 check "an old copy in another letter case refuses" [ $? -ne 0 ]
 /bin/rm -rf "$E/Notitial.Callboard-Panels-0.1.0"
 
+/bin/mkdir -p "$E/local.callboard-panels-0.1.0"
+run "$C" --ext-dir "$E" --apply
+check "a copy under the earlier id refuses" [ $? -ne 0 ]
+check "the refusal names the earlier id" grep -qF "local.callboard-panels-0.1.0 is a copy under the extension's earlier id" "$T/out"
+check "the earlier-id copy is left alone" [ -d "$E/local.callboard-panels-0.1.0" ]
+run "$C" --ext-dir "$E" --remove --apply
+check "remove reports the earlier-id copy and leaves it" grep -qF "left alone (the extension's earlier id): $E/local.callboard-panels-0.1.0" "$T/out"
+/bin/rm -rf "$E/local.callboard-panels-0.1.0"
+
 run "$C" --ext-dir
 check "--ext-dir with no folder is a usage error" [ $? -eq 2 ]
 

@@ -46,7 +46,7 @@ first; it is the source for every step here, and wins where the two differ.
      `sudo rm -rf /usr/local/libexec/callboard`, to run in a terminal, and say step 3 replaces its `env` value.
    - The extension link: run the dry run `bash <checkout>/tools/callboard/link-extension.sh` and show it. If it
      refuses an entry it names, show it. Only when the entry is `~/.vscode/extensions/<name>` with `<name>` matching
-     `^notitial\.callboard-panels-[A-Za-z0-9._-]+$` (any letter case), give the person `rm -rf '<that path>'`;
+     `^(notitial|local)\.callboard-panels-[A-Za-z0-9._-]+$` (any letter case; `local.` is the extension's earlier id), give the person `rm -rf '<that path>'`;
      anything else: build no command, and stop.
      Then run the dry run again.
    - Give the person `bash <checkout>/tools/callboard/link-extension.sh --apply`. After they paste the output, run

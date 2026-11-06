@@ -52,8 +52,9 @@ sudo rm -rf /usr/local/libexec/callboard
 rm -rf ~/.vscode/extensions/notitial.callboard-panels-1.0.0
 ```
 
-The earlier installer only ever wrote version 1.0.0. If `link-extension.sh` below names another real folder, remove
-that one the same way.
+The earlier installer only ever wrote version 1.0.0. If `link-extension.sh` below names another real folder, or a
+copy under the extension's earlier id `local.callboard-panels-*` (it would open every lane twice), remove that one the
+same way.
 
 - In the next steps, the `CLAUDE_CODE_PLUGIN_DIRS` value **replaces** `/usr/local/libexec/callboard/mod`. Never add a
   second folder: two folders holding a `callboard` mod would both load. Until you replace it, a session that starts
