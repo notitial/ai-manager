@@ -1,0 +1,19 @@
+{
+  "name": "callboard-panels",
+  "displayName": "callboard panels",
+  "description": "Opens, reopens and closes Claude Code lane panels and reports each panel's session id.",
+  "version": "0.1.0",
+  "publisher": "local",
+  "engines": { "vscode": "^1.90.0" },
+  "main": "./extension.js",
+  "activationEvents": ["onStartupFinished"],
+  "extensionDependencies": ["anthropic.claude-code"],
+  "contributes": {
+    "commands": [
+      { "command": "callboard.open", "title": "Callboard: open lane panel" },
+      { "command": "callboard.reopen", "title": "Callboard: reopen lane panel by session id" },
+      { "command": "callboard.close", "title": "Callboard: close lane panel by session id" }
+    ]
+  },
+  "type": "commonjs"
+}
