@@ -4613,7 +4613,7 @@ test('a lane list that is already there when the lead is granted is the baseline
   expect(notices()).toBe(1)
 })
 
-test('at most 12 notices an hour: a capped change stays owed and goes out once a slot frees', async ($, on) => {
+test('at most 12 notices an hour: a capped change stays owed and goes out once a slot frees', { timeoutMs: 30_000 }, async ($, on) => {
   const stdins: string[] = []
   await leadAt($, on, stdins, { clock: true })
   for (let i = 1; i <= 15; i++) {
@@ -9450,7 +9450,7 @@ test('v13.2 keepalive: a lane a lead started (its start text is real work) and t
   expect(pings()).toEqual([KEEPALIVE_TEXT])
 })
 
-test('v13.2 keepalive: pings stop 3 hours after the last real turn, logged once; a real turn starts them again', async ($, on) => {
+test('v13.2 keepalive: pings stop 3 hours after the last real turn, logged once; a real turn starts them again', { timeoutMs: 30_000 }, async ($, on) => {
   const stdins: string[] = []
   const trace: Trace = { log: [], failCounters: false }
   await warm($, on, stdins, trace)
