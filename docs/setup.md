@@ -247,7 +247,7 @@ ai-toolkit's `/setup-claude` and `/cleanup-claude` leave everything in this guid
 
 Follow [docs/manager/README.md](manager/README.md), Starting and resuming. In short: a plain session in this
 checkout, without `CLAUDE_CONFIG_DIR`, on Opus (`/model opus`), then type `/callboard manager [NAME]` yourself. With
-no NAME the session is named `MANAGER`. The grant lives in memory, so every start and resume needs the command again.
+no NAME the session is named `MANAGER`. The grant lives in memory and your yes saves it: the same conversation, started or resumed, asks once whether to restore the manager (a compaction asks nothing).
 
 The only name callboard reserves built in is `MANAGER`. A manager on a second machine needs a different name, because
 Remote Control lists every machine's sessions. Reserve it on that machine first, typed yourself, then use it:

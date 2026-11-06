@@ -54,6 +54,12 @@ lane. Every stop and every remove opens its own dialog, which the person answers
 **Amended 2026-11-05 (callboard v15.1):** the only built-in reserved name is `MANAGER`. A machine adds its own with
 `/callboard reserve NAME`, so a second machine's manager reserves a different name there the same way.
 
+**Amended 2026-11-06 (callboard v15.3):** the grant still lives in memory, but the person's yes is also saved, and a start or
+resume of the same conversation asks whether to restore it, through the usual Manager dialog (ADR 0002, design addition
+v15.3). A restore is never silent. The manager's `lane_remove` is dropped in the same version: its `lane_retire` and
+`lane_terminate` delete the lane's record once the session has stopped, each behind its own dialog, so the manager has
+five tools.
+
 **The hard line.** The role file carries it, and the callboard briefing carries H2 word for word:
 - **H1** Never decide an approval.
 - **H2** Never dispatch, cancel, `kill_all` or restart anything. One exception: a callboard `lane_terminate` or
