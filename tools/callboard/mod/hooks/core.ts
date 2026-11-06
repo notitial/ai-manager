@@ -1551,9 +1551,13 @@ const mdEscape = (s: string): string => s.replace(/[\\|*_`><[\]]/g, '\\$&')
 // v15 (2026-11-05): a conductor's view wraps its boxes in one `**Conductor NAME** · live` box, as the manager's. S6c (Q6): the manager's view puts
 // each live conductor's repos inside a Conductor box (conductors, sorted by name) in the Manager box, then the repos no conductor lists; a repo two conductors
 // list goes under the first, its lead box headers saying `· also NAME2`. conductors 'error': the conductors could not be read, so the list is drawn flat with a note.
+// A live lead in reach (its presence file passed every check; the registry gives its name), with the repo it leads. The manager's and a conductor's view draw
+// one for each lead that no lane box already names, so a lead with no lanes is seen: `**Lead NAME** · live · repo` and `no lanes`. A lead's own view ignores them.
 export type ConductorView = { name?: string; repos: string[] }
-export function laneListText(lanes: Lane[], entries: RegEntry[], now: number, view: { level?: 'lead' | 'manager' | 'conductor'; name?: string; conductors?: ConductorView[] | 'error' } = {}): string {
-  if (lanes.length === 0) return view.level === 'conductor' ? 'no lanes in its repos' : 'no lanes in this repo'
+export type LiveLead = { name: string; repo: string }
+export function laneListText(lanes: Lane[], entries: RegEntry[], now: number, view: { level?: 'lead' | 'manager' | 'conductor'; name?: string; conductors?: ConductorView[] | 'error'; leads?: LiveLead[] } = {}): string {
+  const liveLeads = view.level === 'manager' || view.level === 'conductor' ? (view.leads ?? []) : []
+  if (lanes.length === 0 && liveLeads.length === 0) return view.level === 'conductor' ? 'no lanes in its repos' : 'no lanes in this repo'
   const names = entries.flatMap((e) => (typeof e.name === 'string' ? [e.name] : []))
   const waiting = (l: Lane): string => {
     const one = laneSession(entries, l, '')
@@ -1570,7 +1574,7 @@ export function laneListText(lanes: Lane[], entries: RegEntry[], now: number, vi
   const quote = (ls: string[]): string[] => ls.map((x) => (x === '' ? '>' : `> ${x}`))
   const boxes: string[][] = []
   const boxRepo: string[] = []
-  for (const repo of new Set(lanes.map((l) => l.repo ?? ''))) {
+  for (const repo of new Set([...lanes.map((l) => l.repo ?? ''), ...liveLeads.map((x) => x.repo)])) {
     const here = lanes.filter((l) => (l.repo ?? '') === repo)
     const where = mdEscape(folderName(repo))
     for (const lead of new Set(here.map((l) => l.leadName ?? ''))) {
@@ -1588,6 +1592,11 @@ export function laneListText(lanes: Lane[], entries: RegEntry[], now: number, vi
         withFolder ? '|---|---|---|---|' : '|---|---|---|',
         ...mine.map(row),
       ])
+    }
+    const boxed = new Set(here.map((l) => l.leadName ?? ''))
+    for (const lead of [...new Set(liveLeads.filter((x) => x.repo === repo && !boxed.has(x.name)).map((x) => x.name))].sort()) {
+      boxRepo.push(repo)
+      boxes.push([`**Lead ${lead}** · live · ${where}`, '', 'no lanes'])
     }
   }
   const join = (bs: string[][]): string[] => bs.flatMap((b, i) => [...(i > 0 ? [''] : []), ...quote(b)])
