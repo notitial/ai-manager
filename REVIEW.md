@@ -17,7 +17,7 @@ Hunt private data in every file, docs and prose included. The role names this re
 private. Neither are the owner's name and GitHub handle as LICENSE shows them, nor stand-ins such as `/Users/x` in
 tests. Private here: a nickname for one of the owner's machines or sessions, a host or account label, a home path, a
 username in a label or path, a client or person named in a case study, a ticket key, and any `.archive/` path except
-the generic forms the tools create. Callboard's reserved session-name list is an accepted exception.
+the generic forms the tools create.
 
 ## Nit cap
 

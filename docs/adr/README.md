@@ -24,5 +24,5 @@ repo's.
 
 | # | Title | Status | Date |
 |---|-------|--------|------|
-| 0001 | The manager role (`0001-manager-role.md`) | accepted | 2026-10-21 |
+| 0001 | The manager role (`0001-manager-role.md`) | accepted, amended | 2026-10-21 |
 | 0002 | Callboard (`0002-callboard.md`) | accepted | 2026-10-24 |

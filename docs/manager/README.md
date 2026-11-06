@@ -26,8 +26,9 @@ enforces.
 
 - The person starts the manager: a plain session in this checkout, on Opus (`/model opus`), then
   `/callboard manager [NAME]`. The grant lives in memory, so every start and resume needs the command again.
-- **Name.** One of callboard's reserved names, and not one a manager on another machine uses (Remote Control lists
-  every machine's sessions, so two of the same name make a bare-name message ambiguous).
+- **Name.** `MANAGER`, or a name reserved on this machine with `/callboard reserve NAME`. A manager on another machine
+  reserves a different name there the same way (Remote Control lists every machine's sessions, so two of the same name
+  make a bare-name message ambiguous).
 - **Config root.** Run without `CLAUDE_CONFIG_DIR`. Callboard and `ListAgents` see only sessions on `~/.claude`.
 - **On start, resume and after a compaction:**
   - Run `echo $CLAUDE_CONFIG_DIR`. Not empty: stop and tell the person.
