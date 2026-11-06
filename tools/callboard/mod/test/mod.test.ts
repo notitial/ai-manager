@@ -47,6 +47,12 @@ let callerCwd = '/data/x/work/lab'
 let callerRoot: string | undefined
 let reportGrown: string | undefined
 let headFails = false
+// v15.2: what the live checkout's .git/HEAD holds when the mod reads it at session start (undefined: the read fails). Default: on main, which warns nothing.
+const MAIN_HEAD = 'ref: refs/heads/main\n'
+let liveHead: string | undefined = MAIN_HEAD
+let liveHeadReads = 0
+// The path and the byte count of the last HEAD read; under the test engine $.plugin.root is the mod folder itself, so the checkout is the clone the suite runs in.
+let liveHeadAsked: { path: string; bytes: string } | undefined
 let sessionsUnsafe = false
 let composeStale = false
 let appendRows: any[] = []
@@ -277,6 +283,9 @@ function engine(on: any, argvSeen: string[][], stdins: string[] = [], clk = fals
   mvHook = undefined
   reportGrown = undefined
   headFails = false
+  liveHead = MAIN_HEAD
+  liveHeadReads = 0
+  liveHeadAsked = undefined
   sessionsUnsafe = false
   envVars = {}
   ownSessions = {}
@@ -618,6 +627,12 @@ function engine(on: any, argvSeen: string[][], stdins: string[] = [], clk = fals
       return ok('')
     }
     if (a[0] === '/usr/bin/stat' && condFiles.has(last)) return ok(condStat.get(last) ?? `501 644 1 Regular File 19 ${condFiles.get(last)!.length} 1700000000\n`)
+    // v15.2: the live checkout's HEAD, read with a bound at session start.
+    if (a[0] === '/usr/bin/head' && a[1] === '-c' && a[2] === '257' && a[3] === '--' && /\/\.git\/HEAD$/.test(last)) {
+      liveHeadReads++
+      liveHeadAsked = { path: last, bytes: a[2] }
+      return liveHead === undefined ? ok('', 1, `head: ${last}: No such file or directory`) : ok(liveHead.slice(0, Number(a[2])))
+    }
     if (a[0] === '/usr/bin/head' && condFiles.has(last)) {
       condHeads++
       return ok(condFiles.get(last)!)
@@ -956,6 +971,57 @@ test('a valid request is queued and logged with fixed fields only', async ($, on
   expect(JSON.parse(lines[0])).toEqual({ t: '2023-11-14T22:13:20.000Z', event: 'requested', reason: 'on-cue' })
   expect(stdins.join('')).not.toContain('keep the plan')
 })
+
+// v15.2 (ADR 0003): the live checkout's HEAD is read once at session start. Main says nothing; any other branch or a detached commit warns with one toast
+// and `warn live-checkout-not-main`; an unreadable or odd HEAD logs `warn live-checkout-unknown` and shows nothing. Nothing is ever refused.
+const warns = (stdins: string[]) => allEvents(stdins).filter((e) => e.event === 'warn').map((e) => e.reason)
+const liveToasts = () => toasts.filter((t) => t.startsWith('Callboard loads from '))
+
+test('a live checkout on main starts silently: one bounded read of .git/HEAD, no toast, no warn line', async ($, on) => {
+  const stdins: string[] = []
+  await started($, on, stdins)
+  expect(liveHeadReads).toBe(1)
+  expect(liveHeadAsked?.path).toMatch(/^\/.+\/\.git\/HEAD$/)
+  expect(liveHeadAsked?.bytes).toBe('257')
+  expect(liveToasts()).toEqual([])
+  expect(warns(stdins)).toEqual([])
+})
+
+test('a live checkout on another branch warns once with a toast and a log line, and nothing is blocked', async ($, on) => {
+  const stdins: string[] = []
+  await started($, on, stdins, { seed: () => { liveHead = 'ref: refs/heads/feat/symlink-install\n' } })
+  const checkout = liveHeadAsked!.path.slice(0, -'/.git/HEAD'.length)
+  expect(liveToasts()).toEqual([`Callboard loads from ${checkout}, which is not on main (it is on branch feat/symlink-install). Whatever is checked out there is live in every session.`])
+  expect(warns(stdins)).toEqual(['live-checkout-not-main'])
+  expect(allEvents(stdins).find((e) => e.event === 'warn')).toEqual({ t: '2023-11-14T22:13:20.000Z', event: 'warn', reason: 'live-checkout-not-main' })
+  expect(stdins.filter((x) => x.includes('live-checkout')).join('')).not.toContain(checkout)
+  expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Lead: OFF.')
+  await $.tool.call(GOOD as any)
+  await $.prompt.submit({ text: 'hello' } as any)
+  expect(liveHeadReads).toBe(1)
+  expect(liveToasts().length).toBe(1)
+  expect(warns(stdins)).toEqual(['live-checkout-not-main'])
+})
+
+test('a detached live checkout warns too, and says so', async ($, on) => {
+  const stdins: string[] = []
+  await started($, on, stdins, { seed: () => { liveHead = `${'0123abcd'.repeat(5)}\n` } })
+  expect(liveToasts().length).toBe(1)
+  expect(liveToasts()[0]).toMatch(/, which is not on main \(it is on a detached commit\)\. Whatever is checked out there is live in every session\.$/)
+  expect(liveToasts()[0]).not.toContain('0123abcd')
+  expect(warns(stdins)).toEqual(['live-checkout-not-main'])
+})
+
+// One engine per test, so each odd HEAD is a test of its own.
+for (const [label, odd] of [['unreadable', undefined], ['empty', ''], ['a newline', '\n'], ['a tag ref', 'ref: refs/tags/v1\n'], ['a branch with a space', 'ref: refs/heads/a b\n'], ['garbage', 'garbage'], ['41 hex', `${'a'.repeat(41)}\n`], ['two lines', 'ref: refs/heads/main\nextra\n']] as const) {
+  test(`${label} HEAD logs live-checkout-unknown and shows no toast`, async ($, on) => {
+    const stdins: string[] = []
+    await started($, on, stdins, { seed: () => { liveHead = odd } })
+    expect(liveHeadReads).toBe(1)
+    expect(liveToasts()).toEqual([])
+    expect(warns(stdins)).toEqual(['live-checkout-unknown'])
+  })
+}
 
 test('every process call uses a fixed absolute executable and no shell', async ($, on) => {
   const argv: string[][] = []

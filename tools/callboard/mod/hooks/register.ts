@@ -735,6 +735,28 @@ function toast($: any, text: string) {
   } catch {}
 }
 
+// v15.2: the live checkout's branch, checked once per session start (ADR 0003). The checkout is found from the mod's own folder ($.plugin.root, the folder
+// holding plugin.json: <checkout>/tools/callboard/mod); .git/HEAD is read as a plain file with a bound, never through git (a changed .git/config could run
+// code). Main: nothing. Another branch or a detached commit: one toast and `warn live-checkout-not-main`. No checkout at that place, a .git that is a file (a
+// worktree), an unreadable or odd HEAD: `warn live-checkout-unknown`, no toast. It only warns: the mod loads and nothing is blocked. No path enters a log line.
+async function liveCheckoutCheck($: any, sid: string): Promise<void> {
+  try {
+    const checkout = c.liveCheckout($.plugin.root)
+    let head: c.LiveHead = { kind: 'unknown' }
+    if (checkout) {
+      const r = await run($, [HEAD, '-c', String(c.LIVE_HEAD_MAX + 1), '--', `${checkout}/.git/HEAD`]).catch(() => undefined)
+      if (r && r.exitCode === 0) head = c.parseLiveHead(r.stdout)
+    }
+    if (head.kind === 'main') return
+    if (!checkout || head.kind === 'unknown') {
+      await log($, sid, 'warn', 'live-checkout-unknown')
+      return
+    }
+    toast($, c.liveCheckoutToast(checkout, head))
+    await log($, sid, 'warn', 'live-checkout-not-main')
+  } catch {}
+}
+
 // One callboard question per session at a time: a second request while one is open is refused, not queued.
 const dialogOpen = new Set<string>()
 // Counts the `off` commands that ran, so a restore or a join that waited on a dialog can see an `off` came in meanwhile and stop.
@@ -4682,6 +4704,8 @@ export const register: Register = (on) => {
     } catch {
       await log($, me, 'error', 'command-register')
     }
+    // v15.2: once per session start, before anything slow; it only warns.
+    await liveCheckoutCheck($, me)
     // v13.5: what a retired /callboard on left, after /callboard is registered, so a slow store cannot hold the command up.
     await onLeftovers($, me)
     try {

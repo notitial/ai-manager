@@ -2230,3 +2230,32 @@ test('v15.1 (2026-11-05): this machine\'s reserved names', () => {
   assert.equal(c.reserveShowText(['BLUE', 'GREEN']), 'Reserved names: MANAGER (built in); on this machine: BLUE, GREEN.')
   assert.match(c.reserveNotListedText('MANAGER'), /built in and cannot be removed/)
 })
+
+test('liveCheckout names the checkout only for a mod folder at <checkout>/tools/callboard/mod', () => {
+  assert.equal(c.liveCheckout('/Users/x/code/ai-manager/tools/callboard/mod'), '/Users/x/code/ai-manager')
+  assert.equal(c.liveCheckout('/opt/m/tools/callboard/mod'), '/opt/m')
+  for (const bad of [undefined, null, 5, '', 'tools/callboard/mod', '/tools/callboard/mod', '/Users/x/mod', '/Users/x/tools/callboard/mod/', '/Users/x/tools/callboard/extension', '/Users/x\n/tools/callboard/mod', '/Users/x/tools/callboard/mod/hooks']) {
+    assert.equal(c.liveCheckout(bad), undefined, JSON.stringify(bad))
+  }
+})
+
+test('parseLiveHead: main, a branch, a detached commit; anything else is unknown', () => {
+  const sha = 'a'.repeat(40)
+  assert.deepEqual(c.parseLiveHead('ref: refs/heads/main\n'), { kind: 'main' })
+  assert.deepEqual(c.parseLiveHead('ref: refs/heads/main'), { kind: 'main' })
+  assert.deepEqual(c.parseLiveHead('ref: refs/heads/feat/symlink-install\n'), { kind: 'branch', name: 'feat/symlink-install' })
+  assert.deepEqual(c.parseLiveHead('ref: refs/heads/mainline\n'), { kind: 'branch', name: 'mainline' })
+  assert.deepEqual(c.parseLiveHead('ref: refs/heads/Main\n'), { kind: 'branch', name: 'Main' })
+  assert.deepEqual(c.parseLiveHead(`${sha}\n`), { kind: 'detached' })
+  assert.deepEqual(c.parseLiveHead(sha), { kind: 'detached' })
+  for (const bad of [undefined, null, 7, '', '\n', 'ref: refs/heads/\n', 'ref: refs/heads/main\nref: refs/heads/x\n', 'ref: refs/heads/main\n\n', 'ref: refs/heads/main ', ' ref: refs/heads/main\n',
+    'ref: refs/remotes/origin/main\n', 'ref: refs/heads/a..b\n', 'ref: refs/heads/a/\n', 'ref: refs/heads/-x\n', 'ref: refs/heads/a b\n', 'ref: refs/heads/a$(x)\n', 'ref: refs/heads/é\n',
+    `${'a'.repeat(39)}\n`, `${'a'.repeat(41)}\n`, `${'A'.repeat(40)}\n`, `${sha}\n${sha}\n`, `ref: refs/heads/${'a'.repeat(101)}\n`, 'x'.repeat(300)]) {
+    assert.deepEqual(c.parseLiveHead(bad), { kind: 'unknown' }, JSON.stringify(bad))
+  }
+})
+
+test('liveCheckoutToast says where the mod loads from and what it is on', () => {
+  assert.equal(c.liveCheckoutToast('/Users/x/ai-manager', { kind: 'branch', name: 'feat/x' }), 'Callboard loads from /Users/x/ai-manager, which is not on main (it is on branch feat/x). Whatever is checked out there is live in every session.')
+  assert.equal(c.liveCheckoutToast('/Users/x/ai-manager', { kind: 'detached' }), 'Callboard loads from /Users/x/ai-manager, which is not on main (it is on a detached commit). Whatever is checked out there is live in every session.')
+})

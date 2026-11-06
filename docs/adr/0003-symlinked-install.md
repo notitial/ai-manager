@@ -56,8 +56,12 @@ For the root `lanes.json`, which only `install.sh --lanes` could write:
 - **The update path is hardened.** Before a pull the person checks `remote get-url origin` against the fixed URL,
   and every status, fetch, log and pull the docs give runs with `-c core.hooksPath=/dev/null -c core.fsmonitor=false`,
   so a changed `.git/config` can't run code or swap the source unseen.
-- **Deferred:** a guard that keeps the mod off, or warns, when the live checkout is not a clean `main`. The person
-  chose to add it once development settles.
+- **A minimal warning shipped (v15.2); a refusing guard stays deferred.** At session start the mod reads the live
+  checkout's `.git/HEAD` as a plain file. It finds the checkout from the mod's own folder (three levels above `mod/`)
+  and makes no git call, since a changed `.git/config` could run code. When HEAD is not `ref: refs/heads/main` it
+  shows one toast and logs `warn live-checkout-not-main`. Where the checkout can't be told it logs
+  `warn live-checkout-unknown` and shows nothing. It never refuses to load and blocks nothing. A guard that keeps the
+  mod off when the checkout is not a clean `main` is deferred: the person chose to add it once development settles.
 
 ## Consequences
 
@@ -68,7 +72,9 @@ For the root `lanes.json`, which only `install.sh --lanes` could write:
   checkout as their working folder, so a habitual `git checkout -b`, a `git stash` or a git call that leaves out its
   `path` lands there. ADR 0002's statement that "no agent can edit" the mod's files no longer holds.
 - A pull of an unread commit goes live, so the person reads the incoming diff before pulling.
-- The live checkout must stay on `main`. Nothing enforces that until the deferred guard lands.
+- The live checkout must stay on `main`. Nothing enforces that until the deferred guard lands. Until then the warning
+  tells the person at the next session start, after the branch is already live, and it sees only HEAD, not
+  uncommitted edits.
 - A lane that existed only in a root `lanes.json` has to be made again with `lane_create`.
 - `/tmp` is wiped on reboot, so an agent pushes its branch before it stops.
 - The extension's version is in its link name. A version bump needs `link-extension.sh --apply` again, which moves
