@@ -554,14 +554,18 @@ def account_dir_ok(path, home):
     return False
 
 
-def account_dirs(main_dir, home, conf, fallback_fp=None):
+def account_dirs(main_dir, home, conf, fallback_fp=None, dir_fps=None):
     """([(config dir, account key)], main account fingerprint): the dirs to scan, the main account's dir first. The
     key is None for the main account, the account's fingerprint for another, or UNKNOWN_ACCT for a dir whose
     .claude.json names no account. The other dirs are the `dirs` of the local config plus every
     ~/.claude-*/config, each one checked by account_dir_ok (the person's listed dirs come first, so the cap cuts
     the globbed ones). A dir whose account is the main account's (the same login, kept in a second place) counts as
     the main one. When the main account's .claude.json cannot be read this run (it is rewritten often),
-    `fallback_fp`, the last one seen, stands in, so a second dir does not flip accounts for a run."""
+    `fallback_fp`, the last one seen, stands in, so a second dir does not flip accounts for a run. The same holds
+    for every other dir: `dir_fps` (dir -> fingerprint, updated in place) keeps the last fingerprint read from each,
+    used when a read fails and replaced only by a read that succeeds, so one failed read never turns an account
+    into UNKNOWN_ACCT for a run."""
+    dir_fps = {} if dir_fps is None else dir_fps
     main_fp = account_fp(claude_json_of(main_dir, home))
     if main_fp is None:
         main_fp = fallback_fp
@@ -578,6 +582,11 @@ def account_dirs(main_dir, home, conf, fallback_fp=None):
             continue
         seen.add(os.path.realpath(path))
         fp = account_fp(claude_json_of(path, home))
+        if fp is not None:
+            dir_fps[path] = fp
+        elif dir_fps.get(path):
+            fp = dir_fps[path]
+            err("a config dir's account was not read this run; using the last one seen")
         out.append((path, None if fp is not None and fp == main_fp else (fp or UNKNOWN_ACCT)))
     return out, main_fp
 
@@ -1373,9 +1382,12 @@ def run(args):
         t0 = time.monotonic()
         conf = read_accounts_conf(args.accounts_file)
         last_fp = state.get("mainFp") if FP_RE.fullmatch(str(state.get("mainFp"))) else None
-        dirs, main_fp = account_dirs(args.config_dir, args.home, conf, last_fp)
+        saved = state.get("dirFps") if isinstance(state.get("dirFps"), dict) else {}
+        dir_fps = {k: v for k, v in saved.items() if isinstance(k, str) and isinstance(v, str) and FP_RE.fullmatch(v)}
+        dirs, main_fp = account_dirs(args.config_dir, args.home, conf, last_fp, dir_fps)
         if main_fp:
             state["mainFp"] = main_fp
+        state["dirFps"] = {d: dir_fps[d] for d, _ in dirs if d in dir_fps}
         for cdir, acct in dirs:
             if cdir == args.config_dir:
                 scan(cdir, state, now, health, acct)
@@ -1409,7 +1421,13 @@ def run(args):
         reg = {}
         for cdir, _ in reversed(dirs):  # the main dir last, so on a shared session id its entry wins
             try:
-                reg.update(read_registry(cdir))
+                got = read_registry(cdir)
+                if cdir != args.config_dir:
+                    # ListAgents shows only the manager's own sessions, and a name is unique only among those: no
+                    # session of another dir is addressable, whatever its name.
+                    for e in got.values():
+                        e["exact"] = False
+                reg.update(got)
             except Exception as e:  # another account's dir must not blind the run; class name only
                 if cdir == args.config_dir:
                     raise

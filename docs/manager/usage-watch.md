@@ -61,9 +61,9 @@ The watcher measures; you ask; the person decides.
 
 Log these as "Don't send (standing pref)" and mention them in your report, without an AskUserQuestion:
 - a `warn` whose only `why` is `compToday`, on a session busy with work the person assigned this window;
-- a `burnH` `warn` on a session running on an account the person has named (`acct` set to a name: not a 12-character
-  hex fingerprint and not `unknown`) and doing assigned major work. Still report that account's own meters when they
-  run hot. A session on an unnamed account is asked about like a main-account one.
+- a `burnH` `warn` on a session running on another account (`acct` set, whatever its value, `unknown` included) and
+  doing assigned major work. The manager's high-usage warning applies to the account the manager itself runs on, the
+  one `meter` and `window` describe. Still report that account's own meters when they run hot.
 
 Still ask when burn rate, context size or a meter is among the triggers on the main account, when the session has no
 assigned work, and on any `runaway`-level alert.

@@ -1324,7 +1324,7 @@ class WatchTest(unittest.TestCase):
         self.assertEqual(len(s["accounts"]), 1, "the same dir twice is one dir; a missing or relative one is skipped")
         self.assertIsNotNone(cfg)
 
-    def test_the_other_accounts_registry_makes_its_sessions_live_and_addressable(self):
+    def test_the_other_accounts_registry_makes_its_sessions_live_but_never_addressable(self):
         cfg = self.make_account()
         self.account_session(cfg, self.SID2)
         pid = os.getpid()
@@ -1332,7 +1332,48 @@ class WatchTest(unittest.TestCase):
             json.dump({"sessionId": self.SID2, "pid": pid, "name": "SECOND", "kind": "interactive",
                        "entrypoint": "cli", "cwd": "/Users/x/Code/repo-a"}, f)
         row = self.row(self.run_watch(), self.SID2)
-        self.assertEqual((row["live"], row["addr"], row["name"]), (True, True, "SECOND"))
+        self.assertEqual((row["live"], row["addr"], row["name"]), (True, False, "SECOND"),
+                         "ListAgents shows only the manager's own sessions")
+
+    def test_a_name_shared_across_accounts_is_never_addressable_for_the_other_accounts_session(self):
+        self.register("FOO")
+        self.append(*self.burst(3, out=1000))
+        cfg = self.make_account()
+        self.account_session(cfg, self.SID2)
+        with open(os.path.join(cfg, "sessions", "%d.json" % os.getppid()), "w") as f:
+            json.dump({"sessionId": self.SID2, "pid": os.getppid(), "name": "FOO", "kind": "interactive",
+                       "entrypoint": "cli", "cwd": "/Users/x/Code/repo-a"}, f)
+        s = self.run_watch()
+        self.assertEqual((self.row(s)["live"], self.row(s)["addr"]), (True, True), "the main account's FOO")
+        self.assertEqual((self.row(s, self.SID2)["live"], self.row(s, self.SID2)["addr"]), (True, False))
+
+    def test_one_failed_read_of_another_dirs_account_does_not_make_it_unknown(self):
+        self.register("MAIN")
+        self.append(*self.burst(3, out=1000))
+        cfg = self.make_account()
+        self.account_session(cfg, self.SID2)
+        self.assertEqual(self.row(self.run_watch(), self.SID2)["acct"], fp_of(SECOND_UUID))
+        cj = os.path.join(cfg, ".claude.json")
+        moved = os.path.join(self.root, "second.json.away")
+        shutil.move(cj, moved)
+        os.symlink(moved, cj)  # a link is not read, as a half-rewritten file might not be
+        s = self.run_watch()
+        self.assertEqual(self.row(s, self.SID2)["acct"], fp_of(SECOND_UUID), "the last fingerprint stands in")
+        self.assertEqual([a["fp"] for a in s["accounts"]], [fp_of(SECOND_UUID)], "no transient unknown account")
+        self.assertIn("a config dir's account was not read this run; using the last one seen",
+                      read(os.path.join(self.out, "watch.err")))
+        os.unlink(cj)
+        self.write_claude_json(cj, THIRD_UUID)
+        self.assertEqual(self.row(self.run_watch(), self.SID2)["acct"], fp_of(THIRD_UUID), "a successful read replaces it")
+
+    def test_a_dir_never_read_is_unknown_and_the_last_fingerprints_follow_the_scanned_dirs(self):
+        cfg = self.make_account()
+        self.account_session(cfg, self.SID2)
+        self.run_watch()
+        self.assertEqual(json.loads(read(os.path.join(self.out, "state.json")))["dirFps"], {cfg: fp_of(SECOND_UUID)})
+        os.chmod(cfg, 0o777)  # no longer scanned
+        self.run_watch()
+        self.assertEqual(json.loads(read(os.path.join(self.out, "state.json")))["dirFps"], {})
 
     def test_an_account_dir_with_no_account_is_its_own_unknown_account(self):
         self.register("MAIN")
