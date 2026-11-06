@@ -978,14 +978,13 @@ function leadDrop($: any, sid: string): Promise<boolean> {
   conductorSavedAt.delete(sid)
   conductorRestorePending.delete(sid)
   conductorReadAt.delete(sid)
-  // v15.3 (2026-11-06): the manager's pending restore and saved-grant clock go too, and its saved grant below.
-  managerRestorePending.delete(sid)
+  // v15.3 (2026-11-06): the manager's saved-grant clock goes too. Its pending restore and saved grant do not: a Cancel on a lead's or a conductor's question, or a
+  // failed manager grant, must not delete a mark the person never answered (managerForget, from /callboard off and the restore's Cancel, does).
   managerSavedAt.delete(sid)
   // v13: the saved grant goes too, so the session is not lead again after a restart.
   const unsave = Promise.resolve()
     .then(() => $.store.delete(`${c.LEAD_HINT_PREFIX}${sid}`))
     .then(() => $.store.delete(`${c.CONDUCTOR_HINT_PREFIX}${sid}`))
-    .then(() => $.store.delete(`${c.MANAGER_HINT_PREFIX}${sid}`))
     .then(
       () => true,
       async () => {
@@ -1585,7 +1584,7 @@ async function leadTools($: any, sid: string) {
   })
   await $.tool.register({
     name: 'lane_list',
-    description: 'List the lanes of the repo this lead was allowed in, in one box per lead (the box header names the lead, whether it is live, and the repo path): each lane, its folder when it is outside the repo root, whether a live session carries its name or it is parked, and how many minutes it has waited on a prompt. Call it when told the lanes changed.',
+    description: 'List the lanes of the repo this lead was allowed in, in one box per lead (the box header names the lead, whether it is live, and the repo folder name): each lane, its folder when it is outside the repo root, whether a live session carries its name or it is parked, and how many minutes it has waited on a prompt. Call it when told the lanes changed.',
     inputSchema: { type: 'object', properties: {} },
   })
   leadDeclared.add(sid)
@@ -1640,7 +1639,7 @@ async function managerTools($: any, sid: string) {
   if (managerDeclared.has(sid)) return
   const lane = { type: 'object', properties: { lane: { type: 'string' } }, required: ['lane'] }
   const tools: [string, string, unknown][] = [
-    ['lane_list', 'List every lane on this Mac, in one box per repo and lead (the box header names the lead, whether it is live, and the repo path): each lane, its folder when it is outside the repo root, whether a live session carries its name or it is parked, and how many minutes it has waited on a prompt.', { type: 'object', properties: {} }],
+    ['lane_list', 'List every lane on this Mac, in one box per repo and lead (the box header names the lead, whether it is live, and the repo folder name): each lane, its folder when it is outside the repo root, whether a live session carries its name or it is parked, and how many minutes it has waited on a prompt.', { type: 'object', properties: {} }],
     ['lane_resume', "Cue a lane's session to resume from its own notes. The session applies its own limits. lane: the lane name.", lane],
     ['lane_compact', "Ask a lane's session to compact: at once if it asked for that with request_compact on-cue, otherwise the plugin nudges it to save its notes and compact itself. lane: the lane name, or the session name of a live lead; a lead compacts only when it asked with request_compact on-cue, and is never nudged.", lane],
     ['lane_terminate', "Stop a lane's session with SIGTERM, whatever it is doing. Every stop asks the person: they confirm in a dialog that names the lane, its repo, the session and the pid. Once the session has stopped, the lane's record is deleted too (the .archive/<LANE> folder and report stay; a lane a session joined keeps its record). A lane with no live session is removed directly. lane: the lane name.", lane],
@@ -1707,17 +1706,20 @@ async function removeRecord($: any, e: unknown, me: string, key: string, name: s
 // manager reach, asks as for a live lane; lane_terminate always asks the person (the remove question). Checked before the question and again after the click.
 async function stopNoSession($: any, e: unknown, sid: string, verb: 'retire' | 'terminate', level: string | undefined, prep: { lane: c.Lane }, no: (reason: string, why: string) => Promise<{ deny: string }>) {
   const l = prep.lane
-  if (l.adopted || l.src === undefined || l.repo === undefined) return no('no-live-session', c.reasonWhy('no-live-session'))
+  // A lane a session joined keeps its record (only /callboard lane off in that session detaches it); nothing else removes one.
+  if (l.adopted) return no('adopted-record', c.reasonWhy('adopted-record'))
+  if (l.src === undefined || l.repo === undefined) return no('no-live-session', c.reasonWhy('no-live-session'))
   const epoch = epochOf(sid)
   const held = () => grantOf(sid)?.level === level && epochOf(sid) === epoch
   const live = await registryEntries($)
   if (!live) return no('registry-unreadable', c.reasonWhy('registry-unreadable'))
   const refused = await laneLive($, live, l)
   if (refused) return no(refused, c.reasonWhy(refused))
-  if (verb === 'terminate' || level === 'manager') {
+  // The same question for both verbs (review): the repo by its path, that the lane has no live session, and the parked sentence. A retire at lead level asks only
+  // for a parked lane, whose record holds the only callboard pointer to its saved conversation.
+  if (verb === 'terminate' || level === 'manager' || l.parked !== undefined) {
     const p = await where($)
-    const question = verb === 'terminate' ? c.removeQuestion(l.name, l.repo, l.parked !== undefined, p ? homeOf(p) : undefined) : c.retireQuestion(l.name, l.repo, true)
-    const r = await askOnce($, sid, question, verb === 'terminate' ? c.REMOVE_YES : c.RETIRE_YES, verb === 'terminate' ? c.REMOVE_NO : c.RETIRE_NO, c.HEADER.stop)
+    const r = await askOnce($, sid, c.removeQuestion(l.name, l.repo, l.parked !== undefined, p ? homeOf(p) : undefined), c.REMOVE_YES, c.REMOVE_NO, c.HEADER.stop)
     if (r === 'busy') return no('busy', c.reasonWhy('busy'))
     if (r === 'timed-out') return { deny: leadReason(verb, `${await timedOut($, sid)}.`) }
     if (r !== 'yes') return no('not-confirmed', 'the person did not confirm. Nothing was removed.')
@@ -3759,7 +3761,7 @@ async function laneCommand($: any, sid: string, code: c.OriginCode, arg: c.Comma
 // session holds a valid manager file (manager-exists). The grant lives in memory, and since v15.3 the person's yes also saves manager:<sid> (managerSave), so the
 // same conversation asks again when it starts or resumes (managerRestoreAsk runs this function with restore set: the restore question, and its own log lines).
 // After the grant the presence file must be written (one per machine rests on it), and a second manager that won the same moment makes both step back.
-async function managerCommand($: any, sid: string, code: c.OriginCode, want: string | undefined, busy: () => Promise<{ text: string }>, restore = false): Promise<{ text: string }> {
+async function managerCommand($: any, sid: string, code: c.OriginCode, want: string | undefined, busy: () => Promise<{ text: string }>, restore = false, alive: () => boolean = () => true): Promise<{ text: string }> {
   await reservedGet($, sid, true)
   // v14.1 (2026-11-04): with no NAME, a session whose registry name (one row) is already reserved keeps it; otherwise MANAGER. An unreadable registry
   // gives MANAGER here and is refused by the check below.
@@ -3787,6 +3789,8 @@ async function managerCommand($: any, sid: string, code: c.OriginCode, want: str
   }
   const before = await held(true)
   if (before) return refuse(before)
+  // A restore whose pending entry went while these checks ran (an /callboard off, a manager grant by hand) asks nothing.
+  if (restore && !alive()) return { text: '' }
   const seq = offSeq.get(sid) ?? 0
   const r = await askOnce($, sid, restore ? c.MANAGER_RESTORE_QUESTION : c.askedFrom(c.MANAGER_QUESTION, code), c.MANAGER_YES, c.MANAGER_NO, c.HEADER.manager)
   if (r === 'busy') return busy()
@@ -3810,11 +3814,13 @@ async function managerCommand($: any, sid: string, code: c.OriginCode, want: str
     return { text: 'Manager stays off.' }
   }
   // The post-click re-check, as the lead's: the marks are read and set with no await between.
+  if (restore && !alive()) return refuse('changed')
   if (laneBinding.has(sid) || leadGranting.has(sid)) return refuse(laneBinding.has(sid) ? 'lane-holder' : 'lead-holder')
   leadGranting.add(sid)
   let grantEpoch = -1
   try {
     const after = await withTimeout($, held(false), c.ENGINE_CALL_TIMEOUT_MS)
+    if (restore && !alive()) return refuse('changed')
     if (after !== undefined) return refuse(after === 'timeout' ? 'manager-check-slow' : after)
     if ((offSeq.get(sid) ?? 0) !== seq) {
       await log($, sid, 'refused', 'off-meanwhile')
@@ -3868,6 +3874,17 @@ async function managerCommand($: any, sid: string, code: c.OriginCode, want: str
 // leadDrop (off) and by a Cancel on the restore question. A failed write is logged and tried again a day later; a drop while the write was in flight deletes the
 // key again.
 const managerSavedAt = new Map<string, number>()
+// /callboard off: the pending restore and the saved grant go. Resolves false when the delete failed (the reply then says the manager may come back).
+async function managerForget($: any, sid: string): Promise<boolean> {
+  managerRestorePending.delete(sid)
+  try {
+    await $.store.delete(`${c.MANAGER_HINT_PREFIX}${sid}`)
+    return true
+  } catch {
+    await log($, sid, 'error', 'manager-hint-delete').catch(() => undefined)
+    return false
+  }
+}
 async function managerSave($: any, sid: string) {
   const epoch = epochOf(sid)
   const g = grants.get(sid)
@@ -3892,6 +3909,8 @@ async function managerSave($: any, sid: string) {
 const MANAGER_RESTORE_TRIES = 15
 type MgrPending = { hint: c.ManagerHint; tries: number; asking?: boolean }
 const managerRestorePending = new Map<string, MgrPending>()
+// A restore is offered once per process and session: a session.start that is not a start (a compaction, a reload) never asks again.
+const managerRestoreOffered = new Set<string>()
 async function managerRestoreAsk($: any, me: string, pend: MgrPending) {
   let busy = false
   pend.asking = true
@@ -3899,7 +3918,7 @@ async function managerRestoreAsk($: any, me: string, pend: MgrPending) {
     await managerCommand($, me, 'prompt', pend.hint.name, async () => {
       busy = true
       return { text: '' }
-    }, true)
+    }, true, () => managerRestorePending.get(me) === pend)
   } finally {
     pend.asking = false
   }
@@ -3921,7 +3940,18 @@ async function managerTick($: any, sid: string) {
     managerRestorePending.delete(sid)
     return void (await log($, sid, 'manager-restore-rejected', 'not-person'))
   }
+  // A lane on its way back (a rebind still waiting, a lane hint, a store record naming this session) is not asked, as the conductor's restore (conductorRestoreTry).
+  if (rebindPending.has(sid)) return
+  const reject = async (why: string) => {
+    if (managerRestorePending.get(sid) === pend) managerRestorePending.delete(sid)
+    await log($, sid, 'manager-restore-rejected', why)
+  }
+  if (c.parseHint(await $.store.get(`${c.HINT_PREFIX}${sid}`).catch(() => undefined), await $.clock.now())?.lane) return void (await reject('lane-holder'))
+  const lanes = await loadLanes($).catch(() => 'lanes-error')
+  if (typeof lanes === 'string') return
+  if (lanes.some((l) => l.sid === sid)) return void (await reject('lane-holder'))
   if ((await idleCheck($, sid)) !== undefined) return
+  if (managerRestorePending.get(sid) !== pend) return
   void managerRestoreAsk($, sid, pend).catch(() => log($, sid, 'error', 'manager-restore-ask').catch(() => undefined))
 }
 
@@ -4285,7 +4315,7 @@ async function conductorTools($: any, sid: string) {
   if (conductorDeclared.has(sid)) return
   const lane = { type: 'object', properties: { lane: { type: 'string' } }, required: ['lane'] }
   const tools: [string, string, unknown][] = [
-    ['lane_list', "List the lanes of this conductor's repos, inside one Conductor box with one box per repo and lead (the box header names the lead, whether it is live, and the repo path): each lane, its folder when it is outside the repo root, whether a live session carries its name or it is parked, and how many minutes it has waited on a prompt. A lead with no lanes is not listed.", { type: 'object', properties: {} }],
+    ['lane_list', "List the lanes of this conductor's repos, inside one Conductor box with one box per repo and lead (the box header names the lead, whether it is live, and the repo folder name): each lane, its folder when it is outside the repo root, whether a live session carries its name or it is parked, and how many minutes it has waited on a prompt. A lead with no lanes is not listed.", { type: 'object', properties: {} }],
     ['lane_compact', "Ask a session to compact. lane: the session name of a live lead of your repos (it compacts only when it asked with request_compact on-cue, and is never nudged), or a lane name (at once if it asked on-cue, otherwise the plugin nudges it).", lane],
     ['lane_terminate', "Stop a lane's session with SIGTERM, whatever it is doing. Every stop asks the person: they confirm in a dialog that names the lane, its repo, the session and the pid. Once the session has stopped, the lane's record is deleted too (the .archive/<LANE> folder and report stay; a lane a session joined keeps its record). A lane with no live session is removed directly. lane: the lane name. A lead cannot be stopped.", lane],
   ]
@@ -4836,7 +4866,8 @@ export const register: Register = (on) => {
       // compaction) is not asked.
       try {
         const raw = await $.store.get(`${c.MANAGER_HINT_PREFIX}${me}`)
-        if (raw !== undefined && grants.get(me)?.level !== 'manager') {
+        if (raw !== undefined && grants.get(me)?.level !== 'manager' && !managerRestoreOffered.has(me)) {
+          managerRestoreOffered.add(me)
           const h = c.parseManagerHint(raw, now)
           if (!h) {
             await $.store.delete(`${c.MANAGER_HINT_PREFIX}${me}`)
@@ -4924,7 +4955,7 @@ export const register: Register = (on) => {
     let savedLead = false
     if (arg === 'off') {
       offSeq.set(sid, (offSeq.get(sid) ?? 0) + 1)
-      wasManager = grants.get(sid)?.level === 'manager' || managerRestorePending.has(sid)
+      wasManager = grants.get(sid)?.level === 'manager'
       wasConductor = grants.get(sid)?.level === 'conductor' || conductorRestorePending.has(sid)
       wasLead = !wasManager && !wasConductor && (grants.has(sid) || leadRestorePending.has(sid))
       rebindWas = rebindPending.has(sid)
@@ -4940,9 +4971,10 @@ export const register: Register = (on) => {
         const gotC = await withTimeout($, (async () => $.store.get(`${c.CONDUCTOR_HINT_PREFIX}${sid}`))(), c.ENGINE_CALL_TIMEOUT_MS).catch(() => undefined)
         savedConductor = gotC !== undefined && gotC !== 'timeout'
         const gotM = await withTimeout($, (async () => $.store.get(`${c.MANAGER_HINT_PREFIX}${sid}`))(), c.ENGINE_CALL_TIMEOUT_MS).catch(() => undefined)
-        savedManager = gotM !== undefined && gotM !== 'timeout'
+        savedManager = managerRestorePending.has(sid) || (gotM !== undefined && gotM !== 'timeout')
       }
       if (!(await leadDrop($, sid))) leadKept = true
+      if (!(await managerForget($, sid))) leadKept = true
     }
     if (arg === 'lead') {
       // A lane is never a lead too: asked before the dialog and again after a yes, since the binding may land while the question is open.
@@ -5416,6 +5448,9 @@ export const register: Register = (on) => {
       // v14 (2026-11-04): the level the call started under. At manager reach every stop asks the person once, in a dialog that names the repo, and nothing is
       // signalled unless the grant still holds at that level after the click.
       const level = grantOf(sid)?.level
+      // v15.3 (review): the grant is the same one, not only the same level (an off and a new grant meanwhile ends the call).
+      const epoch = epochOf(sid)
+      const heldNow = () => grantOf(sid)?.level === level && epochOf(sid) === epoch
       let prep = await leadPrep($, e, sid)
       if ('err' in prep) return no(...prep.err)
       let one = c.laneSession(prep.entries, prep.lane, sid)
@@ -5432,8 +5467,10 @@ export const register: Register = (on) => {
           const left = until - (await $.clock.now())
           if (left <= 0) break
           await $.clock.sleep(Math.min(c.IDLE_POLL_MS, left))
-          if (grantOf(sid)?.level !== level) return no('grant-changed', c.reasonWhy('grant-changed'))
+          if (!heldNow()) return no('grant-changed', c.reasonWhy('grant-changed'))
           const again = await leadPrep($, e, sid)
+          // A read that fails now and then (the lane's own registry row is rewritten just as it turns idle) is polled again; the refusal comes at the deadline.
+          if ('err' in again && ['registry-unreadable', 'store-unreadable', 'store-busy'].includes(again.err[0])) continue
           if ('err' in again) return no(...again.err)
           const two = c.laneSession(again.entries, again.lane, sid)
           if (!two.ok) return no(two.reason, c.reasonWhy(two.reason))
@@ -5477,7 +5514,7 @@ export const register: Register = (on) => {
       const recheck = async (between?: (v: c.RegEntry) => Promise<{ deny: string } | undefined>): Promise<{ deny: string } | { victim: c.RegEntry }> => {
         const again = await leadPrep($, e, sid)
         if ('err' in again) return no(...again.err)
-        if (grantOf(sid)?.level !== level) return no('grant-changed', c.reasonWhy('grant-changed'))
+        if (!heldNow()) return no('grant-changed', c.reasonWhy('grant-changed'))
         const two = c.laneSession(again.entries, again.lane, sid)
         if (!two.ok) return no(two.reason, c.reasonWhy(two.reason))
         const v = two.entry
@@ -5547,8 +5584,7 @@ export const register: Register = (on) => {
       }
       await log($, sid, verb === 'terminate' ? 'terminating' : verb === 'retire' ? 'retiring' : 'parking', prep.lane.name)
       // v14 (2026-11-04, review c1, S8): the grant is read once more right before the signal (the process checks and the log line above awaited).
-      const gNow = grantOf(sid)
-      if (!gNow || gNow.level !== level) {
+      if (!heldNow()) {
         const r = await no('grant-changed', c.reasonWhy('grant-changed'))
         if (verb === 'terminate') toast($, `Force stop not sent: ${lastCode}`)
         return r
@@ -5574,12 +5610,27 @@ export const register: Register = (on) => {
       // v15.3 (2026-11-06): retire and force stop end the lane for good: once the session got its signal, its store record goes too (the .archive folder and the
       // report stay). A lane a session joined keeps its record, which stops naming the stopped session, as before. A failed removal is told, with its code; the call
       // can be made again, since the record still names the session.
-      let outcome: 'removed' | 'kept' | { unremoved: string } = 'kept'
+      // The record goes only once the process (that pid and start time) has ended, polled up to c.STOP_POLLS times.
+      const ended = async (): Promise<boolean> => {
+        for (let i = 0; ; i++) {
+          // Only ps's own "no such process" (or another start time at that pid) is an end; a ps that failed is no answer, so the record is kept.
+          const at = await psOne($, victim.pid, 'lstart=').catch((): 'error' => 'error')
+          if (at === 'gone' || (at !== 'error' && !c.sameStart(victim.procStart, at.out))) return true
+          if (i >= c.STOP_POLLS) return false
+          await $.clock.sleep(c.STOP_POLL_MS)
+        }
+      }
+      let outcome: 'removed' | 'kept' | 'alive' | { unremoved: string } = 'kept'
       if (prep.lane.src) {
         if (prep.lane.adopted) await sidClearAfterStop($, sid, prep.lane.src, prep.lane.name, victim.sessionId)
-        else {
+        else if (!(await ended())) {
+          // A session that survives its SIGTERM keeps its record, so the lead can still stop it by name.
+          outcome = 'alive'
+          await log($, sid, 'error', 'lane-still-running').catch(() => undefined)
+        } else {
           const gone = await removeRecord($, e, sid, prep.lane.src, prep.lane.name, { kind: 'stopped', victim: victim.sessionId })
-          if ('no' in gone) {
+          // A record that is gone already (another writer took it out meanwhile) is the outcome wanted.
+          if ('no' in gone && gone.no !== 'unknown-lane') {
             outcome = { unremoved: gone.no }
             await log($, sid, 'error', `lane-unremoved ${gone.no}`).catch(() => undefined)
           } else {

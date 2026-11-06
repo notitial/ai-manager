@@ -883,7 +883,10 @@ export function idleRefusal(e: RegEntry, now: number): string | undefined {
 // turn), polling the registry every IDLE_POLL_MS; they refuse only when the session is still not idle then. The refusal says what is left: the seconds, when the
 // session is idle and the time is the only thing missing (never for a busy or waiting session, whose end nobody can tell).
 export const IDLE_WAIT_MS = 40_000
-export const IDLE_POLL_MS = 1000
+export const IDLE_POLL_MS = 2000
+// After the signal of a retire or a force stop the record goes only once the process has ended: polled every STOP_POLL_MS, at most STOP_POLLS times.
+export const STOP_POLL_MS = 500
+export const STOP_POLLS = 20
 export function idleSecondsLeft(e: RegEntry, now: number): number | undefined {
   if (e.status !== 'idle' || (e.waitingFor ?? null) !== null) return undefined
   if (typeof e.statusUpdatedAt !== 'number' || e.statusUpdatedAt > now) return undefined
@@ -899,9 +902,10 @@ export function notIdleText(e: RegEntry, now: number): string {
 
 // What lane_retire and lane_terminate answer once the session got its signal: removed (the record is gone), kept (a lane a session joined keeps its record) or
 // unremoved (the write failed; code says why, and the call can be made again).
-export function stoppedText(verb: 'retire' | 'terminate', name: string, pid: number, outcome: 'removed' | 'kept' | { unremoved: string }): string {
+export function stoppedText(verb: 'retire' | 'terminate', name: string, pid: number, outcome: 'removed' | 'kept' | 'alive' | { unremoved: string }): string {
   const done = verb === 'retire' ? 'retired' : 'terminated'
   if (outcome === 'removed') return `lane ${name} ${done} and removed: SIGTERM sent to process ${pid}. Its .archive/${name}/ folder and report stay.`
+  if (outcome === 'alive') return `lane ${name} ${done}: SIGTERM sent to process ${pid}, but the session was still running ${STOP_POLLS * STOP_POLL_MS / 1000} seconds later, so its record stays. Call lane_${verb} again if it does not end.`
   if (outcome === 'kept') return `lane ${name} ${done}: SIGTERM sent to process ${pid}. The record stays: a lane a session joined keeps it.`
   return `lane ${name} ${done}: SIGTERM sent to process ${pid}. Its record could not be removed (${outcome.unremoved}); call lane_${verb} again to remove it.`
 }
@@ -1247,7 +1251,7 @@ export const REASON_TEXT: Record<string, string> = {
   'store-unreadable': 'this repo\'s lane list cannot be read safely.',
   'store-size': 'this repo\'s lane list is too big.',
   'lane-cap': 'the repo already has 16 lanes.',
-  'adopted-record': 'an attached lane keeps its own session: no rename, start or open. Use lane_resume, or remove the lane once the session ends.',
+  'adopted-record': 'an attached lane keeps its own session and its record: no rename, start, open or removal. Use lane_resume; only /callboard lane off in that session detaches it.',
   'folder-bad': 'the session folder must be a real path, not a link.',
   'folder-chars': 'the folder path has a space or an odd character, so it cannot be a lane folder.',
   changed: 'something changed while the question was open. Nothing was written; run it again.',
@@ -1274,7 +1278,6 @@ export const REASON_TEXT: Record<string, string> = {
   // v14 (2026-11-04, review c2): a session that was the manager is never made a lane either (the mirror of lead-after-manager).
   'lane-after-manager': 'this session was the manager, so it cannot be a lane until it restarts. Make the lane in a new session.',
   // v15.3 (2026-11-06): lane_retire on a lane no live session carries.
-  'removed-elsewhere': 'the lane record is gone already.',
   // v15 (2026-11-05): the conductor level.
   'conductor-tool': 'the conductor may only list lanes, compact leads and lanes, and force stop a lane.',
   'conductor-list': "none of the conductor's repos is in reach now (its list file is unreadable, or lists no repo it may reach). Ask the person to run /callboard conductor.",
@@ -1864,7 +1867,7 @@ export function parseManagerHint(raw: unknown, now: number): ManagerHint | undef
   if (!isNum(savedAt) || savedAt > now + 60_000 || now - savedAt > HINT_MAX_AGE_MS) return undefined
   return { name, savedAt }
 }
-export const MANAGER_RESTORE_QUESTION = 'Restore this session as the manager of every lane on this machine? It can resume, compact, stop, retire and remove lanes in any repo. Every stop and remove asks you. Cancel removes the saved manager grant.'
+export const MANAGER_RESTORE_QUESTION = 'Restore this session as the manager of every lane on this machine? You made it the manager here earlier and callboard saved that; click Cancel if you did not. It can resume, compact, stop, retire and remove lanes in any repo. Every stop and remove asks you. Cancel removes the saved manager grant.'
 export const MANAGER_RESTORED_TOAST = 'Manager is on again.'
 export const MANAGER_UNANSWERED_TOAST = 'Manager not restored: the question was not answered. Run /callboard manager.'
 export const MANAGER_KEPT = ' Manager may come back after a restart. If it does, run /callboard off again.'

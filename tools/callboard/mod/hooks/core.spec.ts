@@ -2005,7 +2005,7 @@ test('v14 the manager texts: the question, the buttons and header, the stop ques
   assert.equal(c.terminateQuestion('API', LEAD, 4242, '/Users/x/code/app', true), `Force stop lane API's session in app (${LEAD.slice(0, 8)}, pid 4242)? It ends at once, even mid-task. The lane's record is then removed.`)
   assert.equal(c.retireQuestion('API', '/Users/x/code/app', true), "Retire lane API in app? The lane's record is then removed.")
   assert.equal(c.retireQuestion('API', '/Users/x/code/app', false), 'Retire lane API in app?')
-  assert.ok(c.hasText('removed-elsewhere'))
+  assert.equal(c.hasText('removed-elsewhere'), false)
   assert.equal(c.hasText('no-session-report'), false)
   for (const code of ['remove-args', 'mixed-repos', 'lanes-manager-only']) assert.equal(c.hasText(code), false, code)
   assert.equal('removeNames' in c, false)
@@ -2321,6 +2321,7 @@ test('v15.3 parseManagerHint takes only a clean name and a savedAt of the last 3
 test('v15.3 the stop texts', () => {
   assert.equal(c.stoppedText('retire', 'API', 4242, 'removed'), 'lane API retired and removed: SIGTERM sent to process 4242. Its .archive/API/ folder and report stay.')
   assert.equal(c.stoppedText('terminate', 'API', 4242, 'removed'), 'lane API terminated and removed: SIGTERM sent to process 4242. Its .archive/API/ folder and report stay.')
+  assert.equal(c.stoppedText('terminate', 'API', 4242, 'alive'), 'lane API terminated: SIGTERM sent to process 4242, but the session was still running 10 seconds later, so its record stays. Call lane_terminate again if it does not end.')
   assert.equal(c.stoppedText('retire', 'API', 4242, 'kept'), 'lane API retired: SIGTERM sent to process 4242. The record stays: a lane a session joined keeps it.')
   assert.equal(c.stoppedText('terminate', 'API', 4242, { unremoved: 'changed' }), 'lane API terminated: SIGTERM sent to process 4242. Its record could not be removed (changed); call lane_terminate again to remove it.')
   assert.equal(c.removedNoSessionText('retire', 'API'), 'lane API retired and removed: it had no live session. Its .archive/API/ folder and report stay.')

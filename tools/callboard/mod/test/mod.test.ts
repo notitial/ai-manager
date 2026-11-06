@@ -170,6 +170,10 @@ let psTableFails = false
 let psRowsFail = false
 let psOversize = false
 let killFails = false
+// v15.3: a pid that got a SIGTERM that exited 0 is gone from `ps -p` unless a test sets survivesKill (the record is removed only once the process ended).
+const killedPids = new Set<string>()
+let survivesKill = false
+let psFailsAfterKill = false
 const psCalls: string[] = []
 // `ps -A -o pid=,lstart=`, the registry filter's table: built from the registry files (each file's pid, at its own procStart) plus launchd, unless a test says otherwise.
 let psStartsOut: string | undefined
@@ -325,6 +329,9 @@ function engine(on: any, argvSeen: string[][], stdins: string[] = [], clk = fals
   psRowsFail = false
   psOversize = false
   killFails = false
+  killedPids.clear()
+  survivesKill = false
+  psFailsAfterKill = false
   psCalls.length = 0
   psStartsOut = undefined
   psStartsFails = undefined
@@ -435,7 +442,7 @@ function engine(on: any, argvSeen: string[][], stdins: string[] = [], clk = fals
     on('clock.sleep', async (_: any, e: any) => {
       const ms = Number(typeof e === 'number' ? e : e?.ms ?? e?.duration ?? 0)
       // Only the short polls return (a dialog's or a call's time limit is a long sleep, and must not fire).
-      if (!fastSleep || !(ms <= 1000)) return new Promise(() => undefined)
+      if (!fastSleep || !(ms <= 2000)) return new Promise(() => undefined)
       nowMs += ms
       await fastSleep(ms)
       return { value: undefined }
@@ -878,6 +885,9 @@ function engine(on: any, argvSeen: string[][], stdins: string[] = [], clk = fals
     }
     if (a[0] === '/bin/realpath') return ok(`${realMap.get(a[a.length - 1]) ?? a[a.length - 1]}\n`)
     if (a[0] === '/bin/kill' && killFails) return ok('', 1, 'kill: no such process')
+    if (a[0] === '/bin/kill') killedPids.add(a[a.length - 1])
+    if (a[0] === '/bin/ps' && a.includes('lstart=') && a.includes('-p') && psFailsAfterKill && killedPids.has(a[a.length - 1])) return ok('', 2, 'ps: failed')
+    if (a[0] === '/bin/ps' && a.includes('lstart=') && a.includes('-p') && !survivesKill && killedPids.has(a[a.length - 1])) return ok('', 1, '')
     if (a[0] === '/bin/ps' && a.includes('pid=,lstart=')) {
       psStartsCalls.push(`${e.init?.env?.TZ}|${e.init?.env?.LC_ALL}|${Object.keys(regFiles()).sort().join(',')}`)
       if (psStartsFails === 'throw') throw new Error('spawn failed')
@@ -1869,6 +1879,7 @@ test('a stop that sent the signal asks the VS Code window to close the dead tab:
   expect(logged(stdins)).toContain('close-requested:LABLANE')
   // The retire removed the lane's record: seed it again for the stop that follows.
   laneSeed.text = LEAD_LANES('/data/x/work')
+  killedPids.clear()
   expect((await $.tool.call(leadCall('terminate'))).result).toContain('SIGTERM sent')
   w = closeWrites(argv)
   expect(w.length).toBe(2)
@@ -2111,7 +2122,7 @@ test('v15.3 lane_retire waits for the 30 s idle time itself: a lane idle for 5 s
   const slept: number[] = []
   fastSleep = (ms) => void slept.push(ms)
   expect((await $.tool.call(leadCall('retire'))).result).toContain('SIGTERM sent to process 4242')
-  expect(slept.filter((ms) => ms === 1000).length).toBe(25)
+  expect(slept.filter((ms) => ms === 2000).length).toBe(13)
   expect(killed(argv)).toEqual([['/bin/kill', '-TERM', '4242']])
 })
 
@@ -2124,7 +2135,7 @@ test('v15.3 lane_retire and lane_park on a lane idle for 30 s or more wait for n
   fastSleep = (ms) => void slept.push(ms)
   sessions = retireOk({ statusUpdatedAt: nowMs - 30_000 })
   expect((await $.tool.call(leadCall('retire'))).result).toContain('SIGTERM sent to process 4242')
-  expect(slept.filter((ms) => ms === 1000)).toEqual([])
+  expect(slept.filter((ms) => ms === 2000)).toEqual([])
 })
 
 test('v15.3 lane_retire on a lane that stays busy refuses after 40 s, once, with the busy words and no cue', async ($, on) => {
@@ -2138,7 +2149,7 @@ test('v15.3 lane_retire on a lane that stays busy refuses after 40 s, once, with
   fastSleep = (ms) => void slept.push(ms)
   const out = JSON.stringify(await $.tool.call(leadCall('retire')))
   expect(out).toContain('not-idle: the session is busy or waiting for the person. Retry once it is idle for 30 seconds; do not loop.')
-  expect(slept.filter((ms) => ms === 1000).length).toBe(40)
+  expect(slept.filter((ms) => ms === 2000).length).toBe(20)
   expect(nowMs - t0).toBe(40_000)
   expect(stdins).not.toContain('retire\n')
   expect(killed(argv).length).toBe(0)
@@ -2168,11 +2179,11 @@ test('v15.3 lane_retire: a lane that turns idle while the call waits is retired 
   let total = 0
   fastSleep = (ms) => {
     total += ms
-    if (total === 7000) sessions = retireOk({ statusUpdatedAt: nowMs - 31_000 })
+    if (total === 8000) sessions = retireOk({ statusUpdatedAt: nowMs - 31_000 })
   }
   expect((await $.tool.call(leadCall('retire'))).result).toContain('SIGTERM sent to process 4242')
-  expect(total).toBeGreaterThanOrEqual(7000)
-  expect(total).toBeLessThan(8000)
+  expect(total).toBeGreaterThanOrEqual(8000)
+  expect(total).toBeLessThan(10_000)
 })
 
 test('v15.3 lane_retire: the session must stay the same process while the call waits (session-changed), and an off meanwhile ends it (grant-changed)', async ($, on) => {
@@ -2198,7 +2209,7 @@ test('v15.3 lane_terminate never waits for idleness: a busy lane gets its dialog
   const slept: number[] = []
   fastSleep = (ms) => void slept.push(ms)
   expect(JSON.stringify(await $.tool.call(leadCall('terminate')))).toContain('did not confirm')
-  expect(slept.filter((ms) => ms === 1000)).toEqual([])
+  expect(slept.filter((ms) => ms === 2000)).toEqual([])
 })
 
 test('v15.3 lane_park waits for the idle time too: a lane idle for 5 s is parked after 25 polls; a busy one is refused after 40', async ($, on) => {
@@ -2208,13 +2219,13 @@ test('v15.3 lane_park waits for the idle time too: a lane idle for 5 s is parked
   fastSleep = (ms) => void slept.push(ms)
   sessions = parkSess({ statusUpdatedAt: nowMs - 5000 })
   expect((await park($)).result).toContain('lane API parked')
-  expect(slept.filter((ms) => ms === 1000).length).toBe(25)
+  expect(slept.filter((ms) => ms === 2000).length).toBe(13)
   expect(killed(argv)).toEqual([['/bin/kill', '-TERM', '4500']])
   slept.length = 0
   putStore([PARK_API({ sid: OTHER })])
   sessions = parkSess({ status: 'busy' })
   expect(JSON.stringify(await park($))).toContain('do not loop')
-  expect(slept.filter((ms) => ms === 1000).length).toBe(40)
+  expect(slept.filter((ms) => ms === 2000).length).toBe(20)
   expect(killed(argv).length).toBe(1)
 })
 
@@ -2232,6 +2243,7 @@ test('lane_retire waits for its answer 10 seconds from the cue write; the other 
   expect(killed(argv).length).toBe(1)
   // The retire removed the lane's record: seed it again for the cues that follow.
   laneSeed.text = LEAD_LANES('/data/x/work')
+  killedPids.clear()
   const q = $.tool.call(leadCall('resume'))
   for (let i = 0; i < 14; i++) await clock!.advance(500)
   expect(JSON.stringify(await q)).toContain('no-answer')
@@ -4713,7 +4725,7 @@ test('a lead tool serves an attached lane whichever lead it joined: the lead fie
   expect(JSON.stringify(await $.tool.call(leadCall('open', { lane: 'ATT' })))).toContain('adopted-record')
   // The record of a lane a session joined is never removed by a stop: with no session carrying it, the stops refuse and the record stays.
   sessions = leadSelfReg()
-  for (const verb of ['terminate', 'retire']) expect(JSON.stringify(await $.tool.call(leadCall(verb, { lane: 'ATT' }))), verb).toContain(`lane_${verb} refused: no-live-session`)
+  for (const verb of ['terminate', 'retire']) expect(JSON.stringify(await $.tool.call(leadCall(verb, { lane: 'ATT' }))), verb).toContain(`lane_${verb} refused: adopted-record`)
   expect(JSON.parse(storeFiles.get(STOREFILE)!).lanes.map((l: any) => l.name)).toEqual(['ATT'])
   expect(JSON.stringify(argv)).not.toContain('lead-gone')
 })
@@ -5832,6 +5844,7 @@ test('a file that is not an object, or names another pid than its own file name,
     psStartsFails = fails
     // Each stop removes the lane's record: seed it again.
     laneSeed.text = LEAD_LANES('/data/x/work')
+    killedPids.clear()
     sessions = { ...cueSession(OTHER, 'LABLANE'), ...forged }
     expect(await terminateNow($)).toContain('SIGTERM sent to process 4242')
   }
@@ -7737,6 +7750,7 @@ test('retire and terminate of a joined lane keep its record and clear the stoppe
   expect(logged(stdins)).toContain('sid-cleared:ATT')
   expect(logged(stdins)).not.toContain('lane-removed:ATT')
   putStore([{ ...rec, sid: OTHER }])
+  killedPids.clear()
   reportAt = `${PIN}/.archive/ATT/REPORT.md`
   reportFile = REPORT_OK()
   expect((await $.tool.call(leadCall('retire', { lane: 'ATT' }))).result).toBe('lane ATT retired: SIGTERM sent to process 4500. The record stays: a lane a session joined keeps it.')
@@ -7802,12 +7816,36 @@ test('v15.3 a stop whose record cannot be removed after the signal says so with 
   expect(logged(stdins)).not.toContain('lane-removed:API')
 })
 
+test('v15.3 a stop whose process is still running 10 seconds after the signal keeps the record and says so', async ($, on) => {
+  const stdins: string[] = []
+  await leadAt($, on, stdins, { sess: liveApi() })
+  putStore([PARK_API({ sid: OTHER, parked: 3 })])
+  askAnswer = YES
+  survivesKill = true
+  const slept: number[] = []
+  fastSleep = (ms) => void slept.push(ms)
+  expect(stopText(await $.tool.call(leadCall('terminate', { lane: 'API' })))).toBe('lane API terminated: SIGTERM sent to process 4500, but the session was still running 10 seconds later, so its record stays. Call lane_terminate again if it does not end.')
+  expect(slept.filter((ms) => ms === 500).length).toBe(20)
+  expect(recOf('API').name).toBe('API')
+  expect(logged(stdins)).not.toContain('lane-removed:API')
+})
+
+test('v15.3 a stop whose ps read keeps failing after the signal is no end of the process: the record stays', async ($, on) => {
+  await leadAt($, on, [], { sess: liveApi() })
+  putStore([PARK_API({ sid: OTHER, parked: 3 })])
+  askAnswer = YES
+  psFailsAfterKill = true
+  fastSleep = () => undefined
+  expect(stopText(await $.tool.call(leadCall('terminate', { lane: 'API' })))).toContain('still running 10 seconds later, so its record stays')
+  expect(recOf('API').name).toBe('API')
+})
+
 test('v15.3 lane_retire of a lane no live session carries removes its record with no dialog and no report; a joined lane is still refused', async ($, on) => {
   const argv: string[][] = []
   const stdins: string[] = []
   await leadAt($, on, stdins, { argv })
   const att = attRec(SID, 'ATT')
-  putStore([OLD_REC, PARK_API({ sid: OTHER, parked: 3 }), att])
+  putStore([OLD_REC, PARK_API({ sid: OTHER }), att])
   const asked = askCount
   expect(stopText(await $.tool.call(leadCall('retire', { lane: 'API' })))).toBe('lane API retired and removed: it had no live session. Its .archive/API/ folder and report stay.')
   expect(storeJson().lanes).toEqual([OLD_REC, att])
@@ -7820,10 +7858,22 @@ test('v15.3 lane_retire of a lane no live session carries removes its record wit
   expect(killed(argv)).toEqual([])
   expect(noArchiveRm(argv)).toBe(true)
   putStore([OLD_REC, att])
-  expect(JSON.stringify(await $.tool.call(leadCall('retire', { lane: 'ATT' })))).toContain('lane_retire refused: no-live-session')
-  expect(JSON.stringify(await $.tool.call(leadCall('terminate', { lane: 'ATT' })))).toContain('lane_terminate refused: no-live-session')
+  expect(JSON.stringify(await $.tool.call(leadCall('retire', { lane: 'ATT' })))).toContain('lane_retire refused: adopted-record')
+  expect(JSON.stringify(await $.tool.call(leadCall('terminate', { lane: 'ATT' })))).toContain('lane_terminate refused: adopted-record')
   expect(storeJson().lanes).toEqual([OLD_REC, att])
   expect(askCount).toBe(asked)
+})
+
+test('v15.3 lane_retire of a parked lane no live session carries asks the Remove question; Cancel removes nothing, Remove removes the record', async ($, on) => {
+  await leadAt($, on, [])
+  putStore([PARK_API({ sid: OTHER, parked: 3 })])
+  askAnswer = NO
+  expect(JSON.stringify(await $.tool.call(leadCall('retire', { lane: 'API' })))).toContain('did not confirm')
+  expect(lastQuestion).toBe(removeQuestion('API', PIN, true, HOME))
+  expect(recOf('API').parked).toBe(3)
+  askAnswer = YES
+  expect(stopText(await $.tool.call(leadCall('retire', { lane: 'API' })))).toBe('lane API retired and removed: it had no live session. Its .archive/API/ folder and report stay.')
+  expect(storeJson().lanes).toEqual([])
 })
 
 test('v15.3 lane_terminate of a lane no live session carries always asks the Remove question (the parked sentence when parked); Cancel removes nothing; Remove removes the record', async ($, on) => {
@@ -11286,10 +11336,10 @@ test('v15.3 manager lane_retire of a lane no live session carries: needs no repo
   reportFile = undefined
   askAnswer = NO
   expect(await retire()).toContain('lane_retire refused: the person did not confirm.')
-  expect(lastQuestion).toBe(retireQuestion('API', PIN, true))
-  expect(lastQuestion).toBe("Retire lane API in app? The lane's record is then removed.")
+  expect(lastQuestion).toBe(removeQuestion('API', PIN, false, HOME))
+  expect(lastQuestion).toBe('Remove lane API in ~/code/app? It has no live session.')
   expect(lastHeader).toBe('Stop Lane')
-  expect(askedOptions[askedOptions.length - 1]).toEqual(['Retire', 'Cancel'])
+  expect(askedOptions[askedOptions.length - 1]).toEqual(['Remove', 'Cancel'])
   expect(storeNames()).toEqual(['API'])
   expect(logged(stdins)).not.toContain('lane-removed:API')
   askAnswer = YES
@@ -12996,16 +13046,17 @@ test('v15.3 manager restore: the same conversation asks once when it starts, wit
   await mgrRestarter($, on, stdins)
   expect(askCount).toBe(0)
   expect(await mgrStatus($)).toBe('Lane: NONE. Lead: OFF.')
-  await clock!.advance(2000)
+  for (let i = 0; i < 3; i++) await clock!.advance(2000)
   await until(() => mgrLogs(stdins).includes('manager-restored:'))
   expect(lastQuestion).toBe(MANAGER_RESTORE_QUESTION)
-  expect(lastQuestion).toBe('Restore this session as the manager of every lane on this machine? It can resume, compact, stop, retire and remove lanes in any repo. Every stop and remove asks you. Cancel removes the saved manager grant.')
+  expect(lastQuestion).toBe('Restore this session as the manager of every lane on this machine? You made it the manager here earlier and callboard saved that; click Cancel if you did not. It can resume, compact, stop, retire and remove lanes in any repo. Every stop and remove asks you. Cancel removes the saved manager grant.')
   expect(lastHeader).toBe('Manager')
   expect(askedOptions).toEqual([['Manager', 'Cancel']])
   expect(askCount).toBe(1)
   expect(await mgrStatus($)).toBe('Lane: NONE. Manager: ON. Check-ins: ON.')
   expect(JSON.parse(leadFiles.get(SELFPATH)!.text)).toEqual({ sid: SID, pid: 4400, procStart: LEADPS, level: 'manager', name: 'MANAGER' })
-  expect(store.get(MGRKEY)).toEqual({ name: 'MANAGER', savedAt: nowMs })
+  expect(store.get(MGRKEY)).toEqual({ name: 'MANAGER', savedAt: expect.any(Number) })
+  expect((store.get(MGRKEY) as any).savedAt).toBeGreaterThan(T0)
   expect(toasts).toContain(MANAGER_RESTORED_TOAST)
   expect(mgrLogs(stdins).some((x) => x.startsWith('manager-restore-rejected') || x.startsWith('manager-on'))).toBe(false)
   // Once: no further question on later ticks.
@@ -13017,7 +13068,7 @@ test('v15.3 manager restore: Cancel deletes the saved grant, leaves the session 
   const stdins: string[] = []
   await mgrRestarter($, on, stdins, { seed: () => (askAnswer = NO) })
   askAnswer = NO
-  await clock!.advance(2000)
+  for (let i = 0; i < 3; i++) await clock!.advance(2000)
   await until(() => mgrLogs(stdins).includes('manager-restore-cancelled:'))
   expect(store.has(MGRKEY)).toBe(false)
   expect(await mgrStatus($)).toBe('Lane: NONE. Lead: OFF.')
@@ -13030,7 +13081,7 @@ test('v15.3 manager restore: a dialog nobody answers restores nothing and keeps 
   const stdins: string[] = []
   await mgrRestarter($, on, stdins)
   askHang = new Promise<string>(() => undefined)
-  await clock!.advance(2000)
+  for (let i = 0; i < 3; i++) await clock!.advance(2000)
   await until(() => askCount === 1)
   for (let i = 0; i < 50; i++) await clock!.advance(2000)
   await until(() => mgrLogs(stdins).includes('manager-restore-unanswered:'))
@@ -13099,10 +13150,11 @@ test('v15.3 manager restore: a name that is no longer reserved on this machine r
 test('v15.3 manager restore: a reserved name other than MANAGER restores under that name', async ($, on) => {
   const stdins: string[] = []
   await mgrRestarter($, on, stdins, { raw: { name: 'HARBOR', savedAt: T0 - 60_000 }, sess: MSELF({ name: 'HARBOR' }), seed: () => store.set('reserved', { names: ['HARBOR'] }) })
-  await clock!.advance(2000)
+  for (let i = 0; i < 3; i++) await clock!.advance(2000)
   await until(() => mgrLogs(stdins).includes('manager-restored:'))
   expect(JSON.parse(leadFiles.get(SELFPATH)!.text).name).toBe('HARBOR')
-  expect(store.get(MGRKEY)).toEqual({ name: 'HARBOR', savedAt: nowMs })
+  expect(store.get(MGRKEY)).toEqual({ name: 'HARBOR', savedAt: expect.any(Number) })
+  expect((store.get(MGRKEY) as any).savedAt).toBeGreaterThan(T0)
 })
 test('v15.3 manager restore: a session that is a lane is not asked (lane-holder) and keeps the saved grant', async ($, on) => {
   const stdins: string[] = []
@@ -13132,7 +13184,7 @@ test('v15.3 manager restore: every check runs again after the yes: a manager tha
     mgrFile()
     return YES
   }
-  await clock!.advance(2000)
+  for (let i = 0; i < 3; i++) await clock!.advance(2000)
   await until(() => mgrLogs(stdins).includes('manager-restore-rejected:manager-exists'))
   expect(await mgrStatus($)).toBe('Lane: NONE. Lead: OFF.')
   expect(leadFiles.has(SELFPATH)).toBe(false)
@@ -13143,9 +13195,9 @@ test('v15.3 manager restore: /callboard off while the question is open grants no
   await mgrRestarter($, on, stdins)
   let release: (a: string) => void = () => undefined
   askHang = new Promise<string>((r) => (release = r))
-  await clock!.advance(2000)
+  for (let i = 0; i < 3; i++) await clock!.advance(2000)
   await until(() => askCount === 1)
-  expect((await $.command.run(lane('off'))).text).toContain('Manager is now off.')
+  expect((await $.command.run(lane('off'))).text).toContain('Its saved manager grant was removed.')
   release(YES)
   for (let i = 0; i < 4; i++) await clock!.advance(2000)
   expect(await mgrStatus($)).toBe('Lane: NONE. Lead: OFF.')
@@ -13179,6 +13231,28 @@ test('v15.3 manager restore: a manager that still holds the grant in memory (a c
   expect(mgrLogs(stdins).some((x) => x.startsWith('manager-restore'))).toBe(false)
 })
 
+test('v15.3 manager restore: an unanswered question is not asked again by a second session.start of the same process', async ($, on) => {
+  const stdins: string[] = []
+  await mgrRestarter($, on, stdins)
+  askHang = new Promise<string>(() => undefined)
+  for (let i = 0; i < 3; i++) await clock!.advance(2000)
+  await until(() => askCount === 1)
+  for (let i = 0; i < 50; i++) await clock!.advance(2000)
+  await until(() => mgrLogs(stdins).includes('manager-restore-unanswered:'))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  for (let i = 0; i < 5; i++) await clock!.advance(2000)
+  expect(askCount).toBe(1)
+  expect(store.has(MGRKEY)).toBe(true)
+})
+
+test('v15.3 manager restore: a lead grant that the person cancels in a session with a saved manager grant leaves that grant alone', async ($, on) => {
+  const stdins: string[] = []
+  await mgrRestarter($, on, stdins, { sess: MSELF({ status: 'busy' }) })
+  askAnswer = NO
+  await $.command.run(lane('lead'))
+  expect(store.has(MGRKEY)).toBe(true)
+})
+
 test('v15.3 manager restore: the saved grant is written at the person\'s yes and removed by /callboard off; Cancel on the grant dialog saves nothing', async ($, on) => {
   const stdins: string[] = []
   await mgrAt($, on, stdins, { clock: true })
@@ -13196,7 +13270,7 @@ test('v15.3 manager restore: /callboard off in a session whose saved grant is no
   const stdins: string[] = []
   await mgrRestarter($, on, stdins)
   askHang = new Promise<string>(() => undefined)
-  await clock!.advance(2000)
+  for (let i = 0; i < 3; i++) await clock!.advance(2000)
   await until(() => askCount === 1)
   for (let i = 0; i < 50; i++) await clock!.advance(2000)
   await until(() => mgrLogs(stdins).includes('manager-restore-unanswered:'))
@@ -13208,7 +13282,7 @@ test('v15.3 manager restore: /callboard off in a session whose saved grant is no
 test('v15.3 manager restore: a saved grant that fails the parse is deleted with no question; another session\'s bad one is pruned at start', async ($, on) => {
   const stdins: string[] = []
   await mgrRestarter($, on, stdins, { raw: { name: 'bad name', savedAt: T0 }, seed: () => store.set('manager:11111111-0000-4000-8000-123456789abc', 'junk') })
-  await clock!.advance(2000)
+  for (let i = 0; i < 3; i++) await clock!.advance(2000)
   expect(askCount).toBe(0)
   expect(store.has(MGRKEY)).toBe(false)
   expect(store.has('manager:11111111-0000-4000-8000-123456789abc')).toBe(false)
