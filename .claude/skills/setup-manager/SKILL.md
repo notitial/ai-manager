@@ -48,26 +48,32 @@ first; it is the source for every step here, and wins where the two differ.
      After they paste the output, check that it says `verified: installed files`, then run the `ls -l` check again.
    - Tell them to reload open VS Code windows.
 3. **Default load.** Check: `echo "${CLAUDE_CODE_PLUGIN_DIRS:-unset}"`. If it is not
-   `/usr/local/libexec/callboard/mod`, check whether the key holds another value:
-   `jq -e '.env.CLAUDE_CODE_PLUGIN_DIRS != null' ~/.claude/settings.json`. `true` means another value is there: tell
-   the person to decide by hand (callboard should be the only plugin on it). `false`: give them the one-line command
-   from `tools/callboard/README.md`, Default load (every session), copied exactly. Then tell them to restart every
-   session, this one included, and to run `/setup-manager` again to go on.
-4. **Install check.** In the restarted session, ask the person to type `/callboard config ping 45` and then ask you
-   to run it. Run it when asked: this is the one deliberate probe (Ground rules), and only on the person's own
+   `/usr/local/libexec/callboard/mod`, check the settings file's key:
+   `jq -e '.env.CLAUDE_CODE_PLUGIN_DIRS == "/usr/local/libexec/callboard/mod"' ~/.claude/settings.json`.
+   - `true`: the line is already there and this session started before it. Tell them to restart every session, this
+     one included, and to run `/setup-manager` again to go on.
+   - `false`: run `jq -e '.env.CLAUDE_CODE_PLUGIN_DIRS != null' ~/.claude/settings.json`. `true` means another value
+     is there: tell the person to decide by hand (callboard should be the only plugin on it). `false`: give them the
+     one-line command from `tools/callboard/README.md`, Default load (every session), copied exactly, then the same
+     restart and re-run.
+4. **Install check.** In the restarted session, ask the person to type `/callboard config` and note the ping value
+   it shows. Then ask them to type `/callboard config ping 45` and then ask you to run it. Run it when asked: this is the one deliberate probe (Ground rules), and only on the person's own
    request in their own turn. The model-run one must be refused ("Only you can change callboard settings"). Then
-   ask them to type `/callboard config reset`. If the model-run one applied, say so plainly: report it.
+   ask them to type `/callboard config ping <the value they noted>`. Never suggest `/callboard config reset`: it puts
+   every callboard setting on this Mac back to its default, not only ping. If the model-run one applied, say so
+   plainly: report it.
 5. **Deny lines.** For each of the four lines in docs/setup.md (Manager setup: keep agents off the list file and the
    store (by hand)), run
    `jq -e --arg r '<line>' '(.permissions.deny // []) | index($r) != null' ~/.claude/settings.json`. For any `false`,
    show the person the missing lines to add to `permissions.deny` by hand. If they run a conductor repo, give them
    `chmod go-w <conductor repo>/.claude`.
-6. **Old watcher.** Run `launchctl list | grep usage-watcher`. If a job other than `io.notitial.usage-watcher` is
+6. **Old watcher.** First ask whether the repo is public; if unsure, run the dry run
+   `bash tools/usage-watcher/install.sh --ref <commit>`: a fetch failure means it is not public yet. Not public: skip
+   steps 6 to 8 (an old job stays until the new one can replace it), and say the manager will report
+   "install pending" until then. Public: run `launchctl list | grep usage-watcher`. If a job other than `io.notitial.usage-watcher` is
    loaded, name it and ask the person whether to unload it. A label outside `[A-Za-z0-9._-]`: show it, build no
    command, and stop. On their yes, give them `launchctl bootout gui/$(id -u)/'<that label>'` (single-quoted) and the reminder to remove its plist from `~/Library/LaunchAgents/`.
-7. **Usage watcher.** Ask whether the repo is public; if unsure, run the dry run
-   `bash tools/usage-watcher/install.sh --ref <commit>`: a fetch failure means it is not public yet. Not public: skip
-   this step and step 8, and say the manager will report "install pending" until then. Public:
+7. **Usage watcher** (only when step 6 found the repo public):
    - Run the dry run and show it.
    - Give the person `bash tools/usage-watcher/install.sh --ref <commit> --apply`.
    - Then run `bash tools/usage-watcher/install.sh --status --ref <commit>` yourself and show the result.

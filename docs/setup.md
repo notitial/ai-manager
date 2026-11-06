@@ -89,9 +89,10 @@ Once `/usr/local/libexec/callboard/mod/.claude-plugin/plugin.json` exists, add t
 - Restart every session, not only new ones: a session on an older mod can drop fields from the lane store.
 
 **Install check.** In a restarted session, type `/callboard config ping 45` once yourself, and once ask the model to
-run it. The typed one must apply; the model-run one must be refused with "Only you can change callboard settings".
-If the model-run one applies, report it (callboard README, Keepalive and settings (v13.2)). Then type
-`/callboard config reset`.
+run it. First type `/callboard config` and note the ping value. The typed one must apply; the model-run one must be
+refused with "Only you can change callboard settings". If the model-run one applies, report it (callboard README,
+Keepalive and settings (v13.2)). Then type `/callboard config ping <the value you noted>`. Do not use
+`/callboard config reset` for this: it puts every callboard setting on this Mac back to its default.
 
 ### Manager setup: keep agents off the list file and the store (by hand)
 
@@ -136,7 +137,8 @@ summary: [docs/manager/usage-watch.md](manager/usage-watch.md).
 
 ### An older watcher first
 
-If an older usage-watcher job is loaded under another label, unload it first: `launchctl bootout gui/$(id -u)/<old label>`.
+Only when you are about to install this one (the repo is public): if an older usage-watcher job is loaded under
+another label, unload it first: `launchctl bootout gui/$(id -u)/<old label>`.
 Then remove its plist from `~/Library/LaunchAgents/`, or it loads again at the next login. The data folder is shared
 and kept. This repo's job is `io.notitial.usage-watcher`.
 
