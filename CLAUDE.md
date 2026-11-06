@@ -18,7 +18,9 @@ pass/fail table (`--quick` skips the slow `callboard` suite, `NAME…` runs only
 `usage-watcher`, `usage-watcher-install`, `session-peers`; keep its list in step with this one.
 
 - `tools/callboard/` — `bash tools/callboard/test.sh` after changing anything under it. Needs node 22.18 or later
-  and the `claude` CLI (`claude plugin validate`, `claude plugin test`).
+  and the `claude` CLI (`claude plugin validate`, `claude plugin test`). CI (`.github/workflows/ci.yml`) skips
+  `claude plugin test mod` (it sets `CALLBOARD_SKIP_MOD_TESTS=1`; those tests are timing-sensitive on its runner), so
+  run the script without that variable before any PR that touches `tools/callboard/mod`.
 - `tools/usage-watcher/` — `/usr/bin/python3 -I tools/usage-watcher/test_watch.py` after changing `watch.py`;
   `bash tools/usage-watcher/test-install.sh` after changing `install.sh`.
 - `tools/session-peers/` — `bash tools/session-peers/test-peers.sh` after changing `peers.sh` (needs jq and python3).
