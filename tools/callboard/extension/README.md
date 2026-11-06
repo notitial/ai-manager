@@ -26,6 +26,6 @@ It doesn't touch the terminal, any setting or the network. It reads and writes r
 
 ## Updating
 
-Pull the checkout, run callboard's `link-extension.sh --apply` when the version changed, then reload the VS Code windows. A new version keeps the same id, and the script removes the old version's link.
+When the version changed: quit VS Code (Cmd+Q), pull the checkout, run callboard's `link-extension.sh --apply` from a plain Terminal, then reopen VS Code. A new version keeps the same id, and the script replaces the old version's link and its entry in VS Code's `extensions.json`.
 
 More in the callboard README in the [ai-manager repo](https://github.com/notitial/ai-manager).

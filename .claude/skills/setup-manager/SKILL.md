@@ -44,14 +44,17 @@ first; it is the source for every step here, and wins where the two differ.
      branch, local changes or commits ahead: show it and stop; the person sorts it out (never you).
    - The earlier root-owned install: run `ls -d /usr/local/libexec/callboard`. If it exists, give the person
      `sudo rm -rf /usr/local/libexec/callboard`, to run in a terminal, and say step 3 replaces its `env` value.
-   - The extension link: run the dry run `bash <checkout>/tools/callboard/link-extension.sh` and show it. If it
+   - The extension link: first tell them to quit VS Code (Cmd+Q) and run the link step from a plain Terminal, because
+     the script also registers the link in VS Code's `extensions.json` and refuses to change anything while VS Code
+     runs. Run the dry run `bash <checkout>/tools/callboard/link-extension.sh` and show it. If it
      refuses an entry it names, show it. Only when the entry is `~/.vscode/extensions/<name>` with `<name>` matching
      `^(notitial|local)\.callboard-panels-[A-Za-z0-9._-]+$` (any letter case; `local.` is the extension's earlier id), give the person `rm -rf '<that path>'`;
      anything else: build no command, and stop.
      Then run the dry run again.
    - Give the person `bash <checkout>/tools/callboard/link-extension.sh --apply`. After they paste the output, run
-     `ls -l ~/.vscode/extensions | grep callboard-panels`: one link, to `<checkout>/tools/callboard/extension`.
-   - Tell them to reload open VS Code windows.
+     `ls -l ~/.vscode/extensions | grep callboard-panels`: one link, to `<checkout>/tools/callboard/extension`. Then
+     run the dry run once more: it should print `already linked` and no `DRY:` line (the entry is in place).
+   - Tell them to start VS Code again.
 3. **Default load.** The value is `<checkout>/tools/callboard/mod`. Check: `echo "${CLAUDE_CODE_PLUGIN_DIRS:-unset}"`.
    If it is not that value, check the settings file's key:
    `jq -e --arg v '<checkout>/tools/callboard/mod' '.env.CLAUDE_CODE_PLUGIN_DIRS == $v' ~/.claude/settings.json`.

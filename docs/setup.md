@@ -66,7 +66,9 @@ same way.
 
 ### Link the panels extension (VS Code)
 
-Dry run, then apply:
+Quit VS Code first (Cmd+Q) and run these in a plain Terminal, not in VS Code's own terminal. VS Code deletes, at each
+start, any extension folder its `extensions.json` doesn't list, so the script also registers the link there, and it
+refuses to change anything while VS Code runs. Dry run, then apply:
 
 ```
 bash <checkout>/tools/callboard/link-extension.sh
@@ -77,12 +79,23 @@ bash <checkout>/tools/callboard/link-extension.sh --apply
 ```
 
 - It links `~/.vscode/extensions/notitial.callboard-panels-<version>` to `<checkout>/tools/callboard/extension`,
-  with the version from `extension/package.json`. Run it again after a version bump: it makes the new link and
-  removes the old one.
+  with the version from `extension/package.json`, and writes one entry for it into
+  `~/.vscode/extensions/extensions.json` (no `metadata`, which keeps VS Code from deleting through the link). It
+  replaces this id's other entries, and clears this id's keys in `.obsolete`. The first old copy of each file is kept as
+  `extensions.json.callboard.bak` and `.obsolete.callboard.bak` (delete a backup to have it written again). Run it again after a version bump: it makes the new
+  link and entry and removes the old ones.
+- With VS Code open, the dry run says so and `--apply` refuses when something would change. A run with nothing to
+  change is fine while VS Code is open. It also repairs a link that has no entry.
 - It refuses, and names the entry, when a real folder or a link to anywhere else sits under a
   `notitial.callboard-panels-*` name: an old copy would shadow the link. Remove that entry yourself and run it again.
-- `--remove --apply` takes the links off again.
-- Reload open VS Code windows to load the extension.
+- It refuses, and names the file, when `extensions.json` or `.obsolete` is a link or is not valid JSON of the
+  expected shape (a list, an object), or holds an entry of this id that points outside the extensions folder. Only the
+  default profile gets the entry; a window on another profile has no panels.
+- `--remove --apply` takes the links, the entries inside the extensions folder and the `.obsolete` keys off again (VS
+  Code quit, as above).
+- Start VS Code afterwards. If you use Settings Sync, consider adding `"notitial.callboard-panels"` to
+  `settingsSync.ignoredExtensions` by hand, so a removal of an old version isn't synced to another Mac; the script
+  changes no setting.
 
 ### Load it in every session
 
@@ -241,7 +254,7 @@ ai-toolkit's `/setup-claude` and `/cleanup-claude` leave everything in this guid
   custom hook. `/cleanup-claude` removes only entries its template lists. So the `CLAUDE_CODE_PLUGIN_DIRS` line, the
   deny lines and the SessionStart hook survive both.
 - **Installed files.** Neither touches the panels extension link or the usage-watcher job. `link-extension.sh
-  --remove --apply` takes the link off.
+  --remove --apply` takes the link and its entry off.
 
 ## 4. Start the manager
 
@@ -273,6 +286,7 @@ lane or a live lead carries cannot be reserved. Details: callboard README, The m
 | Origin | `git -C <checkout> remote get-url origin` | `https://github.com/notitial/ai-manager.git` |
 | Old install gone | `ls /usr/local/libexec/callboard` | No such file or directory |
 | Panels extension | `ls -l ~/.vscode/extensions \| grep callboard-panels` | one link, to `<checkout>/tools/callboard/extension` |
+| Panels entry | `bash <checkout>/tools/callboard/link-extension.sh` | it prints `already linked` and no `DRY:` line |
 | Default load | type `! echo $CLAUDE_CODE_PLUGIN_DIRS` in a new session | `<checkout>/tools/callboard/mod` |
 | Mod loaded | type `/callboard status` in a session | it answers `Lane: NONE. Lead: OFF.` or similar |
 | Reserved names | type `/callboard reserve` | the manager's name, when it is not `MANAGER`, is listed |
@@ -319,8 +333,8 @@ git -C <checkout> -c core.hooksPath=/dev/null -c core.fsmonitor=false merge --ff
 Other settings in the checkout's own config still apply (for example a `url.<base>.insteadOf` that rewrites the
 fetch), which is why the commit check and the read diff are the guard. The merge is callboard's update, and the rule
 link follows the checkout too, so a change to `tools/callboard/` or `rules/` reaches every session: never install a
-commit you haven't read. After a callboard update, run `link-extension.sh --apply` when
-the extension's version changed, reload the VS Code windows and restart every session. For the usage watcher, run
+commit you haven't read. After a callboard update, when the extension's version changed: quit VS Code (Cmd+Q), merge
+as above, run `link-extension.sh --apply` in a plain Terminal, then reopen VS Code. Restart every session. For the usage watcher, run
 its installer again with the new `--ref`.
 
 ## The guided way

@@ -81,3 +81,24 @@ For the root `lanes.json`, which only `install.sh --lanes` could write:
 - `/tmp` is wiped on reboot, so an agent pushes its branch before it stops.
 - The extension's version is in its link name. A version bump needs `link-extension.sh --apply` again, which moves
   the link.
+
+## Amendment (2026-11-06): the link alone is not enough
+
+VS Code (checked in 1.145.2) deletes at each start every user extension folder whose `id@version`, read from the
+folder's `package.json`, is in no profile's `extensions.json`: it marks it in `.obsolete`, and deletes it when the
+`extensions.json` entry carries `installedTimestamp`. A bare link was therefore unlisted and marked at the next start,
+and a version bump left the entry out of step.
+
+- **`link-extension.sh` also registers the link.** It writes one `extensions.json` entry for the linked version, with
+  no `metadata`, and clears the id's `.obsolete` keys. An entry without `installedTimestamp` is marked at worst, never
+  deleted, so VS Code does not delete through the link. The entry must never gain `metadata`.
+- **It refuses while VS Code runs, when something would change.** VS Code reads and writes `extensions.json` in its
+  own queue; an outside writer can't join it, and a new extension needs a full quit anyway. Nothing to change exits 0
+  with VS Code open. The files are VS Code's private ones: the script keeps the first old copy as `<name>.callboard.bak`, refuses linked or
+  malformed files, and a refusal changes nothing.
+- **Not a `.vsix`.** `code --install-extension` is the supported route, but it makes a copy: a merge plus fast-forward
+  would stop being the extension's install, every change would need a version bump and a reinstall, and the mod and
+  the extension could drift. It stays the fallback if VS Code changes the file format.
+- **Accepted risk.** If the format changes, the script refuses or the final check fails. Only the default profile gets
+  the entry. Settings Sync is not verified: a synced removal of an old version could unlist the extension on another
+  Mac, so the docs suggest `settingsSync.ignoredExtensions` as a hand edit; the script changes no setting.
