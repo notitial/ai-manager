@@ -306,7 +306,8 @@ run "$R" --ext-dir "$BK" --apply
 first="$(cat "$BK/extensions.json.callboard.bak")"
 fixture "$R" 1.4.0
 run "$R" --ext-dir "$BK" --apply
-check "backup: the first backup is kept through a second change" [ "$(cat "$BK/extensions.json.callboard.bak")" = "$first" ] && [ "$first" = "[$OTHER]" ]
+check "backup: the first backup is the original file" [ "$first" = "[$OTHER]" ]
+check "backup: the first backup is kept through a second change" [ "$(cat "$BK/extensions.json.callboard.bak")" = "$first" ]
 /bin/mkdir -p "$T/bakdir"
 printf '[]' > "$T/bakdir/extensions.json"
 /bin/mkdir "$T/bakdir/extensions.json.callboard.bak"
@@ -319,16 +320,19 @@ printf '[{"identifier":{"id":"x"},"n":NaN}]' > "$T/nanext/extensions.json"
 run "$R" --ext-dir "$T/nanext" --apply
 check "NaN in extensions.json refuses" [ $? -ne 0 ]
 /bin/mkdir -p "$T/sur"
-printf '[{"identifier":{"id":"x"},"n":"\ud800"}]' > "$T/sur/extensions.json"
+printf '%s' '[{"identifier":{"id":"x"},"n":"\ud800"}]' > "$T/sur/extensions.json"
 before="$(snap "$T/sur")"
 run "$R" --ext-dir "$T/sur" --apply
 check "a string that can't be written back refuses before the link is made" [ $? -ne 0 ]
+check "that refusal is the serialization one, not a parse error" grep -qF "can't be written as JSON" "$T/out"
 check "a string that can't be written back changes nothing" [ "$(snap "$T/sur")" = "$before" ]
 
 # A path from a file is printed escaped when it holds control characters.
 /bin/mkdir -p "$T/esc"
-printf '[{"identifier":{"id":"notitial.callboard-panels"},"version":"1.0.0","location":{"$mid":1,"path":"/a\u001b[31mb","scheme":"file"}}]' > "$T/esc/extensions.json"
+printf '%s' '[{"identifier":{"id":"notitial.callboard-panels"},"version":"1.0.0","location":{"$mid":1,"path":"/a\u001b[31mb","scheme":"file"}}]' > "$T/esc/extensions.json"
 run "$R" --ext-dir "$T/esc" --apply
+check "the fixture really holds the JSON escape text" grep -qF '\u001b' "$T/esc/extensions.json"
+check "the escaped path is printed as escape text" grep -qF '\u001b[31mb' "$T/out"
 check "an escape character in a path is not printed raw" sh -c '! grep -q "$(printf "\033")" "$1"' _ "$T/out"
 
 # A trailing slash does not get past the link check.
