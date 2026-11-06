@@ -113,34 +113,39 @@ Why, and what these lines do not cover: [callboard README, Manager setup: keep a
 store (by hand)](../tools/callboard/README.md#manager-setup-keep-agents-off-the-list-file-and-the-store-by-hand). Do it
 now, by hand: an agent must not edit permission settings, and the `/setup-claude` templates do not carry these lines.
 
-Add these four lines to `permissions.deny` in your global `~/.claude/settings.json`:
+Add these two lines to `permissions.deny` in your global `~/.claude/settings.json` (an `Edit` rule covers the
+Write tool too, so no `Write` line is needed; adding one only draws a warning):
 
 ```json
 "Edit(**/.claude/callboard-conductor.json)",
-"Write(**/.claude/callboard-conductor.json)",
-"Edit(~/.claude/plugins/store/callboard_*.json)",
-"Write(~/.claude/plugins/store/callboard_*.json)"
+"Edit(~/.claude/plugins/store/callboard_*.json)"
 ```
 
 They keep an agent's Edit and Write tools off a conductor repo's list file and off the mod's store file, which holds
 the saved grants and this machine's reserved names; they do not stop a shell write. A pattern without a leading `/`,
 `~/` or `//` is relative to the session's folder, so the `**/` lines cover only sessions started in or above the
 conductor repo: for each conductor repo, add the absolute form too
-(`Edit(//Users/x/cond/.claude/callboard-conductor.json)` and the same with `Write`).
+(`Edit(//Users/x/cond/.claude/callboard-conductor.json)`).
 
-### Keep agents off the live mod
+### Keep agents off the live checkout
 
-By hand too: ai-toolkit carries nothing about callboard. Add these two lines to `permissions.deny` in your global
+By hand too: ai-toolkit carries nothing about callboard. Add these six lines to `permissions.deny` in your global
 `~/.claude/settings.json`, with `/<checkout>` written as your checkout's real path. `<checkout>` starts with `/`, so
-each rule starts with `//`, as in `Edit(//Users/x/ai-manager/tools/callboard/**)`:
+each rule starts with `//`, as in `Edit(//Users/x/ai-manager/tools/**)`:
 
 ```json
-"Edit(/<checkout>/tools/callboard/**)",
-"Write(/<checkout>/tools/callboard/**)"
+"Edit(/<checkout>/tools/**)",
+"Edit(/<checkout>/rules/**)",
+"Edit(/<checkout>/.claude/**)",
+"Edit(/<checkout>/docs/**)",
+"Edit(/<checkout>/CLAUDE.md)",
+"Edit(/<checkout>/.git/**)"
 ```
 
-They keep an agent's Edit and Write tools off the mod and the extension every session loads. Agents never need them:
-they edit in `/tmp` clones. Like the lines above, they do not stop a shell write
+The live checkout feeds every session more than the mod: the extension, the always-on rule `rules/callboard.md`,
+`CLAUDE.md`, the skills under `.claude/` and the manager's `docs/`. Its `.git/` decides what a pull brings and what
+git runs. These lines keep an agent's Edit and Write tools off all of it; `.archive/` stays writable. Agents never
+need the rest: they edit in `/tmp` clones. Like the lines above, they do not stop a shell write
 ([ADR 0003](adr/0003-symlinked-install.md), Consequences).
 
 If you run a conductor repo: callboard refuses its `.claude` folder as unsafe when group or other may write it (as
@@ -228,7 +233,7 @@ ai-toolkit's `/setup-claude` and `/cleanup-claude` leave everything in this guid
   `ln -s` again.
 - **Settings.** `/setup-claude` never alters an `env` key outside its template and never removes a deny entry or a
   custom hook. `/cleanup-claude` removes only entries its template lists. So the `CLAUDE_CODE_PLUGIN_DIRS` line, the
-  four deny lines and the SessionStart hook survive both.
+  deny lines and the SessionStart hook survive both.
 - **Installed files.** Neither touches the panels extension link or the usage-watcher job. `link-extension.sh
   --remove --apply` takes the link off.
 
@@ -258,13 +263,14 @@ lane or a live lead carries cannot be reserved. Details: callboard README, The m
 
 | Part | Check | Good when |
 |---|---|---|
-| Live checkout | `git -C <checkout> status -sb` | `## main...origin/main` and nothing else |
+| Live checkout | `git -C <checkout> -c core.hooksPath=/dev/null -c core.fsmonitor=false status -sb` | `## main...origin/main` and nothing else |
+| Origin | `git -C <checkout> remote get-url origin` | `https://github.com/notitial/ai-manager.git` |
 | Old install gone | `ls /usr/local/libexec/callboard` | No such file or directory |
 | Panels extension | `ls -l ~/.vscode/extensions \| grep callboard-panels` | one link, to `<checkout>/tools/callboard/extension` |
 | Default load | type `! echo $CLAUDE_CODE_PLUGIN_DIRS` in a new session | `<checkout>/tools/callboard/mod` |
 | Mod loaded | type `/callboard status` in a session | it answers `Lane: NONE. Lead: OFF.` or similar |
 | Reserved names | type `/callboard reserve` | the manager's name, when it is not `MANAGER`, is listed |
-| Deny lines | read `permissions.deny` in `~/.claude/settings.json` | the four lines and the two live-mod lines are there |
+| Deny lines | read `permissions.deny` in `~/.claude/settings.json` | the two store and list-file lines and the six live-checkout lines are there |
 | Usage watcher | `bash tools/usage-watcher/install.sh --status --ref <commit>` | exit 0, the job loaded |
 | Summary | `ls -l ~/.local/state/usage-watcher/usage-summary.json` | written in the last 5 minutes |
 | SessionStart hook | read `hooks.SessionStart` in `~/.claude/settings.json` | the `account-stamp.sh` entry is there |
@@ -274,8 +280,28 @@ lane or a live lead carries cannot be reserved. Details: callboard README, The m
 
 ## Updating
 
-Read the incoming diff, then pull: `git -C <checkout> fetch`, then `git -C <checkout> pull --ff-only`. The pull is
-callboard's update, and the rule link follows the checkout too, so a change to `tools/callboard/` or `rules/` reaches
+First check where it pulls from: this must print `https://github.com/notitial/ai-manager.git`. Anything else: stop.
+
+```
+git -C <checkout> remote get-url origin
+```
+
+Then fetch, read the incoming diff, and pull. The `-c` flags keep git from running a hook or a file-system monitor
+that a changed `.git/config` could name:
+
+```
+git -C <checkout> -c core.hooksPath=/dev/null -c core.fsmonitor=false fetch
+```
+
+```
+git -C <checkout> -c core.hooksPath=/dev/null -c core.fsmonitor=false log -p HEAD..origin/main
+```
+
+```
+git -C <checkout> -c core.hooksPath=/dev/null -c core.fsmonitor=false pull --ff-only
+```
+
+The pull is callboard's update, and the rule link follows the checkout too, so a change to `tools/callboard/` or `rules/` reaches
 every session: never pull a commit you haven't read. After a callboard update, run `link-extension.sh --apply` when
 the extension's version changed, reload the VS Code windows and restart every session. For the usage watcher, run
 its installer again with the new `--ref`.

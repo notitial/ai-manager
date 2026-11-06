@@ -37,7 +37,10 @@ first; it is the source for every step here, and wins where the two differ.
    `xcode-select -p`. node must be 22.18 or later. Ask whether ai-toolkit is installed (`/setup-claude`); if not,
    stop: it is the base. Check the checkout is not inside the ai-toolkit checkout.
 2. **Callboard.**
-   - The live checkout: run `git -C <checkout> status -sb`. Good: `## main...origin/main` and nothing else. Another
+   - The live checkout: run `git -C <checkout> remote get-url origin`; it must print
+     `https://github.com/notitial/ai-manager.git`, else show it and stop. Then run
+     `git -C <checkout> -c core.hooksPath=/dev/null -c core.fsmonitor=false status -sb` (the flags keep git from running a hook or monitor a changed
+     `.git/config` could name). Good: `## main...origin/main` and nothing else. Another
      branch, local changes or commits ahead: show it and stop; the person sorts it out (never you).
    - The earlier root-owned install: run `ls -d /usr/local/libexec/callboard`. If it exists, give the person
      `sudo rm -rf /usr/local/libexec/callboard`, to run in a terminal, and say step 3 replaces its `env` value.
@@ -65,9 +68,9 @@ first; it is the source for every step here, and wins where the two differ.
    ask them to type `/callboard config ping <the value they noted>`. Never suggest `/callboard config reset`: it puts
    every callboard setting on this Mac back to its default, not only ping. If the model-run one applied, say so
    plainly: report it.
-5. **Deny lines.** For each of the four lines in docs/setup.md (Manager setup: keep agents off the list file and the
-   store (by hand)), and for `Edit(/<checkout>/tools/callboard/**)` and `Write(/<checkout>/tools/callboard/**)` (Keep agents off the
-   live mod, also by hand; `<checkout>` starts with `/`, so each string starts with `//`; ai-toolkit's
+5. **Deny lines.** For each of the two lines in docs/setup.md (Manager setup: keep agents off the list file and the
+   store (by hand)), and for the six lines in Keep agents off the live checkout (also by hand: `Edit` on `/<checkout>/` `tools/**`,
+   `rules/**`, `.claude/**`, `docs/**`, `CLAUDE.md` and `.git/**`; no `Write` lines, an `Edit` rule covers Write; `<checkout>` starts with `/`, so each string starts with `//`; ai-toolkit's
    `/setup-claude` writes it), run
    `jq -e --arg r '<line>' '(.permissions.deny // []) | index($r) != null' ~/.claude/settings.json`. For any `false`,
    show the person the missing lines to add to `permissions.deny` by hand. If they run a conductor repo, give them
@@ -107,7 +110,7 @@ End with one table, from the checks as they stand now (run them again; do not re
 | Extension link | ok / missing / refused: ... |
 | Default load | ok / unset / other value / skipped |
 | Callboard install check | refused as it should / applied: report it / not run |
-| Deny lines | 5 of 5 / N of 5 |
+| Deny lines | 8 of 8 / N of 8 |
 | Old watcher | none / unloaded / still loaded: LABEL |
 | Usage watcher | ok / needs attention / skipped: repo not public |
 | SessionStart hook | ok / missing / skipped |

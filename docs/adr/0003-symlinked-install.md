@@ -49,8 +49,13 @@ For the root `lanes.json`, which only `install.sh --lanes` could write:
   check, its refusal codes and the `root-lane` refusals of `lane_remove` and `lane_park` are gone. Every other
   ownership check, against the person's own uid, stays.
 - **Permission rules** are ai-manager's, added by hand like the existing callboard store and list-file denies
-  (ai-toolkit carries nothing about callboard): `Edit(/<live checkout>/tools/callboard/**)` and the same with
-  `Write`, from the real path, so each starts with `//`.
+  (ai-toolkit carries nothing about callboard): `Edit` on the live checkout's `tools/**`, `rules/**`, `.claude/**`,
+  `docs/**`, `CLAUDE.md` and `.git/**`, from the real path, so each starts with `//` (an `Edit` rule covers the Write
+  tool too). The checkout feeds every session more than the mod (the always-on rule, CLAUDE.md, skills, the
+  manager's docs), and its `.git/` decides what a pull brings. `.archive/` stays writable.
+- **The update path is hardened.** Before a pull the person checks `remote get-url origin` against the fixed URL,
+  and every status, fetch, log and pull the docs give runs with `-c core.hooksPath=/dev/null -c core.fsmonitor=false`,
+  so a changed `.git/config` can't run code or swap the source unseen.
 - **Deferred:** a guard that keeps the mod off, or warns, when the live checkout is not a clean `main`. The person
   chose to add it once development settles.
 
