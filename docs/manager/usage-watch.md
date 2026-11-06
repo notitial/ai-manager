@@ -82,8 +82,7 @@ assigned work, and on any `runaway`-level alert.
 - Run `ListAgents` again and re-check the match, with the same limit: exactly one row, on this machine.
 - Send exactly one message, this text and nothing else:
   `Stop at your next boundary and write a /handover; the person will restart you.`
-- It may go to a session that is not a lead or a named session: the one exception to H3. It never goes to a
-  dispatched worker.
+- It may go to a session that is not a lead or a named session: the one exception to H3.
 - Never add the `why` or any text from the file. Never stop, kill or restart the session yourself. Send at most once
   per yes.
 - Log the alert, the person's answer and any send in the tracker.

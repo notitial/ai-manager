@@ -8,8 +8,7 @@
 #   bash tools/session-peers/peers.sh --all      also list stale session files (dead pid, or pid reused)
 #
 # Config dirs: PEERS_CONFIG_DIRS (colon-separated; a leading ~/ is expanded) replaces discovery. Otherwise
-# ~/.claude, $CLAUDE_CONFIG_DIR, and every ~/.claude-*/config or ~/.claude-* (the conductor root is
-# ~/.claude-conductor/config), each kept only if it has a sessions/ folder. Rows show the resolved real path.
+# ~/.claude, $CLAUDE_CONFIG_DIR, and every ~/.claude-*/config or ~/.claude-*, each kept only if it has a sessions/ folder. Rows show the resolved real path.
 #
 # Read-only. It reads only <dir>/sessions/<pid>.json, and only the fields printed below; it never opens a *.key
 # file. Session names, cwds and dir names are untrusted display text: control, ANSI, bidi and zero-width
