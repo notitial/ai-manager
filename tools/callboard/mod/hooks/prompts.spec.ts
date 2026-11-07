@@ -50,7 +50,13 @@ test('floor: git_push shapes that read as the current branch, a delete, an optio
   assert.equal(p.needsBranch(`${GIT}git_push`, { path: '/r', branch: '' }), true)
   assert.equal(floor(`${GIT}git_push`, { path: '/r', branch: ':' }, { branch: 'feat/x' }), 'protected-push')
   assert.equal(floor(`${GIT}git_push`, { path: '/r', branch: ':feat/x' }), 'destructive')
-  assert.equal(floor(`${GIT}git_push`, { path: '/r', branch: 'origin :feat' }), undefined)
+  assert.equal(floor(`${GIT}git_push`, { path: '/r', branch: 'origin :feat' }), 'protected-push')
+  // A glob, a remote that reads as an option, and force or delete given as anything but false.
+  for (const branch of ['refs/heads/*:refs/heads/*', '*:*', 'feat/x main', 'feat/ma?n']) assert.equal(floor(`${GIT}git_push`, { path: '/r', branch }), 'protected-push', branch)
+  for (const remote of ['--all', '--mirror', 'a b', 7]) assert.equal(floor(`${GIT}git_push`, { path: '/r', remote, branch: 'feat/x' }), 'protected-push', String(remote))
+  assert.equal(floor(`${GIT}git_push`, { path: '/r', force: 'true', branch: 'feat/x' }), 'force-push')
+  assert.equal(floor(`${GIT}git_push`, { path: '/r', force: false, branch: 'feat/x' }), undefined)
+  assert.equal(floor(`${GIT}git_push`, { path: '/r', delete: 1, branch: 'feat/x' }), 'destructive')
   assert.equal(floor(`${GIT}git_push`, { path: '/r', remoteBranch: 'heads/main' }), 'protected-push')
   for (const branch of ['--force', '--mirror', '--all', '-d']) assert.equal(floor(`${GIT}git_push`, { path: '/r', branch }), 'protected-push', branch)
   for (const branch of [7, ['main'], { a: 1 }, true]) assert.equal(floor(`${GIT}git_push`, { path: '/r', branch }), 'protected-push', JSON.stringify(branch))
@@ -114,17 +120,23 @@ test('floor: SQL in any tool\'s string input', () => {
   assert.equal(floor('mcp__db__query', { sql: 'truncate users' }), 'destructive')
   assert.equal(floor('mcp__db__query', { sql: 'delete   from users where 1=1' }), 'destructive')
   assert.equal(floor('mcp__db__query', { nested: { q: ['select 1', 'DELETE FROM t'] } }), 'destructive')
-  for (const sql of ['DELETE t FROM t JOIN u ON 1=1', 'DELETE LOW_PRIORITY FROM t', 'DELETE/**/FROM t', 'delete /* x */ from t']) assert.equal(floor('mcp__db__query', { sql }), 'destructive', sql)
+  for (const sql of ['DELETE t FROM t JOIN u ON 1=1', 'DELETE LOW_PRIORITY FROM t', 'DELETE/**/FROM t', 'delete /* x */ from t', 'DROP/**/TABLE t', 'TRUNCATE/**/x', 'DELETE t1, t2 FROM t1 JOIN t2', 'DELETE t1.* FROM t1', 'DELETE -- c\nFROM t']) assert.equal(floor('mcp__db__query', { sql }), 'destructive', sql)
   // Past the depth cap the rest is read whole, so nesting cannot hide it.
   let deep: any = { sql: 'DROP TABLE users' }
   for (let i = 0; i < 20; i++) deep = { a: deep }
   assert.equal(floor('mcp__db__query', deep), 'destructive')
   assert.equal(floor('mcp__db__query', { sql: 'select count(*) from users' }), undefined)
+  // A run of comment openers cannot stall the scan, and a string too long to scan is floor.
+  const t0 = Date.now()
+  floor('mcp__db__query', { sql: 'DELETE' + ' /**/'.repeat(5000) + ' x' })
+  floor('mcp__db__query', { sql: 'DELETE ' + '/* '.repeat(60_000) })
+  assert.ok(Date.now() - t0 < 2000)
+  assert.equal(floor('mcp__db__query', { sql: 'x'.repeat(200_001) }), 'destructive')
   assert.equal(floor('mcp__db__query', { sql: 'select * from drop_events' }), undefined)
 })
 test('floor: settings, hooks and callboard state, by path (written and real) and by shell text', () => {
   for (const file_path of ['/Users/x/.claude/settings.json', '~/.claude/callboard/prompts/ledger-2026-11.jsonl', '/Users/x/.claude/hooks/a.sh', '/r/.claude/settings.local.json', '/r/.mcp.json', '/r/.git/hooks/pre-commit', '/r/install.conf', '/r/a/../.mcp.json', '/Users/x/.claude',
-    '/r/.MCP.json', '/r/.claude/Settings.local.json', '/R/.GIT/hooks/x', '/r/.git/config', '/Users/x/.gitconfig', '/r/.claude/hooks/a.sh', '/r/.husky/pre-commit', '/r/.githooks/x', '/USERS/X/.CLAUDE/rules/a.md'])
+    '/r/.MCP.json', '/r/.claude/Settings.local.json', '/R/.GIT/hooks/x', '/r/.git/config', '/Users/x/.gitconfig', '/r/.claude/hooks/a.sh', '/r/.husky/pre-commit', '/r/.githooks/x', '/r/.git/modules/s/hooks/post-checkout', '/r/.git/config.worktree', '/r/.git/worktrees/w/config.worktree', '/USERS/X/.CLAUDE/rules/a.md'])
     assert.equal(floor('Write', { file_path }, HOME), 'settings', file_path)
   assert.equal(floor('Edit', { file_path: '/r/src/a.ts' }, { ...HOME, roots: ['/live/ai-manager'] }), undefined)
   assert.equal(floor('Edit', { file_path: '/live/ai-manager/docs/a.md' }, { ...HOME, roots: ['/live/ai-manager'] }), 'settings')
@@ -237,11 +249,12 @@ test('capInput: strings redacted and capped, the whole kept under the cap, trunc
 })
 test('capInput: a value under a key that names a secret is replaced, whatever it looks like', () => {
   const k = (...a: string[]) => a.join('')
-  const r = p.capInput({ [k('pass', 'word')]: 'hunter2', env: { [k('API', '_KEY')]: 'abc', PATH: '/bin', max_tokens: 4000 }, headers: { [k('Cook', 'ie')]: 'sid=1', Accept: 'x' }, list: [{ [k('to', 'ken')]: 'zzz', name: 'n' }], [k('Author', 'ization')]: ['a', 'b'] }).input as any
+  const r = p.capInput({ [k('pass', 'word')]: 'hunter2', env: { [k('API', '_KEY')]: 'abc', PATH: '/bin', max_tokens: '4000', [k('PG', 'PASSWORD')]: 'p1', [k('access', 'Token')]: 't1', [k('client', 'Secret')]: 's1', [k('db', 'Pass', 'word')]: 'p2' }, headers: { [k('Cook', 'ie')]: 'sid=1', Accept: 'x' }, list: [{ [k('to', 'ken')]: 'zzz', name: 'n' }], [k('Author', 'ization')]: ['a', 'b'] }).input as any
   assert.equal(r[k('pass', 'word')], '[REDACTED]')
   assert.equal(r.env[k('API', '_KEY')], '[REDACTED]')
   assert.equal(r.env.PATH, '/bin')
-  assert.equal(r.env.max_tokens, 4000)
+  assert.equal(r.env.max_tokens, '4000')
+  for (const key of ['PG' + 'PASSWORD', 'access' + 'Token', 'client' + 'Secret', 'db' + 'Pass' + 'word']) assert.equal(r.env[key], '[REDACTED]', key)
   assert.equal(r.headers[k('Cook', 'ie')], '[REDACTED]')
   assert.equal(r.headers.Accept, 'x')
   assert.equal(r.list[0][k('to', 'ken')], '[REDACTED]')

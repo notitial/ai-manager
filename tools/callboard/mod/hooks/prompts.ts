@@ -65,7 +65,8 @@ const REDACT: [RegExp, string | ((m: string, ...g: any[]) => string)][] = [
   [/([Bb]earer\s+)[A-Za-z0-9._-]+/g, (_m, b: string) => `${b}[REDACTED]`],
 ]
 // An object key that names a secret: whatever string it holds is replaced, whatever the string looks like.
-const SECRET_KEY = /(^|[_-])(password|passwd|pwd|secret|token|api[_-]?key|apikey|authorization|cookie|set-cookie|credentials?|private[_-]?key|access[_-]?key|bearer)([_-]|$)/i
+const SECRET_KEY_RE = /(password|passwd|passphrase|pwd|secret|token(?!s)|api_?key|authorization|cookie|credential|private_?key|access_?key|bearer|(^|_)auth(_|$)|^(key|pass)$)/i
+const SECRET_KEY = (k: string): boolean => SECRET_KEY_RE.test(k.replace(/([a-z0-9])([A-Z])/g, '$1_$2').replace(/-/g, '_'))
 export function redact(s: string): string {
   let out = s
   for (const [re, to] of REDACT) out = out.replace(re, to as any)
@@ -90,8 +91,9 @@ export function capInput(input: unknown): { input: unknown; truncated: boolean }
   const walk = (v: any, depth: number, secret = false): any => {
     if (typeof v === 'string') {
       if (secret) return '[REDACTED]'
-      const r = capBytes(redact(v), STRING_CAP)
-      if (r.cut) cut = true
+      const head = capBytes(v, STRING_CAP + 512)
+      const r = capBytes(redact(head.text), STRING_CAP)
+      if (head.cut || r.cut) cut = true
       return r.text
     }
     if (v === null || typeof v === 'number' || typeof v === 'boolean') return v
@@ -103,7 +105,7 @@ export function capInput(input: unknown): { input: unknown; truncated: boolean }
     if (v && typeof v === 'object') {
       const keys = Object.keys(v)
       if (keys.length > 100) cut = true
-      return Object.fromEntries(keys.slice(0, 100).map((k) => [capBytes(redact(k), 200).text, walk(v[k], depth + 1, secret || SECRET_KEY.test(k))]))
+      return Object.fromEntries(keys.slice(0, 100).map((k) => [capBytes(redact(k), 200).text, walk(v[k], depth + 1, secret || SECRET_KEY(k))]))
     }
     cut = true
     return '[unsupported]'
@@ -187,7 +189,7 @@ function lexical(p: string, home: string | undefined): string {
 function settingsPath(p0: string, o: FloorOpts): boolean {
   // Case-insensitive: the usual Mac volume is, and a file not made yet keeps the name it was given.
   const p = lexical(p0, o.home).toLowerCase()
-  if (/(^|\/)\.mcp\.json$/.test(p) || /(^|\/)\.git\/(hooks(\/|$)|config$)/.test(p) || /(^|\/)install\.conf$/.test(p)) return true
+  if (/(^|\/)\.mcp\.json$/.test(p) || /(^|\/)\.git(\/|$)/.test(p) || /(^|\/)install\.conf$/.test(p)) return true
   if (/(^|\/)\.gitconfig$/.test(p) || /(^|\/)\.(husky|githooks)(\/|$)/.test(p) || /(^|\/)\.claude\/(settings[^/]*|hooks(\/.*)?)$/.test(p)) return true
   const home = o.home?.toLowerCase()
   if (home && (p === `${home}/.claude` || p.startsWith(`${home}/.claude/`))) return true
@@ -200,7 +202,7 @@ function settingsPath(p0: string, o: FloorOpts): boolean {
 function settingsText(cmd: string, o: FloorOpts): boolean {
   if (/(~|\$HOME|\$\{HOME\})\/\.claude\b/i.test(cmd) || /\.claude\/(settings|hooks)/i.test(cmd)) return true
   if (o.home && cmd.toLowerCase().includes(`${o.home.toLowerCase()}/.claude`)) return true
-  if (/\.mcp\.json|\.git\/(hooks|config)|\.gitconfig|\.husky|\.githooks|install\.conf|CLAUDE_CODE_PLUGIN_DIRS/i.test(cmd)) return true
+  if (/\.mcp\.json|\.git\/(hooks|config|modules)|\.gitconfig|\.husky|\.githooks|install\.conf|CLAUDE_CODE_PLUGIN_DIRS/i.test(cmd)) return true
   // Settings of the source tool that run code: a hooks folder, a monitor, an ssh command, an alias, a credential helper, an include.
   if (/\bgit\b[^\n;&|]*\bconfig\b[^\n;&|]*(core\.(hookspath|fsmonitor|sshcommand|pager|editor|askpass)|alias\.|credential\.|include)/i.test(cmd)) return true
   if (/(^|[\s;&|(])claude\s+mcp\b/.test(cmd)) return true
@@ -209,7 +211,11 @@ function settingsText(cmd: string, o: FloorOpts): boolean {
   return (o.roots ?? []).some((r) => low.includes(r.toLowerCase()))
 }
 
-const SQL_DANGER = [/\bDROP\s+(TABLE|DATABASE|SCHEMA|INDEX|VIEW|COLUMN|USER|ROLE|FUNCTION|TRIGGER|POLICY|EXTENSION|MATERIALIZED|SEQUENCE|TYPE)\b/i, /\bTRUNCATE\b(\s+TABLE)?\s+\S/i, /\bDELETE(?:\s|\/\*[\s\S]*?\*\/)+(?:(?:LOW_PRIORITY|QUICK|IGNORE)(?:\s|\/\*[\s\S]*?\*\/)+)*(?:[\w.`]+(?:\s|\/\*[\s\S]*?\*\/)+)?FROM\b/i]
+const SQL_DANGER = [/\bDROP\s+(TABLE|DATABASE|SCHEMA|INDEX|VIEW|COLUMN|USER|ROLE|FUNCTION|TRIGGER|POLICY|EXTENSION|MATERIALIZED|SEQUENCE|TYPE)\b/i, /\bTRUNCATE\b(\s+TABLE)?\s+\S/i, /\bDELETE\s+(?:(?:LOW_PRIORITY|QUICK|IGNORE)\s+)*(?:[\w.`*]+(?:\s*,\s*[\w.`*]+)*\s+)?FROM\b/i]
+// A string longer than this is not scanned: it is the floor (a scan of a huge body must not stall the hook).
+const SQL_SCAN_MAX = 200_000
+// Comments are blanked first, bounded so a run of unclosed ones cannot make the scan slow.
+const sqlDanger = (s: string): boolean => s.length > SQL_SCAN_MAX || ((t) => SQL_DANGER.some((re) => re.test(t)))(s.replace(/\/\*(?:[^*]|\*(?!\/)){0,200}\*\//g, ' ').replace(/--[^\n]{0,200}/g, ' '))
 function strings(v: unknown, out: string[] = [], depth = 0): string[] {
   if (typeof v === 'string') out.push(v)
   else if (depth < 12 && Array.isArray(v)) for (const x of v) strings(x, out, depth + 1)
@@ -248,12 +254,16 @@ export function floorCheck(tool: string, input0: unknown, o: FloorOpts = {}): Fl
     return b === undefined || PROTECTED.has(b) ? 'merge' : undefined
   }
   if (tool === `${GIT}git_push`) {
-    if (input.force === true || input.forceWithLease === true) return 'force-push'
-    if (input.delete === true) return 'destructive'
+    const on = (v: unknown) => v !== undefined && v !== false
+    if (on(input.force) || on(input.forceWithLease)) return 'force-push'
+    if (on(input.delete)) return 'destructive'
+    // A remote that is not text, reads as an option, or holds whitespace is not understood.
+    if (input.remote !== undefined && input.remote !== null && (typeof input.remote !== 'string' || /^\s*-|\s\S/.test(input.remote.trim()))) return 'protected-push'
     const remote = str(input.remote)
     const given = [input.branch, input.remoteBranch].filter((x) => x !== undefined && x !== null && x !== '')
     // A ref that is not a string, or that reads as an option, is not understood: the floor.
-    if (given.some((x) => typeof x !== 'string' || x.trim().startsWith('-'))) return 'protected-push'
+    // A glob, whitespace or a control character in a ref is the same: refs/heads/*:refs/heads/* pushes main too.
+    if (given.some((x) => typeof x !== 'string' || x.trim().startsWith('-') || /[*?[\u0000-\u0020]/.test(x.trim()))) return 'protected-push'
     const refs = (given as string[]).filter((x) => x.trim() !== '')
     // `:name` deletes a remote branch.
     if (refs.some((r) => /^\s*:./.test(r))) return 'destructive'
@@ -302,7 +312,7 @@ export function floorCheck(tool: string, input0: unknown, o: FloorOpts = {}): Fl
     if (BASH_DELETE.some((re) => re.test(cmd))) return 'destructive'
   }
   // SQL in any tool's string input (a query, a command, a file's content).
-  if (strings(input0).some((s) => SQL_DANGER.some((re) => re.test(s)))) return 'destructive'
+  if (strings(input0).some(sqlDanger)) return 'destructive'
   return undefined
 }
 

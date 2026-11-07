@@ -4967,7 +4967,7 @@ async function promptFloorOpts($: any, tool: string, input: any, cwd: string, ho
     }
   } catch {}
   // The folders the hooks and rules under ~/.claude are linked into (the toolkit's live checkout): an edit there is an edit of the guards themselves.
-  for (const r of await linkedRoots($, home)) if (!o.roots!.includes(r)) o.roots!.push(r)
+  if (PERSON_HOLDS.has(tool) || tool === 'Bash') for (const r of await linkedRoots($, home)) if (!o.roots!.includes(r)) o.roots!.push(r)
   if (pr.needsBranch(tool, input)) {
     const dir = pr.gitPathOf(tool, input) ?? (tool === 'Bash' ? cwd : undefined)
     if (dir) o.branch = await branchOf($, dir)
@@ -5005,7 +5005,8 @@ async function linkedRoots($: any, home: string): Promise<string[]> {
       const r = await $.process.run([REALPATH, '--', ...names.map((n) => `${home}/.claude/${sub}/${n}`)], { timeoutMs: 5000, env: { LC_ALL: 'C' } })
       for (const line of String(r.stdout).split('\n')) {
         const m = /^(\/.+?)\/(?:hooks|rules)\/[^/]+$/.exec(line.trim())
-        if (m && !m[1].toLowerCase().startsWith(own)) out.add(m[1])
+        const low = m?.[1].toLowerCase()
+        if (m && low !== own && !low!.startsWith(`${own}/`)) out.add(m[1])
       }
     } catch {}
   }
@@ -5025,7 +5026,7 @@ async function promptLeadOf($: any, level: 'lane' | 'lead', sid: string, cwd: st
 // This session's own registry row, by one file read (not the whole table): the row of the pid the request was made under, kept only if it names this session and
 // the same process start. undefined: unknown (a changing, missing or odd file).
 async function promptOwnRow($: any, w: WaitCtx): Promise<any | undefined> {
-  if (w.p.own === undefined) return undefined
+  if (w.p.own === undefined || !(await dirOk($, w.p.own, w.p.uid))) return undefined
   const r = await readSmallR($, `${w.p.own}/${w.req.pid}.json`, w.p.uid, c.REGISTRY_FILE_MAX, true)
   if (r.state !== 'ok') return undefined
   try {
