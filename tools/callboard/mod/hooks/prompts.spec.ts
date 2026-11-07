@@ -865,9 +865,16 @@ test('review r1: a relative path into a live checkout is the floor behind a wrap
     'find -H -P ../ai-manager -exec chmod 000 {} +',
     'find -D tree,rates -O3 .. -exec chmod 000 {} +',
     'find -f ../ai-manager -exec chmod 000 {} +',
+    'nohup git -C .. -C ai-manager pull',
+    'git -C .. -C ai-manager checkout other',
+    'find -- .. -exec chmod 000 {} +',
+    'find -LX .. -exec chmod 000 {} +',
+    'find -f../ai-manager -exec chmod 000 {} +',
+    'find -P -- .. -name x -exec chmod 000 {} +',
+    'find -f.. -exec chmod 000 {} +',
   ]) assert.notEqual(f(c), undefined, c)
   // Not a reach into a checkout: the same shapes elsewhere, a read of the clone's own files, a find that stays in the clone.
-  for (const c of ['git -C ../other pull', 'nohup git status', 'pushd ../other && git status', "find . -name '*.ts' -exec grep -l floor {} +", 'find /tmp/clone -name x -exec ls {} +', 'cd /tmp/clone && ls ../other', 'env FOO=1 git status', 'git --work-tree=../other status', 'find -L . -exec ls {} +']) assert.equal(f(c), undefined, c)
+  for (const c of ['git -C ../other pull', 'nohup git status', 'pushd ../other && git status', "find . -name '*.ts' -exec grep -l floor {} +", 'find /tmp/clone -name x -exec ls {} +', 'cd /tmp/clone && ls ../other', 'env FOO=1 git status', 'git --work-tree=../other status', 'find -L . -exec ls {} +', 'find -- . -exec ls {} +', 'git -C ../other status']) assert.equal(f(c), undefined, c)
 })
 test('review r1: pushd with no folder, +N, -N or -n is an unknown folder; cd with no folder is home', () => {
   const o = { home: '/Users/x', roots: ['/tmp/ai-manager'], cwd: '/tmp/clone' }

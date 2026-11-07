@@ -817,6 +817,7 @@ const GIT_COND = /^(push|checkout|switch|reset|stash|branch|tag|config|clean|res
 // One git call: options before the verb (-C, -c, --git-dir), the verb, and the shapes the floor names. eff: the folders the call acts in; ro: it only reads.
 function judgeGit(args: Word[], cur: B[], j: J): Res {
   let eff = cur
+  let nC = 0
   let i = 0
   for (; i < args.length && args[i].t.startsWith('-'); i++) {
     const t = args[i].t
@@ -824,6 +825,8 @@ function judgeGit(args: Word[], cur: B[], j: J): Res {
     if (t === '-C') {
       const v = args[++i]
       if (!v) return DEST
+      // -C applies in turn (-C .. -C app): the folder it leads to is not followed past the first.
+      if (++nC > 1) return SETT
       eff = v.dyn ? [null] : capB(eff.map((b) => cdTo(b, v.t)))
     } else if (t === '-c') {
       const v = args[++i]
@@ -1298,21 +1301,18 @@ function dispatch(v: string, verb: Word, args: Word[], it: Item, cur: B[], j: J,
     if (args.some((w) => /^-(delete|fprint\w*|fls)$/.test(w.t))) return DEST
     const x = args.findIndex((w) => /^-(exec|execdir|ok|okdir)$/.test(w.t))
     if (x >= 0) {
-      // The folders find starts from (the words before its first expression): with a command to run on what it finds, one that is a live checkout, lies under one or
-      // above one is the floor, and so is one that cannot be read.
-      for (let a = 0; a < args.length; a++) {
-        const w = args[a]
-        // Options that come before the folders: -H -L -P -O, -D with its words, BSD -E -X -d -s -x; BSD -f names a folder.
-        if (/^-(H|L|P|O\d?|E|X|d|s|x)$/.test(w.t)) continue
-        if (w.t === '-D') {
-          a++
-          continue
+      // With a command to run on what it finds, find may write anywhere under the folders it starts from. Those are not picked out by their position (the options
+      // that may come before them, `--` and glued values are many): every word is read, and one that is a live checkout, lies under one or above one is the floor,
+      // as is a word that cannot be read. A glued short-option value (-f../app) is read as a word as well.
+      for (const w of args) {
+        if (w.dyn) return SETT
+        const glued = /^-[A-Za-z](.+)$/s.exec(w.t)?.[1]
+        for (const t of glued === undefined ? [w] : [w, { ...w, t: glued }]) {
+          if (t.t.startsWith('-')) continue
+          const c = wpath(t, cur, j)
+          if (c) return { cat: c }
+          if (rpaths(t, cur).some((p) => coversRoot(p, j.o))) return SETT
         }
-        if (w.t === '-f') continue
-        if (w.t.startsWith('-') || w.t === '(' || w.t === '!') break
-        const c = wpath(w, cur, j)
-        if (c) return { cat: c }
-        if (rpaths(w, cur).some((p) => coversRoot(p, j.o))) return SETT
       }
     }
     if (x >= 0 && !noWrap) {
