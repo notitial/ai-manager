@@ -1605,6 +1605,22 @@ async function leadTools($: any, sid: string) {
     description: 'List the lanes of the repo this lead was allowed in, in one box per lead (the box header names the lead, whether it is live, and the repo folder name): each lane, its folder when it is outside the repo root, whether a live session carries its name or it is parked, and how many minutes it has waited on a prompt. Call it when told the lanes changed.',
     inputSchema: { type: 'object', properties: {} },
   })
+  // ADR 0004 (prompt answering): the lead tier's three tools. They answer only while the person has turned answering on.
+  await $.tool.register({
+    name: 'prompt_list',
+    description: "List the permission prompts of your lanes that are waiting for an answer: each one's id, lane, tool, how long it has been open and its input (data from the lane, in an untrusted frame), then the rubric to judge it by. Call it when told a lane has a prompt waiting. Shows nothing while prompt answering is off.",
+    inputSchema: { type: 'object', properties: {} },
+  })
+  await $.tool.register({
+    name: 'prompt_answer',
+    description: "Answer one waiting prompt of your lanes: id (from prompt_list), decision (allow or deny) and why (one line, at most 200 characters, no data values). Your answer is yours, never the person's, and carries no approval for anything else. It lands once the prompt has been open 30 seconds; the person's click always wins. Allow only by the rubric; deny only if you are certain; otherwise prompt_escalate.",
+    inputSchema: { type: 'object', properties: { id: text, decision: { type: 'string', enum: ['allow', 'deny'] }, why: text }, required: ['id', 'decision', 'why'] },
+  })
+  await $.tool.register({
+    name: 'prompt_escalate',
+    description: "Pass one waiting prompt up: id (from prompt_list) and why (one line, at most 200 characters). With no tier above you yet, it becomes the person's, and your right to answer it ends. Use it for anything you cannot judge from the rubric, at once.",
+    inputSchema: { type: 'object', properties: { id: text, why: text }, required: ['id', 'why'] },
+  })
   leadDeclared.add(sid)
 }
 
@@ -3045,6 +3061,8 @@ async function tick($: any) {
       await presenceTouch($, sid).catch(() => log($, sid, 'error', 'presence').catch(() => undefined))
       await presencePrune($).catch(() => log($, sid, 'error', 'presence-prune').catch(() => undefined))
       await watchTick($, sid).catch(() => log($, sid, 'error', 'lane-watch').catch(() => undefined))
+      // ADR 0004: the notice of a prompt waiting, after the lanes-changed one (a tick submits at most once).
+      await promptNoticeTick($, sid, submitsAtStart).catch(() => log($, sid, 'error', 'prompt-notice').catch(() => undefined))
       // v14 review c1: the lead's look for a live manager, once a minute; not awaited (as the check-in), so its reads never hold the tick. Review c2 (CR1):
       // a due look runs under a timeout (managerSeenStep).
       if (grants.get(sid)?.level === 'lead') void managerSeenStep($, sid as string).catch(() => undefined)
@@ -4891,30 +4909,41 @@ async function ledgerAdd($: any, row: Omit<pr.LedgerRow, 't'>): Promise<boolean>
   }
 }
 
-// Whether this month's or last month's ledger holds an `answered` row for the id and nonce, found with a bounded grep -F. A read that fails or is cut is unreadable.
-// The needle is the id as pr.ledgerLine writes it (`"id":"<uuid>"`, JSON.stringify's spacing): whatever writes an `answered` row (PR 2) must write it with ledgerLine.
-async function ledgerHas($: any, p: { uid: number; root: string }, id: string, nonce: string): Promise<'found' | 'missing' | 'unreadable'> {
+// The rows of this month's and last month's ledgers that hold the needle, found with a bounded grep -F. A read that fails or is cut is unreadable.
+// The needle is a JSON fragment as pr.ledgerLine writes it (`"id":"<uuid>"`, JSON.stringify's spacing): every row is written with ledgerLine.
+async function ledgerRowsFor($: any, p: { uid: number; root: string }, needle: string): Promise<pr.LedgerRow[] | 'unreadable'> {
   try {
     const now = await $.clock.now()
+    const rows: pr.LedgerRow[] = []
     for (const name of [pr.ledgerFile(now), pr.ledgerFilePrev(now)]) {
       const path = `${p.root}/prompts/${name}`
       const st = await statR($, path)
       if (st === 'absent') continue
       if (st === 'error' || st.kind !== 'file' || st.uid !== p.uid || (st.mode & 0o022) !== 0) return 'unreadable'
-      const r = await $.process.run([GREP, '-F', '-h', '--', `"id":"${id}"`, path], { timeoutMs: 5000 })
+      const r = await $.process.run([GREP, '-F', '-h', '--', needle, path], { timeoutMs: 5000 })
       if (r.exitCode === 1) continue
       if (r.exitCode !== 0 || r.isStdoutTruncated) return 'unreadable'
-      for (const line of String(r.stdout).split('\n')) {
-        try {
-          const j = JSON.parse(line)
-          if (j?.kind === 'answered' && j.id === id && j.nonce === nonce) return 'found'
-        } catch {}
-      }
+      rows.push(...pr.parseRows(String(r.stdout)))
     }
-    return 'missing'
+    return rows
   } catch {
     return 'unreadable'
   }
+}
+
+// Whether this month's or last month's ledger holds an `answered` row for the id and nonce.
+async function ledgerHas($: any, p: { uid: number; root: string }, id: string, nonce: string, bind?: { code: string; by: string }): Promise<'found' | 'missing' | 'unreadable'> {
+  const rows = await ledgerRowsFor($, p, `"id":"${id}"`)
+  if (rows === 'unreadable') return 'unreadable'
+  // bind: the row must name the same decision and the same author as the file, so a file rewritten after its row (a deny turned allow) is not found.
+  return rows.some((j) => j.kind === 'answered' && j.id === id && j.nonce === nonce && (bind === undefined || (j.code === bind.code && j.by === bind.by))) ? 'found' : 'missing'
+}
+
+// The standing comment cap for a call that carries an `@claude` body: the `returned` allow rows of this month and last for the same repo, PR and kind. A failed
+// read is 'unreadable', which the callers treat as over the cap (the prompt stays the person's).
+async function capOf($: any, p: { uid: number; root: string }, cap: { kind: pr.CapKind; target: string }): Promise<'ok' | 'over' | 'unreadable'> {
+  const rows = await ledgerRowsFor($, p, `"target":${JSON.stringify(cap.target)}`)
+  return rows === 'unreadable' ? 'unreadable' : pr.capState(rows, cap)
 }
 
 // The emergency file: while it exists answering is off. A stat that fails counts as present (fail closed).
@@ -4925,11 +4954,11 @@ async function promptsOff($: any): Promise<boolean> {
 }
 
 // Whether the switch is on and this session is a lane or a lead: the cheap first test. The scope (a lane's or a lead's name) is judged once the lead is known.
-async function promptCoverage($: any, sid: string): Promise<{ a: pr.Answering; level: 'lane' | 'lead'; lane?: string; self?: string } | undefined> {
+async function promptCoverage($: any, sid: string): Promise<{ a: pr.Answering; level: 'lane' | 'lead'; lane?: string; self?: string; lead?: string } | undefined> {
   const a = pr.parseAnswering(await $.store.get(ANSWERING_KEY))
   if (!a) return undefined
   const b = (await $.state.get(lane)).value as Bound | null | undefined
-  if (b && typeof b.name === 'string') return { a, level: 'lane', lane: b.name }
+  if (b && typeof b.name === 'string') return { a, level: 'lane', lane: b.name, ...(typeof b.lead === 'string' ? { lead: b.lead } : {}) }
   const g = grants.get(sid)
   return g?.level === 'lead' ? { a, level: 'lead', self: g.name } : undefined
 }
@@ -4956,8 +4985,20 @@ async function branchOf($: any, dir: string): Promise<string | undefined> {
   return b === '' || /[\u0000-\u001f]/.test(b) ? undefined : b
 }
 
-async function promptFloorOpts($: any, tool: string, input: any, cwd: string, home: string): Promise<pr.FloorOpts> {
-  const o: pr.FloorOpts = { home, roots: [], cwd }
+// Where a push of this branch goes when the call names no branch: the keys git reads for it (branch.<b>.remote, pushRemote, merge, remote.pushDefault, push.default,
+// a remote's push or mirror). No keys is an answer (the defaults apply); anything else that fails leaves it unresolved, and the floor holds.
+const PUSH_KEYS = '^(branch\\..*\\.(remote|pushremote|merge)|remote\\.pushdefault|remote\\..*\\.(push|pushurl|mirror)|url\\..*\\.(insteadof|pushinsteadof)|push\\.default)$'
+async function pushTargetOf($: any, dir: string, branch: string, remote?: string): Promise<NonNullable<pr.FloorOpts['pushTarget']>> {
+  const r = await $.process.run([GIT_BIN, '--no-optional-locks', '-C', dir, 'config', '--get-regexp', PUSH_KEYS], { timeoutMs: 5000, env: { LC_ALL: 'C' } }).catch(() => undefined)
+  // A config that cannot be read may rewrite the push: even a named ref is then the floor.
+  if (!r) return { unresolved: true, mapped: true }
+  if (r.exitCode === 1 && String(r.stdout).trim() === '') return pr.pushTargetFrom('', branch, remote)
+  return r.exitCode === 0 && !r.isStdoutTruncated ? pr.pushTargetFrom(String(r.stdout), branch, remote) : { unresolved: true, mapped: true }
+}
+
+// cwdKnown: cwd is the folder the engine said the call ran in. When it said none, the floor reads every relative path as having an unknown base.
+async function promptFloorOpts($: any, tool: string, input: any, cwd: string, home: string, cwdKnown = true): Promise<pr.FloorOpts> {
+  const o: pr.FloorOpts = { home, roots: [], cwd, ...(cwdKnown ? {} : { cwdUnknown: true }) }
   const isGit = tool.startsWith('mcp__git-mcp__')
   try {
     const co = c.liveCheckout($.plugin.root)
@@ -4972,6 +5013,12 @@ async function promptFloorOpts($: any, tool: string, input: any, cwd: string, ho
   if (pr.needsBranch(tool, input)) {
     const dir = pr.gitPathOf(tool, input) ?? (tool === 'Bash' ? cwd : undefined)
     if (dir) o.branch = await branchOf($, dir)
+  }
+  // Every push is judged by where git sends it: a push naming no branch goes to the configured target of the current one, and a remote may rewrite even a named ref.
+  // An unread branch is '' (the rewrite check needs none); no folder to read is unresolved.
+  if (pr.needsPushTarget(tool, input)) {
+    const dir = pr.gitPathOf(tool, input) ?? cwd
+    o.pushTarget = await pushTargetOf($, dir, o.branch ?? '', typeof input?.remote === 'string' ? input.remote : undefined)
   }
   if (PERSON_HOLDS.has(tool) || isGit) {
     const real: string[] = []
@@ -5016,13 +5063,15 @@ async function linkedRoots($: any, home: string): Promise<string[]> {
 }
 
 // The lane's own lead (a live lead of the repo that is not the lane), by sid and name; undefined for a lead's own prompt or when none is live.
-async function promptLeadOf($: any, level: 'lane' | 'lead', sid: string, cwd: string): Promise<{ sid: string; name?: string } | undefined> {
+async function promptLeadOf($: any, level: 'lane' | 'lead', sid: string, cwd: string, bound?: string): Promise<{ sid: string; name?: string } | undefined> {
   if (level !== 'lane') return undefined
   const live = await registryEntries($)
   if (!live) return undefined
   const leads = (await leadsFor($, live, cwd).catch(() => [] as c.LeadFile[])).filter((l) => l.sid !== sid)
-  if (leads.length === 0) return undefined
-  return { sid: leads[0].sid, name: c.leadNameOf(live.map((r) => r.j), leads[0].sid) ?? undefined }
+  // The lead the lane is bound to, if it is live; with no binding, the one live lead of the repo. Two leads and no binding: nobody can be asked.
+  const lead = bound !== undefined ? leads.find((l) => l.sid === bound) : leads.length === 1 ? leads[0] : undefined
+  if (!lead) return undefined
+  return { sid: lead.sid, name: c.leadNameOf(live.map((r) => r.j), lead.sid) ?? undefined }
 }
 
 // This session's own registry row, by one file read (not the whole table): the row of the pid the request was made under, kept only if it names this session and
@@ -5112,7 +5161,7 @@ async function promptHook($: any, e: any, nextOnce: (x: any) => Promise<any>, si
     let lead: { sid: string; name?: string } | undefined
     let leadRead = false
     if (cov.a.scope !== 'all' && cov.a.scope !== cov.lane && cov.a.scope !== cov.self) {
-      lead = await promptLeadOf($, cov.level, sid, cwd)
+      lead = await promptLeadOf($, cov.level, sid, cwd, cov.lead)
       leadRead = true
       if (!pr.covers(cov.a, { lane: cov.lane, lead: lead?.name, self: cov.self })) return beneath
     }
@@ -5130,14 +5179,16 @@ async function promptHook($: any, e: any, nextOnce: (x: any) => Promise<any>, si
       return beneath
     }
     // 6. The floor.
-    const fo = await promptFloorOpts($, tool, input, cwd, homeOf(p))
+    // The floor reads relative paths against the folder the engine says the call ran in (a shell keeps its cd between calls), not the folder the session started in.
+    const ecwd = typeof e.cwd === 'string' && e.cwd.startsWith('/') ? e.cwd : undefined
+    const fo = await promptFloorOpts($, tool, input, ecwd ?? cwd, homeOf(p), ecwd !== undefined)
     const floor = pr.floorCheck(tool, input, fo)
     if (floor !== undefined) {
       await ledgerAdd($, { ...base, kind: 'floor', code: floor })
       return beneath
     }
     // 7. A live tier. Only the lead's is built (PR 3 adds the others), and only for a lane: a lead's own prompt starts at the conductor.
-    if (!leadRead) lead = await promptLeadOf($, cov.level, sid, cwd)
+    if (!leadRead) lead = await promptLeadOf($, cov.level, sid, cwd, cov.lead)
     const leadSid = lead?.sid
     const leadName = lead?.name
     if (leadSid === undefined) {
@@ -5155,7 +5206,7 @@ async function promptHook($: any, e: any, nextOnce: (x: any) => Promise<any>, si
     const id = await promptNewId($)
     const nonce = await promptNewId($)
     const capped = pr.capInput(input)
-    const req: pr.Request = { id, sid, pid: own.pid, procStart: own.procStart, level: cov.level, lane: cov.lane, ...(leadName ? { leadName } : {}), repo: cwd, tool, inputHash: hash, raisedBy: judged.raisedBy, at: started, expiresAt: started + pr.EXPIRES_MS, nonce, input: capped.input, truncated: capped.truncated }
+    const req: pr.Request = { id, sid, pid: own.pid, procStart: own.procStart, level: cov.level, lane: cov.lane, ...(leadName ? { leadName } : {}), repo: cwd, tool, ...(ecwd !== undefined ? { cwd: ecwd } : {}), inputHash: hash, raisedBy: judged.raisedBy, at: started, expiresAt: started + pr.EXPIRES_MS, nonce, input: capped.input, truncated: capped.truncated }
     const text = pr.requestText(req)
     if (new TextEncoder().encode(text).length > pr.REQUEST_MAX || !(await promptPut($, `${dir}/${id}.request.json`, text))) {
       await ledgerAdd($, { ...base, kind: 'abandoned', code: 'hook-failed' })
@@ -5168,7 +5219,7 @@ async function promptHook($: any, e: any, nextOnce: (x: any) => Promise<any>, si
     const row = { ...base, id, tier: 'lead' }
     // Without a `requested` row no decision could ever pass the ledger check: the dialog is left to the person.
     if (!(await ledgerAdd($, { ...row, kind: 'requested', nonce }))) throw new Error('ledger-unwritable')
-    return await promptWait($, e, beneath, signal, { sid, tid: tid as string, id, nonce, dir, hash, input, tool, cwd, home: homeOf(p), p, started, row, req, leadName })
+    return await promptWait($, e, beneath, signal, { sid, tid: tid as string, id, nonce, dir, hash, input, tool, cwd, ecwd, home: homeOf(p), p, started, row, req, leadName, cap: pr.claudeCap(tool, input) })
   } catch (err) {
     // A failing hook answers nothing: the dialog stays (the caller returns what the chain beneath gives).
     await ledgerAdd($, { kind: 'abandoned', code: 'hook-failed', id: reqDir.id }).catch(() => undefined)
@@ -5178,7 +5229,7 @@ async function promptHook($: any, e: any, nextOnce: (x: any) => Promise<any>, si
   }
 }
 
-type WaitCtx = { sid: string; tid: string; id: string; nonce: string; dir: string; hash: string; input: unknown; tool: string; cwd: string; home: string; p: { uid: number; root: string; own?: string }; started: number; row: Omit<pr.LedgerRow, 't' | 'kind'>; req: pr.Request; leadName?: string }
+type WaitCtx = { sid: string; tid: string; id: string; nonce: string; dir: string; hash: string; input: unknown; tool: string; cwd: string; home: string; p: { uid: number; root: string; own?: string }; started: number; row: Omit<pr.LedgerRow, 't' | 'kind'>; req: pr.Request; leadName?: string; cap?: { kind: pr.CapKind; target: string }; ecwd?: string }
 
 // The wait (§3.1a, §6.1). Each poll: a click, the switch, the dialog's own row, expiry, then a decision file. The awake clock adds each gap, capped.
 async function promptWait($: any, e: any, beneath: any, signal: AbortSignal, w: WaitCtx): Promise<any> {
@@ -5211,6 +5262,8 @@ async function promptWait($: any, e: any, beneath: any, signal: AbortSignal, w: 
       else if (seenWaiting && !waiting) return end('superseded')
     }
     if (awake >= pr.expiresAfter(false)) return end('abandoned', 'expired')
+    // Passed up with no tier above the lead (PR 3 adds them): it is the person's now, and the lead's right ends. An escalate file wins over a decision beside it.
+    if ((await statR($, `${w.dir}/${w.id}.escalate.json`)) !== 'absent') return end('abandoned', 'escalated')
     const df = await readSmallR($, `${w.dir}/${w.id}.decision.json`, w.p.uid, pr.DECISION_MAX)
     if (df.state === 'bad' && (await statR($, `${w.dir}/${w.id}.decision.json`)) !== 'absent' && lastDrop !== 'file') {
       lastDrop = 'file'
@@ -5236,7 +5289,7 @@ async function promptWait($: any, e: any, beneath: any, signal: AbortSignal, w: 
           // The decision stands, unless a click or the switch got there first meanwhile.
           if (signal.aborted || doneIds.has(w.tid)) return end('superseded')
           if (!(await stillOn())) return end('off')
-          if (!(await ledgerAdd($, { ...w.row, kind: 'returned', code: d.decision, why: d.why, tier: d.by.level }))) return beneath
+          if (!(await ledgerAdd($, { ...w.row, kind: 'returned', code: d.decision, why: d.why, tier: d.by.level, by: d.by.sid, tuid: w.tid, ...(w.cap ? { cap: w.cap.kind, target: w.cap.target } : {}) }))) return beneath
           const decision = d.decision === 'allow' ? { behavior: 'allow' as const } : { behavior: 'deny' as const, message: pr.capBytes(pr.redact(`Denied by the ${d.by.level} ${d.by.name}: ${d.why}`), 300).text }
           return { ...(beneath && typeof beneath === 'object' ? beneath : {}), decision }
         }
@@ -5255,15 +5308,18 @@ async function promptApply($: any, w: WaitCtx, d: pr.Decision, awake: number, gr
   try {
     liveHash = await sha($, pr.canonical(w.input))
   } catch {}
-  const fo = await promptFloorOpts($, w.tool, w.input, w.cwd, w.home)
+  const fo = await promptFloorOpts($, w.tool, w.input, w.ecwd ?? w.cwd, w.home, w.ecwd !== undefined)
   let byOk = false
   if (pr.SID.test(d.by.sid) && d.by.sid !== w.sid) {
     const live = await registryEntries($)
     const cv = await promptCoverage($, w.sid)
     // The author is a live lead of the repo, and one the switch's scope covers (a scope naming one lead does not let another lead answer).
-    if (live && cv) byOk = (await leadsFor($, live, w.cwd).catch(() => [] as c.LeadFile[])).some((l) => l.sid === d.by.sid && pr.covers(cv.a, { lane: cv.lane, lead: c.leadNameOf(live.map((r) => r.j), l.sid) ?? undefined, self: cv.self }))
+    if (live && cv) byOk = (await leadsFor($, live, w.cwd).catch(() => [] as c.LeadFile[])).some((l) => l.sid === d.by.sid && (w.leadName === undefined || c.leadNameOf(live.map((r) => r.j), l.sid) === w.leadName) && pr.covers(cv.a, { lane: cv.lane, lead: c.leadNameOf(live.map((r) => r.j), l.sid) ?? undefined, self: cv.self }))
   }
-  return pr.applyCheck({ req: w.req, decision: d, liveHash, awakeMs: awake, expiresAt: pr.expiresAfter(false), floor: pr.floorCheck(w.tool, w.input, fo), byOk, ledger: await ledgerHas($, w.p, w.id, w.nonce), graceMs })
+  const ledger = await ledgerHas($, w.p, w.id, w.nonce, { code: d.decision, by: d.by.sid })
+  // Only a call that carries an `@claude` body, and only once the other checks would let the decision through, reads the cap.
+  const cap = w.cap && ledger === 'found' && d.decision === 'allow' ? await capOf($, w.p, w.cap) : undefined
+  return pr.applyCheck({ req: w.req, decision: d, liveHash, awakeMs: awake, expiresAt: pr.expiresAfter(false), floor: pr.floorCheck(w.tool, w.input, fo), byOk, ledger, graceMs, cap })
 }
 
 // The tick's sweep: a request whose session is gone, or older than a day, is closed with a row and its files removed. No process call unless a prompts folder is there.
@@ -5361,6 +5417,271 @@ async function promptsCommand($: any): Promise<{ text: string }> {
       open += ((await $.fs.list(`${p.root}/prompts/${d.name}`).catch(() => [])) as { name: string }[]).filter((f) => f.name.endsWith('.request.json')).length
   }
   return { text: `${pr.answeringState(a, await promptsOff($))} Open requests: ${open}. ${pr.FLOOR_LINE}` }
+}
+
+// ---- PR 2: the lead tier (prompt_list, prompt_answer, prompt_escalate) and its notice ----
+const LN = '/bin/ln'
+const PROMPT_REQUESTS_MAX = 64
+const PROMPT_DIRS_MAX = 512
+const promptReason = (tool: string, why: string) => `${tool} refused: ${why}`
+const promptRefuse = (code: string): string => pr.PROMPT_REFUSE[code] ?? code
+
+type PromptFile = { dir: string; req: pr.Request; names: Set<string> }
+
+// The request files in the prompts folders, parsed: a folder or file that is not ours (owner, mode, one link, size, shape, a name that does not match the
+// request inside it) is skipped. At most PROMPT_REQUESTS_MAX, in folder order.
+const PROMPT_SCAN_MAX = 256
+async function promptRequests($: any, p: { uid: number; root: string }, accept?: (q: pr.Request, names: Set<string>) => Promise<boolean>): Promise<PromptFile[]> {
+  let scanned = 0
+  const base = `${p.root}/prompts`
+  const out: PromptFile[] = []
+  if (!(await dirOk($, base, p.uid))) return out
+  const dirs = ((await $.fs.list(base).catch(() => [])) as { name: string }[]).filter((d) => c.SID_RE.test(d.name)).map((d) => d.name).sort().slice(0, PROMPT_DIRS_MAX)
+  for (const name of dirs) {
+    if (out.length >= PROMPT_REQUESTS_MAX) break
+    const dir = `${base}/${name}`
+    const names = new Set(((await $.fs.list(dir).catch(() => [])) as { name: string }[]).map((f) => f.name))
+    const ids = [...names].flatMap((n) => (/^[0-9a-f-]{36}\.request\.json$/.test(n) ? [n.slice(0, 36)] : []))
+    if (ids.length === 0 || !(await dirOk($, dir, p.uid))) continue
+    for (const id of ids) {
+      if (out.length >= PROMPT_REQUESTS_MAX || scanned >= PROMPT_SCAN_MAX) break
+      scanned++
+      const r = await readSmallR($, `${dir}/${id}.request.json`, p.uid, pr.REQUEST_MAX)
+      if (r.state !== 'ok') continue
+      const q = pr.parseRequest(r.text)
+      if (q && q.id === id && q.sid === name && (accept === undefined || (await accept(q, names)))) out.push({ dir, req: q, names })
+    }
+  }
+  return out
+}
+
+// Whether a request is the lead's to see and answer: not its own, a lane's (a lead's own prompt starts at the conductor, PR 3), narrowed to the lead the
+// request names, covered by the switch, from a session that is live under the pid and start the request names, and the lead is a live lead of the repo the
+// lane works in (as the hook checks it at apply).
+async function promptReach($: any, tier: { sid: string; name: string }, a: pr.Answering, live: RegRow[], q: pr.Request): Promise<boolean> {
+  if (q.level !== 'lane' || q.sid === tier.sid) return false
+  if (q.leadName !== undefined && (tier.name === '' || q.leadName !== tier.name)) return false
+  if (!pr.covers(a, { lane: q.lane, lead: tier.name === '' ? undefined : tier.name })) return false
+  if (!live.some((r) => r.j.sessionId === q.sid && String(r.j.pid) === r.pid && r.pid === String(q.pid) && r.j.procStart === q.procStart)) return false
+  const leads = await leadsFor($, live, q.repo).catch(() => [] as c.LeadFile[])
+  return leads.some((l) => l.sid === tier.sid)
+}
+
+// The tier's own context for the three tools: the lead steps every lead tool shares, the switch, the OFF file.
+async function promptTierCtx($: any, e: unknown, sid: string) {
+  const base = await leadBase($, e, sid)
+  if ('err' in base) return base
+  const p = await where($)
+  if (!p) return { err: ['write-failed', pr.PROMPT_REFUSE['write-failed']] as const }
+  const answering = pr.parseAnswering(await $.store.get(ANSWERING_KEY).catch(() => undefined))
+  return { ...base, p, answering, off: await promptsOff($) }
+}
+
+// A request by id, with every refusal the answering tools share. Each refusal is a code of pr.PROMPT_REFUSE.
+async function promptFind($: any, t: { p: { uid: number; root: string }; live: RegRow[]; g: c.Grant; answering: pr.Answering }, sid: string, id: string, allowDecided = false): Promise<{ file: PromptFile } | { no: string }> {
+  const base = `${t.p.root}/prompts`
+  if (!(await dirOk($, base, t.p.uid))) return { no: 'unknown-request' }
+  const dirs = ((await $.fs.list(base).catch(() => [])) as { name: string }[]).filter((d) => c.SID_RE.test(d.name)).map((d) => d.name).sort().slice(0, PROMPT_DIRS_MAX)
+  let found: { dir: string; names: Set<string>; q: pr.Request } | undefined
+  for (const name of dirs) {
+    const dir = `${base}/${name}`
+    const names = new Set(((await $.fs.list(dir).catch(() => [])) as { name: string }[]).map((f) => f.name))
+    if (!names.has(`${id}.request.json`) || !(await dirOk($, dir, t.p.uid))) continue
+    const r = await readSmallR($, `${dir}/${id}.request.json`, t.p.uid, pr.REQUEST_MAX)
+    const q = r.state === 'ok' ? pr.parseRequest(r.text) : undefined
+    if (!q || q.id !== id || q.sid !== name) continue
+    // Two folders holding a request with one id: the lead could judge one and answer the other, so neither is answered.
+    if (found !== undefined) return { no: 'unknown-request' }
+    found = { dir, names, q }
+  }
+  if (found === undefined) return { no: 'unknown-request' }
+  {
+    const { dir, names, q } = found
+    if (q.sid === sid) return { no: 'own-request' }
+    if (!(await promptReach($, { sid, name: t.g.name }, t.answering, t.live, q))) return { no: 'unknown-request' }
+    if (names.has(`${id}.done`)) return { no: 'closed' }
+    if (names.has(`${id}.escalate.json`)) return { no: 'escalated' }
+    // A decision the hook dropped (a cap, the floor at apply) stays in the folder: passing the request up is still open to the lead, answering again is not.
+    if (!allowDecided && names.has(`${id}.decision.json`)) return { no: 'decided' }
+    return { file: { dir, req: q, names } }
+  }
+}
+
+// A file of ours, written whole beside its name and linked into place: `ln` fails when the target exists, so the first writer wins (mv -n gives no failure to
+// rely on). 'exists': the target was there; 'failed': nothing was written.
+async function promptLinkOnce($: any, path: string, text: string): Promise<'ok' | 'exists' | 'failed'> {
+  // Two leads of one repo are two processes writing in the asker's folder: the name carries digits drawn from a fresh uuid (the sweep's orphan pattern is
+  // `<id>.<word>.<digits>.tmp`), so a counter that two processes share cannot make them write one file.
+  let tmp = ''
+  try {
+    tmp = `${path}.${BigInt(`0x${(await promptNewId($)).replace(/-/g, '').slice(0, 16)}`).toString()}.tmp`
+    if ((await run($, [INSTALL, '-m', '600', '/dev/null', tmp])).exitCode !== 0) return 'failed'
+    if ((await run($, [TEE, '--', tmp], text)).exitCode !== 0) return 'failed'
+    const l = await run($, [LN, '--', tmp, path])
+    if (l.exitCode === 0) {
+      // A target that was a folder, or a link to one, takes the link inside it and says nothing: only a plain file in place counts.
+      const f = await statR($, path)
+      return f !== 'absent' && f !== 'error' && f.kind === 'file' ? 'ok' : 'failed'
+    }
+    return (await statR($, path)) === 'absent' ? 'failed' : 'exists'
+  } catch {
+    return 'failed'
+  } finally {
+    if (tmp !== '') await run($, [RM, '-f', '--', tmp]).catch(() => undefined)
+  }
+}
+
+// Dropped decisions this month and last that look forged or stale (the codes the audit counts as anomalies): a cheap, ledger-only number for prompt_list.
+async function promptAnomalyHint($: any, p: { uid: number; root: string }): Promise<string | undefined> {
+  const rows = await ledgerRowsFor($, p, '"kind":"dropped"')
+  if (rows === 'unreadable') return undefined
+  const n = rows.filter((r) => r.kind === 'dropped' && ['no-answered-row', 'id', 'hash', 'nonce', 'by-sid'].includes(String(r.code))).length
+  return n > 0 ? `${n} decision${n === 1 ? ' was' : 's were'} dropped in the last two months for a reason that can mean a forged or stale file; tell the person (tools/callboard/prompt-audit.mjs lists them).` : undefined
+}
+
+async function promptListTool($: any, e: unknown): Promise<{ result: string } | { deny: string }> {
+  const sid = await $.session.id()
+  const t = await promptTierCtx($, e, sid)
+  if ('err' in t) {
+    await log($, sid, 'refused', `prompt-${t.err[0]}`)
+    return { deny: promptReason('prompt_list', t.err[1]) }
+  }
+  if (!t.answering || t.off) return { result: pr.promptListText([], { on: false }) }
+  const now = await $.clock.now()
+  const items: pr.ListItem[] = []
+  const open = (await promptRequests($, t.p, async (q, names) => !names.has(`${q.id}.done`) && !names.has(`${q.id}.escalate.json`) && !names.has(`${q.id}.decision.json`) && (await promptReach($, { sid, name: t.g.name }, t.answering!, t.live, q)))).sort((a, b) => a.req.at - b.req.at)
+  for (const f of open) {
+    const q = f.req
+    items.push({ id: q.id, lane: q.lane, tool: q.tool, repo: q.repo, raisedBy: q.raisedBy, ageSec: (now - q.at) / 1000, truncated: q.truncated, agentType: q.agentType, input: q.input })
+  }
+  return { result: pr.promptListText(items, { on: true, hint: await promptAnomalyHint($, t.p).catch(() => undefined) }) }
+}
+
+// prompt_answer and prompt_escalate share their checks; `answer` false is the escalation.
+async function promptAnswerTool($: any, e: any, answer: boolean): Promise<{ result: string } | { deny: string }> {
+  const sid = await $.session.id()
+  const tool = answer ? 'prompt_answer' : 'prompt_escalate'
+  const refuse = async (code: string, why?: string) => {
+    await log($, sid, 'refused', `prompt-${code}`)
+    return { deny: promptReason(tool, why ?? promptRefuse(code)) }
+  }
+  const t = await promptTierCtx($, e, sid)
+  if ('err' in t) return refuse(t.err[0], t.err[1])
+  const id = typeof e.id === 'string' ? e.id : ''
+  const decision = e.decision
+  const why = pr.cleanWhy(e.why)
+  if (!pr.ID_RE.test(id) || why === undefined || (answer && decision !== 'allow' && decision !== 'deny')) return refuse('bad-input')
+  if (!t.answering || t.off) return refuse('off')
+  const found = await promptFind($, { p: t.p, live: t.live, g: t.g, answering: t.answering }, sid, id, !answer)
+  if ('no' in found) return refuse(found.no)
+  const { dir, req: q } = found.file
+  // The decision is judged on the copy the tier read. A truncated copy cannot be allowed (the rubric: seen whole); a floor call is never answered, whichever way.
+  if (answer) {
+    if (q.truncated && decision === 'allow') return refuse('truncated')
+    if (!q.truncated) {
+      const fo = await promptFloorOpts($, q.tool, q.input, q.cwd ?? q.repo, homeOf(t.p), q.cwd !== undefined)
+      if (pr.floorCheck(q.tool, q.input, fo) !== undefined) return refuse('floor')
+    }
+  }
+  const cap = answer && decision === 'allow' ? pr.claudeCap(q.tool, q.input) : undefined
+  if (cap && (await capOf($, t.p, cap)) !== 'ok') return refuse('cap')
+  const now = await $.clock.now()
+  const row = { id, nonce: q.nonce, lane: q.lane, repo: q.repo, tool: q.tool, pattern: pr.patternOf(q.tool, q.input, q.repo), hash: q.inputHash, tier: 'lead', why }
+  const path = answer ? `${dir}/${id}.decision.json` : `${dir}/${id}.escalate.json`
+  const body = answer
+    ? JSON.stringify({ id, inputHash: q.inputHash, decision, why, by: { level: 'lead', sid, name: t.g.name === '' ? 'lead' : t.g.name }, at: now, nonce: q.nonce })
+    : pr.escalateText({ id, tier: 'person', why, at: now })
+  const put = await promptLinkOnce($, path, body)
+  if (put === 'exists') return refuse(answer ? 'decided' : 'escalated')
+  if (put === 'failed') return refuse('write-failed')
+  // The request may have closed while the file was written: a decision left in a closed request's folder is removed, and nothing is logged.
+  if ((await statR($, `${dir}/${id}.request.json`)) === 'absent') {
+    await run($, [RM, '-f', '--', path]).catch(() => undefined)
+    return refuse('closed')
+  }
+  // The row is written only after the file is in place; the hook holds a decision it sees a moment before its row for a few seconds. A row that cannot be written
+  // takes the file back, so a decision never stands without its row.
+  const logged = await ledgerAdd($, answer ? { ...row, kind: 'answered', code: decision, by: sid, ...(cap ? { cap: cap.kind, target: cap.target } : {}) } : { ...row, kind: 'escalated', code: 'person' })
+  if (!logged) {
+    await run($, [RM, '-f', '--', path]).catch(() => undefined)
+    return refuse('write-failed')
+  }
+  return {
+    result: answer
+      ? `Recorded: ${decision} for ${id}. The dialog stays open in front of the person and their click wins; your answer lands once the prompt has been open 30 seconds. It is yours, not the person's, and carries no approval for anything else.`
+      : `Passed up: ${id} is the person's now, and your right to answer it has ended. The dialog is still open in front of them.`,
+  }
+}
+
+// The tick's notice (§6.2): one fixed turn, only to an idle lead, covering every open request in reach. A request is told once; a notice over the hourly cap stays owed
+// (the next tick tries again). Nothing is read while answering is off, but one store read.
+// Per lead: request id to 0 (told) or to the time it was found not to be in reach (looked at again after PROMPT_RECHECK_MS: a check that failed once must not
+// hide a request for good).
+const PROMPT_RECHECK_MS = 60_000
+const promptTold = new Map<string, Map<string, number>>()
+const promptNotices = new Map<string, number[]>()
+const promptCapLogged = new Set<string>()
+async function promptNoticeTick($: any, sid: string, submitsAtStart: number): Promise<void> {
+  const g = grantOf(sid)
+  if (g?.level !== 'lead') return
+  const answering = pr.parseAnswering(await $.store.get(ANSWERING_KEY).catch(() => undefined))
+  if (!answering || (await promptsOff($))) {
+    promptTold.delete(sid)
+    return
+  }
+  const p = await where($)
+  if (!p) return
+  const base = `${p.root}/prompts`
+  const open = new Map<string, { dir: string }>()
+  const dirs = ((await $.fs.list(base).catch(() => [])) as { name: string }[]).filter((d) => c.SID_RE.test(d.name)).map((d) => d.name).sort().slice(0, PROMPT_DIRS_MAX)
+  for (const name of dirs) {
+    const names = new Set(((await $.fs.list(`${base}/${name}`).catch(() => [])) as { name: string }[]).map((f) => f.name))
+    for (const n of names) {
+      const m = /^([0-9a-f-]{36})\.request\.json$/.exec(n)
+      if (m && pr.ID_RE.test(m[1]) && !names.has(`${m[1]}.done`) && !names.has(`${m[1]}.escalate.json`) && !names.has(`${m[1]}.decision.json`)) open.set(m[1], { dir: `${base}/${name}` })
+    }
+  }
+  const told = promptTold.get(sid) ?? new Map<string, number>()
+  for (const id of [...told.keys()]) if (!open.has(id)) told.delete(id)
+  promptTold.set(sid, told)
+  const at = await $.clock.now()
+  // 0: told. -1: the lead's, owed a notice (not read again). Above 0: found not in reach at that time.
+  const fresh = [...open.keys()].filter((id) => !told.has(id) || (told.get(id)! > 0 && at - told.get(id)! >= PROMPT_RECHECK_MS))
+  if (fresh.length > 0) {
+    // Each new request is read once: whose it is decides whether it is owed a notice.
+    const live = await registryEntries($)
+    if (!live || !(await dirOk($, base, p.uid))) return
+    const name = c.leadNameOf(live.map((r) => r.j), sid) ?? ''
+    for (const id of fresh.slice(0, PROMPT_REQUESTS_MAX)) {
+      const r = await readSmallR($, `${open.get(id)!.dir}/${id}.request.json`, p.uid, pr.REQUEST_MAX)
+      if (r.state !== 'ok') continue
+      const q = pr.parseRequest(r.text)
+      told.set(id, q && q.id === id && (await promptReach($, { sid, name }, answering, live, q)) ? -1 : at)
+    }
+  }
+  const mine = [...told].filter(([, v]) => v === -1).map(([id]) => id)
+  if (mine.length === 0) return
+  const now = await $.clock.now()
+  const times = promptNotices.get(sid) ?? []
+  if (!c.noticeAllowed(times, now, pr.PROMPT_NOTICES_PER_HOUR)) {
+    if (promptCapLogged.has(sid)) return
+    promptCapLogged.add(sid)
+    return log($, sid, 'notice-capped', 'prompts')
+  }
+  if (dialogOpen.has(sid) || submits !== submitsAtStart) return
+  // A pending request (a compaction that is armed or waiting to resume) or a due nudge has the idle moment first.
+  if ((await $.state.get(request)).value != null || (await $.state.get(nudgeDueRef)).value != null) return
+  if ((await idleCheck($, sid)) !== undefined) return
+  // Every read is behind us: nothing is awaited between this guard and the submit.
+  if (dialogOpen.has(sid) || submits !== submitsAtStart) return
+  for (const id of mine) told.set(id, 0)
+  promptCapLogged.delete(sid)
+  promptNotices.set(sid, [...times.filter((t) => t <= now && now - t < c.HOUR_MS), now])
+  await submitOwn($, pr.PROMPT_NOTICE_TEXT, false).catch(async () => {
+    for (const id of mine) told.set(id, -1)
+    turnKind.delete(sid)
+    await log($, sid, 'notice-failed', 'prompts')
+  })
 }
 
 export const register: Register = (on) => {
@@ -6015,6 +6336,20 @@ export const register: Register = (on) => {
     return { result: t.text } as never
   })).catch(() => ({ deny: 'lane_list failed closed.' }))
 
+  // ADR 0004: the lead tier's three tools. leadRun keeps the lead's presence file fresh and tells it once of a changed lane list, as for every lead tool.
+  on('tool.call', { tool: 'mcp__callboard__prompt_list' }, async ($, e, next) => leadRun($, e, async () => {
+    ensureTimer($)
+    return (await promptListTool($, e)) as never
+  })).catch(() => ({ deny: 'prompt_list failed closed.' }))
+  on('tool.call', { tool: 'mcp__callboard__prompt_answer' }, async ($, e, next) => leadRun($, e, async () => {
+    ensureTimer($)
+    return (await promptAnswerTool($, e, true)) as never
+  })).catch(() => ({ deny: 'prompt_answer failed closed.' }))
+  on('tool.call', { tool: 'mcp__callboard__prompt_escalate' }, async ($, e, next) => leadRun($, e, async () => {
+    ensureTimer($)
+    return (await promptAnswerTool($, e, false)) as never
+  })).catch(() => ({ deny: 'prompt_escalate failed closed.' }))
+
   for (const verb of c.STOP_VERBS) {
     on('tool.call', { tool: `mcp__callboard__lane_${verb}` }, async ($, e, next) => leadRun($, e, async () => {
       const sid = await $.session.id()
@@ -6348,6 +6683,8 @@ export const register: Register = (on) => {
     let sections = out.sections
     if (gated) sections = [...sections.filter((x) => x.id !== c.LEAD_BRIEFING_ID), { id: c.LEAD_BRIEFING_ID, text: c.leadBriefing(pin), scope: 'session' as const }]
     if (gated) sections = [...sections.filter((x) => x.id !== c.LEAD_MANAGER_ID), ...(leadManager ? [{ id: c.LEAD_MANAGER_ID, text: c.LEAD_MANAGER_TEXT, scope: 'session' as const }] : [])]
+    // ADR 0004: the lead's prompt section, beside the briefing (whose approved text is left alone).
+    if (gated) sections = [...sections.filter((x) => x.id !== pr.LEAD_PROMPTS_ID), ...(grants.get(sid)?.level === 'lead' ? [{ id: pr.LEAD_PROMPTS_ID, text: pr.LEAD_PROMPT_BRIEFING, scope: 'session' as const }] : [])]
     if (gated) sections = [...sections.filter((x) => x.id !== c.LEAD_CONDUCTOR_ID), ...(seenConductors.length > 0 ? [{ id: c.LEAD_CONDUCTOR_ID, text: c.leadConductorText(seenConductors), scope: 'session' as const }] : [])]
     if (managerText !== undefined) sections = [...sections.filter((x) => x.id !== c.MANAGER_BRIEFING_ID), { id: c.MANAGER_BRIEFING_ID, text: managerText, scope: 'session' as const }]
     if (conductorText !== undefined) sections = [...sections.filter((x) => x.id !== c.CONDUCTOR_BRIEFING_ID), { id: c.CONDUCTOR_BRIEFING_ID, text: conductorText, scope: 'session' as const }]
