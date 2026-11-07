@@ -766,7 +766,23 @@ function weakWord(w: Word, cur: B[], j: J): FloorCategory | undefined {
     if (p !== w.t && wordSettings(p, o)) return 'settings'
     if (w.t.startsWith('/') && p !== w.t && underRoot(p, o)) return 'settings'
   }
+  // A relative word that starts outside every live checkout and lands inside one (git -C ../app, find ../app ...), whatever wraps the command: the wrapper hides the
+  // folder the inner command runs in, the word still shows where it points. A word that stays inside a checkout the session is already in is the root-session rule's.
+  if (!w.t.startsWith('/') && (o.roots?.length ?? 0) > 0) {
+    for (const b of cur) {
+      if (b === null || b === '' || underRoot(b, o)) continue
+      if (underRoot(lexical(`${b}/${w.t}`, undefined), o)) return 'settings'
+    }
+  }
   return undefined
+}
+// A path that is a root or lies above one (a find from there reaches it).
+const coversRoot = (p: string, o: FloorOpts): boolean => {
+  const a = p.toLowerCase().replace(/\/+$/, '')
+  return (o.roots ?? []).some((r) => {
+    const b = r.toLowerCase()
+    return a === '' || a === b || b.startsWith(`${a}/`)
+  })
 }
 
 // Names of git settings that run code, redirect a push or widen trust; compared in lower case.
@@ -1255,7 +1271,9 @@ function dispatch(v: string, verb: Word, args: Word[], it: Item, cur: B[], j: J,
   if (v === 'diskutil') return args.some((w) => /^(erase|partition|reformat|zerodisk|randomdisk|secureerase|deletevolume|deletecontainer)/i.test(w.t)) ? DEST : { ro: false }
   if (v === 'cd' || v === 'pushd') {
     const a = args.find((w) => !w.t.startsWith('-') || w.t === '-')
-    const to: B[] = !a ? (o.home ? [lexical(o.home, undefined)] : [null]) : a.t === '-' || a.dyn ? [null] : capB(cur.map((b) => cdTo(b, a.t)))
+    // pushd with no folder swaps the top two of the stack, +N and -N rotate it, and -n moves nothing: none of those is a known folder. (cd alone is home.)
+    const stackMove = v === 'pushd' && (!a || /^[+-]\d+$/.test(a.t) || args.some((w) => w.t.startsWith('-') && w.t !== '-' && w.t !== a?.t))
+    const to: B[] = stackMove ? [null] : !a ? (o.home ? [lexical(o.home, undefined)] : [null]) : a.t === '-' || a.dyn ? [null] : capB(cur.map((b) => cdTo(b, a.t)))
     return { ro: true, cd: to }
   }
   if (v === 'popd') return { ro: true, cd: [null] }
@@ -1274,6 +1292,16 @@ function dispatch(v: string, verb: Word, args: Word[], it: Item, cur: B[], j: J,
   if (v === 'find') {
     if (args.some((w) => /^-(delete|fprint\w*|fls)$/.test(w.t))) return DEST
     const x = args.findIndex((w) => /^-(exec|execdir|ok|okdir)$/.test(w.t))
+    if (x >= 0) {
+      // The folders find starts from (the words before its first expression): with a command to run on what it finds, one that is a live checkout, lies under one or
+      // above one is the floor, and so is one that cannot be read.
+      for (const w of args) {
+        if (w.t.startsWith('-') || w.t === '(' || w.t === '!') break
+        const c = wpath(w, cur, j)
+        if (c) return { cat: c }
+        if (rpaths(w, cur).some((p) => coversRoot(p, j.o))) return SETT
+      }
+    }
     if (x >= 0 && !noWrap) {
       const c = wrapScan(args.slice(x + 1), it, cur, j, false)
       if (c) return { cat: c }
@@ -1308,6 +1336,8 @@ function dispatch(v: string, verb: Word, args: Word[], it: Item, cur: B[], j: J,
     return { ro: false }
   }
   if (v === 'env' && args.length === 0) return { ro: true }
+  // env -C DIR (or --chdir) runs the command in another folder; not followed, so the command is the floor.
+  if (v === 'env' && args.some((w) => w.t === '-C' || /^--chdir/.test(w.t) || /^-[A-Za-z]*C./.test(w.t))) return SETT
   if (SH_WRAP.test(v)) return noWrap ? {} : { cat: wrapScan(args, it, cur, j, false) }
   if (SH_CONT.test(v)) {
     if (args.some((w) => INFRA_WORD.test(w.t)) || opaque(args.find((w) => !w.t.startsWith('-')) ?? mkWord())) return DEST

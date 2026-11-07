@@ -55,9 +55,10 @@ const DROP_FINE = new Set(['expired', 'ledger-unreadable', 'file', 'shape', 'flo
 // The small built-in floor check of rule d, best effort. A ledger row never holds arguments (patternOf keeps a command's first word,
 // a tool's repository and number, a file's repo-relative path), so only shapes visible in `tool` and `pattern` can be recognised:
 // merge and branch-update tools, an assumed machine-ops server (`mcp__machine-ops__*` or `mcp__machine_ops__*`), and a write tool
-// whose path is a settings file, a hooks folder or callboard's own folder. A force push cannot be told from a plain one here.
+// whose path is one the hook's own floor holds (.claude/settings*, .claude/hooks, callboard's folder, .git, .husky, .githooks); a hooks folder or a settings.json of
+// a project is not one. A force push cannot be told from a plain one here.
 const FLOOR_TOOL_RE = /(^|__)(merge_pull_request|update_pull_request_branch)$|^mcp__machine[-_]ops__/
-const FLOOR_PATH_RE = /(^|\/)(settings(\.local)?\.json|hooks(\/|$)|\.claude\/callboard(\/|$)|callboard\/(prompts|cue|leads|open)(\/|$))/
+const FLOOR_PATH_RE = /(^|\/)(\.claude\/(settings[^/]*|hooks(\/|$)|callboard(\/|$))|callboard\/(prompts|cue|leads|open)(\/|$)|\.git(\/|$)|\.husky(\/|$)|\.githooks(\/|$)|\.mcp\.json$|install\.conf$)/
 const WRITE_TOOL_RE = /^(Edit|Write|MultiEdit|NotebookEdit)\b/
 export function floorShape(tool, pattern) {
   if (typeof tool !== 'string') return undefined
@@ -241,15 +242,21 @@ function findDecision(root0) {
   return pd === undefined ? undefined : { pd, toolUseId }
 }
 
-function collectTranscriptFiles(projects, since, notes) {
+function collectTranscriptFiles(projects, since, problems) {
   const found = []
   let visited = 0
+  let deep = false
+  let unreadable = 0
   const walk = (dir, depth) => {
-    if (depth > WALK_DEPTH_MAX) return
+    if (depth > WALK_DEPTH_MAX) {
+      deep = true
+      return
+    }
     let ents
     try {
       ents = list(dir)
     } catch {
+      unreadable++
       return
     }
     for (const d of ents) {
@@ -271,10 +278,13 @@ function collectTranscriptFiles(projects, since, notes) {
     }
   }
   walk(projects, 0)
-  if (visited > DIR_ENTRIES_MAX) notes.push(`transcripts: stopped listing after ${DIR_ENTRIES_MAX} entries`)
+  // A transcript that is not listed is a transcript that is not read: the run is incomplete, whatever the anomalies say.
+  if (visited > DIR_ENTRIES_MAX) problems.push(`transcripts: stopped listing after ${DIR_ENTRIES_MAX} entries`)
+  if (deep) problems.push(`transcripts: folders deeper than ${WALK_DEPTH_MAX} levels were not listed`)
+  if (unreadable > 0) problems.push(`transcripts: ${unreadable} folder(s) could not be listed`)
   found.sort((a, b) => b.mtimeMs - a.mtimeMs)
   if (found.length > TRANSCRIPT_FILES_MAX) {
-    notes.push(`transcripts: ${TRANSCRIPT_FILES_MAX} newest of ${found.length} files scanned; narrow it with --since`)
+    problems.push(`transcripts: only the ${TRANSCRIPT_FILES_MAX} newest of ${found.length} files were scanned; narrow it with --since`)
     found.length = TRANSCRIPT_FILES_MAX
   }
   return found
@@ -284,7 +294,7 @@ function scanTranscripts(projects, since, notes, problems, budget) {
   const decisions = []
   let scanned = 0
   let total = 0
-  const files = collectTranscriptFiles(projects, since, notes)
+  const files = collectTranscriptFiles(projects, since, problems)
   for (const [n, f] of files.entries()) {
     // A total byte budget over all transcripts: running out of it leaves the rest unread, which makes the audit incomplete.
     if (total >= budget) {
@@ -341,9 +351,9 @@ function scanTranscripts(projects, since, notes, problems, budget) {
         problems.push(`transcripts: the byte budget of ${budget} was used up inside ${basename(f.path)}; the rest of it and ${files.length - n - 1} more file(s) were not read`)
         break
       }
-      if (s.truncated) notes.push(`transcripts: ${basename(f.path)} read only to its first ${TRANSCRIPT_MAX_BYTES} bytes`)
+      if (s.truncated) problems.push(`transcripts: ${basename(f.path)} was read only to its first ${TRANSCRIPT_MAX_BYTES} bytes`)
     } catch (e) {
-      notes.push(`transcripts: ${basename(f.path)}: ${e instanceof AuditError ? e.code : e.message}, not read`)
+      problems.push(`transcripts: ${basename(f.path)}: ${e instanceof AuditError ? e.code : e.message}, not read`)
     }
   }
   return { decisions, scanned, filesFound: files.length }

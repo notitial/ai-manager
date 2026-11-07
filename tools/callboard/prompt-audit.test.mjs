@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, readdirSync, lstatSync, readFileSync, utimesSync, truncateSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, readdirSync, lstatSync, readFileSync, utimesSync, truncateSync, rmSync, chmodSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -561,4 +561,36 @@ test('a4: a total byte budget for transcripts: running out of it is a problem', 
   assert.equal(rep.problems.length, 1)
   assert.match(rep.problems[0], /byte budget of 200/)
   assert.match(render(rep), /INCOMPLETE: 1 problem/)
+})
+
+test('review: a project hooks folder or settings.json is not a floor path; the hook\'s own paths are', () => {
+  for (const p of ['Edit src/hooks/useAuth.ts', 'Edit .vscode/settings.json', 'Write app/settings.json', 'Edit hooks/a.sh']) assert.equal(floorShape('Edit', p), undefined, p)
+  for (const p of ['Edit .claude/settings.json', 'Edit .claude/settings.local.json', 'Edit .claude/hooks/guard.sh', 'Edit .git/hooks/pre-commit', 'Edit .husky/pre-push', 'Edit .githooks/x', 'Edit .claude/callboard/state', 'Write .mcp.json']) assert.match(String(floorShape('Edit', p)), /^path in /, p)
+})
+
+test('review: every way of not reading a transcript makes the run incomplete, not a clean result', () => {
+  const fx = fixture()
+  ledger(fx, [ON(), ...clean()])
+  transcript(fx, SID, { at: BASE })
+  const dir = join(fx.projects, '-Users-x-api')
+  for (let i = 0; i < 2001; i++) writeFileSync(join(dir, `pad-${i}.jsonl`), '')
+  const rep = run(fx)
+  assert.ok(rep.problems.some((p) => /only the 2000 newest of \d+ files/.test(p)), rep.problems.join('|'))
+  assert.match(render(rep), /INCOMPLETE: \d+ problem/)
+  assert.equal(rep.notes.some((n) => /newest of/.test(n)), false)
+})
+
+test('review: a transcript folder that cannot be listed is a problem', () => {
+  const fx = fixture()
+  ledger(fx, [ON(), ...clean()])
+  transcript(fx, SID, { at: BASE })
+  const bad = join(fx.projects, '-Users-x-locked')
+  mkdirSync(bad)
+  chmodSync(bad, 0o000)
+  try {
+    const rep = run(fx)
+    assert.ok(rep.problems.some((p) => /could not be listed/.test(p)), rep.problems.join('|'))
+  } finally {
+    chmodSync(bad, 0o700)
+  }
 })
