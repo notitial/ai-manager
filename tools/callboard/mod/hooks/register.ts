@@ -4845,6 +4845,7 @@ const checks = new Map<string, CheckEntry>()
 const openReqs = new Map<string, { sid: string; id?: string; dir?: string }>()
 const doneIds = new Set<string>()
 let lastSweepAt = 0
+let sweepFrom = 0
 
 async function promptDir($: any, p: { uid: number; root: string }, sid?: string): Promise<string | undefined> {
   const base = `${p.root}/prompts`
@@ -4891,6 +4892,7 @@ async function ledgerAdd($: any, row: Omit<pr.LedgerRow, 't'>): Promise<boolean>
 }
 
 // Whether this month's or last month's ledger holds an `answered` row for the id and nonce, found with a bounded grep -F. A read that fails or is cut is unreadable.
+// The needle is the id as pr.ledgerLine writes it (`"id":"<uuid>"`, JSON.stringify's spacing): whatever writes an `answered` row (PR 2) must write it with ledgerLine.
 async function ledgerHas($: any, p: { uid: number; root: string }, id: string, nonce: string): Promise<'found' | 'missing' | 'unreadable'> {
   try {
     const now = await $.clock.now()
@@ -4958,8 +4960,14 @@ async function promptFloorOpts($: any, tool: string, input: any, cwd: string, ho
   const o: pr.FloorOpts = { home, roots: [] }
   try {
     const co = c.liveCheckout($.plugin.root)
-    if (co) o.roots = [co]
+    if (co) {
+      o.roots = [co]
+      const real = await realR($, co)
+      if (typeof real !== 'string' && real.path !== co) o.roots.push(real.path)
+    }
   } catch {}
+  // The folders the hooks and rules under ~/.claude are linked into (the toolkit's live checkout): an edit there is an edit of the guards themselves.
+  for (const r of await linkedRoots($, home)) if (!o.roots!.includes(r)) o.roots!.push(r)
   if (pr.needsBranch(tool, input)) {
     const dir = pr.gitPathOf(tool, input) ?? (tool === 'Bash' ? cwd : undefined)
     if (dir) o.branch = await branchOf($, dir)
@@ -4983,6 +4991,49 @@ async function promptFloorOpts($: any, tool: string, input: any, cwd: string, ho
     o.real = real
   }
   return o
+}
+
+// The folder above `hooks` or `rules` in the real path of each entry of ~/.claude/hooks and ~/.claude/rules that is a link out of ~/.claude. Best effort: a
+// failed list or realpath adds nothing. A folder found this way is as wide as the link's own parent, which errs toward the floor.
+async function linkedRoots($: any, home: string): Promise<string[]> {
+  const out = new Set<string>()
+  const own = `${home.toLowerCase()}/.claude`
+  for (const sub of ['hooks', 'rules']) {
+    try {
+      const names = ((await $.fs.list(`${home}/.claude/${sub}`).catch(() => [])) as { name: string }[]).map((f) => f.name).filter((n) => /^[A-Za-z0-9._-]{1,100}$/.test(n)).slice(0, 64)
+      if (names.length === 0) continue
+      const r = await $.process.run([REALPATH, '--', ...names.map((n) => `${home}/.claude/${sub}/${n}`)], { timeoutMs: 5000, env: { LC_ALL: 'C' } })
+      for (const line of String(r.stdout).split('\n')) {
+        const m = /^(\/.+?)\/(?:hooks|rules)\/[^/]+$/.exec(line.trim())
+        if (m && !m[1].toLowerCase().startsWith(own)) out.add(m[1])
+      }
+    } catch {}
+  }
+  return [...out]
+}
+
+// The lane's own lead (a live lead of the repo that is not the lane), by sid and name; undefined for a lead's own prompt or when none is live.
+async function promptLeadOf($: any, level: 'lane' | 'lead', sid: string, cwd: string): Promise<{ sid: string; name?: string } | undefined> {
+  if (level !== 'lane') return undefined
+  const live = await registryEntries($)
+  if (!live) return undefined
+  const leads = (await leadsFor($, live, cwd).catch(() => [] as c.LeadFile[])).filter((l) => l.sid !== sid)
+  if (leads.length === 0) return undefined
+  return { sid: leads[0].sid, name: c.leadNameOf(live.map((r) => r.j), leads[0].sid) ?? undefined }
+}
+
+// This session's own registry row, by one file read (not the whole table): the row of the pid the request was made under, kept only if it names this session and
+// the same process start. undefined: unknown (a changing, missing or odd file).
+async function promptOwnRow($: any, w: WaitCtx): Promise<any | undefined> {
+  if (w.p.own === undefined) return undefined
+  const r = await readSmallR($, `${w.p.own}/${w.req.pid}.json`, w.p.uid, c.REGISTRY_FILE_MAX, true)
+  if (r.state !== 'ok') return undefined
+  try {
+    const j = JSON.parse(r.text)
+    return j && typeof j === 'object' && String(j.pid) === String(w.req.pid) && j.sessionId === w.sid && j.procStart === w.req.procStart ? j : undefined
+  } catch {
+    return undefined
+  }
 }
 
 async function promptNewId($: any): Promise<string> {
@@ -5054,6 +5105,14 @@ async function promptHook($: any, e: any, nextOnce: (x: any) => Promise<any>, si
     // A No click aborted the signal; a Yes ended the dialog with no signal, so the done events are looked at again (probed P-I6).
     if (signal.aborted || (tid !== undefined && doneIds.has(tid))) return beneath
     const cwd = String(await sessionRoot($).catch(() => ''))
+    // A session the switch does not cover leaves no row: a scope of one lane or one lead is judged first, and only a scope that names a lead needs the lead's name.
+    let lead: { sid: string; name?: string } | undefined
+    let leadRead = false
+    if (cov.a.scope !== 'all' && cov.a.scope !== cov.lane && cov.a.scope !== cov.self) {
+      lead = await promptLeadOf($, cov.level, sid, cwd)
+      leadRead = true
+      if (!pr.covers(cov.a, { lane: cov.lane, lead: lead?.name, self: cov.self })) return beneath
+    }
     const base = { lane: cov.lane ?? cov.self, repo: cwd, tool, pattern: pr.patternOf(tool, input, cwd), hash }
     if (!usable || entry === undefined) {
       await ledgerAdd($, { ...base, kind: 'not-judgeable', code: 'no-check' })
@@ -5075,16 +5134,9 @@ async function promptHook($: any, e: any, nextOnce: (x: any) => Promise<any>, si
       return beneath
     }
     // 7. A live tier. Only the lead's is built (PR 3 adds the others), and only for a lane: a lead's own prompt starts at the conductor.
-    const live = await registryEntries($)
-    let leadSid: string | undefined
-    let leadName: string | undefined
-    if (cov.level === 'lane' && live) {
-      const leads = (await leadsFor($, live, cwd).catch(() => [] as c.LeadFile[])).filter((l) => l.sid !== sid)
-      if (leads.length > 0) {
-        leadSid = leads[0].sid
-        leadName = c.leadNameOf(live.map((r) => r.j), leads[0].sid) ?? undefined
-      }
-    }
+    if (!leadRead) lead = await promptLeadOf($, cov.level, sid, cwd)
+    const leadSid = lead?.sid
+    const leadName = lead?.name
     if (leadSid === undefined) {
       await ledgerAdd($, { ...base, kind: 'abandoned', code: 'no-tier' })
       return beneath
@@ -5111,8 +5163,9 @@ async function promptHook($: any, e: any, nextOnce: (x: any) => Promise<any>, si
     openReqs.set(tid as string, { sid, id, dir })
     if (doneIds.has(tid as string)) await promptDone($, { tool_use_id: tid })
     const row = { ...base, id, tier: 'lead' }
-    await ledgerAdd($, { ...row, kind: 'requested', nonce })
-    return await promptWait($, e, beneath, signal, { sid, tid: tid as string, id, nonce, dir, hash, input, tool, cwd, home: homeOf(p), p, started, row, req })
+    // Without a `requested` row no decision could ever pass the ledger check: the dialog is left to the person.
+    if (!(await ledgerAdd($, { ...row, kind: 'requested', nonce }))) throw new Error('ledger-unwritable')
+    return await promptWait($, e, beneath, signal, { sid, tid: tid as string, id, nonce, dir, hash, input, tool, cwd, home: homeOf(p), p, started, row, req, leadName })
   } catch (err) {
     // A failing hook answers nothing: the dialog stays (the caller returns what the chain beneath gives).
     await ledgerAdd($, { kind: 'abandoned', code: 'hook-failed', id: reqDir.id }).catch(() => undefined)
@@ -5122,13 +5175,19 @@ async function promptHook($: any, e: any, nextOnce: (x: any) => Promise<any>, si
   }
 }
 
-type WaitCtx = { sid: string; tid: string; id: string; nonce: string; dir: string; hash: string; input: unknown; tool: string; cwd: string; home: string; p: { uid: number; root: string }; started: number; row: Omit<pr.LedgerRow, 't' | 'kind'>; req: pr.Request }
+type WaitCtx = { sid: string; tid: string; id: string; nonce: string; dir: string; hash: string; input: unknown; tool: string; cwd: string; home: string; p: { uid: number; root: string; own?: string }; started: number; row: Omit<pr.LedgerRow, 't' | 'kind'>; req: pr.Request; leadName?: string }
 
 // The wait (§3.1a, §6.1). Each poll: a click, the switch, the dialog's own row, expiry, then a decision file. The awake clock adds each gap, capped.
 async function promptWait($: any, e: any, beneath: any, signal: AbortSignal, w: WaitCtx): Promise<any> {
   const end = async (kind: pr.RowKind, code?: string) => {
     await ledgerAdd($, { ...w.row, kind, ...(code ? { code } : {}) })
     return beneath
+  }
+  // The switch is read again at each poll and before an answer is returned: off, an OFF file, or a scope that no longer covers this lane ends the wait.
+  const stillOn = async (): Promise<boolean> => {
+    if (await promptsOff($)) return false
+    const cv = await promptCoverage($, w.sid)
+    return cv !== undefined && pr.covers(cv.a, { lane: cv.lane, lead: w.leadName, self: cv.self })
   }
   let last = await $.clock.now()
   let awake = pr.awakeAdd(0, last - w.started)
@@ -5138,9 +5197,9 @@ async function promptWait($: any, e: any, beneath: any, signal: AbortSignal, w: 
   for (;;) {
     if (signal.aborted || doneIds.has(w.tid)) return end('superseded')
     // Off stops the wait whichever way it was turned off: the emergency file or /callboard answering off.
-    if (await promptsOff($) || !(await promptCoverage($, w.sid))) return end('off')
+    if (!(await stillOn())) return end('off')
     // The dialog counts as closed only once the own row has been seen waiting for this request and is then empty; a row that is missing or ambiguous is unknown.
-    const rowNow = await registryOf($, w.sid, ownReg($)).catch(() => undefined)
+    const rowNow = await promptOwnRow($, w).catch(() => undefined)
     if (rowNow) {
       const waiting = rowNow.status === 'waiting' && (rowNow.waitingFor ?? null) !== null
       if (waiting && typeof rowNow.statusUpdatedAt === 'number' && rowNow.statusUpdatedAt >= w.started) seenWaiting = true
@@ -5171,7 +5230,7 @@ async function promptWait($: any, e: any, beneath: any, signal: AbortSignal, w: 
         } else {
           // The decision stands, unless a click or the switch got there first meanwhile.
           if (signal.aborted || doneIds.has(w.tid)) return end('superseded')
-          if (await promptsOff($)) return end('off')
+          if (!(await stillOn())) return end('off')
           if (!(await ledgerAdd($, { ...w.row, kind: 'returned', code: d.decision, why: d.why, tier: d.by.level }))) return beneath
           const decision = d.decision === 'allow' ? { behavior: 'allow' as const } : { behavior: 'deny' as const, message: pr.capBytes(pr.redact(`Denied by the ${d.by.level} ${d.by.name}: ${d.why}`), 300).text }
           return { ...(beneath && typeof beneath === 'object' ? beneath : {}), decision }
@@ -5195,7 +5254,9 @@ async function promptApply($: any, w: WaitCtx, d: pr.Decision, awake: number, gr
   let byOk = false
   if (pr.SID.test(d.by.sid) && d.by.sid !== w.sid) {
     const live = await registryEntries($)
-    if (live) byOk = (await leadsFor($, live, w.cwd).catch(() => [] as c.LeadFile[])).some((l) => l.sid === d.by.sid)
+    const cv = await promptCoverage($, w.sid)
+    // The author is a live lead of the repo, and one the switch's scope covers (a scope naming one lead does not let another lead answer).
+    if (live && cv) byOk = (await leadsFor($, live, w.cwd).catch(() => [] as c.LeadFile[])).some((l) => l.sid === d.by.sid && pr.covers(cv.a, { lane: cv.lane, lead: c.leadNameOf(live.map((r) => r.j), l.sid) ?? undefined, self: cv.self }))
   }
   return pr.applyCheck({ req: w.req, decision: d, liveHash, awakeMs: awake, expiresAt: pr.expiresAfter(false), floor: pr.floorCheck(w.tool, w.input, fo), byOk, ledger: await ledgerHas($, w.p, w.id, w.nonce), graceMs })
 }
@@ -5208,21 +5269,35 @@ async function promptSweep($: any): Promise<void> {
   const p = await where($)
   if (!p) return
   const base = `${p.root}/prompts`
-  const dirs = ((await $.fs.list(base).catch(() => [])) as { name: string }[]).filter((d) => c.SID_RE.test(d.name)).slice(0, SWEEP_DIRS_MAX)
-  if (dirs.length === 0) return
+  const all = ((await $.fs.list(base).catch(() => [])) as { name: string }[]).filter((d) => c.SID_RE.test(d.name)).sort((a, b) => (a.name < b.name ? -1 : 1))
+  if (all.length === 0) return
+  // At most SWEEP_DIRS_MAX folders a tick, taking up where the last tick stopped, so every folder is reached however many there are.
+  if (sweepFrom >= all.length) sweepFrom = 0
+  const dirs = all.slice(sweepFrom, sweepFrom + SWEEP_DIRS_MAX)
+  sweepFrom = sweepFrom + SWEEP_DIRS_MAX >= all.length ? 0 : sweepFrom + SWEEP_DIRS_MAX
   const live = await registryEntries($)
   const busy = new Set([...openReqs.values()].flatMap((o) => (o.id ? [o.id] : [])))
   for (const d of dirs) {
     const files = (await $.fs.list(`${base}/${d.name}`).catch(() => [])) as { name: string; mtimeMs?: number }[]
+    const gone = live !== undefined && !live.some((r) => r.j.sessionId === d.name)
+    const requests = new Set(files.flatMap((f) => (/^[0-9a-f-]{36}\.request\.json$/.test(f.name) ? [f.name.slice(0, 36)] : [])))
     for (const f of files) {
-      const m = /^([0-9a-f-]{36})\.request\.json$/.exec(f.name)
-      if (!m || !pr.ID_RE.test(m[1]) || busy.has(m[1])) continue
-      const gone = live !== undefined && !live.some((r) => r.j.sessionId === d.name)
       const old = typeof f.mtimeMs === 'number' && now - f.mtimeMs > pr.SWEEP_MS
-      if (!gone && !old) continue
-      await ledgerAdd($, { kind: 'abandoned', code: gone ? 'session-gone' : 'swept', id: m[1] })
-      await run($, [RM, '-f', '--', ...['request.json', 'decision.json', 'escalate.json', 'done'].map((x) => `${base}/${d.name}/${m[1]}.${x}`)]).catch(() => undefined)
+      const m = /^([0-9a-f-]{36})\.request\.json$/.exec(f.name)
+      if (m) {
+        if (!pr.ID_RE.test(m[1]) || busy.has(m[1])) continue
+        if (!gone && !old) continue
+        await ledgerAdd($, { kind: 'abandoned', code: gone ? 'session-gone' : 'swept', id: m[1] })
+        await run($, [RM, '-f', '--', ...['request.json', 'decision.json', 'escalate.json', 'done'].map((x) => `${base}/${d.name}/${m[1]}.${x}`)]).catch(() => undefined)
+        continue
+      }
+      // A file whose request is gone (a crash between the two removals, or a half-written copy), a day old: removed with no row, it names no open request.
+      const o = /^([0-9a-f-]{36})\.(decision\.json|done|escalate\.json)$/.exec(f.name)
+      const orphan = (o !== null && pr.ID_RE.test(o[1]) && !requests.has(o[1]) && !busy.has(o[1])) || /^[0-9a-f-]{36}\.[A-Za-z.]+\.\d+\.tmp$/.test(f.name)
+      if (orphan && old) await run($, [RM, '-f', '--', `${base}/${d.name}/${f.name}`]).catch(() => undefined)
     }
+    // A folder of a session that has ended, with nothing left in it, goes too (rmdir refuses a folder that holds anything).
+    if (gone && files.length === 0) await run($, [RMDIR, '--', `${base}/${d.name}`]).catch(() => undefined)
   }
 }
 
@@ -5266,7 +5341,7 @@ async function promptsCommand($: any): Promise<{ text: string }> {
   const p = await where($)
   let open = 0
   if (p) {
-    for (const d of ((await $.fs.list(`${p.root}/prompts`).catch(() => [])) as { name: string }[]).filter((x) => c.SID_RE.test(x.name)).slice(0, SWEEP_DIRS_MAX))
+    for (const d of ((await $.fs.list(`${p.root}/prompts`).catch(() => [])) as { name: string }[]).filter((x) => c.SID_RE.test(x.name)).slice(0, 512))
       open += ((await $.fs.list(`${p.root}/prompts/${d.name}`).catch(() => [])) as { name: string }[]).filter((f) => f.name.endsWith('.request.json')).length
   }
   return { text: `${pr.answeringState(a, await promptsOff($))} Open requests: ${open}. ${pr.FLOOR_LINE}` }

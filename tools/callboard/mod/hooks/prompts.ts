@@ -57,10 +57,15 @@ const REDACT: [RegExp, string | ((m: string, ...g: any[]) => string)][] = [
   [/(sk|rk)_live_[A-Za-z0-9_-]+/g, '[REDACTED_STRIPE]'],
   [/AIza[A-Za-z0-9_-]+/g, '[REDACTED_GOOGLE]'],
   [/xox[bpasr]-[A-Za-z0-9-]+/g, '[REDACTED_SLACK]'],
-  [/((?:postgres|postgresql|mysql|mongodb|redis|amqp):\/\/[^:@/\s]+:)[^@/\s]+@/g, (_m, u: string) => `${u}[REDACTED]@`],
+  [/(\b[a-z][a-z0-9+.-]*:\/\/[^:@/\s]+:)[^@/\s]+@/gi, (_m, u: string) => `${u}[REDACTED]@`],
+  [/(--(?:password|passwd|pass|token|secret|api[_-]?key|auth)\s+)[^\s-]\S*/gi, (_m, k: string) => `${k}[REDACTED]`],
+  [/(\b(?:mysql|mariadb|mysqldump|mysqladmin)\b[^\n|;&]*\s-p)[^\s=-]\S*/g, (_m, k: string) => `${k}[REDACTED]`],
+  [/(\bBasic\s+)[A-Za-z0-9+/=]{8,}/g, (_m, b: string) => `${b}[REDACTED]`],
   [/((?:api[_-]?key|apikey|access[_-]?(?:token|key)|token|secret|password|passwd|[_-]pass|pwd|service_role[a-z_]*|client[_-]?secret)[A-Za-z0-9_]*"?\s*[=:]\s*"?)[^\s"&|;,]+/gi, (_m, k: string) => `${k}[REDACTED]`],
   [/([Bb]earer\s+)[A-Za-z0-9._-]+/g, (_m, b: string) => `${b}[REDACTED]`],
 ]
+// An object key that names a secret: whatever string it holds is replaced, whatever the string looks like.
+const SECRET_KEY = /(^|[_-])(password|passwd|pwd|secret|token|api[_-]?key|apikey|authorization|cookie|set-cookie|credentials?|private[_-]?key|access[_-]?key|bearer)([_-]|$)/i
 export function redact(s: string): string {
   let out = s
   for (const [re, to] of REDACT) out = out.replace(re, to as any)
@@ -82,8 +87,9 @@ export function capBytes(s: string, max: number): { text: string; cut: boolean }
 // the rubric then passes it up. Anything not plain JSON (a function, a cycle) is cut the same way, never thrown.
 export function capInput(input: unknown): { input: unknown; truncated: boolean } {
   let cut = false
-  const walk = (v: any, depth: number): any => {
+  const walk = (v: any, depth: number, secret = false): any => {
     if (typeof v === 'string') {
+      if (secret) return '[REDACTED]'
       const r = capBytes(redact(v), STRING_CAP)
       if (r.cut) cut = true
       return r.text
@@ -93,11 +99,11 @@ export function capInput(input: unknown): { input: unknown; truncated: boolean }
       cut = true
       return '[too deep]'
     }
-    if (Array.isArray(v)) return v.slice(0, 200).map((x) => walk(x, depth + 1)).concat(v.length > 200 ? ((cut = true), ['[more]']) : [])
+    if (Array.isArray(v)) return v.slice(0, 200).map((x) => walk(x, depth + 1, secret)).concat(v.length > 200 ? ((cut = true), ['[more]']) : [])
     if (v && typeof v === 'object') {
       const keys = Object.keys(v)
       if (keys.length > 100) cut = true
-      return Object.fromEntries(keys.slice(0, 100).map((k) => [capBytes(k, 200).text, walk(v[k], depth + 1)]))
+      return Object.fromEntries(keys.slice(0, 100).map((k) => [capBytes(redact(k), 200).text, walk(v[k], depth + 1, secret || SECRET_KEY.test(k))]))
     }
     cut = true
     return '[unsupported]'
@@ -138,7 +144,7 @@ const obj = (v: unknown): Record<string, unknown> => (v && typeof v === 'object'
 export function normRef(ref: string, remote?: string): string | undefined {
   let r = ref.trim().replace(/^\+/, '')
   if (r === '@' || r.toUpperCase() === 'HEAD') return undefined
-  r = r.replace(/^refs\/heads\//, '').replace(/^refs\/remotes\//, '').replace(/^refs\//, '')
+  r = r.replace(/^refs\/heads\//, '').replace(/^refs\/remotes\//, '').replace(/^refs\//, '').replace(/^heads\//, '')
   const slash = r.indexOf('/')
   if (slash > 0) {
     const first = r.slice(0, slash)
@@ -148,6 +154,8 @@ export function normRef(ref: string, remote?: string): string | undefined {
 }
 // Whether a pushed ref (a name or a src:dst refspec) reaches a protected branch. unresolved: it names the current branch, which the caller must read.
 function refProtected(ref: string, remote: string | undefined, branch: string | undefined): boolean {
+  // A lone `:` is the "matching" push (every branch both sides share, main included): the floor.
+  if (ref.trim() === ':') return true
   const parts = ref.includes(':') ? ref.split(':') : [ref]
   for (const p of parts) {
     if (p === '') continue
@@ -177,41 +185,52 @@ function lexical(p: string, home: string | undefined): string {
   return (abs ? '/' : '') + out.join('/')
 }
 function settingsPath(p0: string, o: FloorOpts): boolean {
-  const p = lexical(p0, o.home)
-  if (/(^|\/)\.mcp\.json$/.test(p) || /(^|\/)\.git\/hooks(\/|$)/.test(p) || /(^|\/)install\.conf$/.test(p)) return true
-  if (/(^|\/)\.claude\/settings[^/]*$/.test(p)) return true
-  if (o.home && (p === `${o.home}/.claude` || p.startsWith(`${o.home}/.claude/`))) return true
-  return (o.roots ?? []).some((r) => p === r || p.startsWith(`${r}/`))
+  // Case-insensitive: the usual Mac volume is, and a file not made yet keeps the name it was given.
+  const p = lexical(p0, o.home).toLowerCase()
+  if (/(^|\/)\.mcp\.json$/.test(p) || /(^|\/)\.git\/(hooks(\/|$)|config$)/.test(p) || /(^|\/)install\.conf$/.test(p)) return true
+  if (/(^|\/)\.gitconfig$/.test(p) || /(^|\/)\.(husky|githooks)(\/|$)/.test(p) || /(^|\/)\.claude\/(settings[^/]*|hooks(\/.*)?)$/.test(p)) return true
+  const home = o.home?.toLowerCase()
+  if (home && (p === `${home}/.claude` || p.startsWith(`${home}/.claude/`))) return true
+  return (o.roots ?? []).some((r0) => {
+    const r = r0.toLowerCase()
+    return p === r || p.startsWith(`${r}/`)
+  })
 }
 // Shell text naming the settings, hooks or callboard state. Best effort: eval, an encoded payload or a script file can hide it.
 function settingsText(cmd: string, o: FloorOpts): boolean {
-  if (/(~|\$HOME|\$\{HOME\})\/\.claude\b/.test(cmd) || /\.claude\/settings/.test(cmd)) return true
-  if (o.home && cmd.includes(`${o.home}/.claude`)) return true
-  if (/\.mcp\.json|\.git\/hooks|install\.conf|CLAUDE_CODE_PLUGIN_DIRS/.test(cmd)) return true
+  if (/(~|\$HOME|\$\{HOME\})\/\.claude\b/i.test(cmd) || /\.claude\/(settings|hooks)/i.test(cmd)) return true
+  if (o.home && cmd.toLowerCase().includes(`${o.home.toLowerCase()}/.claude`)) return true
+  if (/\.mcp\.json|\.git\/(hooks|config)|\.gitconfig|\.husky|\.githooks|install\.conf|CLAUDE_CODE_PLUGIN_DIRS/i.test(cmd)) return true
+  // Settings of the source tool that run code: a hooks folder, a monitor, an ssh command, an alias, a credential helper, an include.
+  if (/\bgit\b[^\n;&|]*\bconfig\b[^\n;&|]*(core\.(hookspath|fsmonitor|sshcommand|pager|editor|askpass)|alias\.|credential\.|include)/i.test(cmd)) return true
   if (/(^|[\s;&|(])claude\s+mcp\b/.test(cmd)) return true
   if (/workspace-lock\.sh\b[^\n;&|]*\bclear\b/.test(cmd)) return true
-  return (o.roots ?? []).some((r) => cmd.includes(r))
+  const low = cmd.toLowerCase()
+  return (o.roots ?? []).some((r) => low.includes(r.toLowerCase()))
 }
 
-const SQL_DANGER = [/\bDROP\s+(TABLE|DATABASE|SCHEMA|INDEX|VIEW|COLUMN|USER|ROLE|FUNCTION|TRIGGER|POLICY|EXTENSION|MATERIALIZED|SEQUENCE|TYPE)\b/i, /\bTRUNCATE\b(\s+TABLE)?\s+\S/i, /\bDELETE\s+FROM\b/i]
+const SQL_DANGER = [/\bDROP\s+(TABLE|DATABASE|SCHEMA|INDEX|VIEW|COLUMN|USER|ROLE|FUNCTION|TRIGGER|POLICY|EXTENSION|MATERIALIZED|SEQUENCE|TYPE)\b/i, /\bTRUNCATE\b(\s+TABLE)?\s+\S/i, /\bDELETE(?:\s|\/\*[\s\S]*?\*\/)+(?:(?:LOW_PRIORITY|QUICK|IGNORE)(?:\s|\/\*[\s\S]*?\*\/)+)*(?:[\w.`]+(?:\s|\/\*[\s\S]*?\*\/)+)?FROM\b/i]
 function strings(v: unknown, out: string[] = [], depth = 0): string[] {
   if (typeof v === 'string') out.push(v)
   else if (depth < 12 && Array.isArray(v)) for (const x of v) strings(x, out, depth + 1)
   else if (depth < 12 && v && typeof v === 'object') for (const x of Object.values(v)) strings(x, out, depth + 1)
+  // Past the depth cap the rest is read as one text, so nesting cannot hide SQL.
+  else if (v && typeof v === 'object') out.push((JSON.stringify(v) ?? '').slice(0, 20_000))
   return out
 }
 const BASH_DELETE: RegExp[] = [
-  /(^|[\s;&|(`])rm\s/,
-  /(^|[\s;&|(`])rm$/,
+  // rm by name, by path (/bin/rm), or with a backslash (\rm).
+  /(^|[\s;&|(`/\\])rm(\s|$)/,
   /\bfind\b[^\n;&|]*\s-delete\b/,
-  /(^|[\s;&|(`])truncate\s/,
-  /(^|[\s;&|(`])dd\s[^\n;&|]*\bof=/,
+  /(^|[\s;&|(`/\\])truncate\s/,
+  /(^|[\s;&|(`/\\])dd\s[^\n;&|]*\bof=/,
   /(^|[\s;&|(`])mkfs(\.\w+)?\b/,
-  /\bgit\s+(-\S+\s+)*branch\s+[^\n;&|]*(-D\b|-d\b|--delete\b)/,
-  /\bgit\s+(-\S+\s+)*clean\b/,
-  /\bgit\s+(-\S+\s+)*reset\s+[^\n;&|]*--(hard|merge|keep)\b/,
-  /\bgit\s+(-\S+\s+)*stash\s+(drop|clear)\b/,
-  /\bgit\s+(-\S+\s+)*tag\s+[^\n;&|]*(-d\b|--delete\b|-f\b|--force\b)/,
+  // Source-tool shapes, with any options (-C dir, -c k=v) before the verb.
+  /\bgit\b[^\n;&|]*\bbranch\b[^\n;&|]*(-D\b|-d\b|--delete\b)/,
+  /\bgit\b[^\n;&|]*\bclean\b/,
+  /\bgit\b[^\n;&|]*\breset\b[^\n;&|]*--(hard|merge|keep)\b/,
+  /\bgit\b[^\n;&|]*\bstash\b[^\n;&|]*\b(drop|clear)\b/,
+  /\bgit\b[^\n;&|]*\btag\b[^\n;&|]*(-d\b|--delete\b|-f\b|--force\b)/,
 ]
 
 // The floor, or undefined when the call is not on it. Pure: the hook runs it before a request is written and again at apply.
@@ -232,13 +251,26 @@ export function floorCheck(tool: string, input0: unknown, o: FloorOpts = {}): Fl
     if (input.force === true || input.forceWithLease === true) return 'force-push'
     if (input.delete === true) return 'destructive'
     const remote = str(input.remote)
-    const refs = [str(input.branch), str(input.remoteBranch)].filter((x): x is string => x !== undefined)
+    const given = [input.branch, input.remoteBranch].filter((x) => x !== undefined && x !== null && x !== '')
+    // A ref that is not a string, or that reads as an option, is not understood: the floor.
+    if (given.some((x) => typeof x !== 'string' || x.trim().startsWith('-'))) return 'protected-push'
+    const refs = (given as string[]).filter((x) => x.trim() !== '')
+    // `:name` deletes a remote branch.
+    if (refs.some((r) => /^\s*:./.test(r))) return 'destructive'
     if (refs.length === 0) {
       const b = o.branch === undefined ? undefined : normRef(o.branch, remote)
       return b === undefined || PROTECTED.has(b) ? 'protected-push' : undefined
     }
     for (const r of refs) if (/^\+/.test(r.trim())) return 'force-push'
     return refs.some((r) => refProtected(r, remote, o.branch)) ? 'protected-push' : undefined
+  }
+  // The GitHub server's writes to a branch: a commit to a protected branch (or the default one, named by leaving `branch` out) is a push; a delete is a delete.
+  if (tool.startsWith('mcp__') && !tool.startsWith(GIT)) {
+    if (/^(delete_file|delete_branch|delete_ref|delete_tag|delete_repository)$/.test(name)) return 'destructive'
+    if (name === 'push_files' || name === 'create_or_update_file') {
+      const b = typeof input.branch === 'string' ? normRef(input.branch) : undefined
+      if (b === undefined || PROTECTED.has(b)) return 'protected-push'
+    }
   }
   if (tool.startsWith(GIT)) {
     const mode = str(input.mode)
@@ -255,17 +287,17 @@ export function floorCheck(tool: string, input0: unknown, o: FloorOpts = {}): Fl
     if (pathArgs(input).concat(o.real ?? []).some((p) => settingsPath(p, o))) return 'settings'
   }
   if (tool === 'Bash') {
-    const cmd = str(input.command)
-    if (cmd === undefined) return 'destructive'
+    const cmd0 = str(input.command)
+    if (cmd0 === undefined) return 'destructive'
+    // A backslash-newline is a space to the shell.
+    const cmd = cmd0.replace(/\\\r?\n/g, ' ')
     // Any Bash `git push`: Bash cannot be parsed reliably, and the toolkit turns it away anyway. A force flag or a + refspec is told apart first.
     if (/\bgit\b[^\n;&|]*\bpush\b/.test(cmd)) {
       return /(\s|^)(--force\S*|-f)(\s|$)|\s\+\S/.test(cmd) ? 'force-push' : 'protected-push'
     }
-    if (/\bgit\b[^\n;&|]*\bmerge\b/.test(cmd)) {
-      const b = o.branch === undefined ? undefined : normRef(o.branch)
-      if (b === undefined || PROTECTED.has(b)) return 'merge'
-    }
-    if (/\bgh\s+pr\s+merge\b/.test(cmd)) return 'merge'
+    // Any Bash merge too: the branch it lands on depends on a cd, a -C or a checkout earlier in the same line, which cannot be read here.
+    if (/\bgit\b[^\n;&|]*\bmerge\b/.test(cmd)) return 'merge'
+    if (/\bgh\b[^\n;&|]*\bpr\b[^\n;&|]*\bmerge\b/.test(cmd) || /\bgh\b[^\n;&|]*\bapi\b[^\n;&|]*\/merge\b/.test(cmd)) return 'merge'
     if (settingsText(cmd, o)) return 'settings'
     if (BASH_DELETE.some((re) => re.test(cmd))) return 'destructive'
   }
@@ -278,11 +310,10 @@ export function floorCheck(tool: string, input0: unknown, o: FloorOpts = {}): Fl
 export function needsBranch(tool: string, input0: unknown): boolean {
   const input = obj(input0)
   if (tool === `${GIT}git_push`) {
-    const refs = [str(input.branch), str(input.remoteBranch)].filter((x): x is string => x !== undefined)
-    return refs.length === 0 || refs.some((r) => r.split(':').some((p) => normRef(p) === undefined))
+    const refs = [input.branch, input.remoteBranch].filter((x): x is string => typeof x === 'string' && x.trim() !== '')
+    return refs.length === 0 || refs.some((r) => r.split(':').some((p) => p !== '' && normRef(p) === undefined))
   }
   if (tool === `${GIT}git_merge`) return true
-  if (tool === 'Bash' && typeof input.command === 'string') return /\bgit\b[^\n;&|]*\b(merge|push)\b/.test(input.command)
   return false
 }
 // The repo folder a git call names (an absolute path), for the branch read.
@@ -413,7 +444,7 @@ export type LedgerRow = { t: string; kind: RowKind; code?: string; id?: string; 
 export function ledgerLine(row: LedgerRow): string {
   const r: LedgerRow = { ...row }
   if (r.why !== undefined) r.why = capBytes(redact(r.why).replace(/[\r\n]+/g, ' '), WHY_MAX).text
-  if (r.pattern !== undefined) r.pattern = capBytes(r.pattern, 200).text
+  if (r.pattern !== undefined) r.pattern = capBytes(redact(r.pattern), 200).text
   if (r.repo !== undefined) r.repo = capBytes(r.repo, 300).text
   let line = JSON.stringify(r)
   // Each row stays whole under one append: drop the long fields first, never the identity.
@@ -435,8 +466,10 @@ export const ledgerFilePrev = (now: number): string => {
 export function patternOf(tool: string, input0: unknown, repo?: string): string {
   const input = obj(input0)
   if (tool === 'Bash') {
-    const first = (str(input.command) ?? '').trim().split(/\s+/)[0] ?? ''
-    return first.replace(/^.*\//, '').slice(0, 60) || 'bash'
+    // The first word that is not a NAME=value assignment (a secret may sit in one), by its base name; anything odd reads as plain `bash`.
+    const first = (str(input.command) ?? '').trim().split(/\s+/).find((w) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w)) ?? ''
+    const base = first.replace(/^.*\//, '')
+    return /^[A-Za-z0-9._+-]{1,60}$/.test(base) ? base : 'bash'
   }
   if (tool.startsWith('mcp__github__')) {
     const n = input.pullNumber ?? input.issue_number ?? input.number

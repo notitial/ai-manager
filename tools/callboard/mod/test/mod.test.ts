@@ -145,6 +145,8 @@ const PROMPTS_DIR = '/Users/x/.claude/callboard/prompts'
 const pfs = new Map<string, { text: string; mtimeSec: number; mode?: string; nlink?: number }>()
 const pdirs = new Set<string>()
 let uuidN = 0
+// The entries of ~/.claude/hooks (links into the toolkit's checkout, by realMap).
+let hooksList: string[] = []
 let gitBranch: string | undefined = 'feat/x'
 let pfsFails: ((a: string[]) => boolean) | undefined
 const isPromptPath = (p: unknown) => typeof p === 'string' && (p === PROMPTS_DIR || p.startsWith(`${PROMPTS_DIR}/`))
@@ -191,6 +193,12 @@ function promptFs(a: string[], stdin: string | undefined, now: number): any | un
   }
   if (a[0] === '/bin/rm') {
     for (const p of a.filter((x) => x.startsWith('/'))) pfs.delete(p)
+    return ok('')
+  }
+  if (a[0] === '/bin/rmdir') {
+    // Like rmdir: a folder that holds anything stays.
+    if ([...pfs.keys()].some((k) => k.startsWith(`${last}/`))) return ok('', 1, 'rmdir: Directory not empty')
+    pdirs.delete(last)
     return ok('')
   }
   if (a[0] === '/usr/bin/head') return pfs.has(last) ? ok(pfs.get(last)!.text.slice(0, Number(a[2]))) : ok('', 1, 'head: no such file')
@@ -505,6 +513,7 @@ function engine(on: any, argvSeen: string[][], stdins: string[] = [], clk = fals
   store = new Map()
   pfs.clear()
   pdirs.clear()
+  hooksList = []
   uuidN = 0
   gitBranch = 'feat/x'
   pfsFails = undefined
@@ -702,7 +711,7 @@ function engine(on: any, argvSeen: string[][], stdins: string[] = [], clk = fals
     if (e.path === LANESDIR && lanesListHook) await lanesListHook()
     return listed_(e)
   })
-  const listed_ = (e: any) => ({ value: isPromptPath(e.path) ? promptList(e.path) : e.path === `${ROOT}/leads` ? [...leadFiles.entries()].map(([k, f]) => ({ name: k.slice(ROOT.length + 7), kind: 'file', size: 1, mtimeMs: (f.mtimeSec ?? Math.floor(nowMs / 1000)) * 1000, isLink: false })) : e.path === `${ROOT}/result` ? resultList : e.path === `${ROOT}/cue` ? cueList : e.path === `${ROOT}/log` ? logList : e.path === LANESDIR ? [...storeFiles.keys()].map((k) => ({ name: k.slice(LANESDIR.length + 1), kind: 'file', size: 1, mtimeMs: 0, isLink: false })) : e.path === SESSIONS ? Object.keys(regFiles()).map((name) => ({ name, kind: 'file', size: 1, mtimeMs: 0, isLink: false })) : e.path === OWNDIR ? Object.keys(ownSessions).map((name) => ({ name, kind: 'file', size: 1, mtimeMs: 0, isLink: false })) : [] })
+  const listed_ = (e: any) => ({ value: e.path === '/Users/x/.claude/hooks' ? hooksList.map((name) => ({ name, kind: 'file', size: 1, mtimeMs: 0, isLink: true })) : isPromptPath(e.path) ? promptList(e.path) : e.path === `${ROOT}/leads` ? [...leadFiles.entries()].map(([k, f]) => ({ name: k.slice(ROOT.length + 7), kind: 'file', size: 1, mtimeMs: (f.mtimeSec ?? Math.floor(nowMs / 1000)) * 1000, isLink: false })) : e.path === `${ROOT}/result` ? resultList : e.path === `${ROOT}/cue` ? cueList : e.path === `${ROOT}/log` ? logList : e.path === LANESDIR ? [...storeFiles.keys()].map((k) => ({ name: k.slice(LANESDIR.length + 1), kind: 'file', size: 1, mtimeMs: 0, isLink: false })) : e.path === SESSIONS ? Object.keys(regFiles()).map((name) => ({ name, kind: 'file', size: 1, mtimeMs: 0, isLink: false })) : e.path === OWNDIR ? Object.keys(ownSessions).map((name) => ({ name, kind: 'file', size: 1, mtimeMs: 0, isLink: false })) : [] })
   on('process.run', function procRun(_: any, e: any): any {
     if (over()) return { value: { exitCode: 1, stdout: '', stderr: 'test over', isStdoutTruncated: false, isStderrTruncated: false } }
     argvSeen.push([...e.argv])
@@ -13793,9 +13802,12 @@ test('prompts: P-I5: a subagent\'s ask returns the chain beneath at once: no req
   expect(rowKinds()).toEqual([])
   expect(argv.slice(before).length).toBe(0)
   // Even a subagent's ask the observer saw (it never stores one) leaves nothing a later main-agent request could join.
+  // Nor does the observer keep a subagent's ask: had it stored one (a second entry on one hash), the main agent's own request would read as two calls in flight
+  // and be left to the person. It is judged, answered by the lead.
   await askCheck($, { agentId: 'a1', tool_use_id: 'tu2' })
-  expect(await startReq($, { agent_id: 'a1' })).toEqual({})
-  expect(reqFiles().length).toBe(0)
+  clockHooks.push(at(4000, () => handDecision(readReq())))
+  expect(await startReq($)).toEqual({ decision: { behavior: 'allow' } })
+  expect(rowKinds()).toEqual(['requested', 'answered', 'returned allow'])
 })
 
 test('prompts: a non-empty result from beneath (a settings hook\'s deny) stands whole, and the chain beneath runs once', async ($, on) => {
@@ -13915,6 +13927,16 @@ const FLOOR_CASES: [string, string, unknown, string][] = [
   ['a shell command naming the callboard folder', 'Bash', { command: 'echo x >> ~/.claude/callboard/prompts/ledger-2026-11.jsonl' }, 'settings'],
   ['workspace-lock clear', 'Bash', { command: '/x/workspace-lock.sh --id a clear' }, 'settings'],
   ['ExitPlanMode', 'ExitPlanMode', { plan: 'p' }, 'dialog'],
+  ['rm by path', 'Bash', { command: '/bin/rm -rf build' }, 'destructive'],
+  ['git clean after -C', 'Bash', { command: 'git -C /r clean -fdx' }, 'destructive'],
+  ['a Bash merge, whatever the branch', 'Bash', { command: 'git checkout main && git merge feat/x' }, 'merge'],
+  ['gh pr merge with -R before the verb', 'Bash', { command: 'gh -R o/r pr merge 5' }, 'merge'],
+  ['a commit to main through the GitHub server', 'mcp__github__create_or_update_file', { owner: 'o', repo: 'r', path: 'a', content: 'x', message: 'm', branch: 'main' }, 'protected-push'],
+  ['a GitHub commit with no branch (the default one)', 'mcp__github__push_files', { owner: 'o', repo: 'r', files: [], message: 'm' }, 'protected-push'],
+  ['a GitHub file delete', 'mcp__github__delete_file', { owner: 'o', repo: 'r', path: 'a', message: 'm', branch: 'feat/x' }, 'destructive'],
+  ['a git config that sets the hooks folder', 'Bash', { command: 'git config core.hooksPath /tmp/h' }, 'settings'],
+  ['a matching push (a lone colon)', 'mcp__git-mcp__git_push', { path: '/r', branch: ':' }, 'protected-push'],
+  ['a push whose ref reads as an option', 'mcp__git-mcp__git_push', { path: '/r', branch: '--mirror' }, 'protected-push'],
 ]
 for (const [name, tool, input, cat] of FLOOR_CASES) {
   test(`prompts: floor at the request: ${name}: no request, a floor ${cat} row, the dialog stays`, async ($, on) => {
@@ -14272,4 +14294,83 @@ test('prompts: /callboard prompts counts open requests', async ($, on) => {
   pdirs.add(`${PROMPTS_DIR}/${LEADSID}`)
   pfs.set(`${PROMPTS_DIR}/${LEADSID}/${RID(3)}.request.json`, { text: '{}', mtimeSec: T0 / 1000 })
   expect((await $.command.run(lane('prompts'))).text).toContain('Open requests: 1.')
+})
+
+// ---- review fixes ----
+test('prompts: a switch narrowed to another scope during a wait ends it: row off, dialog left to the person', async ($, on) => {
+  await answerer($, on, [])
+  const r = await runRequest($, [at(4000, () => { store.set('answering', { scope: 'OTHERLANE', asks: false, savedAt: nowMs }) }), at(6000, () => handDecision(readReq()))])
+  expect(r).toEqual({})
+  expect(rowKinds()).toEqual(['requested', 'off'])
+  expect(noFiles()).toBe(true)
+})
+for (const scope of ['LEAD', 'svc-api']) {
+  test(`prompts: scope ${scope}: the lead's answer lands`, async ($, on) => {
+    await answerer($, on, [], { scope })
+    const r = await runRequest($, [at(4000, () => handDecision(readReq()))])
+    expect(r).toEqual({ decision: { behavior: 'allow' } })
+    expect(rowKinds()).toEqual(['requested', 'answered', 'returned allow'])
+  })
+}
+test('prompts: a session the scope does not cover leaves no row, even for an ask on the floor or one a hook raised', async ($, on) => {
+  await answerer($, on, [], { scope: 'OTHERLANE' })
+  const c2 = callOf('Bash', { command: 'git push origin x' })
+  expect(await runRequest($, [], c2.over, c2.check)).toEqual({})
+  prVerdict = { decision: 'ask', hook: 'PreToolUse', reason: 'x' }
+  await askCheck($, { tool_use_id: 'tu3' })
+  expect(await startReq($)).toEqual({})
+  expect(rowKinds()).toEqual([])
+})
+test('prompts: a ledger that cannot take the requested row leaves the dialog: no wait, no files', async ($, on) => {
+  const argv: string[][] = []
+  await answerer($, on, [], { argv })
+  pfsFails = (a) => a[0] === '/usr/bin/tee' && a[1] === '-a'
+  await askCheck($)
+  sessions = waitingRow(T0 + 500)
+  expect(await startReq($)).toEqual({})
+  expect(sleeps(argv).length).toBe(0)
+  expect(noFiles()).toBe(true)
+})
+test('prompts: a poll reads this session\'s own row by one file: no table of every process is read while waiting', async ($, on) => {
+  const argv: string[][] = []
+  await answerer($, on, [], { argv })
+  let mark = -1
+  let during: string[][] = []
+  const r = await runRequest($, [at(4000, () => { mark = argv.length }), at(18_000, () => { during = argv.slice(mark) }), at(20_000, () => handDecision(readReq()))])
+  expect(r).toEqual({ decision: { behavior: 'allow' } })
+  expect(during.length).toBeGreaterThan(10)
+  expect(during.filter((a) => a[0] === '/bin/ps').length).toBe(0)
+  expect(during.some((a) => a[0] === '/usr/bin/stat' && a.some((x) => String(x).endsWith('/4300.json')))).toBe(true)
+})
+test('prompts: floor: an edit under the folder that the hooks of ~/.claude link into (the toolkit checkout) is settings', async ($, on) => {
+  await answerer($, on, [])
+  hooksList = ['guard.sh']
+  realMap.set('/Users/x/.claude/hooks/guard.sh', '/Users/x/code/toolkit/hooks/guard.sh')
+  const c2 = callOf('Edit', { file_path: '/Users/x/code/toolkit/rules/a.md', old_string: 'a', new_string: 'b' })
+  expect(await runRequest($, [], c2.over, c2.check)).toEqual({})
+  expect(rowKinds()).toEqual(['floor settings'])
+  // Elsewhere stays judged.
+  const c3 = callOf('Edit', { file_path: '/Users/x/code/other/a.md', old_string: 'a', new_string: 'b' })
+  await askCheck($, { ...c3.check, tool_use_id: 'tu2' })
+  sessions = waitingRow(T0 + 500)
+  driveClock()
+  clockHooks.push(stop(8000))
+  expect(await startReq($, c3.over)).toEqual({})
+  expect(rowKinds()).toEqual(['floor settings', 'requested', 'off'])
+})
+test('prompts: sweep: folders past the first 64 are reached on a later tick; an old orphan file and the empty folder of a gone session go', async ($, on) => {
+  await answerer($, on, [], { clock: true })
+  const sids = Array.from({ length: 70 }, (_, i) => `${(i + 16).toString(16).padStart(8, '0')}-0000-4000-8000-123456789abc`)
+  for (const sid of sids) pdirs.add(`${PROMPTS_DIR}/${sid}`)
+  pfs.set(`${PROMPTS_DIR}/${sids[1]}/${RID(6)}.decision.json`, { text: '{}', mtimeSec: T0 / 1000 - 90_000 })
+  pfs.set(`${PROMPTS_DIR}/${sids[1]}/${RID(7)}.done`, { text: '', mtimeSec: T0 / 1000 - 10 })
+  pfs.set(`${PROMPTS_DIR}/${sids[69]}/${RID(8)}.request.json`, { text: '{}', mtimeSec: T0 / 1000 - 10 })
+  // A fresh mod sweeps at its first tick, then once a minute.
+  await clock!.advance(5_000)
+  const state = () => ({ d0: pdirs.has(`${PROMPTS_DIR}/${sids[0]}`), d1: pdirs.has(`${PROMPTS_DIR}/${sids[1]}`), orphan: pfs.has(`${PROMPTS_DIR}/${sids[1]}/${RID(6)}.decision.json`), fresh: pfs.has(`${PROMPTS_DIR}/${sids[1]}/${RID(7)}.done`), req: pfs.has(`${PROMPTS_DIR}/${sids[69]}/${RID(8)}.request.json`) })
+  // The first tick looks at the first 64 folders: the empty ones of a gone session go, a day-old orphan goes, a fresh orphan stays, the last folder is not reached.
+  expect(state()).toEqual({ d0: false, d1: true, orphan: false, fresh: true, req: true })
+  await clock!.advance(62_000)
+  expect(pfs.has(`${PROMPTS_DIR}/${sids[69]}/${RID(8)}.request.json`)).toBe(false)
+  expect(ledgerRows().map((r) => `${r.kind} ${r.code} ${r.id}`)).toEqual([`abandoned session-gone ${RID(8)}`])
 })
