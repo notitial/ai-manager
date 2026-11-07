@@ -149,7 +149,7 @@ let uuidN = 0
 let hooksList: string[] = []
 let gitBranch: string | undefined = 'feat/x'
 // What the push-target read answers: undefined is no keys (exit 1), a string is the output of the config read.
-let gitPushConfig: string | undefined
+let gitPushConfig: string | undefined // a config text, 'FAIL' (status 128), 'THROW' (the process cannot run)
 let pfsFails: ((a: string[]) => boolean) | undefined
 const isPromptPath = (p: unknown) => typeof p === 'string' && (p === PROMPTS_DIR || p.startsWith(`${PROMPTS_DIR}/`))
 function promptList(path: string) {
@@ -165,7 +165,10 @@ function promptFs(a: string[], stdin: string | undefined, now: number): any | un
   if (a[0] === '/usr/bin/uuidgen' && pfsFails?.(a)) return ok('', 1, 'failed')
   if (a[0] === '/usr/bin/uuidgen') return ok(`${(++uuidN).toString(16).padStart(8, '0').toUpperCase()}-0000-4000-8000-123456789ABC\n`)
   if (a[0] === '/usr/bin/git' && a.includes('symbolic-ref')) return gitBranch === undefined ? ok('', 1) : ok(`${gitBranch}\n`)
-  if (a[0] === '/usr/bin/git' && a.includes('--get-regexp')) return gitPushConfig === undefined ? ok('', 1) : gitPushConfig === 'FAIL' ? ok('', 128, 'fatal: bad config') : ok(gitPushConfig, 0)
+  if (a[0] === '/usr/bin/git' && a.includes('--get-regexp')) {
+    if (gitPushConfig === 'THROW') throw new Error('spawn failed')
+    return gitPushConfig === undefined ? ok('', 1) : gitPushConfig === 'FAIL' ? ok('', 128, 'fatal: bad config') : ok(gitPushConfig, 0)
+  }
   if (!a.some(isPromptPath)) return undefined
   if (pfsFails?.(a)) return ok('', a[0] === '/usr/bin/grep' ? 2 : 1, 'failed')
   if (a[0] === '/bin/mkdir') {
@@ -14804,6 +14807,25 @@ test('prompts PR2 hook: an escalate file beside a decision wins: the decision is
   expect(rowKinds()).toEqual(['requested', 'answered allow', 'abandoned escalated'])
 })
 
+test('prompts PR2 hook: a pass-up that lands while the decision is being checked still wins', async ($, on) => {
+  await answerer($, on, [])
+  let done = false
+  const r = await runRequest($, [at(4000, () => {
+    handDecision(readReq())
+    pfsFails = (a) => {
+      // Only in the apply that would return the allow (the 30 s hold is over): earlier polls would meet the file at their own stat.
+      if (!done && a[0] === '/usr/bin/grep' && nowMs - T0 >= 30_000) {
+        done = true
+        pfs.set(`${PDIR}/${readReq().id}.escalate.json`, { text: '{}', mtimeSec: nowMs / 1000 })
+      }
+      return false
+    }
+  })])
+  expect(r).toEqual({})
+  expect(done).toBe(true)
+  expect(rowKinds()).toEqual(['requested', 'answered allow', 'abandoned escalated'])
+})
+
 test('prompts PR2 hook: the comment cap is read at apply: a decision over it is dropped as cap and the wait goes on', async ($, on) => {
   await answerer($, on, [], { verdict: GUARD_ASK })
   putLedger([retRow(), retRow()])
@@ -14898,6 +14920,20 @@ test('prompts PR2 floor: a push that names its branch is floor when the remote r
   expect(rowKinds()).toContain('requested')
 })
 
+test('prompts PR2 floor: a push that names its branch is floor when the push config cannot be read', async ($, on) => {
+  await answerer($, on, [])
+  gitBranch = 'feat/x'
+  const named = callOf('mcp__git-mcp__git_push', { path: '/r', branch: 'feat/y' })
+  gitPushConfig = 'FAIL'
+  expect(await runRequest($, [], named.over, named.check)).toEqual({})
+  gitPushConfig = 'THROW'
+  await askCheck($, { ...named.check, tool_use_id: 'tu2' })
+  sessions = waitingRow(T0 + 500)
+  driveClock()
+  expect(await startReq($, named.over)).toEqual({})
+  expect(rowKinds()).toEqual(['floor protected-push', 'floor protected-push'])
+})
+
 test('prompts PR2 floor: a relative write with no folder from the engine is floor; with the event\'s folder it is judged', async ($, on) => {
   await answerer($, on, [])
   const wr = { command: 'echo x > notes.txt' }
@@ -14914,7 +14950,7 @@ test('prompts PR2 floor: a relative write with no folder from the engine is floo
 test('prompts PR2: a request id found in two folders is answered in neither', async ($, on) => {
   await tier($, on)
   putQ()
-  putQ({ sid: '9a1b2c3d-0000-4000-8000-123456789abc' })
+  putQ({ sid: '2a1b2c3d-0000-4000-8000-123456789abc' })
   expect(said(await $.tool.call(answerCall()))).toContain(refusal('unknown-request'))
   expect(decFile()).toBeUndefined()
 })
