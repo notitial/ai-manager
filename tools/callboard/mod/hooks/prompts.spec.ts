@@ -120,6 +120,8 @@ test('floor: SQL in any tool\'s string input', () => {
   assert.equal(floor('mcp__db__query', { sql: 'truncate users' }), 'destructive')
   assert.equal(floor('mcp__db__query', { sql: 'delete   from users where 1=1' }), 'destructive')
   assert.equal(floor('mcp__db__query', { nested: { q: ['select 1', 'DELETE FROM t'] } }), 'destructive')
+  // A long option's `--` in a shell line is no comment: the SQL after it is still seen.
+  for (const command of ['psql --dbname=app -c "DROP TABLE users"', 'mysql --user=x -e "DELETE FROM t"', 'psql -h h --no-psqlrc -c "TRUNCATE users"']) assert.equal(floor('Bash', { command }), 'destructive', command)
   for (const sql of ['DELETE t FROM t JOIN u ON 1=1', 'DELETE LOW_PRIORITY FROM t', 'DELETE/**/FROM t', 'delete /* x */ from t', 'DROP/**/TABLE t', 'TRUNCATE/**/x', 'DELETE t1, t2 FROM t1 JOIN t2', 'DELETE t1.* FROM t1', 'DELETE -- c\nFROM t']) assert.equal(floor('mcp__db__query', { sql }), 'destructive', sql)
   // Past the depth cap the rest is read whole, so nesting cannot hide it.
   let deep: any = { sql: 'DROP TABLE users' }
@@ -149,6 +151,21 @@ test('floor: settings, hooks and callboard state, by path (written and real) and
   for (const command of ['cat ~/.claude/settings.json', 'echo x > $HOME/.claude/rules/a.md', 'ls /Users/x/.claude/callboard', 'cp a .claude/settings.local.json', 'cat .mcp.json', 'claude mcp add x', 'CLAUDE_CODE_PLUGIN_DIRS=/x claude', 'x/workspace-lock.sh --id a clear', 'cat install.conf', 'git config core.hooksPath /tmp/h', 'git -C /r config --local core.fsmonitor /x', 'git config alias.x !sh', 'echo a >> .git/config', 'cat ~/.gitconfig', 'cat /r/.husky/x'])
     assert.equal(floor('Bash', { command }, HOME), 'settings', command)
   assert.equal(floor('Bash', { command: 'ls /Users/x/code' }, HOME), undefined)
+})
+test('floor: a mutating git call on a live checkout is settings; reads and other folders are not', () => {
+  const o = { ...HOME, roots: ['/live/ai-manager', '/live/toolkit'], cwd: '/tmp/clone' }
+  for (const tool of ['git_checkout', 'git_pull', 'git_reset', 'git_commit', 'git_merge', 'git_push', 'git_branch', 'git_fetch'])
+    for (const path of ['/live/ai-manager', '/live/toolkit/hooks', '/LIVE/AI-Manager/x'])
+      assert.equal(floor(`${GIT}${tool}`, { path, target: 'x', mode: 'soft', branch: 'feat/x' }, o), 'settings', `${tool} ${path}`)
+  assert.equal(floor(`${GIT}git_checkout`, { path: '/tmp/clone', target: 'x' }, o), undefined)
+  assert.equal(floor(`${GIT}git_pull`, { path: '/live/ai-manager-other', target: 'x' }, o), undefined)
+  for (const tool of ['git_status', 'git_log', 'git_diff', 'git_show', 'git_blame']) assert.equal(floor(`${GIT}${tool}`, { path: '/live/ai-manager' }, o), undefined, tool)
+  // No path: the folder the session runs in. A relative path: under it. A real path under a root, or an unresolved one, is floor.
+  assert.equal(floor(`${GIT}git_checkout`, { target: 'x' }, { ...o, cwd: '/live/ai-manager' }), 'settings')
+  assert.equal(floor(`${GIT}git_checkout`, { path: 'sub', target: 'x' }, { ...o, cwd: '/live/ai-manager' }), 'settings')
+  assert.equal(floor(`${GIT}git_checkout`, { path: '/tmp/link', target: 'x' }, { ...o, real: ['/live/toolkit'] }), 'settings')
+  assert.equal(floor(`${GIT}git_checkout`, { path: '/tmp/clone', target: 'x' }, { ...o, unresolved: true }), 'settings')
+  assert.equal(floor(`${GIT}git_status`, { path: '/tmp/clone' }, { ...o, unresolved: true }), undefined)
 })
 test('floor: ExitPlanMode is a dialog', () => {
   assert.equal(floor('ExitPlanMode', {}), 'dialog')

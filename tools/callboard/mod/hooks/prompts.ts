@@ -131,6 +131,8 @@ export type FloorOpts = {
   home?: string
   // Tracked folders of the live checkouts (ai-manager, ai-toolkit): an edit under one is the floor.
   roots?: string[]
+  // The folder the session runs in: a git call with no path acts there.
+  cwd?: string
   // The optional items (PR 5 sets them; PR 1 passes none, so both are on the floor).
   optional?: { merges?: boolean; forcePushes?: boolean }
   // A file tool's real path could not be resolved: the floor holds (fail closed).
@@ -171,6 +173,8 @@ function refProtected(ref: string, remote: string | undefined, branch: string | 
 }
 
 const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit'])
+// The git server's verbs that only read: every other call on a live checkout (a checkout, a pull, a commit, a soft reset) changes the install the mod loads from.
+const GIT_READ = new Set(['git_status', 'git_log', 'git_diff', 'git_show', 'git_blame', 'git_reflog', 'git_changelog_analyze', 'git_wrapup_instructions'])
 function pathArgs(input: Record<string, unknown>): string[] {
   return [input.file_path, input.notebook_path, input.path].filter((x): x is string => typeof x === 'string')
 }
@@ -185,6 +189,14 @@ function lexical(p: string, home: string | undefined): string {
     else out.push(s)
   }
   return (abs ? '/' : '') + out.join('/')
+}
+// Whether a path is a live checkout or inside one (lexical, case-insensitive).
+function underRoot(p0: string, o: FloorOpts): boolean {
+  const p = lexical(p0, o.home).toLowerCase()
+  return (o.roots ?? []).some((r0) => {
+    const r = r0.toLowerCase()
+    return p === r || p.startsWith(`${r}/`)
+  })
 }
 function settingsPath(p0: string, o: FloorOpts): boolean {
   // Case-insensitive: the usual Mac volume is, and a file not made yet keeps the name it was given.
@@ -215,7 +227,8 @@ const SQL_DANGER = [/\bDROP\s+(TABLE|DATABASE|SCHEMA|INDEX|VIEW|COLUMN|USER|ROLE
 // A string longer than this is not scanned: it is the floor (a scan of a huge body must not stall the hook).
 const SQL_SCAN_MAX = 200_000
 // Comments are blanked first, bounded so a run of unclosed ones cannot make the scan slow.
-const sqlDanger = (s: string): boolean => s.length > SQL_SCAN_MAX || ((t) => SQL_DANGER.some((re) => re.test(t)))(s.replace(/\/\*(?:[^*]|\*(?!\/)){0,200}\*\//g, ' ').replace(/--[^\n]{0,200}/g, ' '))
+// The raw text is tested as well: in a shell line a `--` is a long option that comes before the SQL, not a comment.
+const sqlDanger = (s: string): boolean => s.length > SQL_SCAN_MAX || [s, s.replace(/\/\*(?:[^*]|\*(?!\/)){0,200}\*\//g, ' ').replace(/--[^\n]{0,200}/g, ' ')].some((t) => SQL_DANGER.some((re) => re.test(t)))
 function strings(v: unknown, out: string[] = [], depth = 0): string[] {
   if (typeof v === 'string') out.push(v)
   else if (depth < 12 && Array.isArray(v)) for (const x of v) strings(x, out, depth + 1)
@@ -249,6 +262,13 @@ export function floorCheck(tool: string, input0: unknown, o: FloorOpts = {}): Fl
   if (/^mcp__.+__merge_pull_request$/.test(tool) || /^mcp__.+__update_pull_request_branch$/.test(tool)) return 'merge'
   if (tool === 'mcp__machine-ops__pr_merge') return o.optional?.merges === true ? undefined : 'merge'
   if (tool === 'mcp__machine-ops__force_push') return o.optional?.forcePushes === true ? undefined : 'force-push'
+  // A mutating git call on a live checkout (by its path, its real path, or the folder the session runs in when no path is given) changes the install itself.
+  if (tool.startsWith(GIT) && !GIT_READ.has(name)) {
+    if (o.unresolved) return 'settings'
+    const p = str(input.path)
+    const abs = p === undefined ? o.cwd : p.startsWith('/') || p === '~' || p.startsWith('~/') || o.cwd === undefined ? p : `${o.cwd}/${p}`
+    if ([abs, ...(o.real ?? [])].some((d) => typeof d === 'string' && underRoot(d, o))) return 'settings'
+  }
   if (tool === `${GIT}git_merge`) {
     const b = o.branch === undefined ? undefined : normRef(o.branch)
     return b === undefined || PROTECTED.has(b) ? 'merge' : undefined

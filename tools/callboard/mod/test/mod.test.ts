@@ -14374,3 +14374,39 @@ test('prompts: sweep: folders past the first 64 are reached on a later tick; an 
   expect(pfs.has(`${PROMPTS_DIR}/${sids[69]}/${RID(8)}.request.json`)).toBe(false)
   expect(ledgerRows().map((r) => `${r.kind} ${r.code} ${r.id}`)).toEqual([`abandoned session-gone ${RID(8)}`])
 })
+
+test('prompts: floor: a mutating git call on the toolkit checkout (found through the linked hooks) is settings; a read there is judged', async ($, on) => {
+  await answerer($, on, [])
+  hooksList = ['guard.sh']
+  realMap.set('/Users/x/.claude/hooks/guard.sh', '/Users/x/code/toolkit/hooks/guard.sh')
+  const c2 = callOf('mcp__git-mcp__git_checkout', { path: '/Users/x/code/toolkit', target: 'feat/x' })
+  expect(await runRequest($, [], c2.over, c2.check)).toEqual({})
+  expect(rowKinds()).toEqual(['floor settings'])
+  expect(reqFiles().length).toBe(0)
+  // No path: the folder the session runs in; the lane runs in its own clone, which is not a live checkout.
+  const c3 = callOf('mcp__git-mcp__git_checkout', { target: 'feat/x' })
+  await askCheck($, { ...c3.check, tool_use_id: 'tu2' })
+  sessions = waitingRow(T0 + 500)
+  driveClock()
+  clockHooks.push(stop(8000))
+  expect(await startReq($, c3.over)).toEqual({})
+  expect(rowKinds()).toEqual(['floor settings', 'requested', 'off'])
+})
+test('prompts: sweep: a request older than a day whose own process is still live is kept; one of another process of that session is swept', async ($, on) => {
+  await answerer($, on, [], { clock: true })
+  const old = T0 / 1000 - 90_000
+  pdirs.add(PDIR)
+  pfs.set(`${PDIR}/${RID(9)}.request.json`, { text: JSON.stringify({ pid: 4300, procStart: LEADPS }), mtimeSec: old })
+  pfs.set(`${PDIR}/${RID(1)}.request.json`, { text: JSON.stringify({ pid: 9999, procStart: LEADPS }), mtimeSec: old })
+  await clock!.advance(5_000)
+  expect(pfs.has(`${PDIR}/${RID(9)}.request.json`)).toBe(true)
+  expect(pfs.has(`${PDIR}/${RID(1)}.request.json`)).toBe(false)
+  expect(ledgerRows().map((r) => `${r.kind} ${r.code} ${r.id}`)).toEqual([`abandoned swept ${RID(1)}`])
+})
+test('prompts: a wait whose request file disappears ends without a second closing row, and the dialog is left to the person', async ($, on) => {
+  await answerer($, on, [])
+  const r = await runRequest($, [at(4000, () => { pfs.delete(reqFiles()[0]) })])
+  expect(r).toEqual({})
+  expect(rowKinds()).toEqual(['requested'])
+  expect(noFiles()).toBe(true)
+})

@@ -4957,7 +4957,8 @@ async function branchOf($: any, dir: string): Promise<string | undefined> {
 }
 
 async function promptFloorOpts($: any, tool: string, input: any, cwd: string, home: string): Promise<pr.FloorOpts> {
-  const o: pr.FloorOpts = { home, roots: [] }
+  const o: pr.FloorOpts = { home, roots: [], cwd }
+  const isGit = tool.startsWith('mcp__git-mcp__')
   try {
     const co = c.liveCheckout($.plugin.root)
     if (co) {
@@ -4967,14 +4968,15 @@ async function promptFloorOpts($: any, tool: string, input: any, cwd: string, ho
     }
   } catch {}
   // The folders the hooks and rules under ~/.claude are linked into (the toolkit's live checkout): an edit there is an edit of the guards themselves.
-  if (PERSON_HOLDS.has(tool) || tool === 'Bash') for (const r of await linkedRoots($, home)) if (!o.roots!.includes(r)) o.roots!.push(r)
+  if (PERSON_HOLDS.has(tool) || tool === 'Bash' || isGit) for (const r of await linkedRoots($, home)) if (!o.roots!.includes(r)) o.roots!.push(r)
   if (pr.needsBranch(tool, input)) {
     const dir = pr.gitPathOf(tool, input) ?? (tool === 'Bash' ? cwd : undefined)
     if (dir) o.branch = await branchOf($, dir)
   }
-  if (PERSON_HOLDS.has(tool)) {
+  if (PERSON_HOLDS.has(tool) || isGit) {
     const real: string[] = []
-    for (const raw of [input?.file_path, input?.notebook_path, input?.path]) {
+    // A git call acts on its `path`, or on the folder the session runs in.
+    for (const raw of isGit ? [typeof input?.path === 'string' ? input.path : cwd] : [input?.file_path, input?.notebook_path, input?.path]) {
       if (typeof raw !== 'string') continue
       const abs0 = raw === '~' || raw.startsWith('~/') ? home + raw.slice(1) : raw
       const abs = abs0.startsWith('/') ? abs0 : `${cwd}/${abs0}`
@@ -5197,6 +5199,8 @@ async function promptWait($: any, e: any, beneath: any, signal: AbortSignal, w: 
   let lastDrop = ''
   for (;;) {
     if (signal.aborted || doneIds.has(w.tid)) return end('superseded')
+    // The request file is gone (the sweep closed it): the sweep's row is the closing one, and the dialog is left to the person.
+    if ((await statR($, `${w.dir}/${w.id}.request.json`)) === 'absent') return beneath
     // Off stops the wait whichever way it was turned off: the emergency file or /callboard answering off.
     if (!(await stillOn())) return end('off')
     // The dialog counts as closed only once the own row has been seen waiting for this request and is then empty; a row that is missing or ambiguous is unknown.
@@ -5281,13 +5285,24 @@ async function promptSweep($: any): Promise<void> {
   for (const d of dirs) {
     const files = (await $.fs.list(`${base}/${d.name}`).catch(() => [])) as { name: string; mtimeMs?: number }[]
     const gone = live !== undefined && !live.some((r) => r.j.sessionId === d.name)
+    // A request older than a day is abandoned only if no live process of that session still holds it: the wait runs on awake time, so a long sleep ages the file, not the prompt.
+    const heldByLive = async (name: string): Promise<boolean> => {
+      const r = await readSmallR($, `${base}/${d.name}/${name}`, p.uid, pr.REQUEST_MAX)
+      if (r.state !== 'ok') return false
+      try {
+        const q = JSON.parse(r.text)
+        return (live ?? []).some((x) => x.j.sessionId === d.name && String(x.j.pid) === String(q?.pid) && x.j.procStart === q?.procStart)
+      } catch {
+        return false
+      }
+    }
     const requests = new Set(files.flatMap((f) => (/^[0-9a-f-]{36}\.request\.json$/.test(f.name) ? [f.name.slice(0, 36)] : [])))
     for (const f of files) {
       const old = typeof f.mtimeMs === 'number' && now - f.mtimeMs > pr.SWEEP_MS
       const m = /^([0-9a-f-]{36})\.request\.json$/.exec(f.name)
       if (m) {
         if (!pr.ID_RE.test(m[1]) || busy.has(m[1])) continue
-        if (!gone && !old) continue
+        if (!gone && (!old || live === undefined || (await heldByLive(f.name)))) continue
         await ledgerAdd($, { kind: 'abandoned', code: gone ? 'session-gone' : 'swept', id: m[1] })
         await run($, [RM, '-f', '--', ...['request.json', 'decision.json', 'escalate.json', 'done'].map((x) => `${base}/${d.name}/${m[1]}.${x}`)]).catch(() => undefined)
         continue
