@@ -14397,20 +14397,21 @@ test('prompts: floor: a mutating git call on the toolkit checkout (found through
   expect(await runRequest($, [], c2.over, c2.check)).toEqual({})
   expect(rowKinds()).toEqual(['floor settings'])
   expect(reqFiles().length).toBe(0)
-  // No path: the folder the session runs in; the lane runs in its own clone, which is not a live checkout.
-  const c3 = callOf('mcp__git-mcp__git_checkout', { target: 'feat/x' })
+  // The lane's own clone, named by its path, is not a live checkout.
+  const c3 = callOf('mcp__git-mcp__git_checkout', { path: SVC, target: 'feat/x' })
   await askCheck($, { ...c3.check, tool_use_id: 'tu2', cwd: SVC })
   sessions = waitingRow(T0 + 500)
   driveClock()
   clockHooks.push(stop(8000))
   expect(await startReq($, { ...c3.over, cwd: SVC })).toEqual({})
   expect(rowKinds()).toEqual(['floor settings', 'requested', 'off'])
-  // The same call with no folder from the engine cannot be placed: it stays the person's.
+  // With no path the git server acts in its own folder, which cannot be placed: it stays the person's, whatever folder the session runs in.
   pfs.delete(OFF_FILE)
-  await askCheck($, { ...c3.check, tool_use_id: 'tu3' })
+  const c4 = callOf('mcp__git-mcp__git_checkout', { target: 'feat/x' })
+  await askCheck($, { ...c4.check, tool_use_id: 'tu3' })
   sessions = waitingRow(T0 + 500)
   driveClock()
-  expect(await startReq($, { ...c3.over, cwd: undefined })).toEqual({})
+  expect(await startReq($, { ...c4.over, cwd: SVC })).toEqual({})
   expect(rowKinds().filter((k) => k === 'floor settings').length).toBe(2)
 })
 test('prompts: sweep: a request older than a day whose own process is still live is kept; one of another process of that session is swept', async ($, on) => {

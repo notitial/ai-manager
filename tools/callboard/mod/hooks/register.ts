@@ -5017,8 +5017,9 @@ async function promptFloorOpts($: any, tool: string, input: any, cwd: string, ho
   // Every push is judged by where git sends it: a push naming no branch goes to the configured target of the current one, and a remote may rewrite even a named ref.
   // An unread branch is '' (the rewrite check needs none); no folder to read is unresolved.
   if (pr.needsPushTarget(tool, input)) {
-    const dir = pr.gitPathOf(tool, input) ?? cwd
-    o.pushTarget = await pushTargetOf($, dir, o.branch ?? '', typeof input?.remote === 'string' ? input.remote : undefined)
+    // The git server acts in the folder the call names; with none it acts in its own, which is not read here.
+    const dir = pr.gitPathOf(tool, input)
+    o.pushTarget = dir === undefined ? { unresolved: true, mapped: true } : await pushTargetOf($, dir, o.branch ?? '', typeof input?.remote === 'string' ? input.remote : undefined)
   }
   if (PERSON_HOLDS.has(tool) || isGit) {
     const real: string[] = []
@@ -5289,6 +5290,8 @@ async function promptWait($: any, e: any, beneath: any, signal: AbortSignal, w: 
           // The decision stands, unless a click or the switch got there first meanwhile.
           if (signal.aborted || doneIds.has(w.tid)) return end('superseded')
           if (!(await stillOn())) return end('off')
+          // A pass-up that landed while the decision was being checked still wins: the lead was told its right to answer had ended.
+          if ((await statR($, `${w.dir}/${w.id}.escalate.json`)) !== 'absent') return end('abandoned', 'escalated')
           if (!(await ledgerAdd($, { ...w.row, kind: 'returned', code: d.decision, why: d.why, tier: d.by.level, by: d.by.sid, tuid: w.tid, ...(w.cap ? { cap: w.cap.kind, target: w.cap.target } : {}) }))) return beneath
           const decision = d.decision === 'allow' ? { behavior: 'allow' as const } : { behavior: 'deny' as const, message: pr.capBytes(pr.redact(`Denied by the ${d.by.level} ${d.by.name}: ${d.why}`), 300).text }
           return { ...(beneath && typeof beneath === 'object' ? beneath : {}), decision }

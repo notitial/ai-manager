@@ -92,12 +92,12 @@ export function capInput(input: unknown): { input: unknown; truncated: boolean }
     if (typeof v === 'string') {
       // What a redaction removed that a shell or an interpreter could run (a substitution, a quote, a redirect) is text the tier has not seen: the input is cut.
       if (secret) {
-        if (/[$`(<>;|&]/.test(v)) cut = true
+        if (/[$`(<>;|&\n\r]/.test(v)) cut = true
         return '[REDACTED]'
       }
       const head = capBytes(v, STRING_CAP + 512)
       const red = redact(head.text)
-      if (red !== head.text && /[$`(<>;|&]/.test(head.text)) cut = true
+      if (red !== head.text && /[$`(<>;|&\n\r]/.test(head.text)) cut = true
       const r = capBytes(red, STRING_CAP)
       if (head.cut || r.cut) cut = true
       return r.text
@@ -845,6 +845,13 @@ function judgeGit(args: Word[], cur: B[], j: J): Res {
       }
     }
   }
+  if (verb === 'clone') {
+    for (let q = 0; q < rest.length; q++) {
+      const t = rest[q].t
+      const kv = t === '-c' || t === '--config' ? (rest[q + 1] ?? { t: '', dyn: true }) : /^--config=/.test(t) ? { t: t.slice(9), dyn: rest[q].dyn } : /^-c./.test(t) ? { t: t.slice(2), dyn: rest[q].dyn } : undefined
+      if (kv !== undefined && (kv.dyn || CODE_KEY.test(keyOf(kv.t)))) return SETT
+    }
+  }
   if (L('ext-diff', 3) || (/^(fetch|pull|clone|ls-remote|archive|push)$/.test(verb) && (L('upload-pack', 3) || L('receive-pack', 3) || L('exec', 3))) || (verb === 'clone' && Sh('u'))) return DEST
   switch (verb) {
     case 'push':
@@ -980,12 +987,15 @@ const SH_INFRA = /^(helm|terraform|tofu|terragrunt|pulumi|aws|gcloud|gsutil|az|d
 const SH_PKG = /^(npm|pnpm|yarn|bun|npx)$/
 const SH_WRITE = /^(mv|cp|ln|install|tee|touch|chmod|chown|chgrp|mkdir|patch|code|subl|tar|zip|unzip|ditto|cpio|bsdtar|mkfifo|mknod|split|csplit|xxd|sponge)$/
 const SH_INTERP = /^(python[0-9.]*|pypy[0-9.]*|node|nodejs|deno|bun|ruby|perl|php[0-9.]*|lua[0-9.]*|tsx|ts-node|rscript|julia)$/
-const SH_ALWAYS = /^(osascript|pwsh|powershell|jshell|busybox|at|batch|crontab)$/
+const SH_ALWAYS = /^(osascript|pwsh|powershell|jshell|busybox|at|batch|crontab|gdb|lldb|expect|tclsh|wish|irb|psql|mysql|mariadb|sqlite3|sqlite|mongosh|redis-cli|R)$/
 const SH_AWK = /^(awk|gawk|mawk|nawk)$/
 const SH_HTTP = /^(http|https|xh|xhs)$/
 // The flag that hands an interpreter its program as a string (or `-`, its standard input).
 const codeFlag = (v: string): RegExp =>
   /^(node|nodejs|deno|bun|tsx|ts-node)$/.test(v) ? /^-[A-Za-z]*[ep][A-Za-z]*$|^--(eval|print)(=|$)|^-$|^eval$/ : /^php/.test(v) ? /^-[A-Za-z]*[rRBE][A-Za-z]*$|^-$/ : /^(python|pypy)/.test(v) ? /^-[A-Za-z]*c[A-Za-z]*$|^-$/ : /^-[A-Za-z]*[eE][A-Za-z]*$|^-$/
+// An interpreter's options that carry no program; anything else (-m, -M, -r, --import, --loader, -x ...) may, and is the floor. `python -m` takes the modules below only.
+const INTERP_OPT = /^(-[vVhuBEIsSq]+|--version|--help|--test|--check|--no-warnings|--trace-warnings|--trace-uncaught|-O|-OO)$/
+const PY_MODULE = /^(pytest|unittest|json\.tool|py_compile|compileall|venv|pip|ensurepip)$/
 const META = /['"\\$`]/
 // A sed script that writes a file (w) or runs a command (e), as a command or as a flag of s///.
 const SED_RUNS = /(^|[;{}]|\s)(\d+|\$|\/[^/]*\/)?[we](\s|;|$|\})|\/[0-9gpiImMx]*[we][0-9gpiImMxwe]*\s*(;|$|\}|\n)/
@@ -1310,6 +1320,8 @@ function dispatch(v: string, verb: Word, args: Word[], it: Item, cur: B[], j: J,
   }
   if (SH_INFRA.test(v)) return args.some((w) => INFRA_WORD.test(w.t)) || opaque(args.find((w) => !w.t.startsWith('-')) ?? mkWord()) ? DEST : { ro: false }
   if (SH_PKG.test(v) && args.some((w) => /^(publish|unpublish|deprecate|token|owner|access|login|logout|adduser)$/.test(w.t))) return DEST
+  // npx -c and npm exec -c hand a string to a shell.
+  if (SH_PKG.test(v) && (v === 'npx' || /^(exec|x|dlx)$/.test(args[0]?.t ?? '')) && args.some((w) => /^(-c|--call|-[A-Za-z]*c)(=|$)/.test(w.t) || (w.dyn && w.t.startsWith('-')))) return DEST
   if (SH_AWK.test(v)) return args.some((w) => /system|getline|\|\s*"|>>?\s*"|print[f]?[^;}]*>|(^|\s)-i\b/.test(w.t)) ? DEST : { ro: false }
   if (v === 'sed' || v === 'gsed') {
     if (args.some((w) => !w.t.startsWith('-') && SED_RUNS.test(w.t))) return DEST
@@ -1327,6 +1339,18 @@ function dispatch(v: string, verb: Word, args: Word[], it: Item, cur: B[], j: J,
     const cf = codeFlag(v)
     const stdin = it.before === '|' || it.before === '|&' || it.redirs.some((r) => r.op.startsWith('<<') || (r.op === '<' && !args.some((w) => !w.t.startsWith('-'))))
     if (stdin || args.some((w) => (cf.test(w.t) && !w.dyn) || (w.dyn && w.t.startsWith('-')))) return DEST
+    // The options before the program: each must be known to carry none. A URL or data: argument is code fetched or carried inline.
+    for (let a = 0; a < args.length; a++) {
+      const t = args[a].t
+      if (!t.startsWith('-')) break
+      if (/^(python|pypy)/.test(v) && t === '-m') {
+        const m = args[a + 1]
+        if (!m || m.dyn || !PY_MODULE.test(m.t)) return DEST
+        break
+      }
+      if (!INTERP_OPT.test(t)) return DEST
+    }
+    if (args.some((w) => /^(data|https?|ftp|file):/i.test(w.t))) return DEST
     if (args.some((w) => !w.t.startsWith('-') && rpaths(w, cur).some((p) => j.written.has(p)))) return DEST
     if (/^(perl|ruby)$/.test(v) && args.some((w) => /^-[A-Za-z]*i/.test(w.t))) {
       for (const w of args) {
@@ -1435,6 +1459,17 @@ export function shellFloor(cmd: string, o: FloorOpts): FloorCategory | undefined
 
 // The floor, or undefined when the call is not on it. Pure: the hook runs it before a request is written and again at apply.
 export function floorCheck(tool: string, input0: unknown, o: FloorOpts = {}): FloorCategory | undefined {
+  const c = floorCore(tool, input0, o)
+  if (c !== undefined) return c
+  // A mutating git server call with no absolute path acts in the server's own working folder (one per server, set by whichever session last said so), not the
+  // session's: it cannot be shown to be outside the live checkouts. Judged after the rest, so a more specific category still names it.
+  if (tool.startsWith(GIT) && !GIT_READ.has(tool.split('__').pop() ?? tool)) {
+    const p = str(obj(input0).path)
+    if (p === undefined || !(p.startsWith('/') || p === '~' || p.startsWith('~/'))) return 'settings'
+  }
+  return undefined
+}
+function floorCore(tool: string, input0: unknown, o: FloorOpts = {}): FloorCategory | undefined {
   const input = obj(input0)
   const name = tool.split('__').pop() ?? tool
   // Dialogs of other kinds.
@@ -1447,8 +1482,7 @@ export function floorCheck(tool: string, input0: unknown, o: FloorOpts = {}): Fl
   if (tool.startsWith(GIT) && !GIT_READ.has(name)) {
     if (o.unresolved) return 'settings'
     const p = str(input.path)
-    // The session's folder is not known: a call with no path, or a relative one, acts somewhere that cannot be shown to be outside the live checkouts.
-    if (o.cwdUnknown === true && (p === undefined || !(p.startsWith('/') || p === '~' || p.startsWith('~/')))) return 'settings'
+    // A call with no absolute path is floored by floorCheck once the rest has been judged; here it is read against the session's folder as a best effort.
     const abs = p === undefined ? o.cwd : p.startsWith('/') || p === '~' || p.startsWith('~/') || o.cwd === undefined ? p : `${o.cwd}/${p}`
     if ([abs, ...(o.real ?? [])].some((d) => typeof d === 'string' && underRoot(d, o))) return 'settings'
     // Other arguments that name a place (a clone's target, a worktree's folder, a file to add): one under a live checkout is the same.
@@ -1553,12 +1587,20 @@ export function floorCheck(tool: string, input0: unknown, o: FloorOpts = {}): Fl
     let n = 0
     for (const v of strings(input0)) {
       if (++n > 500) return 'settings'
-      if (v.length >= 4096 || /\s/.test(v)) continue
+      if (v.length >= 4096) continue
       const abs = v.startsWith('/') || v.startsWith('~')
+      // Text with a space is prose, unless it starts as an absolute path (a folder name may hold a space).
+      if (/\s/.test(v) && !abs) continue
+      // A URL names a place on a server, not a file here.
+      if (/^[a-z][a-z0-9+.-]*:\/\//i.test(v)) continue
       const rel = /^\.\.?(\/|$)/.test(v)
-      if (!abs && !rel && !/^\.claude/.test(v)) continue
+      const bare = !abs && !rel
+      // A relative path whose base is not known cannot be shown to stay outside the live checkouts or the settings.
+      if (rel && (o.cwd === undefined || o.cwdUnknown === true) && !readOnly) return 'settings'
       if (rel && (o.cwd === undefined || o.cwdUnknown === true)) continue
+      // A bare name or relative path is read as written (it holds .git/hooks, .claude/settings* wherever it is).
       const full = rel ? `${o.cwd}/${v}` : v
+      if (bare && !/\//.test(v) && !/^\.claude/.test(v)) continue
       if (settingsPath(full, po) || (abs && settingsNames(v, po))) return 'settings'
     }
   }
@@ -1608,6 +1650,8 @@ export function pushTargetFrom(configLines: string, branch: string, remote0?: st
   const remote = remote0 !== undefined && remote0.trim() !== '' ? remote0.trim() : (badBranch ? undefined : last('branch', branch, 'pushremote')) ?? last('remote', '', 'pushdefault') ?? (badBranch ? undefined : last('branch', branch, 'remote')) ?? 'origin'
   const rewritten = [...m.keys()].some((k) => /^url\u0000.*\u0000(insteadof|pushinsteadof)$/.test(k))
   if (rewritten || all('remote', remote, 'push') !== undefined || all('remote', remote, 'pushurl') !== undefined || /^(true|yes|on|1)$/i.test(last('remote', remote, 'mirror') ?? '')) return { remote, unresolved: true, mapped: true }
+  // Under push.default upstream (or tracking) a branch named without a colon goes to its upstream branch, whatever the name: any protected upstream maps it.
+  if (/^(upstream|tracking)$/i.test(last('push', '', 'default') ?? '') && [...m].some(([k, vs]) => /^branch\u0000.*\u0000merge$/.test(k) && vs.some((x) => refProtected(x, remote, undefined)))) return { remote, unresolved: true, mapped: true }
   if (badBranch) return { unresolved: true }
   const merges = all('branch', branch, 'merge')
   if (merges !== undefined && new Set(merges).size > 1) return { remote, unresolved: true }
