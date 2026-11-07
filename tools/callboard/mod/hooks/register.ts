@@ -1,6 +1,7 @@
 import type { Register } from 'claude-code'
 import type { Counters, Request } from '../types'
 import * as c from './core'
+import * as pr from './prompts'
 
 const ID = '/usr/bin/id'
 const STAT = '/usr/bin/stat'
@@ -3027,6 +3028,8 @@ async function tick($: any) {
     }
     // v15: a pending conductor restore, and a running conductor's reach and saved grant.
     await conductorTick($, sid).catch(() => log($, sid, 'error', 'conductor-tick').catch(() => undefined))
+    // ADR 0004: close the requests of sessions that are gone, and any older than a day.
+    await promptSweep($).catch(() => log($, sid, 'error', 'prompt-sweep').catch(() => undefined))
     // v15.3: a pending manager restore, and a running manager's saved grant.
     await managerTick($, sid).catch(() => log($, sid, 'error', 'manager-tick').catch(() => undefined))
     // v13.1: the cut-compaction note.
@@ -4821,6 +4824,545 @@ async function reserveCommand($: any, sid: string, code: c.OriginCode, op: c.Res
 // v13.6: the usage line, for an unknown word (`on` included since v13.6).
 const USAGE = 'Use /callboard off, lead, lanes, status, config, checkin, conductor, reserve, lane [NAME] or lane off.'
 
+// ---- prompt answering (ADR 0004), PR 1: the hook, the floor, the files and the switch. Off by default; nothing here lets an agent write a decision. ----
+// A PermissionRequest hook in the asking session: it refuses what no agent may answer, writes a request file and waits. Every approval would come from
+// prompt_answer (PR 2); until then a decision file can only be made by hand, and the hook applies it under every check of pr.applyCheck.
+const UUIDGEN = '/usr/bin/uuidgen'
+const GREP = '/usr/bin/grep'
+const GIT_BIN = '/usr/bin/git'
+const ANSWERING_KEY = 'answering'
+const CHECK_TTL_MS = 60_000
+const CHECKS_MAX = 256
+const SWEEP_EVERY_MS = 60_000
+const SWEEP_DIRS_MAX = 64
+const PERSON_HOLDS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit'])
+
+type CheckEntry = { toolUseId: string; at: number; approver: unknown; facts: pr.CheckFacts; dup: boolean }
+// What tool.check saw for an ask, joined to the PermissionRequest that follows by session, tool, whole-input hash and agent. PermissionRequest carries neither
+// the approver nor the tool_use_id (probed), so both come from here.
+const checks = new Map<string, CheckEntry>()
+// The calls whose request is open (or about to be), by tool_use_id: the three done events mark them, so a person's Yes (which fires no signal) is seen.
+const openReqs = new Map<string, { sid: string; id?: string; dir?: string }>()
+const doneIds = new Set<string>()
+let lastSweepAt = 0
+let sweepFrom = 0
+
+async function promptDir($: any, p: { uid: number; root: string }, sid?: string): Promise<string | undefined> {
+  const base = `${p.root}/prompts`
+  const dirs = sid === undefined ? [p.root, base] : [p.root, base, `${base}/${sid}`]
+  await run($, [MKDIR, '-p', '-m', '700', ...dirs])
+  for (const d of dirs) if (!(await dirOk($, d, p.uid))) return undefined
+  return dirs[dirs.length - 1]
+}
+
+// A file of ours, 0600, put in place whole: written beside it, then renamed.
+async function promptPut($: any, path: string, text: string): Promise<boolean> {
+  const tmp = `${path}.${++seq}.tmp`
+  try {
+    if ((await run($, [INSTALL, '-m', '600', '/dev/null', tmp])).exitCode !== 0) return false
+    if ((await run($, [TEE, '--', tmp], text)).exitCode !== 0 || (await run($, [MV, '-f', tmp, path])).exitCode !== 0) {
+      await run($, [RM, '-f', '--', tmp]).catch(() => undefined)
+      return false
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
+// One ledger row, appended whole (one tee call, under pr.LEDGER_ROW_MAX bytes). false: the row could not be written.
+async function ledgerAdd($: any, row: Omit<pr.LedgerRow, 't'>): Promise<boolean> {
+  try {
+    const p = await where($)
+    if (!p) return false
+    const dir = await promptDir($, p)
+    if (!dir) return false
+    const now = await $.clock.now()
+    const file = `${dir}/${pr.ledgerFile(now)}`
+    let f = await facts($, file)
+    if (!f) {
+      await run($, [INSTALL, '-m', '600', '/dev/null', file])
+      f = await facts($, file)
+    }
+    if (!f || f.kind !== 'file' || f.uid !== p.uid || f.mode !== 0o600 || f.nlink !== 1) return false
+    return (await run($, [TEE, '-a', '--', file], pr.ledgerLine({ t: new Date(now).toISOString(), ...row }))).exitCode === 0
+  } catch {
+    return false
+  }
+}
+
+// Whether this month's or last month's ledger holds an `answered` row for the id and nonce, found with a bounded grep -F. A read that fails or is cut is unreadable.
+// The needle is the id as pr.ledgerLine writes it (`"id":"<uuid>"`, JSON.stringify's spacing): whatever writes an `answered` row (PR 2) must write it with ledgerLine.
+async function ledgerHas($: any, p: { uid: number; root: string }, id: string, nonce: string): Promise<'found' | 'missing' | 'unreadable'> {
+  try {
+    const now = await $.clock.now()
+    for (const name of [pr.ledgerFile(now), pr.ledgerFilePrev(now)]) {
+      const path = `${p.root}/prompts/${name}`
+      const st = await statR($, path)
+      if (st === 'absent') continue
+      if (st === 'error' || st.kind !== 'file' || st.uid !== p.uid || (st.mode & 0o022) !== 0) return 'unreadable'
+      const r = await $.process.run([GREP, '-F', '-h', '--', `"id":"${id}"`, path], { timeoutMs: 5000 })
+      if (r.exitCode === 1) continue
+      if (r.exitCode !== 0 || r.isStdoutTruncated) return 'unreadable'
+      for (const line of String(r.stdout).split('\n')) {
+        try {
+          const j = JSON.parse(line)
+          if (j?.kind === 'answered' && j.id === id && j.nonce === nonce) return 'found'
+        } catch {}
+      }
+    }
+    return 'missing'
+  } catch {
+    return 'unreadable'
+  }
+}
+
+// The emergency file: while it exists answering is off. A stat that fails counts as present (fail closed).
+async function promptsOff($: any): Promise<boolean> {
+  const p = await where($)
+  if (!p) return true
+  return (await statR($, `${p.root}/prompts/OFF`)) !== 'absent'
+}
+
+// Whether the switch is on and this session is a lane or a lead: the cheap first test. The scope (a lane's or a lead's name) is judged once the lead is known.
+async function promptCoverage($: any, sid: string): Promise<{ a: pr.Answering; level: 'lane' | 'lead'; lane?: string; self?: string } | undefined> {
+  const a = pr.parseAnswering(await $.store.get(ANSWERING_KEY))
+  if (!a) return undefined
+  const b = (await $.state.get(lane)).value as Bound | null | undefined
+  if (b && typeof b.name === 'string') return { a, level: 'lane', lane: b.name }
+  const g = grants.get(sid)
+  return g?.level === 'lead' ? { a, level: 'lead', self: g.name } : undefined
+}
+
+// tool.check only observes: it stores what it saw for an ask in a covered session, and the caller returns the verdict unchanged, every time (F-C).
+async function promptObserve($: any, e: any, r: any): Promise<void> {
+  if (r?.decision !== 'ask' || typeof e.tool_use_id !== 'string' || typeof e.agentId === 'string') return
+  const sid = await $.session.id()
+  if (!c.SID_RE.test(sid) || !(await promptCoverage($, sid))) return
+  const key = `${sid}\n${pr.joinKey(String(e.tool), await sha($, pr.canonical(e.input)), undefined)}`
+  const now = await $.clock.now()
+  const old = checks.get(key)
+  const dup = old !== undefined && now - old.at <= CHECK_TTL_MS && old.toolUseId !== e.tool_use_id
+  if (dup) old.dup = true
+  checks.set(key, { toolUseId: e.tool_use_id, at: now, approver: e.approver, dup, facts: { decision: r.decision, reason: r.reason, rule: r.rule, hook: r.hook, setting: r.setting, plugin: r.plugin, ceiling: r.ceiling } })
+  for (const [k, v] of checks) if (now - v.at > CHECK_TTL_MS) checks.delete(k)
+  while (checks.size > CHECKS_MAX) checks.delete(checks.keys().next().value as string)
+}
+
+// The current branch of a repo, by a read-only git call that reads no hook and no optional lock; undefined (detached, or any failure) leaves the floor holding.
+async function branchOf($: any, dir: string): Promise<string | undefined> {
+  const r = await $.process.run([GIT_BIN, '--no-optional-locks', '-C', dir, 'symbolic-ref', '--short', '-q', 'HEAD'], { timeoutMs: 5000, env: { LC_ALL: 'C' } }).catch(() => undefined)
+  const b = r?.exitCode === 0 ? String(r.stdout).trim() : ''
+  return b === '' || /[\u0000-\u001f]/.test(b) ? undefined : b
+}
+
+async function promptFloorOpts($: any, tool: string, input: any, cwd: string, home: string): Promise<pr.FloorOpts> {
+  const o: pr.FloorOpts = { home, roots: [], cwd }
+  const isGit = tool.startsWith('mcp__git-mcp__')
+  try {
+    const co = c.liveCheckout($.plugin.root)
+    if (co) {
+      o.roots = [co]
+      const real = await realR($, co)
+      if (typeof real !== 'string' && real.path !== co) o.roots.push(real.path)
+    }
+  } catch {}
+  // The folders the hooks and rules under ~/.claude are linked into (the toolkit's live checkout): an edit there is an edit of the guards themselves.
+  if (PERSON_HOLDS.has(tool) || tool === 'Bash' || isGit) for (const r of await linkedRoots($, home)) if (!o.roots!.includes(r)) o.roots!.push(r)
+  if (pr.needsBranch(tool, input)) {
+    const dir = pr.gitPathOf(tool, input) ?? (tool === 'Bash' ? cwd : undefined)
+    if (dir) o.branch = await branchOf($, dir)
+  }
+  if (PERSON_HOLDS.has(tool) || isGit) {
+    const real: string[] = []
+    // A git call acts on its `path`, or on the folder the session runs in.
+    for (const raw of isGit ? [typeof input?.path === 'string' ? input.path : cwd] : [input?.file_path, input?.notebook_path, input?.path]) {
+      if (typeof raw !== 'string') continue
+      const abs0 = raw === '~' || raw.startsWith('~/') ? home + raw.slice(1) : raw
+      const abs = abs0.startsWith('/') ? abs0 : `${cwd}/${abs0}`
+      let r = await realR($, abs)
+      if (r === 'absent') {
+        // A file not made yet: its folder's real path, and the name.
+        const slash = abs.lastIndexOf('/')
+        const d = await realR($, abs.slice(0, slash) || '/')
+        r = typeof d === 'string' ? d : { path: `${d.path === '/' ? '' : d.path}${abs.slice(slash)}` }
+      }
+      if (typeof r === 'string') o.unresolved = true
+      else real.push(r.path)
+    }
+    o.real = real
+  }
+  return o
+}
+
+// The folder above `hooks` or `rules` in the real path of each entry of ~/.claude/hooks and ~/.claude/rules that is a link out of ~/.claude. Best effort: a
+// failed list or realpath adds nothing. A folder found this way is as wide as the link's own parent, which errs toward the floor.
+async function linkedRoots($: any, home: string): Promise<string[]> {
+  const out = new Set<string>()
+  const own = `${home.toLowerCase()}/.claude`
+  for (const sub of ['hooks', 'rules']) {
+    try {
+      const names = ((await $.fs.list(`${home}/.claude/${sub}`).catch(() => [])) as { name: string }[]).map((f) => f.name).filter((n) => /^[A-Za-z0-9._-]{1,100}$/.test(n)).slice(0, 64)
+      if (names.length === 0) continue
+      const r = await $.process.run([REALPATH, '--', ...names.map((n) => `${home}/.claude/${sub}/${n}`)], { timeoutMs: 5000, env: { LC_ALL: 'C' } })
+      for (const line of String(r.stdout).split('\n')) {
+        const m = /^(\/.+?)\/(?:hooks|rules)\/[^/]+$/.exec(line.trim())
+        const low = m?.[1].toLowerCase()
+        if (m && low !== own && !low!.startsWith(`${own}/`)) out.add(m[1])
+      }
+    } catch {}
+  }
+  return [...out]
+}
+
+// The lane's own lead (a live lead of the repo that is not the lane), by sid and name; undefined for a lead's own prompt or when none is live.
+async function promptLeadOf($: any, level: 'lane' | 'lead', sid: string, cwd: string): Promise<{ sid: string; name?: string } | undefined> {
+  if (level !== 'lane') return undefined
+  const live = await registryEntries($)
+  if (!live) return undefined
+  const leads = (await leadsFor($, live, cwd).catch(() => [] as c.LeadFile[])).filter((l) => l.sid !== sid)
+  if (leads.length === 0) return undefined
+  return { sid: leads[0].sid, name: c.leadNameOf(live.map((r) => r.j), leads[0].sid) ?? undefined }
+}
+
+// This session's own registry row, by one file read (not the whole table): the row of the pid the request was made under, kept only if it names this session and
+// the same process start. undefined: unknown (a changing, missing or odd file).
+async function promptOwnRow($: any, w: WaitCtx): Promise<any | undefined> {
+  if (w.p.own === undefined || !(await dirOk($, w.p.own, w.p.uid))) return undefined
+  const r = await readSmallR($, `${w.p.own}/${w.req.pid}.json`, w.p.uid, c.REGISTRY_FILE_MAX, true)
+  if (r.state !== 'ok') return undefined
+  try {
+    const j = JSON.parse(r.text)
+    return j && typeof j === 'object' && String(j.pid) === String(w.req.pid) && j.sessionId === w.sid && j.procStart === w.req.procStart ? j : undefined
+  } catch {
+    return undefined
+  }
+}
+
+async function promptNewId($: any): Promise<string> {
+  const r = await run($, [UUIDGEN])
+  const id = r.stdout.trim().toLowerCase()
+  if (r.exitCode !== 0 || !pr.ID_RE.test(id)) throw new Error('uuid-failed')
+  return id
+}
+
+// The request's files, removed when it closes (the ledger row is written before this).
+async function promptCleanup($: any, dir: string | undefined, id: string | undefined, tid: string): Promise<void> {
+  openReqs.delete(tid)
+  doneIds.delete(tid)
+  if (!dir || !id) return
+  await run($, [RM, '-f', '--', `${dir}/${id}.request.json`, `${dir}/${id}.decision.json`, `${dir}/${id}.escalate.json`, `${dir}/${id}.done`]).catch(() => undefined)
+}
+
+// A tool's end, or a No click's PermissionDenied, closes the dialog: the hook's wait learns of a click by this id (a Yes fires no signal).
+async function promptDone($: any, e: any): Promise<void> {
+  const tid = typeof e?.tool_use_id === 'string' ? e.tool_use_id : undefined
+  // The call has ended or been refused: an entry kept for it (an ask the dialog never reached) must not make a later identical call look like a second in flight.
+  if (tid !== undefined) for (const [k, v] of checks) if (v.toolUseId === tid) checks.delete(k)
+  const o = tid === undefined ? undefined : openReqs.get(tid)
+  if (!o || tid === undefined) return
+  doneIds.add(tid)
+  if (o.dir && o.id) await run($, [INSTALL, '-m', '600', '/dev/null', `${o.dir}/${o.id}.done`]).catch(() => undefined)
+}
+
+async function doneHook($: any, e: any, next: any): Promise<any> {
+  await promptDone($, e).catch(() => undefined)
+  return next(e)
+}
+
+// The hook (§3.1). nextOnce runs the chain beneath at most once, so a failure after it never runs it a second time.
+async function promptHook($: any, e: any, nextOnce: (x: any) => Promise<any>, signal: AbortSignal): Promise<any> {
+  const sid = await $.session.id()
+  if (!c.SID_RE.test(sid)) return nextOnce(e)
+  // 1. The switch and the session's kind. The emergency file wins over the switch.
+  const cov = await promptCoverage($, sid)
+  if (!cov || (await promptsOff($))) return nextOnce(e)
+  const p = await where($)
+  if (!p) return nextOnce(e)
+  const tool = String(e.tool_name)
+  const input = e.tool_input
+  // 2. The tool.check entry, looked up before the chain beneath runs (a slow hook beneath cannot outlast its memory).
+  let hash: string
+  try {
+    hash = await sha($, pr.canonical(input))
+  } catch {
+    return nextOnce(e)
+  }
+  const key = `${sid}\n${pr.joinKey(tool, hash, undefined)}`
+  const entry = checks.get(key)
+  // An entry serves one request: a later identical call gets its own tool.check.
+  checks.delete(key)
+  const started = await $.clock.now()
+  const usable = entry !== undefined && !entry.dup && started - entry.at <= CHECK_TTL_MS
+  const tid = usable ? entry.toolUseId : undefined
+  // The call is marked open now, so a click (and the tool's end) during the chain beneath is seen.
+  if (tid !== undefined) {
+    openReqs.set(tid, { sid })
+    doneIds.delete(tid)
+  }
+  const reqDir: { dir?: string; id?: string } = {}
+  try {
+    // 3. The chain beneath: any non-empty result stands and is returned whole (a settings hook's deny, another plugin's answer).
+    const beneath = await nextOnce(e)
+    if (beneath && typeof beneath === 'object' && Object.keys(beneath).length > 0) return beneath
+    // A No click aborted the signal; a Yes ended the dialog with no signal, so the done events are looked at again (probed P-I6).
+    if (signal.aborted || (tid !== undefined && doneIds.has(tid))) return beneath
+    const cwd = String(await sessionRoot($).catch(() => ''))
+    // A session the switch does not cover leaves no row: a scope of one lane or one lead is judged first, and only a scope that names a lead needs the lead's name.
+    let lead: { sid: string; name?: string } | undefined
+    let leadRead = false
+    if (cov.a.scope !== 'all' && cov.a.scope !== cov.lane && cov.a.scope !== cov.self) {
+      lead = await promptLeadOf($, cov.level, sid, cwd)
+      leadRead = true
+      if (!pr.covers(cov.a, { lane: cov.lane, lead: lead?.name, self: cov.self })) return beneath
+    }
+    const base = { lane: cov.lane ?? cov.self, repo: cwd, tool, pattern: pr.patternOf(tool, input, cwd), hash }
+    if (!usable || entry === undefined) {
+      await ledgerAdd($, { ...base, kind: 'not-judgeable', code: 'no-check' })
+      return beneath
+    }
+    // 4. Nobody can be asked, or a host answers: not ours.
+    if (entry.approver !== 'person') return beneath
+    // 5. Which asks agents may judge.
+    const judged = pr.classify(tool, entry.facts)
+    if (judged.judge === 'person') {
+      await ledgerAdd($, { ...base, kind: 'not-judgeable', code: judged.why })
+      return beneath
+    }
+    // 6. The floor.
+    const fo = await promptFloorOpts($, tool, input, cwd, homeOf(p))
+    const floor = pr.floorCheck(tool, input, fo)
+    if (floor !== undefined) {
+      await ledgerAdd($, { ...base, kind: 'floor', code: floor })
+      return beneath
+    }
+    // 7. A live tier. Only the lead's is built (PR 3 adds the others), and only for a lane: a lead's own prompt starts at the conductor.
+    if (!leadRead) lead = await promptLeadOf($, cov.level, sid, cwd)
+    const leadSid = lead?.sid
+    const leadName = lead?.name
+    if (leadSid === undefined) {
+      await ledgerAdd($, { ...base, kind: 'abandoned', code: 'no-tier' })
+      return beneath
+    }
+    if (!pr.covers(cov.a, { lane: cov.lane, lead: leadName, self: cov.self })) return beneath
+    // 8. The request, then the wait.
+    const own = await registryOf($, sid, ownReg($))
+    const dir = await promptDir($, p, sid)
+    if (!own || typeof own.pid !== 'number' || typeof own.procStart !== 'string' || !dir) {
+      await ledgerAdd($, { ...base, kind: 'abandoned', code: 'hook-failed' })
+      return beneath
+    }
+    const id = await promptNewId($)
+    const nonce = await promptNewId($)
+    const capped = pr.capInput(input)
+    const req: pr.Request = { id, sid, pid: own.pid, procStart: own.procStart, level: cov.level, lane: cov.lane, ...(leadName ? { leadName } : {}), repo: cwd, tool, inputHash: hash, raisedBy: judged.raisedBy, at: started, expiresAt: started + pr.EXPIRES_MS, nonce, input: capped.input, truncated: capped.truncated }
+    const text = pr.requestText(req)
+    if (new TextEncoder().encode(text).length > pr.REQUEST_MAX || !(await promptPut($, `${dir}/${id}.request.json`, text))) {
+      await ledgerAdd($, { ...base, kind: 'abandoned', code: 'hook-failed' })
+      return beneath
+    }
+    reqDir.dir = dir
+    reqDir.id = id
+    openReqs.set(tid as string, { sid, id, dir })
+    if (doneIds.has(tid as string)) await promptDone($, { tool_use_id: tid })
+    const row = { ...base, id, tier: 'lead' }
+    // Without a `requested` row no decision could ever pass the ledger check: the dialog is left to the person.
+    if (!(await ledgerAdd($, { ...row, kind: 'requested', nonce }))) throw new Error('ledger-unwritable')
+    return await promptWait($, e, beneath, signal, { sid, tid: tid as string, id, nonce, dir, hash, input, tool, cwd, home: homeOf(p), p, started, row, req, leadName })
+  } catch (err) {
+    // A failing hook answers nothing: the dialog stays (the caller returns what the chain beneath gives).
+    await ledgerAdd($, { kind: 'abandoned', code: 'hook-failed', id: reqDir.id }).catch(() => undefined)
+    throw err
+  } finally {
+    await promptCleanup($, reqDir.dir, reqDir.id, tid ?? '')
+  }
+}
+
+type WaitCtx = { sid: string; tid: string; id: string; nonce: string; dir: string; hash: string; input: unknown; tool: string; cwd: string; home: string; p: { uid: number; root: string; own?: string }; started: number; row: Omit<pr.LedgerRow, 't' | 'kind'>; req: pr.Request; leadName?: string }
+
+// The wait (§3.1a, §6.1). Each poll: a click, the switch, the dialog's own row, expiry, then a decision file. The awake clock adds each gap, capped.
+async function promptWait($: any, e: any, beneath: any, signal: AbortSignal, w: WaitCtx): Promise<any> {
+  const end = async (kind: pr.RowKind, code?: string) => {
+    await ledgerAdd($, { ...w.row, kind, ...(code ? { code } : {}) })
+    return beneath
+  }
+  // The switch is read again at each poll and before an answer is returned: off, an OFF file, or a scope that no longer covers this lane ends the wait.
+  const stillOn = async (): Promise<boolean> => {
+    if (await promptsOff($)) return false
+    const cv = await promptCoverage($, w.sid)
+    return cv !== undefined && pr.covers(cv.a, { lane: cv.lane, lead: w.leadName, self: cv.self })
+  }
+  let last = await $.clock.now()
+  let awake = pr.awakeAdd(0, last - w.started)
+  let seenWaiting = false
+  let lagSince: number | undefined
+  let lastDrop = ''
+  for (;;) {
+    if (signal.aborted || doneIds.has(w.tid)) return end('superseded')
+    // The request file is gone (the sweep closed it): the sweep's row is the closing one, and the dialog is left to the person.
+    if ((await statR($, `${w.dir}/${w.id}.request.json`)) === 'absent') return beneath
+    // Off stops the wait whichever way it was turned off: the emergency file or /callboard answering off.
+    if (!(await stillOn())) return end('off')
+    // The dialog counts as closed only once the own row has been seen waiting for this request and is then empty; a row that is missing or ambiguous is unknown.
+    const rowNow = await promptOwnRow($, w).catch(() => undefined)
+    if (rowNow) {
+      const waiting = rowNow.status === 'waiting' && (rowNow.waitingFor ?? null) !== null
+      if (waiting && typeof rowNow.statusUpdatedAt === 'number' && rowNow.statusUpdatedAt >= w.started) seenWaiting = true
+      else if (seenWaiting && !waiting) return end('superseded')
+    }
+    if (awake >= pr.expiresAfter(false)) return end('abandoned', 'expired')
+    const df = await readSmallR($, `${w.dir}/${w.id}.decision.json`, w.p.uid, pr.DECISION_MAX)
+    if (df.state === 'bad' && (await statR($, `${w.dir}/${w.id}.decision.json`)) !== 'absent' && lastDrop !== 'file') {
+      lastDrop = 'file'
+      await ledgerAdd($, { ...w.row, kind: 'dropped', code: 'file' })
+    }
+    if (df.state === 'ok') {
+      const d = pr.parseDecision(df.text)
+      if (!d) {
+        if (lastDrop !== 'shape') {
+          lastDrop = 'shape'
+          await ledgerAdd($, { ...w.row, kind: 'dropped', code: 'shape' })
+        }
+      } else {
+        const out = await promptApply($, w, d, awake, lagSince === undefined ? 0 : awake - lagSince)
+        if ('hold' in out) {
+          if (out.hold === 'ledger') lagSince ??= awake
+        } else if ('drop' in out) {
+          if (lastDrop !== out.drop) {
+            lastDrop = out.drop
+            await ledgerAdd($, { ...w.row, kind: 'dropped', code: out.drop })
+          }
+        } else {
+          // The decision stands, unless a click or the switch got there first meanwhile.
+          if (signal.aborted || doneIds.has(w.tid)) return end('superseded')
+          if (!(await stillOn())) return end('off')
+          if (!(await ledgerAdd($, { ...w.row, kind: 'returned', code: d.decision, why: d.why, tier: d.by.level }))) return beneath
+          const decision = d.decision === 'allow' ? { behavior: 'allow' as const } : { behavior: 'deny' as const, message: pr.capBytes(pr.redact(`Denied by the ${d.by.level} ${d.by.name}: ${d.why}`), 300).text }
+          return { ...(beneath && typeof beneath === 'object' ? beneath : {}), decision }
+        }
+      }
+    }
+    if (!(await pause($, pr.pollFor(false)))) return signal.aborted ? end('superseded') : end('abandoned', 'hook-failed')
+    const now = await $.clock.now()
+    awake = pr.awakeAdd(awake, now - last)
+    last = now
+  }
+}
+
+// Every check a decision must pass, each failure a `dropped <code>` row and the wait going on (pr.applyCheck holds the order and the codes).
+async function promptApply($: any, w: WaitCtx, d: pr.Decision, awake: number, graceMs: number): Promise<pr.ApplyOut> {
+  let liveHash = ''
+  try {
+    liveHash = await sha($, pr.canonical(w.input))
+  } catch {}
+  const fo = await promptFloorOpts($, w.tool, w.input, w.cwd, w.home)
+  let byOk = false
+  if (pr.SID.test(d.by.sid) && d.by.sid !== w.sid) {
+    const live = await registryEntries($)
+    const cv = await promptCoverage($, w.sid)
+    // The author is a live lead of the repo, and one the switch's scope covers (a scope naming one lead does not let another lead answer).
+    if (live && cv) byOk = (await leadsFor($, live, w.cwd).catch(() => [] as c.LeadFile[])).some((l) => l.sid === d.by.sid && pr.covers(cv.a, { lane: cv.lane, lead: c.leadNameOf(live.map((r) => r.j), l.sid) ?? undefined, self: cv.self }))
+  }
+  return pr.applyCheck({ req: w.req, decision: d, liveHash, awakeMs: awake, expiresAt: pr.expiresAfter(false), floor: pr.floorCheck(w.tool, w.input, fo), byOk, ledger: await ledgerHas($, w.p, w.id, w.nonce), graceMs })
+}
+
+// The tick's sweep: a request whose session is gone, or older than a day, is closed with a row and its files removed. No process call unless a prompts folder is there.
+async function promptSweep($: any): Promise<void> {
+  const now = await $.clock.now()
+  if (now - lastSweepAt < SWEEP_EVERY_MS) return
+  lastSweepAt = now
+  const p = await where($)
+  if (!p) return
+  const base = `${p.root}/prompts`
+  const all = ((await $.fs.list(base).catch(() => [])) as { name: string }[]).filter((d) => c.SID_RE.test(d.name)).sort((a, b) => (a.name < b.name ? -1 : 1))
+  if (all.length === 0) return
+  // At most SWEEP_DIRS_MAX folders a tick, taking up where the last tick stopped, so every folder is reached however many there are.
+  if (sweepFrom >= all.length) sweepFrom = 0
+  const dirs = all.slice(sweepFrom, sweepFrom + SWEEP_DIRS_MAX)
+  sweepFrom = sweepFrom + SWEEP_DIRS_MAX >= all.length ? 0 : sweepFrom + SWEEP_DIRS_MAX
+  const live = await registryEntries($)
+  const busy = new Set([...openReqs.values()].flatMap((o) => (o.id ? [o.id] : [])))
+  for (const d of dirs) {
+    const files = (await $.fs.list(`${base}/${d.name}`).catch(() => [])) as { name: string; mtimeMs?: number }[]
+    const gone = live !== undefined && !live.some((r) => r.j.sessionId === d.name)
+    // A request older than a day is abandoned only if no live process of that session still holds it: the wait runs on awake time, so a long sleep ages the file, not the prompt.
+    const heldByLive = async (name: string): Promise<boolean> => {
+      const r = await readSmallR($, `${base}/${d.name}/${name}`, p.uid, pr.REQUEST_MAX)
+      if (r.state !== 'ok') return false
+      try {
+        const q = JSON.parse(r.text)
+        return (live ?? []).some((x) => x.j.sessionId === d.name && String(x.j.pid) === String(q?.pid) && x.j.procStart === q?.procStart)
+      } catch {
+        return false
+      }
+    }
+    const requests = new Set(files.flatMap((f) => (/^[0-9a-f-]{36}\.request\.json$/.test(f.name) ? [f.name.slice(0, 36)] : [])))
+    for (const f of files) {
+      const old = typeof f.mtimeMs === 'number' && now - f.mtimeMs > pr.SWEEP_MS
+      const m = /^([0-9a-f-]{36})\.request\.json$/.exec(f.name)
+      if (m) {
+        if (!pr.ID_RE.test(m[1]) || busy.has(m[1])) continue
+        if (!gone && (!old || live === undefined || (await heldByLive(f.name)))) continue
+        await ledgerAdd($, { kind: 'abandoned', code: gone ? 'session-gone' : 'swept', id: m[1] })
+        await run($, [RM, '-f', '--', ...['request.json', 'decision.json', 'escalate.json', 'done'].map((x) => `${base}/${d.name}/${m[1]}.${x}`)]).catch(() => undefined)
+        continue
+      }
+      // A file whose request is gone (a crash between the two removals, or a half-written copy), a day old: removed with no row, it names no open request.
+      const o = /^([0-9a-f-]{36})\.(decision\.json|done|escalate\.json)$/.exec(f.name)
+      const orphan = (o !== null && pr.ID_RE.test(o[1]) && !requests.has(o[1]) && !busy.has(o[1])) || /^[0-9a-f-]{36}\.[A-Za-z.]+\.\d+\.tmp$/.test(f.name)
+      if (orphan && old) await run($, [RM, '-f', '--', `${base}/${d.name}/${f.name}`]).catch(() => undefined)
+    }
+    // A folder of a session that has ended, with nothing left in it, goes too (rmdir refuses a folder that holds anything).
+    if (gone && files.length === 0) await run($, [RMDIR, '--', `${base}/${d.name}`]).catch(() => undefined)
+  }
+}
+
+async function answeringCommand($: any, sid: string, code: c.OriginCode, op: pr.AnsweringOp): Promise<{ text: string }> {
+  if (op === 'bad') return { text: pr.ANSWERING_USAGE }
+  const read = async () => pr.parseAnswering(await $.store.get(ANSWERING_KEY).catch(() => undefined))
+  if (op === 'show') return { text: pr.answeringState(await read(), await promptsOff($)) }
+  // Off narrows only: any origin, no dialog. It clears the stored switch as well, so deleting the OFF file later does not turn answering back on.
+  if (op === 'off' || op === 'off-asks') {
+    const a = await read()
+    try {
+      if (op === 'off') await $.store.delete(ANSWERING_KEY)
+      else if (a) await $.store.set(ANSWERING_KEY, { ...a, asks: false })
+    } catch {
+      await log($, sid, 'error', 'answering-store').catch(() => undefined)
+      return { text: 'Prompt answering could not be changed: the store did not answer. Create ~/.claude/callboard/prompts/OFF to stop it now.' }
+    }
+    await ledgerAdd($, { kind: 'answering-off', code: op })
+    return { text: op === 'off' ? 'Prompt answering is off on this Mac.' : 'Answering questions is off; permission prompts are unchanged.' }
+  }
+  // On is the person's own command, with a dialog that names exactly what turns on.
+  if (!c.originIsPerson(code)) {
+    await log($, sid, 'refused', `answering-not-person:${code}`).catch(() => undefined)
+    return { text: pr.ANSWERING_NOT_PERSON }
+  }
+  const r = await askOnce($, sid, pr.answeringQuestion(op.on, op.asks), pr.ANSWERING_YES, pr.ANSWERING_NO, pr.ANSWERING_HEADER)
+  if (r === 'busy') return { text: 'A callboard question is already open. Answer it first.' }
+  if (r !== 'yes') return { text: r === 'timed-out' ? 'Nothing changed: the question timed out.' : 'Cancelled. Nothing changed.' }
+  const value: pr.Answering = { scope: op.on, asks: op.asks, savedAt: await $.clock.now() }
+  try {
+    await $.store.set(ANSWERING_KEY, value)
+  } catch {
+    return { text: 'Prompt answering could not be turned on: the store did not answer. Nothing changed.' }
+  }
+  await ledgerAdd($, { kind: 'answering-on', hash: await sha($, pr.canonical(value)).catch(() => undefined) })
+  return { text: `${pr.answeringState(value, await promptsOff($))} ${pr.FLOOR_LINE}` }
+}
+
+async function promptsCommand($: any): Promise<{ text: string }> {
+  const a = pr.parseAnswering(await $.store.get(ANSWERING_KEY).catch(() => undefined))
+  const p = await where($)
+  let open = 0
+  if (p) {
+    for (const d of ((await $.fs.list(`${p.root}/prompts`).catch(() => [])) as { name: string }[]).filter((x) => c.SID_RE.test(x.name)).slice(0, 512))
+      open += ((await $.fs.list(`${p.root}/prompts/${d.name}`).catch(() => [])) as { name: string }[]).filter((f) => f.name.endsWith('.request.json')).length
+  }
+  return { text: `${pr.answeringState(a, await promptsOff($))} Open requests: ${open}. ${pr.FLOOR_LINE}` }
+}
+
 export const register: Register = (on) => {
   on('session.start', async ($, e, next) => {
     goneSeen.clear()
@@ -4847,7 +5389,7 @@ export const register: Register = (on) => {
     })
     const me = await $.session.id()
     try {
-      await $.command.register({ name: 'callboard', description: 'Give lead, make this session a lane, list the lanes, show status, show or change the settings, or turn lead and lane off for this session', argumentHint: 'off|lead|lanes|status|config [SETTING VALUE]|conductor [add|remove NAME]|reserve [remove] [NAME]|lane [NAME]|lane off' })
+      await $.command.register({ name: 'callboard', description: 'Give lead, make this session a lane, list the lanes, show status, show or change the settings, or turn lead and lane off for this session', argumentHint: 'off|lead|lanes|status|config [SETTING VALUE]|conductor [add|remove NAME]|reserve [remove] [NAME]|lane [NAME]|lane off|answering [on LANE|LEAD|all|off]|prompts' })
     } catch {
       await log($, me, 'error', 'command-register')
     }
@@ -4933,7 +5475,12 @@ export const register: Register = (on) => {
   on('command.run', { command: 'callboard' }, async ($, e, next) => {
     const sid = await $.session.id()
     ensureTimer($)
-    const arg = c.parseCommandArgs((e as { args?: unknown }).args)
+    const rawArgs = (e as { args?: unknown }).args
+    const line = typeof rawArgs === 'string' ? rawArgs.trim().replace(/[ \t]+/g, ' ') : ''
+    // Prompt answering (ADR 0004): `answering` and `prompts` are read here, so core's parser keeps its own forms.
+    if (line === 'prompts') return promptsCommand($)
+    if (line === 'answering' || line.startsWith('answering ')) return answeringCommand($, sid, c.originCode((e as { origin?: unknown }).origin), pr.parseAnsweringArgs(line.slice(10)))
+    const arg = c.parseCommandArgs(rawArgs)
     if (!arg) return { text: USAGE }
     const code = c.originCode((e as { origin?: unknown }).origin)
     // v13.2: before the verb below, which would take any other object for a lane command.
@@ -5856,6 +6403,33 @@ export const register: Register = (on) => {
     if (req && req.phase === 'armed' && req.mode === 'on-cue' && (e as { agentId?: string }).agentId === undefined) await dropRequest($, await $.session.id(), 'new-turn')
     return next(e)
   }).catch(($, e, next) => next(e))
+
+  // ---- prompt answering (ADR 0004): see promptHook ----
+  // tool.check returns the engine's verdict unchanged, every time (F-C: a mod's tool.check can pierce a deny rule, so callboard's never changes one).
+  on('tool.check', async ($, e, next) => {
+    const r = await next(e)
+    await promptObserve($, e, r).catch(() => undefined)
+    return r
+  }).catch(($, e, next) => next(e))
+
+  on('classic.PermissionRequest', async ($, e, next) => {
+    // P-I5 (probed 2026-11-06): the dialog of a subagent's ask is shown only after the hooks return, so a wait would hide it from the person. Its ask stays his:
+    // the chain beneath at once, with no request file, no wait and no notice.
+    const agent = (e as { agent_id?: unknown }).agent_id
+    if (typeof agent === 'string' && agent !== '') return next(e)
+    let once: Promise<any> | undefined
+    const nextOnce = (x: any) => (once ??= Promise.resolve(next(x)))
+    try {
+      return await promptHook($, e, nextOnce, next.signal)
+    } catch {
+      // A failing hook answers nothing: the dialog stays.
+      return nextOnce(e)
+    }
+  }).catch(($, e, next) => next(e))
+
+  on('classic.PostToolUse', doneHook).catch(($, e, next) => next(e))
+  on('classic.PostToolUseFailure', doneHook).catch(($, e, next) => next(e))
+  on('classic.PermissionDenied', doneHook).catch(($, e, next) => next(e))
 
   on('classic.PostCompact', async ($, e, next) => {
     const sid = await $.session.id()

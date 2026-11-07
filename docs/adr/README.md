@@ -27,3 +27,4 @@ repo's.
 | 0001 | The manager role (`0001-manager-role.md`) | accepted, amended | 2026-10-21 |
 | 0002 | Callboard (`0002-callboard.md`) | accepted, amended | 2026-10-24 |
 | 0003 | Callboard loads from a live checkout (`0003-symlinked-install.md`) | accepted | 2026-11-06 |
+| 0004 | Prompt answering (`0004-prompt-answering.md`) | proposed | 2026-11-06 |

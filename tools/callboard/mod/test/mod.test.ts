@@ -1,4 +1,5 @@
 import { expect, mock, test } from 'claude-code/testing'
+import * as prm from '../hooks/prompts'
 import { LEAD_MANAGER_TEXT, HINT_PREFIX, MANAGER_RESTORE_QUESTION, MANAGER_RESTORED_TOAST, MANAGER_UNANSWERED_TOAST, HINT_REFRESH_MS } from '../hooks/core'
 import { reserveShowText, reserveAddedText, reserveRemovedText, reserveNotListedText, reserveManagerText, RESERVE_NOT_PERSON, RESERVE_USAGE } from '../hooks/core'
 import { conductorFileText, conductorAddQuestion, conductorRefusalText, conductorAddedText, CONDUCTOR_NOT_PERSON, CONDUCTOR_USAGE, conductorQuestion, conductorRestoreQuestion, conductorBriefing, conductorBriefingNote, conductorRestoredToast, conductorUnansweredToast, conductorFileBadToast, conductorNoReposToast, CONDUCTOR_ON_TEXT, CONDUCTOR_OFF_QUESTION, conductorStatus } from '../hooks/core'
@@ -139,6 +140,75 @@ let envHook: ((name: string) => unknown) | undefined
 const regDirOf = (path: string): { name: string; files: Record<string, string> } | undefined =>
   path.startsWith(`${SESSIONS}/`) ? { name: path.slice(SESSIONS.length + 1), files: regFiles() } : path.startsWith(`${OWNDIR}/`) ? { name: path.slice(OWNDIR.length + 1), files: ownSessions } : undefined
 const T0 = 1_700_000_000_000
+// ADR 0004 (prompt answering): a fake of ~/.claude/callboard/prompts, files by path, answering the argv shapes the hook and the ledger use.
+const PROMPTS_DIR = '/Users/x/.claude/callboard/prompts'
+const pfs = new Map<string, { text: string; mtimeSec: number; mode?: string; nlink?: number }>()
+const pdirs = new Set<string>()
+let uuidN = 0
+// The entries of ~/.claude/hooks (links into the toolkit's checkout, by realMap).
+let hooksList: string[] = []
+let gitBranch: string | undefined = 'feat/x'
+let pfsFails: ((a: string[]) => boolean) | undefined
+const isPromptPath = (p: unknown) => typeof p === 'string' && (p === PROMPTS_DIR || p.startsWith(`${PROMPTS_DIR}/`))
+function promptList(path: string) {
+  const pre = path.endsWith('/') ? path : `${path}/`
+  const names = new Map<string, { kind: string; size: number; mtimeMs: number }>()
+  for (const [k, v] of pfs) if (k.startsWith(pre) && !k.slice(pre.length).includes('/')) names.set(k.slice(pre.length), { kind: 'file', size: v.text.length, mtimeMs: v.mtimeSec * 1000 })
+  for (const d of pdirs) if (d.startsWith(pre) && !d.slice(pre.length).includes('/')) names.set(d.slice(pre.length), { kind: 'dir', size: 0, mtimeMs: 0 })
+  return [...names].map(([name, f]) => ({ name, kind: f.kind, size: f.size, mtimeMs: f.mtimeMs, isLink: false }))
+}
+function promptFs(a: string[], stdin: string | undefined, now: number): any | undefined {
+  const ok = (stdout: string, exitCode = 0, stderr = '') => ({ value: { exitCode, stdout, stderr, isStdoutTruncated: false, isStderrTruncated: false } })
+  const last = a[a.length - 1]
+  if (a[0] === '/usr/bin/uuidgen' && pfsFails?.(a)) return ok('', 1, 'failed')
+  if (a[0] === '/usr/bin/uuidgen') return ok(`${(++uuidN).toString(16).padStart(8, '0').toUpperCase()}-0000-4000-8000-123456789ABC\n`)
+  if (a[0] === '/usr/bin/git' && a.includes('symbolic-ref')) return gitBranch === undefined ? ok('', 1) : ok(`${gitBranch}\n`)
+  if (!a.some(isPromptPath)) return undefined
+  if (pfsFails?.(a)) return ok('', a[0] === '/usr/bin/grep' ? 2 : 1, 'failed')
+  if (a[0] === '/bin/mkdir') {
+    for (const d of a.slice(1).filter((x) => x.startsWith('/'))) pdirs.add(d)
+    return ok('')
+  }
+  if (a[0] === '/usr/bin/stat') {
+    if (pdirs.has(last)) return ok(`501 700 2 Directory 21 64 ${now / 1000}\n`)
+    const f = pfs.get(last)
+    return f ? ok(`501 ${f.mode ?? '600'} ${f.nlink ?? 1} Regular File 31 ${f.text.length} ${f.mtimeSec}\n`) : ok('', 1, `stat: ${last}: No such file or directory`)
+  }
+  if (a[0] === '/usr/bin/install') {
+    if (!pfs.has(last)) pfs.set(last, { text: '', mtimeSec: now / 1000 })
+    return ok('')
+  }
+  if (a[0] === '/usr/bin/tee') {
+    const path = a[1] === '-a' ? a[3] : a[2]
+    const cur = pfs.get(path) ?? { text: '', mtimeSec: now / 1000 }
+    pfs.set(path, { ...cur, text: (a[1] === '-a' ? cur.text : '') + (stdin ?? '') })
+    return ok('')
+  }
+  if (a[0] === '/bin/mv') {
+    const f = pfs.get(a[a.length - 2])
+    if (!f) return ok('', 1, 'mv: no such file')
+    pfs.delete(a[a.length - 2])
+    pfs.set(last, f)
+    return ok('')
+  }
+  if (a[0] === '/bin/rm') {
+    for (const p of a.filter((x) => x.startsWith('/'))) pfs.delete(p)
+    return ok('')
+  }
+  if (a[0] === '/bin/rmdir') {
+    // Like rmdir: a folder that holds anything stays.
+    if ([...pfs.keys()].some((k) => k.startsWith(`${last}/`))) return ok('', 1, 'rmdir: Directory not empty')
+    pdirs.delete(last)
+    return ok('')
+  }
+  if (a[0] === '/usr/bin/head') return pfs.has(last) ? ok(pfs.get(last)!.text.slice(0, Number(a[2]))) : ok('', 1, 'head: no such file')
+  if (a[0] === '/usr/bin/grep') {
+    const needle = a[a.length - 2]
+    const hits = (pfs.get(last)?.text ?? '').split('\n').filter((l) => l.includes(needle))
+    return hits.length > 0 ? ok(hits.join('\n') + '\n') : ok('', 1)
+  }
+  return undefined
+}
 let nowMs = T0
 // set (v13): the mock clock jumps to a time without running every tick on the way.
 let clock: { advance: (ms: number) => Promise<void>; set: (ms: number) => Promise<void> } | undefined
@@ -441,6 +511,12 @@ function engine(on: any, argvSeen: string[][], stdins: string[] = [], clk = fals
   nowThrowsOnce = false
   sleepWaits.length = 0
   store = new Map()
+  pfs.clear()
+  pdirs.clear()
+  hooksList = []
+  uuidN = 0
+  gitBranch = 'feat/x'
+  pfsFails = undefined
   const installed = new Set<string>()
   on('session.start', (_: any, e: any) => ({ cwd: e.cwd }))
   if (clk) {
@@ -635,7 +711,7 @@ function engine(on: any, argvSeen: string[][], stdins: string[] = [], clk = fals
     if (e.path === LANESDIR && lanesListHook) await lanesListHook()
     return listed_(e)
   })
-  const listed_ = (e: any) => ({ value: e.path === `${ROOT}/leads` ? [...leadFiles.entries()].map(([k, f]) => ({ name: k.slice(ROOT.length + 7), kind: 'file', size: 1, mtimeMs: (f.mtimeSec ?? Math.floor(nowMs / 1000)) * 1000, isLink: false })) : e.path === `${ROOT}/result` ? resultList : e.path === `${ROOT}/cue` ? cueList : e.path === `${ROOT}/log` ? logList : e.path === LANESDIR ? [...storeFiles.keys()].map((k) => ({ name: k.slice(LANESDIR.length + 1), kind: 'file', size: 1, mtimeMs: 0, isLink: false })) : e.path === SESSIONS ? Object.keys(regFiles()).map((name) => ({ name, kind: 'file', size: 1, mtimeMs: 0, isLink: false })) : e.path === OWNDIR ? Object.keys(ownSessions).map((name) => ({ name, kind: 'file', size: 1, mtimeMs: 0, isLink: false })) : [] })
+  const listed_ = (e: any) => ({ value: e.path === '/Users/x/.claude/hooks' ? hooksList.map((name) => ({ name, kind: 'file', size: 1, mtimeMs: 0, isLink: true })) : isPromptPath(e.path) ? promptList(e.path) : e.path === `${ROOT}/leads` ? [...leadFiles.entries()].map(([k, f]) => ({ name: k.slice(ROOT.length + 7), kind: 'file', size: 1, mtimeMs: (f.mtimeSec ?? Math.floor(nowMs / 1000)) * 1000, isLink: false })) : e.path === `${ROOT}/result` ? resultList : e.path === `${ROOT}/cue` ? cueList : e.path === `${ROOT}/log` ? logList : e.path === LANESDIR ? [...storeFiles.keys()].map((k) => ({ name: k.slice(LANESDIR.length + 1), kind: 'file', size: 1, mtimeMs: 0, isLink: false })) : e.path === SESSIONS ? Object.keys(regFiles()).map((name) => ({ name, kind: 'file', size: 1, mtimeMs: 0, isLink: false })) : e.path === OWNDIR ? Object.keys(ownSessions).map((name) => ({ name, kind: 'file', size: 1, mtimeMs: 0, isLink: false })) : [] })
   on('process.run', function procRun(_: any, e: any): any {
     if (over()) return { value: { exitCode: 1, stdout: '', stderr: 'test over', isStdoutTruncated: false, isStderrTruncated: false } }
     argvSeen.push([...e.argv])
@@ -654,6 +730,7 @@ function engine(on: any, argvSeen: string[][], stdins: string[] = [], clk = fals
       nowMs += ms
       return Promise.resolve(fastSleep(ms)).then(() => ok(''))
     }
+    { const pf = promptFs(a, typeof e.init?.stdin === 'string' ? e.init.stdin : undefined, nowMs); if (pf !== undefined) return pf }
     if (leadsStatRejects && a[0] === '/usr/bin/stat' && a[a.length - 1] === `${ROOT}/leads`) return Promise.reject(new Error('stat'))
     if (a[0] === '/usr/bin/shasum' && shaHook && typeof e.init?.stdin === 'string' && e.init.stdin.startsWith('LABLANE\n')) {
       const h = shaHook
@@ -13549,4 +13626,787 @@ test('v15.4 the retire cue waits for its answer through /bin/sleep: an answer 8 
   expect(total).toBeGreaterThanOrEqual(8000)
   expect(sleeps(argv).length).toBeGreaterThan(30)
   expect(clockSlept).toBeLessThan(HOOK_BUDGET_MS / 2)
+})
+
+
+// ---- ADR 0004 prompt answering, PR 1: the hook, the floor, the files and the switch ----
+// A lane under a live lead (the attach helpers), the switch on for all, an ask rule beneath, and the engine's PermissionRequest chain beneath returning {}.
+const PRQ = { command: 'ssh host uptime' }
+const PDIR = `${PROMPTS_DIR}/${SID}`
+const reqFiles = () => [...pfs.keys()].filter((k) => k.endsWith('.request.json'))
+const readReq = () => JSON.parse(pfs.get(reqFiles()[0])!.text)
+const ledgerRows = (): any[] => [...pfs.entries()].filter(([k]) => /\/ledger-\d{4}-\d{2}\.jsonl$/.test(k)).flatMap(([, v]) => v.text.split('\n').filter(Boolean).map((l) => JSON.parse(l)))
+const rowKinds = () => ledgerRows().map((r) => `${r.kind}${r.code ? ` ${r.code}` : ''}`)
+const LEDGER_FILE = `${PROMPTS_DIR}/ledger-2023-11.jsonl`
+const waitingRow = (at = T0) => ({ ...leadReg(), ...ownReg({ status: 'waiting', waitingFor: 'permission prompt', statusUpdatedAt: at }) })
+
+// The hooks beneath the plugins are registered before the first $ call; a test changes what they answer through these.
+let prVerdict: any
+let prBeneath: (($: any) => any) | undefined
+let prBeneathCalls = 0
+// While a test sets up its lane (dialogs ask through the same checks), the hook beneath asks for nothing.
+let prSetup = false
+type Ans = { switchOn?: boolean; verdict?: any; beneath?: ($: any) => any; argv?: string[][]; clock?: boolean; asLead?: boolean; scope?: string }
+async function answerer($: any, on: any, stdins: string[], opts: Ans = {}) {
+  prVerdict = opts.verdict ?? { decision: 'ask', rule: 'Bash(ssh:*)' }
+  prBeneath = opts.beneath
+  prBeneathCalls = 0
+  prSetup = true
+  for (const ev of ['classic.PostToolUse', 'classic.PostToolUseFailure', 'classic.PermissionDenied'] as const) on(ev, () => ({}))
+  on('tool.check', (_: any, e: any) => (prSetup || e.tool === 'AskUserQuestion' && !prAskQ ? { decision: 'allow' } : prVerdict))
+  on('classic.PermissionRequest', ($2: any) => {
+    prBeneathCalls++
+    return prBeneath ? prBeneath($2) : {}
+  })
+  if (opts.asLead) await lead($, on, stdins, { argv: opts.argv, clock: opts.clock })
+  else {
+    await attacher($, on, stdins, { clock: opts.clock, argv: opts.argv })
+    await doLane($, 'lane svc-api')
+  }
+  prSetup = false
+  if (opts.switchOn !== false) store.set('answering', { scope: opts.scope ?? 'all', asks: false, savedAt: T0 })
+}
+// A question's own ask is judged like any other once the lane is set up; the setup dialogs above must still pass.
+let prAskQ = true
+const askCheck = ($: any, over: Record<string, unknown> = {}) => $.tool.check({ tool: 'Bash', input: PRQ, tool_use_id: 'tu1', approver: 'person', ...over } as any)
+const startReq = ($: any, over: Record<string, unknown> = {}) => $.classic.PermissionRequest({ tool_name: 'Bash', tool_input: PRQ, ...over } as any)
+// A decision made by hand, the only kind PR 1 has: its answered row (appended to the ledger) and its file.
+function handDecision(req: any, over: Record<string, unknown> = {}, row: boolean | Record<string, unknown> = true) {
+  const d = { id: req.id, inputHash: req.inputHash, decision: 'allow', why: 'ok', by: { level: 'lead', sid: LEADSID, name: 'LEAD' }, at: nowMs, nonce: req.nonce, ...over }
+  if (row) {
+    const l = pfs.get(LEDGER_FILE) ?? { text: '', mtimeSec: T0 / 1000 }
+    pfs.set(LEDGER_FILE, { ...l, text: `${l.text}${JSON.stringify({ t: 'x', kind: 'answered', id: req.id, nonce: req.nonce, ...(row === true ? {} : row) })}\n` })
+  }
+  pfs.set(`${PDIR}/${req.id}.decision.json`, { text: JSON.stringify(d), mtimeSec: nowMs / 1000 })
+}
+
+// With no mock clock a wait through /bin/sleep returns at once and moves the test clock by the time asked (fastSleep): a poll loop then runs on its own, and a
+// hook here acts when the clock reaches a time (a person's click, a hand-made decision).
+let clockHooks: ((rel: number) => void | Promise<void>)[] = []
+const driveClock = () => {
+  clockHooks = []
+  fastSleep = async () => {
+    for (const h of clockHooks) await h(nowMs - T0)
+  }
+}
+// An act that runs once, at the first poll at or after `t` ms into the test.
+const at = (t: number, f: () => void | Promise<void>) => {
+  let done = false
+  return async (rel: number) => {
+    if (rel >= t && !done) {
+      done = true
+      await f()
+    }
+  }
+}
+const OFF_FILE = `${PROMPTS_DIR}/OFF`
+const stop = (t = 40_000) => at(t, () => { pfs.set(OFF_FILE, { text: '', mtimeSec: nowMs / 1000 }) })
+// One request to its end: the ask, the dialog's registry row, then the polls with the acts.
+async function runRequest($: any, acts: ((rel: number) => void | Promise<void>)[], over: Record<string, unknown> = {}, check: Record<string, unknown> = {}) {
+  await askCheck($, check)
+  sessions = waitingRow(T0 + 500)
+  driveClock()
+  clockHooks.push(...acts)
+  return startReq($, over)
+}
+const noFiles = () => [...pfs.keys()].filter((k) => k.startsWith(PDIR)).length === 0
+const callOf = (tool: string, input: unknown) => ({ check: { tool, input }, over: { tool_name: tool, tool_input: input } })
+
+test('prompts: a lead\'s answer after 30 s of awake time is returned, the ledger says so, and the files are removed', async ($, on) => {
+  const stdins: string[] = []
+  const argv: string[][] = []
+  await answerer($, on, stdins, { argv })
+  expect((await askCheck($)).decision).toBe('ask')
+  sessions = waitingRow(T0 + 500)
+  driveClock()
+  let made = false
+  clockHooks.push((rel) => {
+    if (rel >= 4000 && !made) {
+      made = true
+      expect(rowKinds()).toEqual(['requested'])
+      expect(readReq()).toMatchObject({ sid: SID, pid: 4300, procStart: LEADPS, level: 'lane', lane: 'svc-api', tool: 'Bash', raisedBy: 'rule', input: PRQ, truncated: false, repo: SVC })
+      expect(readReq().expiresAt).toBe(readReq().at + 21 * 60_000)
+      handDecision(readReq())
+    }
+  })
+  clockSlept = 0
+  const r = await startReq($)
+  expect(r).toEqual({ decision: { behavior: 'allow' } })
+  // Not before 30 s of awake time with the dialog open, and never with a decision that lands early.
+  expect(nowMs - T0).toBe(30_000)
+  expect(rowKinds()).toEqual(['requested', 'answered', 'returned allow'])
+  expect(noFiles()).toBe(true)
+  // The wait goes through /bin/sleep, never $.clock.sleep (a hook has 10 s of its own time per dispatch).
+  expect(sleeps(argv).length).toBeGreaterThan(10)
+  expect(clockSlept).toBeLessThan(HOOK_BUDGET_MS / 2)
+  // The ledger holds no input text.
+  expect(JSON.stringify(ledgerRows())).not.toContain('uptime')
+})
+
+test('prompts: a decision of deny comes back as a deny with the tier named, and never as updatedPermissions', async ($, on) => {
+  await answerer($, on, [])
+  const r = await runRequest($, [at(4000, () => handDecision(readReq(), { decision: 'deny', why: 'not this one' }))])
+  expect(r).toEqual({ decision: { behavior: 'deny', message: 'Denied by the lead LEAD: not this one' } })
+  expect(rowKinds()).toEqual(['requested', 'answered', 'returned deny'])
+  expect(JSON.stringify(r)).not.toContain('updatedPermissions')
+})
+
+test('prompts: off by default: with no switch stored there is no request, no row and no wait', async ($, on) => {
+  const argv: string[][] = []
+  await answerer($, on, [], { switchOn: false, argv })
+  const r = await runRequest($, [])
+  expect(r).toEqual({})
+  expect(rowKinds()).toEqual([])
+  expect(pfs.size === 0 || noFiles()).toBe(true)
+  expect(reqFiles().length).toBe(0)
+  expect(sleeps(argv).length).toBe(0)
+})
+
+test('prompts: the emergency OFF file wins over the stored switch, at request time and during a wait', async ($, on) => {
+  await answerer($, on, [])
+  pfs.set(OFF_FILE, { text: '', mtimeSec: T0 / 1000 })
+  expect(await runRequest($, [])).toEqual({})
+  expect(reqFiles().length).toBe(0)
+  expect(rowKinds()).toEqual([])
+})
+
+test('prompts: touch OFF during a wait closes it within one poll: row off, dialog left to the person, files removed', async ($, on) => {
+  await answerer($, on, [])
+  const r = await runRequest($, [at(4000, () => handDecision(readReq(), {}, true)), at(8000, () => { pfs.set(OFF_FILE, { text: '', mtimeSec: nowMs / 1000 }) })])
+  expect(r).toEqual({})
+  expect(nowMs - T0).toBeLessThanOrEqual(10_000)
+  expect(rowKinds()).toEqual(['requested', 'answered', 'off'])
+  expect(noFiles()).toBe(true)
+})
+
+test('prompts: /callboard answering off during a wait closes it too, and a decision made after is not applied', async ($, on) => {
+  await answerer($, on, [])
+  const r = await runRequest($, [at(4000, async () => { await $.command.run(lane('answering off', { kind: 'plugin' })) }), at(6000, () => handDecision(readReq()))])
+  expect(r).toEqual({})
+  expect(rowKinds()).toContain('off')
+  expect(rowKinds()).not.toContain('returned allow')
+  expect(store.has('answering')).toBe(false)
+})
+
+test('prompts: P-I5: a subagent\'s ask returns the chain beneath at once: no request, no wait, no row', async ($, on) => {
+  const argv: string[][] = []
+  await answerer($, on, [], { argv })
+  await askCheck($)
+  sessions = waitingRow(T0 + 500)
+  driveClock()
+  const before = argv.length
+  const r = await startReq($, { agent_id: 'a1', agent_type: 'general-purpose' })
+  expect(r).toEqual({})
+  expect(prBeneathCalls).toBe(1)
+  expect(reqFiles().length).toBe(0)
+  expect(rowKinds()).toEqual([])
+  expect(argv.slice(before).length).toBe(0)
+  // Even a subagent's ask the observer saw (it never stores one) leaves nothing a later main-agent request could join.
+  // Nor does the observer keep a subagent's ask: had it stored one (a second entry on one hash), the main agent's own request would read as two calls in flight
+  // and be left to the person. It is judged, answered by the lead.
+  await askCheck($, { agentId: 'a1', tool_use_id: 'tu2' })
+  clockHooks.push(at(4000, () => handDecision(readReq())))
+  expect(await startReq($)).toEqual({ decision: { behavior: 'allow' } })
+  expect(rowKinds()).toEqual(['requested', 'answered', 'returned allow'])
+})
+
+test('prompts: a non-empty result from beneath (a settings hook\'s deny) stands whole, and the chain beneath runs once', async ($, on) => {
+  await answerer($, on, [], { beneath: () => ({ decision: { behavior: 'deny', message: 'settings hook says no' } }) })
+  await askCheck($)
+  const r = await startReq($)
+  expect(r).toEqual({ decision: { behavior: 'deny', message: 'settings hook says no' } })
+  expect(prBeneathCalls).toBe(1)
+  expect(reqFiles().length).toBe(0)
+  expect(rowKinds()).toEqual([])
+})
+
+test('prompts: the chain beneath runs exactly once on every path', async ($, on) => {
+  await answerer($, on, [])
+  await runRequest($, [at(4000, () => handDecision(readReq()))])
+  expect(prBeneathCalls).toBe(1)
+  prBeneathCalls = 0
+  expect(await startReq($)).toEqual({})
+  expect(prBeneathCalls).toBe(1)
+})
+
+for (const verdict of [{ decision: 'ask', rule: 'Bash(ssh:*)' }, { decision: 'ask', hook: 'PreToolUse', reason: 'x' }, { decision: 'allow' }, { decision: 'deny', reason: 'no', rule: 'Bash(rm:*)' }]) {
+  test(`prompts: tool.check returns the engine's verdict unchanged, every time (${JSON.stringify(verdict)})`, async ($, on) => {
+    await answerer($, on, [], { verdict })
+    expect(await askCheck($)).toEqual(verdict)
+    expect(await askCheck($, { approver: 'host', tool_use_id: 'tu9' })).toEqual(verdict)
+    expect(await askCheck($, { tool: 'Write', input: { file_path: '/x/a' } })).toEqual(verdict)
+  })
+}
+
+test('prompts: no tool.check entry, or two calls in flight on one hash, leave the prompt to the person', async ($, on) => {
+  await answerer($, on, [])
+  expect(await startReq($)).toEqual({})
+  expect(rowKinds()).toEqual(['not-judgeable no-check'])
+  await askCheck($, { tool_use_id: 'a' })
+  await askCheck($, { tool_use_id: 'b' })
+  expect(await startReq($)).toEqual({})
+  expect(rowKinds()).toEqual(['not-judgeable no-check', 'not-judgeable no-check'])
+  expect(reqFiles().length).toBe(0)
+})
+
+test('prompts: an entry older than its minute is not used', async ($, on) => {
+  await answerer($, on, [])
+  await askCheck($)
+  nowMs += 61_000
+  expect(await startReq($)).toEqual({})
+  expect(rowKinds()).toEqual(['not-judgeable no-check'])
+})
+
+for (const approver of ['host', undefined]) {
+  test(`prompts: approver ${approver}: nobody can be asked or a host answers: no request and no row`, async ($, on) => {
+    await answerer($, on, [])
+    await askCheck($, { approver })
+    expect(await startReq($)).toEqual({})
+    expect(reqFiles().length).toBe(0)
+    expect(rowKinds()).toEqual([])
+  })
+}
+
+// ---- the classifier, as the hook reads tool.check ----
+const RULE = { decision: 'ask', rule: 'Bash(ssh:*)' }
+const GUARD = (extra: Record<string, unknown> = {}) => ({ decision: 'ask', hook: 'PreToolUse', reason: 'github-mcp-guard: ask', ...extra })
+const CLASSIFY: [string, any, string, unknown, string][] = [
+  ['rule only', RULE, 'Bash', PRQ, 'requested rule'],
+  ['the mode\'s own ask', { decision: 'ask' }, 'Bash', PRQ, 'requested mode'],
+  ['the guard on a PR open', GUARD(), 'mcp__github__create_pull_request', { owner: 'o', repo: 'r', title: 't', head: 'h', base: 'b' }, 'requested guard'],
+  ['the guard on a comment', GUARD(), 'mcp__github__add_issue_comment', { owner: 'o', repo: 'r', issue_number: 3, body: 'hi' }, 'requested guard'],
+  ['the guard marking a PR ready (draft false)', GUARD({ reason: 'github-mcp-guard: update_pull_request on "o"/"r" #3 sets draft false; nothing else. Setting draft to false marks the PR ready for review' }), 'mcp__github__update_pull_request', { owner: 'o', repo: 'r', pullNumber: 3, draft: false }, 'requested guard'],
+  ['a hook ask', { decision: 'ask', hook: 'PreToolUse', reason: 'x' }, 'Bash', PRQ, 'not-judgeable hook'],
+  ['a rule and a hook', { decision: 'ask', rule: 'Bash(ssh:*)', hook: 'PreToolUse', reason: 'rule' }, 'Bash', PRQ, 'not-judgeable hook'],
+  ['the guard\'s prefix on another tool (an imitator)', GUARD(), 'Bash', PRQ, 'not-judgeable hook'],
+  ['the guard on a tool an ask rule also covers', GUARD({ rule: 'mcp__github__actions_run_trigger' }), 'mcp__github__actions_run_trigger', { owner: 'o', repo: 'r' }, 'not-judgeable hook'],
+  ['a setting', { decision: 'ask', setting: 'permissions.x' }, 'Bash', PRQ, 'not-judgeable setting-plugin-ceiling'],
+  ['a plugin', { decision: 'ask', plugin: 'other' }, 'Bash', PRQ, 'not-judgeable setting-plugin-ceiling'],
+  ['a question (stays his until PR 4)', { decision: 'ask' }, 'AskUserQuestion', { questions: [{ question: 'q', header: 'h', options: [{ label: 'a' }, { label: 'b' }] }] }, 'not-judgeable question'],
+]
+for (const [name, verdict, tool, input, want] of CLASSIFY) {
+  test(`prompts: classifier: ${name}`, async ($, on) => {
+    await answerer($, on, [], { verdict })
+    const c2 = callOf(tool, input)
+    const r = await runRequest($, [stop(8000)], c2.over, c2.check)
+    expect(r).toEqual({})
+    const [kind, code] = want.split(' ')
+    if (kind === 'requested') {
+      expect(rowKinds()).toEqual(['requested', 'off'])
+      expect(ledgerRows()[0].tier).toBe('lead')
+      expect(JSON.stringify(ledgerRows())).not.toContain('"input"')
+    } else {
+      expect(rowKinds()).toEqual([`${kind} ${code}`])
+      expect(reqFiles().length).toBe(0)
+    }
+  })
+}
+test('prompts: classifier: a request raised by the guard says so in its file', async ($, on) => {
+  await answerer($, on, [], { verdict: GUARD() })
+  const c2 = callOf('mcp__github__create_pull_request', { owner: 'o', repo: 'r', title: 't', head: 'h', base: 'b' })
+  await runRequest($, [at(4000, () => { expect(readReq().raisedBy).toBe('guard') }), stop(6000)], c2.over, c2.check)
+})
+
+// ---- the floor, at the request: no request is written and the dialog stays the person's ----
+const FLOOR_CASES: [string, string, unknown, string][] = [
+  ['merge', 'mcp__github__merge_pull_request', { owner: 'o', repo: 'r', pullNumber: 1 }, 'merge'],
+  ['the optional merge item, off', 'mcp__machine-ops__pr_merge', { owner: 'o', repo: 'r', number: 1 }, 'merge'],
+  ['a force push', 'mcp__git-mcp__git_push', { path: '/r', branch: 'feat/x', force: true }, 'force-push'],
+  ['a push to main', 'mcp__git-mcp__git_push', { path: '/r', branch: 'main' }, 'protected-push'],
+  ['a push to +main', 'mcp__git-mcp__git_push', { path: '/r', branch: '+main' }, 'force-push'],
+  ['a push to refs/heads/main', 'mcp__git-mcp__git_push', { path: '/r', branch: 'refs/heads/main' }, 'protected-push'],
+  ['a push to origin/master', 'mcp__git-mcp__git_push', { path: '/r', branch: 'origin/master' }, 'protected-push'],
+  ['any Bash git push', 'Bash', { command: 'git push origin feat/x' }, 'protected-push'],
+  ['a branch delete push', 'mcp__git-mcp__git_push', { path: '/r', branch: 'feat/x', delete: true }, 'destructive'],
+  ['git_clean', 'mcp__git-mcp__git_clean', { path: '/r' }, 'destructive'],
+  ['git reset hard', 'mcp__git-mcp__git_reset', { path: '/r', mode: 'hard' }, 'destructive'],
+  ['rm -rf', 'Bash', { command: 'rm -rf build' }, 'destructive'],
+  ['SQL DROP', 'mcp__db__query', { sql: 'DROP TABLE users' }, 'destructive'],
+  ['an edit of settings.json', 'Write', { file_path: '/Users/x/.claude/settings.json', content: 'x' }, 'settings'],
+  ['an edit of callboard\'s folder', 'Edit', { file_path: '/Users/x/.claude/callboard/prompts/ledger-2026-11.jsonl', old_string: 'a', new_string: 'b' }, 'settings'],
+  ['a shell command naming the callboard folder', 'Bash', { command: 'echo x >> ~/.claude/callboard/prompts/ledger-2026-11.jsonl' }, 'settings'],
+  ['workspace-lock clear', 'Bash', { command: '/x/workspace-lock.sh --id a clear' }, 'settings'],
+  ['ExitPlanMode', 'ExitPlanMode', { plan: 'p' }, 'dialog'],
+  ['rm by path', 'Bash', { command: '/bin/rm -rf build' }, 'destructive'],
+  ['git clean after -C', 'Bash', { command: 'git -C /r clean -fdx' }, 'destructive'],
+  ['a Bash merge, whatever the branch', 'Bash', { command: 'git checkout main && git merge feat/x' }, 'merge'],
+  ['gh pr merge with -R before the verb', 'Bash', { command: 'gh -R o/r pr merge 5' }, 'merge'],
+  ['a commit to main through the GitHub server', 'mcp__github__create_or_update_file', { owner: 'o', repo: 'r', path: 'a', content: 'x', message: 'm', branch: 'main' }, 'protected-push'],
+  ['a GitHub commit with no branch (the default one)', 'mcp__github__push_files', { owner: 'o', repo: 'r', files: [], message: 'm' }, 'protected-push'],
+  ['a GitHub file delete', 'mcp__github__delete_file', { owner: 'o', repo: 'r', path: 'a', message: 'm', branch: 'feat/x' }, 'destructive'],
+  ['a git config that sets the hooks folder', 'Bash', { command: 'git config core.hooksPath /tmp/h' }, 'settings'],
+  ['a matching push (a lone colon)', 'mcp__git-mcp__git_push', { path: '/r', branch: ':' }, 'protected-push'],
+  ['a push whose ref reads as an option', 'mcp__git-mcp__git_push', { path: '/r', branch: '--mirror' }, 'protected-push'],
+]
+for (const [name, tool, input, cat] of FLOOR_CASES) {
+  test(`prompts: floor at the request: ${name}: no request, a floor ${cat} row, the dialog stays`, async ($, on) => {
+    const argv: string[][] = []
+    await answerer($, on, [], { argv })
+    const c2 = callOf(tool, input)
+    const r = await runRequest($, [], c2.over, c2.check)
+    expect(r).toEqual({})
+    expect(rowKinds()).toEqual([`floor ${cat}`])
+    expect(reqFiles().length).toBe(0)
+    expect(sleeps(argv).length).toBe(0)
+  })
+}
+test('prompts: floor: a push with no branch reads the current branch, and an unreadable one is floor', async ($, on) => {
+  await answerer($, on, [])
+  const c2 = callOf('mcp__git-mcp__git_push', { path: '/r' })
+  gitBranch = 'main'
+  expect(await runRequest($, [], c2.over, c2.check)).toEqual({})
+  expect(rowKinds()).toEqual(['floor protected-push'])
+  gitBranch = undefined
+  await askCheck($, { ...c2.check, tool_use_id: 'tu2' })
+  expect(await startReq($, c2.over)).toEqual({})
+  expect(rowKinds()).toEqual(['floor protected-push', 'floor protected-push'])
+  expect(reqFiles().length).toBe(0)
+})
+test('prompts: floor: the branch a push without one lands on is read with a read-only git call', async ($, on) => {
+  const argv: string[][] = []
+  await answerer($, on, [], { argv })
+  const c2 = callOf('mcp__git-mcp__git_push', { path: '/r' })
+  await runRequest($, [stop(8000)], c2.over, c2.check)
+  const g = argv.find((a) => a[0] === '/usr/bin/git')!
+  expect(g).toEqual(['/usr/bin/git', '--no-optional-locks', '-C', '/r', 'symbolic-ref', '--short', '-q', 'HEAD'])
+})
+
+test('prompts: floor at apply: a push that was fine at the request and lands on main by the decision is dropped', async ($, on) => {
+  await answerer($, on, [])
+  const c2 = callOf('mcp__git-mcp__git_push', { path: '/r' })
+  const r = await runRequest($, [at(4000, () => { handDecision(readReq()); gitBranch = 'main' }), stop(40_000)], c2.over, c2.check)
+  expect(r).toEqual({})
+  expect(rowKinds()).toEqual(['requested', 'answered', 'dropped floor', 'off'])
+})
+
+// ---- apply: each refusal is a dropped row and the wait goes on; a decision that would have landed at 30 s does not ----
+const DROPS: [string, (req: any) => void, string][] = [
+  ['a wrong hash', (r) => handDecision(r, { inputHash: 'b'.repeat(64) }), 'hash'],
+  ['a wrong nonce', (r) => handDecision(r, { nonce: 'other' }), 'nonce'],
+  ['a wrong id', (r) => handDecision(r, { id: OTHER }), 'id'],
+  ['no answered row', (r) => handDecision(r, {}, false), 'no-answered-row'],
+  ['an answered row for another nonce', (r) => handDecision(r, {}, { nonce: 'n' }), 'no-answered-row'],
+  ['an answered row that says something else', (r) => handDecision(r, {}, { kind: 'dropped' }), 'no-answered-row'],
+  ['an author that is the asker', (r) => handDecision(r, { by: { level: 'lead', sid: SID, name: 'svc-api' } }), 'by-sid'],
+  ['an author that is no live lead', (r) => handDecision(r, { by: { level: 'lead', sid: OTHER, name: 'X' } }), 'by-sid'],
+  ['an author that claims a tier PR 1 does not have', (r) => handDecision(r, { by: { level: 'manager', sid: LEADSID, name: 'LEAD' } }), 'by-sid'],
+]
+for (const [name, make, code] of DROPS) {
+  test(`prompts: apply: ${name}: dropped ${code}, not applied, the wait goes on`, async ($, on) => {
+    await answerer($, on, [])
+    const r = await runRequest($, [at(4000, () => make(readReq())), stop(40_000)])
+    expect(r).toEqual({})
+    expect(rowKinds().filter((k) => k.startsWith('dropped '))).toEqual([`dropped ${code}`])
+    expect(rowKinds()).not.toContain('returned allow')
+    expect(rowKinds()[rowKinds().length - 1]).toBe('off')
+    expect(nowMs - T0).toBeGreaterThanOrEqual(40_000)
+  })
+}
+test('prompts: apply: a decision file of the wrong shape, or one that is not ours, is dropped and ignored', async ($, on) => {
+  await answerer($, on, [])
+  const r = await runRequest($, [at(4000, () => pfs.set(`${PDIR}/${readReq().id}.decision.json`, { text: '{"id": 1}', mtimeSec: nowMs / 1000 })), stop(20_000)])
+  expect(r).toEqual({})
+  expect(rowKinds().filter((k) => k.startsWith('dropped'))).toEqual(['dropped shape'])
+})
+test('prompts: apply: a decision file with another mode or a second link is dropped as a file', async ($, on) => {
+  await answerer($, on, [])
+  const r = await runRequest($, [at(4000, () => { handDecision(readReq()); pfs.get(`${PDIR}/${readReq().id}.decision.json`)!.mode = '666' }), stop(40_000)])
+  expect(r).toEqual({})
+  expect(rowKinds().filter((k) => k.startsWith('dropped'))).toEqual(['dropped file'])
+})
+test('prompts: apply: a ledger that cannot be read keeps the prompt his: dropped ledger-unreadable', async ($, on) => {
+  await answerer($, on, [])
+  const r = await runRequest($, [at(4000, () => { handDecision(readReq()); pfsFails = (a) => a[0] === '/usr/bin/grep' }), stop(40_000)])
+  expect(r).toEqual({})
+  expect(rowKinds()).toContain('dropped ledger-unreadable')
+  expect(rowKinds()).not.toContain('returned allow')
+})
+test('prompts: apply: a decision seen a moment before its row is held, then lands when the row does', async ($, on) => {
+  await answerer($, on, [])
+  const r = await runRequest($, [at(4000, () => handDecision(readReq(), {}, false)), at(8000, () => { const q = readReq(); const l = pfs.get(LEDGER_FILE)!; pfs.set(LEDGER_FILE, { ...l, text: `${l.text}${JSON.stringify({ t: 'x', kind: 'answered', id: q.id, nonce: q.nonce })}\n` }) })])
+  expect(r).toEqual({ decision: { behavior: 'allow' } })
+  expect(rowKinds().some((k) => k.startsWith('dropped'))).toBe(false)
+  expect(nowMs - T0).toBe(30_000)
+})
+test('prompts: apply: a decision made by hand with a ledger row lands, as the plan says it must; the audit finds it by the transcript', async ($, on) => {
+  await answerer($, on, [])
+  const r = await runRequest($, [at(4000, () => handDecision(readReq()))])
+  expect(r).toEqual({ decision: { behavior: 'allow' } })
+})
+
+// ---- the person's click ends the wait: a Yes fires no signal, so the done events and the dialog's own row carry it ----
+for (const ev of ['PostToolUse', 'PostToolUseFailure', 'PermissionDenied']) {
+  test(`prompts: ${ev} with the call's id closes the wait as superseded, and a decision made later is not applied`, async ($, on) => {
+    await answerer($, on, [])
+    const r = await runRequest($, [at(10_000, async () => { await $.classic[ev]({ tool_name: 'Bash', tool_input: PRQ, tool_use_id: 'tu1', tool_response: {} } as any) }), at(12_000, () => handDecision(readReq()))])
+    expect(r).toEqual({})
+    expect(rowKinds()).toEqual(['requested', 'superseded'])
+    expect(nowMs - T0).toBeLessThan(14_000)
+    expect(noFiles()).toBe(true)
+  })
+}
+test('prompts: another call\'s end does not close the wait', async ($, on) => {
+  await answerer($, on, [])
+  const r = await runRequest($, [at(10_000, async () => { await $.classic.PostToolUse({ tool_name: 'Bash', tool_input: PRQ, tool_use_id: 'other', tool_response: {} } as any) }), stop(14_000)])
+  expect(r).toEqual({})
+  expect(rowKinds()).toEqual(['requested', 'off'])
+})
+test('prompts: the dialog\'s own row going from waiting to empty closes the wait: a Yes on a long tool', async ($, on) => {
+  await answerer($, on, [])
+  const r = await runRequest($, [at(10_000, () => { sessions = { ...leadReg(), ...ownReg({ status: 'busy', waitingFor: null, statusUpdatedAt: T0 + 10_000 }) } }), at(14_000, () => handDecision(readReq()))])
+  expect(r).toEqual({})
+  expect(rowKinds()).toEqual(['requested', 'superseded'])
+  expect(nowMs - T0).toBeLessThanOrEqual(12_000)
+})
+test('prompts: a row that never showed this request waiting is unknown, not closed: the wait goes on and a decision lands', async ($, on) => {
+  await answerer($, on, [])
+  await askCheck($)
+  sessions = { ...leadReg(), ...ownReg() }
+  driveClock()
+  clockHooks.push(at(4000, () => handDecision(readReq())))
+  expect(await startReq($)).toEqual({ decision: { behavior: 'allow' } })
+})
+test('prompts: a stale waiting row from an earlier prompt does not count as this one\'s', async ($, on) => {
+  await answerer($, on, [])
+  await askCheck($)
+  sessions = waitingRow(T0 - 5000)
+  driveClock()
+  clockHooks.push(at(6000, () => { sessions = { ...leadReg(), ...ownReg() } }), at(8000, () => handDecision(readReq())))
+  expect(await startReq($)).toEqual({ decision: { behavior: 'allow' } })
+  expect(rowKinds()).not.toContain('superseded')
+})
+test('prompts: a registry row that goes missing or ambiguous is unknown, never closed', async ($, on) => {
+  await answerer($, on, [])
+  // The mock gives every session a row of its own unless it is told not to; here the row really is gone.
+  ownEntryAuto = false
+  const r = await runRequest($, [at(6000, () => { sessions = { ...leadReg() } }), at(10_000, () => { sessions = { ...waitingRow(T0 + 500), '4301.json': JSON.stringify({ ...JSON.parse(waitingRow(T0 + 500)['4300.json']), pid: 4301 }) } }), at(12_000, () => handDecision(readReq()))])
+  expect(r).toEqual({ decision: { behavior: 'allow' } })
+  expect(rowKinds()).not.toContain('superseded')
+})
+test('prompts: P-I6: a Yes during the chain beneath ends it with no request: the done event is looked at again after next(e)', async ($, on) => {
+  await answerer($, on, [], { beneath: async () => { await $.classic.PostToolUse({ tool_name: 'Bash', tool_input: PRQ, tool_use_id: 'tu1', tool_response: {} } as any); return {} } })
+  await askCheck($)
+  expect(await startReq($)).toEqual({})
+  expect(reqFiles().length).toBe(0)
+  expect(rowKinds()).toEqual([])
+})
+test('prompts: after its own answer the hook\'s next done event is the tool\'s own: nothing is read as a click', async ($, on) => {
+  await answerer($, on, [])
+  const r = await runRequest($, [at(4000, () => handDecision(readReq()))])
+  expect(r).toEqual({ decision: { behavior: 'allow' } })
+  await $.classic.PostToolUse({ tool_name: 'Bash', tool_input: PRQ, tool_use_id: 'tu1', tool_response: {} } as any)
+  expect(rowKinds()).toEqual(['requested', 'answered', 'returned allow'])
+})
+
+// ---- timing: the awake clock, expiry, a missing tier ----
+test('prompts: with no tier left the wait ends at expiry after 21 minutes of awake time: abandoned expired, the dialog stays', async ($, on) => {
+  await answerer($, on, [])
+  const r = await runRequest($, [])
+  expect(r).toEqual({})
+  expect(nowMs - T0).toBe(21 * 60_000)
+  expect(rowKinds()).toEqual(['requested', 'abandoned expired'])
+  expect(noFiles()).toBe(true)
+})
+test('prompts: a closed lid does not age a prompt: the sleep gap adds 10 s, so the decision still waits out its 30 s with the dialog open', async ($, on) => {
+  await answerer($, on, [])
+  let wake = 0
+  const r = await runRequest($, [at(4000, () => handDecision(readReq())), at(6000, () => { nowMs += 3_600_000; wake = nowMs })])
+  expect(r).toEqual({ decision: { behavior: 'allow' } })
+  expect(nowMs - wake).toBeGreaterThanOrEqual(12_000)
+  expect(rowKinds()).not.toContain('abandoned expired')
+})
+test('prompts: a lid closed for over 21 minutes does not expire the prompt on wake', async ($, on) => {
+  await answerer($, on, [])
+  const r = await runRequest($, [at(4000, () => { nowMs += 30 * 60_000 }), stop(60_000 + 30 * 60_000)])
+  expect(r).toEqual({})
+  expect(rowKinds()).toEqual(['requested', 'off'])
+})
+test('prompts: no live lead: no request, an abandoned no-tier row, the dialog stays', async ($, on) => {
+  await answerer($, on, [])
+  leadFiles.delete(LEADPATH)
+  expect(await runRequest($, [])).toEqual({})
+  expect(rowKinds()).toEqual(['abandoned no-tier'])
+  expect(reqFiles().length).toBe(0)
+})
+test('prompts: a lead\'s own prompt starts at the conductor, which does not exist yet: no request', async ($, on) => {
+  await answerer($, on, [], { asLead: true })
+  expect(await runRequest($, [])).toEqual({})
+  expect(rowKinds()).toEqual(['abandoned no-tier'])
+  expect(reqFiles().length).toBe(0)
+})
+test('prompts: a plain session (no lane, no lead) is never covered', async ($, on) => {
+  on('classic.PermissionRequest', () => ({}))
+  await started($, on, [])
+  store.set('answering', { scope: 'all', asks: false, savedAt: T0 })
+  expect(await startReq($)).toEqual({})
+  expect(rowKinds()).toEqual([])
+})
+
+// ---- the switch's scope ----
+for (const [scope, covered] of [['all', true], ['svc-api', true], ['LEAD', true], ['svc-ap', false], ['svc-api2', false], ['OTHERLEAD', false]] as const) {
+  test(`prompts: scope ${scope}: ${covered ? 'covers' : 'does not cover'} a lane named svc-api under the lead LEAD`, async ($, on) => {
+    await answerer($, on, [], { scope })
+    const r = await runRequest($, [stop(8000)])
+    expect(r).toEqual({})
+    expect(rowKinds()).toEqual(covered ? ['requested', 'off'] : [])
+  })
+}
+
+// ---- failures leave the dialog; abandoned rows ----
+test('prompts: a throwing hook answers nothing: the dialog stays, and the row says hook-failed', async ($, on) => {
+  await answerer($, on, [])
+  pfsFails = (a) => a[0] === '/usr/bin/uuidgen'
+  await askCheck($)
+  expect(await startReq($)).toEqual({})
+  expect(rowKinds()).toEqual(['abandoned hook-failed'])
+  expect(reqFiles().length).toBe(0)
+})
+test('prompts: a request file that cannot be written leaves the dialog and says hook-failed', async ($, on) => {
+  await answerer($, on, [])
+  pfsFails = (a) => a[0] === '/usr/bin/tee' && a[1] === '--'
+  await askCheck($)
+  expect(await startReq($)).toEqual({})
+  expect(rowKinds()).toEqual(['abandoned hook-failed'])
+})
+test('prompts: a wait whose /bin/sleep fails ends at once, abandoned hook-failed, and does not spin', async ($, on) => {
+  const argv: string[][] = []
+  await answerer($, on, [], { argv })
+  sleepFails = true
+  await askCheck($)
+  sessions = waitingRow(T0 + 500)
+  expect(await startReq($)).toEqual({})
+  expect(rowKinds()).toEqual(['requested', 'abandoned hook-failed'])
+  expect(sleeps(argv).length).toBe(1)
+})
+test('prompts: redaction: the request file holds a redacted, capped copy; the ledger holds neither input nor secret', async ($, on) => {
+  await answerer($, on, [])
+  const secret = `curl -H "Authorization: Bear${'er abc123xyz'}" https://x.example/${'y'.repeat(3000)}`
+  const c2 = callOf('Bash', { command: secret })
+  await runRequest($, [at(4000, () => {
+    const q = readReq()
+    expect(JSON.stringify(q)).not.toContain('abc123xyz')
+    expect(q.input.command).toContain('[REDACTED]')
+    expect(q.truncated).toBe(true)
+    expect(new TextEncoder().encode(q.input.command).length).toBeLessThanOrEqual(2000)
+  }), stop(8000)], c2.over, c2.check)
+  expect(JSON.stringify(ledgerRows())).not.toContain('abc123xyz')
+  expect(ledgerRows()[0].pattern).toBe('curl')
+})
+
+// ---- the sweep ----
+const GONE = '7a1b2c3d-0000-4000-8000-123456789abc'
+const RID = (n: number) => `${n}a1b2c3d-0000-4000-8000-123456789abc`
+test('prompts: sweep: a request of a session that is gone, and one older than a day, are closed with a row and removed; a live fresh one stays', async ($, on) => {
+  await answerer($, on, [], { clock: true })
+  const put = (sid: string, id: string, ageS: number) => {
+    pdirs.add(`${PROMPTS_DIR}/${sid}`)
+    pfs.set(`${PROMPTS_DIR}/${sid}/${id}.request.json`, { text: '{}', mtimeSec: T0 / 1000 - ageS })
+    pfs.set(`${PROMPTS_DIR}/${sid}/${id}.decision.json`, { text: '{}', mtimeSec: T0 / 1000 - ageS })
+  }
+  put(GONE, RID(3), 10)
+  put(LEADSID, RID(4), 90_000)
+  put(LEADSID, RID(5), 10)
+  await clock!.advance(62_000)
+  expect(ledgerRows().map((r) => `${r.kind} ${r.code} ${r.id}`).sort()).toEqual([`abandoned session-gone ${RID(3)}`, `abandoned swept ${RID(4)}`].sort())
+  expect(pfs.has(`${PROMPTS_DIR}/${GONE}/${RID(3)}.request.json`)).toBe(false)
+  expect(pfs.has(`${PROMPTS_DIR}/${GONE}/${RID(3)}.decision.json`)).toBe(false)
+  expect(pfs.has(`${PROMPTS_DIR}/${LEADSID}/${RID(4)}.request.json`)).toBe(false)
+  expect(pfs.has(`${PROMPTS_DIR}/${LEADSID}/${RID(5)}.request.json`)).toBe(true)
+})
+test('prompts: sweep: with no prompts folder the tick makes no process call for it', async ($, on) => {
+  const argv: string[][] = []
+  await answerer($, on, [], { clock: true, argv })
+  const before = argv.length
+  await clock!.advance(62_000)
+  expect(argv.slice(before).filter((a) => a.some((x) => typeof x === 'string' && x.includes('/prompts'))).length).toBe(0)
+})
+
+// ---- /callboard answering and /callboard prompts ----
+const EXPECT_Q = (scope: string, asks: boolean) => prm.answeringQuestion(scope, asks)
+test('prompts: /callboard answering shows the state, off by default', async ($, on) => {
+  await started($, on, [])
+  expect((await $.command.run(lane('answering'))).text).toBe('Prompt answering: off.')
+  expect((await $.command.run(lane('prompts'))).text).toContain('Open requests: 0.')
+  expect((await $.command.run(lane('prompts'))).text).toContain('Floor (never answered by an agent)')
+})
+test('prompts: /callboard answering on all: the person\'s own command, a dialog naming exactly what turns on, stored on Allow with a ledger row', async ($, on) => {
+  await started($, on, [])
+  askAnswer = YES
+  const r = await $.command.run(lane('answering on all'))
+  expect(lastQuestion).toBe(EXPECT_Q('all', false))
+  expect(lastHeader).toBe('Answering')
+  expect(askedOptions[0]).toEqual(['Allow', 'Cancel'])
+  expect(store.get('answering')).toEqual({ scope: 'all', asks: false, savedAt: T0 })
+  expect(r.text).toContain('Prompt answering: on for all lanes and leads.')
+  expect(r.text).toContain('Floor (never answered by an agent)')
+  expect(ledgerRows().map((x) => x.kind)).toEqual(['answering-on'])
+  expect(ledgerRows()[0].hash).toMatch(/^[0-9a-f]{64}$/)
+  expect((await $.command.run(lane('answering'))).text).toBe('Prompt answering: on for all lanes and leads.')
+})
+test('prompts: /callboard answering on LANE asks stores the flag and the dialog says it has no effect yet', async ($, on) => {
+  await started($, on, [])
+  askAnswer = YES
+  await $.command.run(lane('answering on svc-api asks'))
+  expect(lastQuestion).toBe(EXPECT_Q('svc-api', true))
+  expect(lastQuestion).toContain('no effect yet')
+  expect(store.get('answering')).toEqual({ scope: 'svc-api', asks: true, savedAt: T0 })
+})
+test('prompts: /callboard answering on: Cancel or a timeout stores nothing', async ($, on) => {
+  await started($, on, [])
+  askAnswer = NO
+  expect((await $.command.run(lane('answering on all'))).text).toBe('Cancelled. Nothing changed.')
+  expect(store.has('answering')).toBe(false)
+  expect(ledgerRows()).toEqual([])
+})
+for (const kind of ['plugin', 'peer', 'other']) {
+  test(`prompts: /callboard answering on from another origin (${kind}) is refused with no dialog and nothing stored`, async ($, on) => {
+    await started($, on, [])
+    askAnswer = YES
+    const r = await $.command.run(lane('answering on all', { kind }))
+    expect(r.text).toBe(prm.ANSWERING_NOT_PERSON)
+    expect(askCount).toBe(0)
+    expect(store.has('answering')).toBe(false)
+  })
+}
+test('prompts: /callboard answering off from any origin: no dialog, the stored switch is cleared, a row is written', async ($, on) => {
+  await started($, on, [])
+  store.set('answering', { scope: 'all', asks: true, savedAt: T0 })
+  const r = await $.command.run(lane('answering off', { kind: 'plugin' }))
+  expect(r.text).toBe('Prompt answering is off on this Mac.')
+  expect(askCount).toBe(0)
+  expect(store.has('answering')).toBe(false)
+  expect(rowKinds()).toEqual(['answering-off off'])
+})
+test('prompts: /callboard answering off asks narrows only the questions flag', async ($, on) => {
+  await started($, on, [])
+  store.set('answering', { scope: 'all', asks: true, savedAt: T0 })
+  await $.command.run(lane('answering off asks', { kind: 'plugin' }))
+  expect(store.get('answering')).toEqual({ scope: 'all', asks: false, savedAt: T0 })
+})
+test('prompts: /callboard answering with an unknown form gets the usage line, and the state line names the OFF file', async ($, on) => {
+  await started($, on, [])
+  for (const bad of ['answering on', 'answering enable', 'answering on a b']) expect((await $.command.run(lane(bad))).text).toBe(prm.ANSWERING_USAGE)
+  pfs.set(OFF_FILE, { text: '', mtimeSec: T0 / 1000 })
+  expect((await $.command.run(lane('answering'))).text).toContain('The OFF file exists')
+})
+test('prompts: /callboard prompts counts open requests', async ($, on) => {
+  await started($, on, [])
+  pdirs.add(`${PROMPTS_DIR}/${LEADSID}`)
+  pfs.set(`${PROMPTS_DIR}/${LEADSID}/${RID(3)}.request.json`, { text: '{}', mtimeSec: T0 / 1000 })
+  expect((await $.command.run(lane('prompts'))).text).toContain('Open requests: 1.')
+})
+
+// ---- review fixes ----
+test('prompts: a switch narrowed to another scope during a wait ends it: row off, dialog left to the person', async ($, on) => {
+  await answerer($, on, [])
+  const r = await runRequest($, [at(4000, () => { store.set('answering', { scope: 'OTHERLANE', asks: false, savedAt: nowMs }) }), at(6000, () => handDecision(readReq()))])
+  expect(r).toEqual({})
+  expect(rowKinds()).toEqual(['requested', 'off'])
+  expect(noFiles()).toBe(true)
+})
+for (const scope of ['LEAD', 'svc-api']) {
+  test(`prompts: scope ${scope}: the lead's answer lands`, async ($, on) => {
+    await answerer($, on, [], { scope })
+    const r = await runRequest($, [at(4000, () => handDecision(readReq()))])
+    expect(r).toEqual({ decision: { behavior: 'allow' } })
+    expect(rowKinds()).toEqual(['requested', 'answered', 'returned allow'])
+  })
+}
+test('prompts: a session the scope does not cover leaves no row, even for an ask on the floor or one a hook raised', async ($, on) => {
+  await answerer($, on, [], { scope: 'OTHERLANE' })
+  const c2 = callOf('Bash', { command: 'git push origin x' })
+  expect(await runRequest($, [], c2.over, c2.check)).toEqual({})
+  prVerdict = { decision: 'ask', hook: 'PreToolUse', reason: 'x' }
+  await askCheck($, { tool_use_id: 'tu3' })
+  expect(await startReq($)).toEqual({})
+  expect(rowKinds()).toEqual([])
+})
+test('prompts: a ledger that cannot take the requested row leaves the dialog: no wait, no files', async ($, on) => {
+  const argv: string[][] = []
+  await answerer($, on, [], { argv })
+  pfsFails = (a) => a[0] === '/usr/bin/tee' && a[1] === '-a'
+  await askCheck($)
+  sessions = waitingRow(T0 + 500)
+  expect(await startReq($)).toEqual({})
+  expect(sleeps(argv).length).toBe(0)
+  expect(noFiles()).toBe(true)
+})
+test('prompts: a poll reads this session\'s own row by one file: no table of every process is read while waiting', async ($, on) => {
+  const argv: string[][] = []
+  await answerer($, on, [], { argv })
+  let mark = -1
+  let during: string[][] = []
+  const r = await runRequest($, [at(4000, () => { mark = argv.length }), at(18_000, () => { during = argv.slice(mark) }), at(20_000, () => handDecision(readReq()))])
+  expect(r).toEqual({ decision: { behavior: 'allow' } })
+  expect(during.length).toBeGreaterThan(10)
+  expect(during.filter((a) => a[0] === '/bin/ps').length).toBe(0)
+  expect(during.some((a) => a[0] === '/usr/bin/stat' && a.some((x) => String(x).endsWith('/4300.json')))).toBe(true)
+})
+test('prompts: floor: an edit under the folder that the hooks of ~/.claude link into (the toolkit checkout) is settings', async ($, on) => {
+  await answerer($, on, [])
+  hooksList = ['guard.sh']
+  realMap.set('/Users/x/.claude/hooks/guard.sh', '/Users/x/code/toolkit/hooks/guard.sh')
+  const c2 = callOf('Edit', { file_path: '/Users/x/code/toolkit/rules/a.md', old_string: 'a', new_string: 'b' })
+  expect(await runRequest($, [], c2.over, c2.check)).toEqual({})
+  expect(rowKinds()).toEqual(['floor settings'])
+  // Elsewhere stays judged.
+  const c3 = callOf('Edit', { file_path: '/Users/x/code/other/a.md', old_string: 'a', new_string: 'b' })
+  await askCheck($, { ...c3.check, tool_use_id: 'tu2' })
+  sessions = waitingRow(T0 + 500)
+  driveClock()
+  clockHooks.push(stop(8000))
+  expect(await startReq($, c3.over)).toEqual({})
+  expect(rowKinds()).toEqual(['floor settings', 'requested', 'off'])
+})
+test('prompts: sweep: folders past the first 64 are reached on a later tick; an old orphan file and the empty folder of a gone session go', async ($, on) => {
+  await answerer($, on, [], { clock: true })
+  const sids = Array.from({ length: 70 }, (_, i) => `${(i + 16).toString(16).padStart(8, '0')}-0000-4000-8000-123456789abc`)
+  for (const sid of sids) pdirs.add(`${PROMPTS_DIR}/${sid}`)
+  pfs.set(`${PROMPTS_DIR}/${sids[1]}/${RID(6)}.decision.json`, { text: '{}', mtimeSec: T0 / 1000 - 90_000 })
+  pfs.set(`${PROMPTS_DIR}/${sids[1]}/${RID(7)}.done`, { text: '', mtimeSec: T0 / 1000 - 10 })
+  pfs.set(`${PROMPTS_DIR}/${sids[69]}/${RID(8)}.request.json`, { text: '{}', mtimeSec: T0 / 1000 - 10 })
+  // A fresh mod sweeps at its first tick, then once a minute.
+  await clock!.advance(5_000)
+  const state = () => ({ d0: pdirs.has(`${PROMPTS_DIR}/${sids[0]}`), d1: pdirs.has(`${PROMPTS_DIR}/${sids[1]}`), orphan: pfs.has(`${PROMPTS_DIR}/${sids[1]}/${RID(6)}.decision.json`), fresh: pfs.has(`${PROMPTS_DIR}/${sids[1]}/${RID(7)}.done`), req: pfs.has(`${PROMPTS_DIR}/${sids[69]}/${RID(8)}.request.json`) })
+  // The first tick looks at the first 64 folders: the empty ones of a gone session go, a day-old orphan goes, a fresh orphan stays, the last folder is not reached.
+  expect(state()).toEqual({ d0: false, d1: true, orphan: false, fresh: true, req: true })
+  await clock!.advance(62_000)
+  expect(pfs.has(`${PROMPTS_DIR}/${sids[69]}/${RID(8)}.request.json`)).toBe(false)
+  expect(ledgerRows().map((r) => `${r.kind} ${r.code} ${r.id}`)).toEqual([`abandoned session-gone ${RID(8)}`])
+})
+
+test('prompts: floor: a mutating git call on the toolkit checkout (found through the linked hooks) is settings; a read there is judged', async ($, on) => {
+  await answerer($, on, [])
+  hooksList = ['guard.sh']
+  realMap.set('/Users/x/.claude/hooks/guard.sh', '/Users/x/code/toolkit/hooks/guard.sh')
+  const c2 = callOf('mcp__git-mcp__git_checkout', { path: '/Users/x/code/toolkit', target: 'feat/x' })
+  expect(await runRequest($, [], c2.over, c2.check)).toEqual({})
+  expect(rowKinds()).toEqual(['floor settings'])
+  expect(reqFiles().length).toBe(0)
+  // No path: the folder the session runs in; the lane runs in its own clone, which is not a live checkout.
+  const c3 = callOf('mcp__git-mcp__git_checkout', { target: 'feat/x' })
+  await askCheck($, { ...c3.check, tool_use_id: 'tu2' })
+  sessions = waitingRow(T0 + 500)
+  driveClock()
+  clockHooks.push(stop(8000))
+  expect(await startReq($, c3.over)).toEqual({})
+  expect(rowKinds()).toEqual(['floor settings', 'requested', 'off'])
+})
+test('prompts: sweep: a request older than a day whose own process is still live is kept; one of another process of that session is swept', async ($, on) => {
+  await answerer($, on, [], { clock: true })
+  const old = T0 / 1000 - 90_000
+  pdirs.add(PDIR)
+  pfs.set(`${PDIR}/${RID(9)}.request.json`, { text: JSON.stringify({ pid: 4300, procStart: LEADPS }), mtimeSec: old })
+  pfs.set(`${PDIR}/${RID(1)}.request.json`, { text: JSON.stringify({ pid: 9999, procStart: LEADPS }), mtimeSec: old })
+  await clock!.advance(5_000)
+  expect(pfs.has(`${PDIR}/${RID(9)}.request.json`)).toBe(true)
+  expect(pfs.has(`${PDIR}/${RID(1)}.request.json`)).toBe(false)
+  expect(ledgerRows().map((r) => `${r.kind} ${r.code} ${r.id}`)).toEqual([`abandoned swept ${RID(1)}`])
+})
+test('prompts: a wait whose request file disappears ends without a second closing row, and the dialog is left to the person', async ($, on) => {
+  await answerer($, on, [])
+  const r = await runRequest($, [at(4000, () => { pfs.delete(reqFiles()[0]) })])
+  expect(r).toEqual({})
+  expect(rowKinds()).toEqual(['requested'])
+  expect(noFiles()).toBe(true)
 })
