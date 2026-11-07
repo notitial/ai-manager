@@ -768,10 +768,15 @@ function weakWord(w: Word, cur: B[], j: J): FloorCategory | undefined {
   }
   // A relative word that starts outside every live checkout and lands inside one (git -C ../app, find ../app ...), whatever wraps the command: the wrapper hides the
   // folder the inner command runs in, the word still shows where it points. A word that stays inside a checkout the session is already in is the root-session rule's.
-  if (!w.t.startsWith('/') && (o.roots?.length ?? 0) > 0) {
-    for (const b of cur) {
-      if (b === null || b === '' || underRoot(b, o)) continue
-      if (underRoot(lexical(`${b}/${w.t}`, undefined), o)) return 'settings'
+  // An option with its value glued on (--work-tree=../app, --git-dir=../app/.git, -C../app) is the value read as a word of its own.
+  if ((o.roots?.length ?? 0) > 0) {
+    const glued = /^--?[A-Za-z][\w-]*=(.+)$/s.exec(w.t)?.[1] ?? (/^-[A-Za-z](.+)$/s.exec(w.t)?.[1])
+    for (const t of [w.t, glued]) {
+      if (t === undefined || t === '' || t.startsWith('/')) continue
+      for (const b of cur) {
+        if (b === null || b === '' || underRoot(b, o)) continue
+        if (underRoot(lexical(`${b}/${t}`, undefined), o)) return 'settings'
+      }
     }
   }
   return undefined
@@ -1295,7 +1300,15 @@ function dispatch(v: string, verb: Word, args: Word[], it: Item, cur: B[], j: J,
     if (x >= 0) {
       // The folders find starts from (the words before its first expression): with a command to run on what it finds, one that is a live checkout, lies under one or
       // above one is the floor, and so is one that cannot be read.
-      for (const w of args) {
+      for (let a = 0; a < args.length; a++) {
+        const w = args[a]
+        // Options that come before the folders: -H -L -P -O, -D with its words, BSD -E -X -d -s -x; BSD -f names a folder.
+        if (/^-(H|L|P|O\d?|E|X|d|s|x)$/.test(w.t)) continue
+        if (w.t === '-D') {
+          a++
+          continue
+        }
+        if (w.t === '-f') continue
         if (w.t.startsWith('-') || w.t === '(' || w.t === '!') break
         const c = wpath(w, cur, j)
         if (c) return { cat: c }
