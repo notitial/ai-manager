@@ -989,7 +989,7 @@ function roOk(v: string, args: Word[]): boolean {
   const t = args.map((w) => w.t)
   const pos = t.filter((x) => !x.startsWith('-'))
   if (v === 'env') return args.length === 0
-  if (v === 'find') return !t.some((x) => /^-(delete|exec|execdir|ok|okdir|fprint\w*|fls)$/.test(x))
+  if (v === 'find' || v === 'gfind') return !t.some((x) => /^-(delete|exec|execdir|ok|okdir|fprint\w*|fls)$/.test(x))
   if (!RO_PLAIN.has(v)) return false
   if (v === 'sort') return !t.some((x) => x === '--output' || x.startsWith('--output=') || /^-[A-Za-z]*o/.test(x))
   if (v === 'uniq') return pos.length <= 1
@@ -1301,7 +1301,7 @@ function dispatch(v: string, verb: Word, args: Word[], it: Item, cur: B[], j: J,
     const c = judgeNet(v === 'curl' || v === 'wget' ? v : 'http', args, it, cur, j)
     return c ? { cat: c } : { ro: netRo(v, args) }
   }
-  if (v === 'find') {
+  if (v === 'find' || v === 'gfind') {
     if (args.some((w) => /^-(delete|fprint\w*|fls)$/.test(w.t))) return DEST
     const x = args.findIndex((w) => /^-(exec|execdir|ok|okdir)$/.test(w.t))
     if (x >= 0) {

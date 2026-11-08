@@ -5071,7 +5071,9 @@ async function promptLeadOf($: any, level: 'lane' | 'lead', sid: string, cwd: st
   const leads = (await leadsFor($, live, cwd).catch(() => [] as c.LeadFile[])).filter((l) => l.sid !== sid)
   // Record first, as the briefing does (S2): a lane record that names its lead is reached by the live lead of that registry name and no other (none live: nobody).
   // Else the lead the lane is bound to, if it is live; with no binding, the one live lead of the repo. Two leads and no binding: nobody can be asked.
+  // A bound lane whose record cannot be read, or that has none, reaches no lead: the prompt stays the person's.
   const rec = await reportLaneOf($, sid).catch(() => undefined)
+  if (!rec) return undefined
   const rows = live.map((r) => r.j)
   const lead = rec?.leadName !== undefined ? leads.find((l) => c.leadNameOf(rows, l.sid) === rec.leadName) : bound !== undefined ? leads.find((l) => l.sid === bound) : leads.length === 1 ? leads[0] : undefined
   if (!lead) return undefined

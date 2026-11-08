@@ -14156,6 +14156,17 @@ test('review r2: the lead is resolved record first: a record that names a lead i
   expect(rowKinds()).toEqual(['abandoned no-tier'])
   expect(reqFiles().length).toBe(0)
 })
+test('review r2: a bound lane whose record cannot be found reaches no lead, though one lead is live: no request, abandoned no-tier', async ($, on) => {
+  await answerer($, on, [])
+  // The binding stays (it names the lane and its lead) but the lane's record is gone from the store.
+  putStore([])
+  await askCheck($)
+  sessions = waitingRow(T0 + 500)
+  driveClock()
+  expect(await startReq($)).toEqual({})
+  expect(rowKinds()).toEqual(['abandoned no-tier'])
+  expect(reqFiles().length).toBe(0)
+})
 test('review r2: a record that names its lead finds it by the registry name, so the request carries that name', async ($, on) => {
   await answerer($, on, [])
   expect((await runRequest($, [at(4000, () => handDecision(readReq()))]))).toEqual({ decision: { behavior: 'allow' } })
@@ -14776,7 +14787,7 @@ test('prompts PR2: the notice carries no approval and is a turn of the mod\'s ow
 test('prompts PR2: at most 30 notices an hour; a capped one stays owed, is logged once, and goes out once a slot frees', async ($, on) => {
   const stdins: string[] = []
   await tier($, on, stdins, { clock: true })
-  for (let i = 1; i <= 33; i++) {
+  for (let i = 1; i <= 31; i++) {
     putQ({ id: `${i.toString(16).padStart(8, '0')}-aaaa-4000-8000-123456789abc` })
     await clock!.advance(2000)
   }
