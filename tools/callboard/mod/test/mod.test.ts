@@ -7101,6 +7101,23 @@ test('a lead nudge to a busy lane is recorded and goes out once the lane is idle
   expect(nudges()).toEqual([nudgeText('lead')])
 })
 
+test('a lead nudge recorded while a mid-turn nudge was being claimed is dropped at idle: nudge-limit, not a second nudge inside the gap (review, 2026-11-08)', async ($, on) => {
+  const stdins: string[] = []
+  const trace: Trace = { log: [], failCounters: false }
+  await renameThroughTick($, on, stdins, 1, trace)
+  sessions = { [REGFILE]: REG({ status: 'busy' }) }
+  cueFile = { ino: 63, text: 'compact\n', present: true }
+  await tickTwice()
+  expect(resultFiles.get(RESULT)).toBe('compact held nudged 63\n')
+  // The mid-turn hook's claim lands after the lead's check read the old counters.
+  trace.st!.set('counters', { value: { lastNudgeMs: nowMs - 1000, nudgeTimes: [nowMs - 1000], lastNudgeKind: 'idle' }, version: 91 })
+  tokensNow = 350_000
+  sessions = { [REGFILE]: REG() }
+  await ticks(2)
+  expect(nudges()).toEqual([])
+  expect(logged(stdins)).toContain('nudge-dropped:nudge-limit')
+})
+
 test('no lead nudge while the lane has a request in any phase: the answer stays no-request', async ($, on) => {
   const trace: Trace = { log: [], failCounters: false }
   await renameThroughTick($, on, [], 1, trace)
@@ -7156,7 +7173,6 @@ test('a person session is nudged at 300k tokens, not at 299k; the turn end recor
   expect(nudges()).toEqual([])
   expect(logged(stdins)).toContain('nudge-due:threshold')
   await ticks(1)
-  expect(psCalls.length).toBeGreaterThan(0)
   expect(nudges()).toEqual([nudgeText('idle')])
   expect(logged(stdins)).toContain('nudged:idle')
 })
@@ -7166,52 +7182,64 @@ for (const [what, setup] of [
   ['a background shell', () => { psTable = `${SELF_PS} 4400  4999 /bin/zsh -c sleep 90\n` }],
   ['a session that cannot find itself in the process table', () => { psTable = PS_TABLE }],
 ] as const) {
-  test(`a working session (${what}) waits for 400k tokens and gets the working text`, async ($, on) => {
+  test(`a working session (${what}) gets the soft text at 300k, not 299k, and the hard text at 400k (v16)`, async ($, on) => {
     await person($, on)
     setup()
-    tokensNow = 399_999
+    tokensNow = 299_999
     await $.turn.complete(TURN as any)
     await ticks(2)
     expect(nudges()).toEqual([])
+    tokensNow = 399_999
+    await $.turn.complete(TURN as any)
+    await ticks(1)
+    expect(nudges()).toEqual([nudgeText('idle')])
     tokensNow = 400_000
     await $.turn.complete(TURN as any)
     await ticks(1)
-    expect(nudges()).toEqual([nudgeText('working')])
+    expect(nudges()).toEqual([nudgeText('idle'), nudgeText('working')])
   })
 }
 
-test('a lead is nudged by its own level only at 400k, idle or not, with the 400k text; nothing is recorded below it (2026-11-02)', async ($, on) => {
+test('a lead is nudged from 300k with the soft text and from 400k with the hard one, idle or not (v16)', async ($, on) => {
   const stdins: string[] = []
   await person($, on, stdins)
   laneSeed.text = LEAD_LANES('/data/x/work')
   askAnswer = YES
   await $.command.run(lane('lead'))
   await $.turn.complete(TURN as any)
-  tokensNow = 399_999
+  tokensNow = 299_999
   await $.turn.complete(TURN as any)
   await ticks(2)
   expect(nudges()).toEqual([])
   expect(logged(stdins)).not.toContain('nudge-due:threshold')
-  expect(logged(stdins)).not.toContain('nudge-dropped:below-working')
+  tokensNow = 300_000
+  await $.turn.complete(TURN as any)
+  await ticks(1)
+  expect(nudges()).toEqual([nudgeText('idle')])
+  expect(logged(stdins)).toContain('nudged:idle')
   tokensNow = 400_000
   await $.turn.complete(TURN as any)
   await ticks(1)
-  expect(nudges()).toEqual([nudgeText('working')])
+  expect(nudges()).toEqual([nudgeText('idle'), nudgeText('working')])
   expect(logged(stdins)).toContain('nudged:working')
 })
 
-test('a lane that has not signed done since its last prompt is working: none at 350k, the working text at 400k', async ($, on) => {
+test('a lane that has not signed done since its last prompt gets the soft text at 350k and the hard one at 400k (v16: working no longer holds the soft text back)', async ($, on) => {
   const stdins: string[] = []
   await renameThroughTick($, on, stdins, 1)
-  tokensNow = 350_000
+  tokensNow = 299_999
   await $.turn.complete(TURN as any)
   await ticks(2)
   expect(nudges()).toEqual([])
-  expect(logged(stdins)).toContain('nudge-dropped:below-working')
+  tokensNow = 350_000
+  await $.turn.complete(TURN as any)
+  await ticks(1)
+  expect(nudges()).toEqual([nudgeText('idle')])
+  expect(logged(stdins)).not.toContain('nudge-dropped:below-level')
   tokensNow = 400_000
   await $.turn.complete(TURN as any)
   await ticks(1)
-  expect(nudges()).toEqual([nudgeText('working')])
+  expect(nudges()).toEqual([nudgeText('idle'), nudgeText('working')])
 })
 
 test('a lane signed done is not nudged by its own level, at any size; its lead can still nudge it', async ($, on) => {
@@ -7226,6 +7254,179 @@ test('a lane signed done is not nudged by its own level, at any size; its lead c
   await tickTwice()
   expect(resultFiles.get(RESULT)).toBe('compact held nudged 66\n')
   expect(nudges()).toEqual([nudgeText('lead')])
+})
+
+// ---- v16: the nudge in the middle of a turn: a PostToolUse (or failure) hook returns the text as additionalContext ----
+const MID_TOOL = { tool_name: 'Bash', tool_input: { command: 'ls' }, tool_use_id: 'tu-mid', tool_response: {} }
+// The kit answers nothing beneath the plugins: the engine's own result of a tool call is an empty one.
+const postBeneath = (on: any) => { for (const ev of ['classic.PostToolUse', 'classic.PostToolUseFailure'] as const) on(ev, () => ({})) }
+const midCtx = async ($: any, ev: 'PostToolUse' | 'PostToolUseFailure' = 'PostToolUse', extra: object = {}): Promise<string[]> =>
+  ((await $.classic[ev]({ ...MID_TOOL, ...extra } as any)) as { additionalContext?: string[] } | undefined)?.additionalContext ?? []
+
+test('a tool call past 300k carries the soft text, past 400k the hard one after it; nothing below 300k, nothing twice, and no new turn is submitted', async ($, on) => {
+  postBeneath(on)
+  const stdins: string[] = []
+  await person($, on, stdins)
+  tokensNow = 299_999
+  expect(await midCtx($)).toEqual([])
+  tokensNow = 300_000
+  expect(await midCtx($)).toEqual([nudgeText('idle')])
+  expect(logged(stdins)).toContain('nudged:idle mid-turn')
+  expect(await midCtx($)).toEqual([])
+  expect(await midCtx($, 'PostToolUseFailure')).toEqual([])
+  tokensNow = 400_000
+  expect(await midCtx($)).toEqual([nudgeText('working')])
+  expect(await midCtx($)).toEqual([])
+  await ticks(2)
+  expect(nudges()).toEqual([])
+})
+
+test('a failed tool call carries the nudge as well', async ($, on) => {
+  postBeneath(on)
+  await person($, on)
+  tokensNow = 350_000
+  expect(await midCtx($, 'PostToolUseFailure')).toEqual([nudgeText('idle')])
+})
+
+test('a working lane (not signed done) gets the soft text in the middle of a turn: a test fails if it gets none (v16)', async ($, on) => {
+  postBeneath(on)
+  const stdins: string[] = []
+  await renameThroughTick($, on, stdins, 1)
+  tokensNow = 350_000
+  expect(await midCtx($)).toEqual([nudgeText('idle')])
+  tokensNow = 400_000
+  expect(await midCtx($)).toEqual([nudgeText('working')])
+})
+
+test('a lead gets the soft text in the middle of a turn', async ($, on) => {
+  postBeneath(on)
+  await person($, on)
+  laneSeed.text = LEAD_LANES('/data/x/work')
+  askAnswer = YES
+  await $.command.run(lane('lead'))
+  tokensNow = 300_000
+  expect(await midCtx($)).toEqual([nudgeText('idle')])
+})
+
+test('a session with background work gets the soft text in the middle of a turn', async ($, on) => {
+  postBeneath(on)
+  await person($, on)
+  agentsNow = [{ status: 'running' }]
+  tokensNow = 300_000
+  expect(await midCtx($)).toEqual([nudgeText('idle')])
+})
+
+test('a lane signed done gets no nudge in the middle of a turn, at any size', async ($, on) => {
+  postBeneath(on)
+  await retireTarget($, on, [])
+  tokensNow = 450_000
+  expect(await midCtx($)).toEqual([])
+})
+
+test('no nudge in the middle of a turn for a subagent call or a session with a request of its own', async ($, on) => {
+  postBeneath(on)
+  const trace: Trace = { log: [], failCounters: false }
+  await person($, on, [], trace, true)
+  tokensNow = 400_000
+  expect(await midCtx($, 'PostToolUse', { agent_id: 'sub1' })).toEqual([])
+  expect((await $.tool.call(GOOD as any)).result).toBe('queued')
+  expect(await midCtx($)).toEqual([])
+})
+
+test('no nudge in the middle of a turn inside the 30-minute compaction gap', async ($, on) => {
+  postBeneath(on)
+  const trace: Trace = { log: [], failCounters: false }
+  await person($, on, [], trace)
+  tokensNow = 400_000
+  trace.st!.set('counters', { value: { lastCompactMs: nowMs - 60_000 }, version: 50 })
+  expect(await midCtx($)).toEqual([])
+})
+
+test('a nudge recorded at a turn end is taken by the next tool call and the tick does not send it again', async ($, on) => {
+  postBeneath(on)
+  const stdins: string[] = []
+  await person($, on, stdins)
+  tokensNow = 300_000
+  await $.turn.complete(TURN as any)
+  expect(logged(stdins)).toContain('nudge-due:threshold')
+  expect(await midCtx($)).toEqual([nudgeText('idle')])
+  await ticks(3)
+  expect(nudges()).toEqual([])
+  expect(await midCtx($)).toEqual([])
+})
+
+test('a lead nudge recorded for the tick is left to the tick', async ($, on) => {
+  postBeneath(on)
+  await renameThroughTick($, on, [], 1)
+  sessions = { [REGFILE]: REG({ status: 'busy' }) }
+  cueFile = { ino: 63, text: 'compact\n', present: true }
+  await tickTwice()
+  expect(resultFiles.get(RESULT)).toBe('compact held nudged 63\n')
+  tokensNow = 400_000
+  expect(await midCtx($)).toEqual([])
+  sessions = { [REGFILE]: REG() }
+  await ticks(1)
+  expect(nudges()).toEqual([nudgeText('lead')])
+})
+
+// The fallback (2026-11-08): the engine may drop the context, or the model may read it and not act. A turn that carried a mid-turn nudge and ends with no request_compact
+// gets the same nudge once as the idle turn, without waiting for the 30-minute gap.
+test('a mid-turn nudge in a turn that ends with no request_compact is sent once more as the idle turn, inside the 30-minute gap, and only once', async ($, on) => {
+  postBeneath(on)
+  const stdins: string[] = []
+  await person($, on, stdins)
+  tokensNow = 350_000
+  expect(await midCtx($)).toEqual([nudgeText('idle')])
+  expect(nudges()).toEqual([])
+  await $.turn.complete(TURN as any)
+  expect(logged(stdins)).toContain('nudge-due:threshold again')
+  await ticks(2)
+  expect(nudges()).toEqual([nudgeText('idle')])
+  expect(logged(stdins)).toContain('nudged:idle')
+  // The resend is not a mid-turn one: nothing more follows, in that turn's end or in the next.
+  await $.turn.complete(TURN as any)
+  await ticks(3)
+  expect(nudges()).toEqual([nudgeText('idle')])
+  await $.turn.complete(TURN as any)
+  await ticks(3)
+  expect(nudges()).toEqual([nudgeText('idle')])
+})
+
+test('a mid-turn nudge in a turn that ends with a request_compact of the session is not sent again', async ($, on) => {
+  postBeneath(on)
+  const stdins: string[] = []
+  await person($, on, stdins, undefined, true)
+  tokensNow = 350_000
+  expect(await midCtx($)).toEqual([nudgeText('idle')])
+  expect((await $.tool.call(GOOD as any)).result).toBe('queued')
+  await $.turn.complete(TURN as any)
+  await ticks(3)
+  expect(nudges()).toEqual([])
+  expect(logged(stdins).some((x) => x.endsWith(' again'))).toBe(false)
+})
+
+test('a mid-turn nudge is not sent again once the session compacted: back under the idle level', async ($, on) => {
+  postBeneath(on)
+  const stdins: string[] = []
+  await person($, on, stdins)
+  tokensNow = 350_000
+  expect(await midCtx($)).toEqual([nudgeText('idle')])
+  tokensNow = 250_000
+  await $.turn.complete(TURN as any)
+  await ticks(3)
+  expect(nudges()).toEqual([])
+  expect(logged(stdins)).toContain('nudge-dropped:below-level')
+})
+
+test('the resend of a mid-turn nudge is a hard one when the turn ended past the working level', async ($, on) => {
+  postBeneath(on)
+  await person($, on)
+  tokensNow = 350_000
+  expect(await midCtx($)).toEqual([nudgeText('idle')])
+  tokensNow = 410_000
+  await $.turn.complete(TURN as any)
+  await ticks(2)
+  expect(nudges()).toEqual([nudgeText('working')])
 })
 
 test('a declined nudge is not repeated within 30 minutes; after that the next turn can be nudged again', async ($, on) => {
@@ -9642,9 +9843,20 @@ test('v13.2 keepalive: an idle session past the idle level gets the nudge in pla
   expect(pings()).toEqual([])
 })
 
+test('v16 keepalive: a session with background work between the two levels gets the soft nudge in place of the ping', async ($, on) => {
+  const stdins: string[] = []
+  await warm($, on, stdins)
+  tokensNow = 350_000
+  agentsNow = [{ status: 'running' }]
+  await clock!.advance(50 * MIN)
+  expect(logged(stdins)).toContain('nudge-due:idle')
+  await clock!.advance(7 * MIN)
+  expect(nudges()).toEqual([nudgeText('idle')])
+  expect(pings()).toEqual([])
+})
+
 for (const [what, arrange] of [
   ['past the idle level, inside the 30-minute nudge gap', (trace: Trace) => { tokensNow = 310_000; trace.st!.set('counters', { value: { lastNudgeMs: nowMs - 10 * MIN, nudgeTimes: [nowMs - 10 * MIN] }, version: 91 }) }],
-  ['working between the two levels', () => { tokensNow = 350_000; agentsNow = [{ status: 'running' }] }],
   ['past the idle level, inside the compaction gap', (trace: Trace) => { tokensNow = 310_000; trace.st!.set('counters', { value: { lastCompactMs: nowMs - 20 * MIN }, version: 91 }) }],
 ] as const) {
   test(`v13.2 keepalive: ${what}: the plain ping (D2)`, async ($, on) => {
@@ -9805,7 +10017,7 @@ test('v13.2 config: a raised idle level records no nudge below it', async ($, on
   expect(nudges()).toEqual([nudgeText('idle', { idleK: 350, workingK: 400 })])
 })
 
-test('v13.2 config: a working session and a lead use the configured working level', async ($, on) => {
+test('v13.2 config: a working session gets the soft text at the idle level and the hard text at the configured working level (v16)', async ($, on) => {
   const stdins: string[] = []
   await person($, on, stdins)
   await $.command.run(lane('config working 450'))
@@ -9813,29 +10025,33 @@ test('v13.2 config: a working session and a lead use the configured working leve
   tokensNow = 410_000
   await $.turn.complete(TURN as any)
   await ticks(2)
-  expect(nudges()).toEqual([])
-  expect(logged(stdins)).toContain('nudge-dropped:below-working')
+  expect(nudges()).toEqual([nudgeText('idle', { idleK: 300, workingK: 450 })])
+  expect(logged(stdins)).not.toContain('nudge-dropped:below-level')
   tokensNow = 450_000
   await $.turn.complete(TURN as any)
   await ticks(1)
-  expect(nudges()).toEqual([nudgeText('working', { idleK: 300, workingK: 450 })])
-  expect(nudges()[0]).toContain('Your context is past 450k tokens.')
+  expect(nudges()).toEqual([nudgeText('idle', { idleK: 300, workingK: 450 }), nudgeText('working', { idleK: 300, workingK: 450 })])
+  expect(nudges()[1]).toContain('Your context is past 450k tokens.')
 })
 
-test('v13.2 config: a lead is nudged by its own level only at the configured working level', async ($, on) => {
+test('v13.2 config: a lead is nudged from the idle level with the soft text and at the configured working level with the hard one (v16)', async ($, on) => {
   const stdins: string[] = []
   await person($, on, stdins)
   await $.command.run(lane('config working 450'))
   laneSeed.text = LEAD_LANES('/data/x/work')
   await $.command.run(lane('lead'))
-  tokensNow = 449_999
+  tokensNow = 299_999
   await $.turn.complete(TURN as any)
   await ticks(2)
   expect(logged(stdins).some((x) => x.startsWith('nudge-'))).toBe(false)
+  tokensNow = 449_999
+  await $.turn.complete(TURN as any)
+  await ticks(1)
+  expect(nudges()).toEqual([nudgeText('idle', { idleK: 300, workingK: 450 })])
   tokensNow = 450_000
   await $.turn.complete(TURN as any)
   await ticks(1)
-  expect(nudges()).toEqual([nudgeText('working', { idleK: 300, workingK: 450 })])
+  expect(nudges()).toEqual([nudgeText('idle', { idleK: 300, workingK: 450 }), nudgeText('working', { idleK: 300, workingK: 450 })])
 })
 
 
@@ -11732,12 +11948,12 @@ test('v14 nudge: an idle session at or past the working level gets the hard text
   await $.turn.complete(TURN as any)
   await ticks(1)
   expect(nudges()).toEqual([nudgeText('idle')])
-  expect(nudges()[0]).toContain('Your context is past 300k tokens. Compact at your next checkpoint')
+  expect(nudges()[0]).toContain('Your context is past 300k tokens. Compact at your next natural boundary')
   tokensNow = 400_000
   await $.turn.complete(TURN as any)
   await ticks(1)
   expect(nudges()).toEqual([nudgeText('idle'), nudgeText('working')])
-  expect(nudges()[1]).toContain('Your context is past 400k tokens. Stop now, even mid-task')
+  expect(nudges()[1]).toContain('Your context is past 400k tokens. Stop as soon as you can, even mid-item')
   expect(nudges()[1]).toContain('If a background agent or shell is still running, call request_compact at the end of the turn in which it finishes, not before.')
 })
 
@@ -11776,7 +11992,7 @@ test('v14 nudge: a hard nudge is not followed by a soft one inside the gap; the 
   await $.turn.complete(TURN as any)
   await ticks(1)
   expect(nudges()).toEqual([nudgeText('working', lv)])
-  expect(nudges()[0]).toContain('past 300k tokens. Stop now')
+  expect(nudges()[0]).toContain('past 300k tokens. Stop as soon as you can')
   await clock!.advance(5 * MIN)
   tokensNow = 250_000
   await $.turn.complete(TURN as any)
@@ -11787,7 +12003,7 @@ test('v14 nudge: a hard nudge is not followed by a soft one inside the gap; the 
   await $.turn.complete(TURN as any)
   await ticks(1)
   expect(nudges()).toEqual([nudgeText('working', lv), nudgeText('idle', lv)])
-  expect(nudges()[1]).toContain('past 200k tokens. Compact at your next checkpoint')
+  expect(nudges()[1]).toContain('past 200k tokens. Compact at your next natural boundary')
 })
 
 // ---- v14 review c1 (2026-11-04): the fixes of review cycle 1 ----

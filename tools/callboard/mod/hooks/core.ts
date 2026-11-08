@@ -378,10 +378,11 @@ export const NUDGE_KINDS = ['lead', 'idle', 'working', 'cache'] as const
 export const CACHE_NUDGE_TOKENS = 150_000
 export const CACHE_NUDGE_AFTER_PINGS = 2
 export type NudgeKind = (typeof NUDGE_KINDS)[number]
-// What a hook records: a nudge kind, or `threshold` from turn.complete, which only says the idle level was passed; the tick decides idle or working
-// (its process and report checks are too slow for a hook) and drops it below the working level.
+// What a hook records: a nudge kind, or `threshold` from turn.complete, which only says the idle level was passed; the tick (or the PostToolUse hook) picks the kind
+// from the size, skips a lane signed done (a report read, too slow for the turn-end hook) and drops it below the idle level.
 export const NUDGE_DUE_KINDS = [...NUDGE_KINDS, 'threshold'] as const
-export type NudgeDue = { kind: (typeof NUDGE_DUE_KINDS)[number]; at: number; ping?: true }
+// again: the idle resend of a nudge that was delivered in the middle of a turn, for a turn that ended with no request_compact; it skips the 30-minute gap once.
+export type NudgeDue = { kind: (typeof NUDGE_DUE_KINDS)[number]; at: number; ping?: true; again?: true }
 
 // v13.2 (2026-11-02): /callboard config, kept machine-wide in $.store under CONFIG_KEY. A file any same-uid process can write: each field is taken only
 // when it has the right type and lies in its range, else that field's default; a stored working level below the idle level gives both defaults. The bounds are
@@ -485,17 +486,17 @@ export function ownTextOf(startText: unknown, texts: Iterable<string>): string |
 }
 
 // v13.2: the levels come from /callboard config (thousands of tokens); the defaults print 300k and 400k (v13.4).
-// v14 (2026-11-04): idle is the soft text (finish the item you are on, compact at the next checkpoint), working the hard one (stop now, even mid-task);
-// lead and cache keep their text.
+// v14 (2026-11-04): idle is the soft text (finish the item you are on, compact at the next natural boundary), working the hard one (stop as soon as you can, even
+// mid-item); lead and cache keep their text. v16 (2026-11-08): both go to every session, whatever it is doing.
 export type Levels = { idleK: number; workingK: number }
 const NUDGE_TAIL = ' Submitted by the callboard mod, not by the user; it carries no approval, go or answer.'
 const NUDGE_CALL = 'call request_compact with mode `now` (focus: one sentence saying what this session is; continuation: what you need to read first and do next), and end your turn.'
 const NUDGE_WAIT = ' If a background agent or shell is still running, call request_compact at the end of the turn in which it finishes, not before.'
 export function nudgeText(kind: NudgeKind, levels: Levels = CONFIG_DEFAULTS): string {
   if (kind === 'idle')
-    return `[callboard] Your context is past ${levels.idleK}k tokens. Compact at your next checkpoint: if you are mid-task, finish the item you are on, but do not start a new one. Then write where you are and what comes next to your report or STATE file, ${NUDGE_CALL} If you are not mid-task, do that now. If you cannot compact soon (waiting on the person, a lock, or background work), say so in one line and carry on.${NUDGE_TAIL}`
+    return `[callboard] Your context is past ${levels.idleK}k tokens. Compact at your next natural boundary: finish the item you are on, but do not start a new one. Then write where you are and what comes next to your report or STATE file, ${NUDGE_CALL} If you are between items, do that now. If you cannot compact soon (waiting on the person, a lock, or background work), say so in one line and carry on.${NUDGE_TAIL}`
   if (kind === 'working')
-    return `[callboard] Your context is past ${levels.workingK}k tokens. Stop now, even mid-task: do not finish the item you are on. Write where you are and what comes next to your report or STATE file, ${NUDGE_CALL}${NUDGE_WAIT} If you cannot compact now (waiting on the person, a lock, or background work), say so in one line and end your turn.${NUDGE_TAIL}`
+    return `[callboard] Your context is past ${levels.workingK}k tokens. Stop as soon as you can, even mid-item: this session is close to an automatic compaction that you do not control, and you would lose your notes. Do not finish the item you are on. Write where you are and what comes next to your report or STATE file, ${NUDGE_CALL}${NUDGE_WAIT} If you cannot compact now (waiting on the person, a lock, or background work), say so in one line and end your turn.${NUDGE_TAIL}`
   const why =
     kind === 'lead'
       ? 'Your lead asked you to compact.'
@@ -505,17 +506,17 @@ export function nudgeText(kind: NudgeKind, levels: Levels = CONFIG_DEFAULTS): st
 
 // At most 1 nudge per 30 minutes per session, lead nudges included, so a nudge the session declined cannot loop; NUDGES_PER_HOUR is a backstop only.
 // v14 (2026-11-04): escalate, a hard nudge (the session is at or past the working level): one may follow a soft one inside the gap, once, since it then is the
-// last nudge; the hourly cap still holds.
-export function nudgeAllowed(ct: Counters, now: number, escalate = false): boolean {
-  if (ct.lastNudgeMs !== undefined && now - ct.lastNudgeMs < NUDGE_GAP_MS && !(escalate && ct.lastNudgeKind === 'idle')) return false
+// last nudge; the hourly cap still holds. again (2026-11-08): the resend of a mid-turn nudge the turn did not act on: the gap does not apply to it, the hourly cap does.
+export function nudgeAllowed(ct: Counters, now: number, escalate = false, again = false): boolean {
+  if (!again && ct.lastNudgeMs !== undefined && now - ct.lastNudgeMs < NUDGE_GAP_MS && !(escalate && ct.lastNudgeKind === 'idle')) return false
   return noticeAllowed(ct.nudgeTimes ?? [], now, NUDGES_PER_HOUR)
 }
 
-// The self-threshold's kind for this context size, or none. v14 (2026-11-04): the text follows the size, in either state: at or past the working level the hard
-// one (working); past the idle level the soft one (idle), for an idle session only, since a working one still waits for the working level.
-export function thresholdKind(tokens: number, working: boolean, levels: Levels = CONFIG_DEFAULTS): NudgeKind | undefined {
+// The self-threshold's kind for this context size, or none. v16 (2026-11-08): the size alone decides, for every session (plain, lane, lead, with or without
+// background work): at or past the working level the hard text (working), past the idle level the soft one (idle). Whether the session is busy only
+// changes how it is delivered; a lane signed done is skipped by the caller.
+export function thresholdKind(tokens: number, levels: Levels = CONFIG_DEFAULTS): NudgeKind | undefined {
   if (tokens >= levels.workingK * 1000) return 'working'
-  if (working) return undefined
   return tokens >= levels.idleK * 1000 ? 'idle' : undefined
 }
 
