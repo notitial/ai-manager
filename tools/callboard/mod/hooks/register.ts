@@ -2156,12 +2156,12 @@ const mayNudge = ($: any, sid: string): Promise<boolean> => personRow($, sid)
 
 // Written only if nudgeDue is unchanged since the read: a lead nudge recorded meanwhile (by the tick, while this hook awaited) is never replaced. ping: the
 // keepalive step recorded it in place of a ping (v13.2), so a drop is logged as a missed ping.
-async function recordNudge($: any, sid: string, kind: c.NudgeDue['kind'], now: number, ifVersion: number, ping = false) {
-  if ((await $.state.set(nudgeDueRef, { kind, at: now, ...(ping ? { ping: true } : {}) }, { ifVersion })).isSet === false) {
+async function recordNudge($: any, sid: string, kind: c.NudgeDue['kind'], now: number, ifVersion: number, ping = false, again = false) {
+  if ((await $.state.set(nudgeDueRef, { kind, at: now, ...(ping ? { ping: true } : {}), ...(again ? { again: true } : {}) }, { ifVersion })).isSet === false) {
     await log($, sid, 'nudge-skipped', 'changed')
     return false
   }
-  await log($, sid, 'nudge-due', kind)
+  await log($, sid, 'nudge-due', again ? `${kind} again` : kind)
   return true
 }
 
@@ -2280,7 +2280,7 @@ async function nudgeTick($: any, sid: string) {
     kind = c.thresholdKind(tokens, await cfgGet($, sid))
     if (!kind) return drop('below-level')
     // v14: the kind follows the size now; one that fell back to the soft text (a compaction meanwhile) keeps the gap.
-    if (!c.nudgeAllowed(await counts($), now, kind === 'working')) return drop('nudge-limit')
+    if (!c.nudgeAllowed(await counts($), now, kind === 'working', due.again === true)) return drop('nudge-limit')
   }
   if ((await $.state.set(nudgeDueRef, null, { ifVersion: read.version })).isSet === false) return
   await bump($, (ct) => ({ ...ct, lastNudgeMs: now, lastNudgeKind: kind!, nudgeTimes: [...(ct.nudgeTimes ?? []).filter((t) => t <= now && now - t < c.HOUR_MS), now] }))
@@ -2299,6 +2299,8 @@ async function nudgeTick($: any, sid: string) {
 // left to the tick. The check order is cheap first: the token count, then state reads; a session that may not be nudged is not looked at again for a minute.
 // The idle submit stays as the fallback for a turn that ends without a tool call after the level.
 const midTurnBusy = new Set<string>()
+// The sessions whose turn carried a mid-turn nudge, until that turn ends (midTurnFallback).
+const midDelivered = new Set<string>()
 const midTurnSkip = new Map<string, number>()
 const MID_TURN_SKIP_MS = 60_000
 // No timer here: a hook has 10 s of its own time and a $.clock.sleep counts against it (see pause), while the $ calls below do not. The claim is the last step before the
@@ -2331,6 +2333,7 @@ async function midTurnNudge($: any, e: any): Promise<string | undefined> {
     if (due != null && (await $.state.set(nudgeDueRef, null, { ifVersion: read.version })).isSet === false) return undefined
     await bump($, (x) => ({ ...x, lastNudgeMs: now, lastNudgeKind: kind, nudgeTimes: [...(x.nudgeTimes ?? []).filter((t) => t <= now && now - t < c.HOUR_MS), now] }))
     await $.state.set(nudgedAtRef, now)
+    midDelivered.add(sid)
     await log($, sid, 'nudged', `${kind} mid-turn`).catch(() => undefined)
     return text
   } catch {
@@ -2339,6 +2342,17 @@ async function midTurnNudge($: any, e: any): Promise<string | undefined> {
   } finally {
     midTurnBusy.delete(sid)
   }
+}
+
+// The fallback of a mid-turn nudge (2026-11-08). The engine may not surface the context, or the model may read it and not act: when the turn that carried it ends
+// with no request of the session's own (no request_compact), one `threshold` nudge is recorded with `again`, which skips the 30-minute gap, and the tick sends it as
+// the idle turn like any nudge. Once only: that resend is not a mid-turn one, so it records nothing further; a request, a compaction (the compaction gap, or a size back
+// under the idle level), a lane signed done or a pending nudge of another kind send nothing (the tick's own checks).
+async function midTurnFallback($: any, sid: string) {
+  if ((await $.state.get(request)).value) return
+  const read = await $.state.get(nudgeDueRef)
+  if (read.value) return
+  await recordNudge($, sid, 'threshold', await $.clock.now(), read.version, false, true)
 }
 
 // The PostToolUse and PostToolUseFailure hook: the prompt answering's done mark (doneHook), then the mid-turn nudge added to the result's additionalContext.
@@ -6677,6 +6691,7 @@ export const register: Register = (on) => {
     const sid = await $.session.id()
     laneBrief.delete(sid)
     laneBriefed.delete(sid)
+    midDelivered.delete(sid)
     // v14 (2026-11-04, review c2, CR1): what a lead last saw of a manager goes with the session.
     managerSeen.delete(sid)
     managerSeenBusy.delete(sid)
@@ -6714,7 +6729,11 @@ export const register: Register = (on) => {
       } catch {
         await log($, sid, 'error', 'turn-end').catch(() => undefined)
       }
-      if (kind !== 'ping' && e.reason === 'answer') await thresholdNudge($, sid).catch(() => log($, sid, 'error', 'nudge-check').catch(() => undefined))
+      const mid = midDelivered.delete(sid)
+      if (kind !== 'ping' && e.reason === 'answer') {
+        if (mid) await midTurnFallback($, sid).catch(() => log($, sid, 'error', 'nudge-fallback').catch(() => undefined))
+        else await thresholdNudge($, sid).catch(() => log($, sid, 'error', 'nudge-check').catch(() => undefined))
+      }
     }
     return next(e)
   }).catch(($, e, next) => next(e))

@@ -7352,6 +7352,66 @@ test('a lead nudge recorded for the tick is left to the tick', async ($, on) => 
   expect(nudges()).toEqual([nudgeText('lead')])
 })
 
+// The fallback (2026-11-08): the engine may drop the context, or the model may read it and not act. A turn that carried a mid-turn nudge and ends with no request_compact
+// gets the same nudge once as the idle turn, without waiting for the 30-minute gap.
+test('a mid-turn nudge in a turn that ends with no request_compact is sent once more as the idle turn, inside the 30-minute gap, and only once', async ($, on) => {
+  postBeneath(on)
+  const stdins: string[] = []
+  await person($, on, stdins)
+  tokensNow = 350_000
+  expect(await midCtx($)).toEqual([nudgeText('idle')])
+  expect(nudges()).toEqual([])
+  await $.turn.complete(TURN as any)
+  expect(logged(stdins)).toContain('nudge-due:threshold again')
+  await ticks(2)
+  expect(nudges()).toEqual([nudgeText('idle')])
+  expect(logged(stdins)).toContain('nudged:idle')
+  // The resend is not a mid-turn one: nothing more follows, in that turn's end or in the next.
+  await $.turn.complete(TURN as any)
+  await ticks(3)
+  expect(nudges()).toEqual([nudgeText('idle')])
+  await $.turn.complete(TURN as any)
+  await ticks(3)
+  expect(nudges()).toEqual([nudgeText('idle')])
+})
+
+test('a mid-turn nudge in a turn that ends with a request_compact of the session is not sent again', async ($, on) => {
+  postBeneath(on)
+  const stdins: string[] = []
+  await person($, on, stdins, undefined, true)
+  tokensNow = 350_000
+  expect(await midCtx($)).toEqual([nudgeText('idle')])
+  expect((await $.tool.call(GOOD as any)).result).toBe('queued')
+  await $.turn.complete(TURN as any)
+  await ticks(3)
+  expect(nudges()).toEqual([])
+  expect(logged(stdins).some((x) => x.endsWith(' again'))).toBe(false)
+})
+
+test('a mid-turn nudge is not sent again once the session compacted: back under the idle level', async ($, on) => {
+  postBeneath(on)
+  const stdins: string[] = []
+  await person($, on, stdins)
+  tokensNow = 350_000
+  expect(await midCtx($)).toEqual([nudgeText('idle')])
+  tokensNow = 250_000
+  await $.turn.complete(TURN as any)
+  await ticks(3)
+  expect(nudges()).toEqual([])
+  expect(logged(stdins)).toContain('nudge-dropped:below-level')
+})
+
+test('the resend of a mid-turn nudge is a hard one when the turn ended past the working level', async ($, on) => {
+  postBeneath(on)
+  await person($, on)
+  tokensNow = 350_000
+  expect(await midCtx($)).toEqual([nudgeText('idle')])
+  tokensNow = 410_000
+  await $.turn.complete(TURN as any)
+  await ticks(2)
+  expect(nudges()).toEqual([nudgeText('working')])
+})
+
 test('a declined nudge is not repeated within 30 minutes; after that the next turn can be nudged again', async ($, on) => {
   await person($, on)
   tokensNow = 310_000

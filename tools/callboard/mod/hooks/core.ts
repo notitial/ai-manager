@@ -381,7 +381,8 @@ export type NudgeKind = (typeof NUDGE_KINDS)[number]
 // What a hook records: a nudge kind, or `threshold` from turn.complete, which only says the idle level was passed; the tick (or the PostToolUse hook) picks the kind
 // from the size, skips a lane signed done (a report read, too slow for the turn-end hook) and drops it below the idle level.
 export const NUDGE_DUE_KINDS = [...NUDGE_KINDS, 'threshold'] as const
-export type NudgeDue = { kind: (typeof NUDGE_DUE_KINDS)[number]; at: number; ping?: true }
+// again: the idle resend of a nudge that was delivered in the middle of a turn, for a turn that ended with no request_compact; it skips the 30-minute gap once.
+export type NudgeDue = { kind: (typeof NUDGE_DUE_KINDS)[number]; at: number; ping?: true; again?: true }
 
 // v13.2 (2026-11-02): /callboard config, kept machine-wide in $.store under CONFIG_KEY. A file any same-uid process can write: each field is taken only
 // when it has the right type and lies in its range, else that field's default; a stored working level below the idle level gives both defaults. The bounds are
@@ -505,9 +506,9 @@ export function nudgeText(kind: NudgeKind, levels: Levels = CONFIG_DEFAULTS): st
 
 // At most 1 nudge per 30 minutes per session, lead nudges included, so a nudge the session declined cannot loop; NUDGES_PER_HOUR is a backstop only.
 // v14 (2026-11-04): escalate, a hard nudge (the session is at or past the working level): one may follow a soft one inside the gap, once, since it then is the
-// last nudge; the hourly cap still holds.
-export function nudgeAllowed(ct: Counters, now: number, escalate = false): boolean {
-  if (ct.lastNudgeMs !== undefined && now - ct.lastNudgeMs < NUDGE_GAP_MS && !(escalate && ct.lastNudgeKind === 'idle')) return false
+// last nudge; the hourly cap still holds. again (2026-11-08): the resend of a mid-turn nudge the turn did not act on: the gap does not apply to it, the hourly cap does.
+export function nudgeAllowed(ct: Counters, now: number, escalate = false, again = false): boolean {
+  if (!again && ct.lastNudgeMs !== undefined && now - ct.lastNudgeMs < NUDGE_GAP_MS && !(escalate && ct.lastNudgeKind === 'idle')) return false
   return noticeAllowed(ct.nudgeTimes ?? [], now, NUDGES_PER_HOUR)
 }
 

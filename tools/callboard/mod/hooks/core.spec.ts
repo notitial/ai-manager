@@ -1268,6 +1268,10 @@ test('nudgeAllowed: 1 per 30 minutes and 3 an hour, lead nudges included', () =>
   assert.equal(c.nudgeAllowed({ lastNudgeMs: now - c.HOUR_MS, nudgeTimes: [now - 2, now - 1] }, now), true)
   assert.equal(c.nudgeAllowed({ nudgeTimes: [now - c.HOUR_MS, now - 2, now - 1] }, now), true)
   assert.equal(c.nudgeAllowed({ lastCompactMs: now - 1, resumeTimes: [now - 1] }, now), true)
+  // again (2026-11-08): the resend of a mid-turn nudge skips the gap, not the hourly cap.
+  assert.equal(c.nudgeAllowed({ lastNudgeMs: now - 1000 }, now), false)
+  assert.equal(c.nudgeAllowed({ lastNudgeMs: now - 1000 }, now, false, true), true)
+  assert.equal(c.nudgeAllowed({ lastNudgeMs: now - 1000, nudgeTimes: [now - 3, now - 2, now - 1] }, now, false, true), false)
 })
 
 test('thresholdKind: the size alone decides, 300k soft and 400k hard, for every session (v16)', () => {
