@@ -1,6 +1,6 @@
 ---
 name: setup-manager
-description: "Walk the person through docs/setup.md on this Mac: prerequisites, callboard from the live checkout (extension link and default load), the deny lines, the usage watcher (once the repo is public), the old-watcher cut-over, the callboard rule link, the manager's reserved name, and a final status table. Runs only read-only checks and dry runs; every --apply, sudo, settings edit, link and launchctl bootout is shown as an exact command for the person to run. Use on '/setup-manager'."
+description: "Walk the person through docs/setup.md on this Mac: prerequisites, callboard from the live checkout (extension link and default load), the deny lines, the two prompt answering lines (a deny and an ask rule, needed before `/callboard answering on`), the usage watcher (once the repo is public), the old-watcher cut-over, the callboard rule link, the manager's reserved name, and a final status table. Runs only read-only checks and dry runs; every --apply, sudo, settings edit, link and launchctl bootout is shown as an exact command for the person to run. Use on '/setup-manager'."
 disable-model-invocation: true
 ---
 
@@ -71,13 +71,21 @@ first; it is the source for every step here, and wins where the two differ.
    ask them to type `/callboard config ping <the value they noted>`. Never suggest `/callboard config reset`: it puts
    every callboard setting on this Mac back to its default, not only ping. If the model-run one applied, say so
    plainly: report it.
-5. **Deny lines.** For each of the two lines in docs/setup.md (Manager setup: keep agents off the list file and the
+5. **Deny lines and prompt answering lines.**
+   - Deny lines: for each of the two lines in docs/setup.md (Manager setup: keep agents off the list file and the
    store (by hand)), and for the six lines in Keep agents off the live checkout (also by hand: `Edit` on `/<checkout>/` `tools/**`,
    `rules/**`, `.claude/**`, `docs/**`, `CLAUDE.md` and `.git/**`; no `Write` lines, an `Edit` rule covers Write; `<checkout>` starts with `/`, so each string starts with `//`; ai-toolkit's
    `/setup-claude` writes it), run
    `jq -e --arg r '<line>' '(.permissions.deny // []) | index($r) != null' ~/.claude/settings.json`. For any `false`,
    show the person the missing lines to add to `permissions.deny` by hand. If they run a conductor repo, give them
    `chmod go-w <conductor repo>/.claude`.
+   - Prompt answering lines: the two lines in docs/setup.md (Before prompt answering: two lines (by hand)). Run
+     `jq -e --arg r 'Edit(~/.claude/callboard/**)' '(.permissions.deny // []) | index($r) != null' ~/.claude/settings.json`
+     and
+     `jq -e --arg r 'Bash(*.claude/callboard*)' '(.permissions.ask // []) | index($r) != null' ~/.claude/settings.json`.
+     Note the arrays: the first line is a deny rule, the second an ask rule. For any `false`, show the person the
+     missing line and the array to add it to (`permissions.deny` or `permissions.ask`), by hand. Say that both are
+     required before any `/callboard answering on`, which only the person types.
 6. **Old watcher.** First ask whether the repo is public; if unsure, run the dry run
    `bash tools/usage-watcher/install.sh --ref <commit>`: a fetch failure means it is not public yet. Not public: skip
    steps 6 to 8 (an old job stays until the new one can replace it), and say the manager will report
@@ -115,6 +123,7 @@ End with one table, from the checks as they stand now (run them again; do not re
 | Default load | ok / unset / other value / skipped |
 | Callboard install check | refused as it should / applied: report it / not run |
 | Deny lines | 8 of 8 / N of 8 |
+| Prompt answering lines | 2 of 2 / N of 2 |
 | Old watcher | none / unloaded / still loaded: LABEL |
 | Usage watcher | ok / needs attention / skipped: repo not public |
 | SessionStart hook | ok / missing / skipped |

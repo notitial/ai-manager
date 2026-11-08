@@ -278,8 +278,8 @@ ai-toolkit's `/setup-claude` and `/cleanup-claude` leave everything in this guid
   as the toolkit's. After moving the checkout, remove the old link (`rm ~/.claude/rules/callboard.md`) and run the
   `ln -s` again.
 - **Settings.** `/setup-claude` never alters an `env` key outside its template and never removes a deny entry or a
-  custom hook. `/cleanup-claude` removes only entries its template lists. So the `CLAUDE_CODE_PLUGIN_DIRS` line, the
-  deny lines and the SessionStart hook survive both.
+  custom hook, and adds ask entries without ever removing one. `/cleanup-claude` removes only entries its template
+  lists. So the `CLAUDE_CODE_PLUGIN_DIRS` line, the deny and ask lines and the SessionStart hook survive both.
 - **Installed files.** Neither touches the panels extension link or the usage-watcher job. `link-extension.sh
   --remove --apply` takes the link and its entry off.
 
