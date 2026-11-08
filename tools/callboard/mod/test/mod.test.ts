@@ -1,5 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 import * as prm from '../hooks/prompts'
+import { recordText, recordTextLegacy, CLAIM_OTHER_UNNAMED } from '../hooks/core'
+import { CLAIM_HINT, CLAIM_NOT_PERSON, CLAIM_NOT_LEAD, CLAIM_UNNAMED, CLAIM_NONE, claimQuestion, claimedText, claimRefusedText } from '../hooks/core'
 import { LEAD_MANAGER_TEXT, HINT_PREFIX, MANAGER_RESTORE_QUESTION, MANAGER_RESTORED_TOAST, MANAGER_UNANSWERED_TOAST, HINT_REFRESH_MS } from '../hooks/core'
 import { reserveShowText, reserveAddedText, reserveRemovedText, reserveNotListedText, reserveManagerText, RESERVE_NOT_PERSON, RESERVE_USAGE } from '../hooks/core'
 import { conductorFileText, conductorAddQuestion, conductorRefusalText, conductorAddedText, CONDUCTOR_NOT_PERSON, CONDUCTOR_USAGE, conductorQuestion, conductorRestoreQuestion, conductorBriefing, conductorBriefingNote, conductorRestoredToast, conductorUnansweredToast, conductorFileBadToast, conductorNoReposToast, CONDUCTOR_ON_TEXT, CONDUCTOR_OFF_QUESTION, conductorStatus } from '../hooks/core'
@@ -1208,7 +1210,7 @@ const events = (stdins: string[]) => allEvents(stdins).filter((e) => e.event !==
 
 const PERSON = { kind: 'composer' } as const
 // v13.6: the usage line, which /callboard on now gets too.
-const USAGE = 'Use /callboard off, lead, lanes, status, config, checkin, conductor, reserve, lane [NAME] or lane off.'
+const USAGE = 'Use /callboard off, lead, lanes, claim, status, config, checkin, conductor, reserve, lane [NAME] or lane off.'
 const lane = (args: string, origin: unknown = PERSON) => ({ command: 'callboard', args, origin }) as any
 
 // The mocked engine answers each dialog with `askAnswer` (`restoreAnswer` for the Restore question). v13.5: /callboard on is retired, so a session starts
@@ -4888,10 +4890,12 @@ test('a lead tool serves an attached lane whichever lead it joined: the lead fie
   for (const verb of ['start', 'resume', 'compact']) expect(JSON.stringify(await $.tool.call(leadCall(verb, { lane: 'ATT' }))), verb).toContain(`cue ${verb} acted for lane ATT`)
   expect(JSON.stringify(await $.tool.call(leadCall('terminate', { lane: 'ATT' })))).toContain('SIGTERM sent')
   expect(JSON.stringify(await $.tool.call(leadCall('open', { lane: 'ATT' })))).toContain('adopted-record')
-  // The record of a lane a session joined is never removed by a stop: with no session carrying it, the stops refuse and the record stays.
-  sessions = leadSelfReg()
-  for (const verb of ['terminate', 'retire']) expect(JSON.stringify(await $.tool.call(leadCall(verb, { lane: 'ATT' }))), verb).toContain(`lane_${verb} refused: adopted-record`)
+  // A stop of a live attached lane keeps its record (the session is the only other way to detach it); with no session carrying it, a second stop removes it.
   expect(JSON.parse(storeFiles.get(STOREFILE)!).lanes.map((l: any) => l.name)).toEqual(['ATT'])
+  sessions = leadSelfReg()
+  askAnswer = YES
+  expect(JSON.stringify(await $.tool.call(leadCall('terminate', { lane: 'ATT' })))).toContain('terminated and removed: it had no live session')
+  expect(JSON.parse(storeFiles.get(STOREFILE)!).lanes).toEqual([])
   expect(JSON.stringify(argv)).not.toContain('lead-gone')
 })
 const ATTLEAD = (verb: string, extra: Record<string, unknown> = {}) => leadCall(verb, { lane: 'ATT', ...extra })
@@ -8119,7 +8123,7 @@ test('retire and terminate of a joined lane keep its record and clear the stoppe
   expect(recOf('ATT').sid).toBe(OTHER)
   killFails = false
   const out = (await $.tool.call(leadCall('terminate', { lane: 'ATT' }))).result as string
-  expect(out).toBe('lane ATT terminated: SIGTERM sent to process 4500. The record stays: a lane a session joined keeps it.')
+  expect(out).toBe('lane ATT terminated: SIGTERM sent to process 4500. The record stays because a session joined it. With that session gone, call lane_terminate again to remove it.')
   expect(lastQuestion).toBe(terminateQuestion('ATT', OTHER, 4500, undefined, false))
   expect(lastQuestion).not.toContain('record is then removed')
   expect(recOf('ATT')).toEqual(rec)
@@ -8129,7 +8133,7 @@ test('retire and terminate of a joined lane keep its record and clear the stoppe
   killedPids.clear()
   reportAt = `${PIN}/.archive/ATT/REPORT.md`
   reportFile = REPORT_OK()
-  expect((await $.tool.call(leadCall('retire', { lane: 'ATT' }))).result).toBe('lane ATT retired: SIGTERM sent to process 4500. The record stays: a lane a session joined keeps it.')
+  expect((await $.tool.call(leadCall('retire', { lane: 'ATT' }))).result).toBe('lane ATT retired: SIGTERM sent to process 4500. The record stays because a session joined it. With that session gone, call lane_retire again to remove it.')
   expect(recOf('ATT')).toEqual(rec)
 })
 
@@ -8220,7 +8224,7 @@ test('v15.3 a stop whose ps read keeps failing after the signal is no end of the
   expect(recOf('API').name).toBe('API')
 })
 
-test('v15.3 lane_retire of a lane no live session carries removes its record with no dialog and no report; a joined lane is still refused', async ($, on) => {
+test('v15.3 lane_retire of a lane no live session carries removes its record with no dialog and no report; a joined lane too once its session is gone', async ($, on) => {
   const argv: string[][] = []
   const stdins: string[] = []
   await leadAt($, on, stdins, { argv })
@@ -8237,10 +8241,10 @@ test('v15.3 lane_retire of a lane no live session carries removes its record wit
   expect(logged(stdins)).toContain('lane-removed:API')
   expect(killed(argv)).toEqual([])
   expect(noArchiveRm(argv)).toBe(true)
+  // A lane a session joined, whose session is gone, goes the same way (stuck lanes): retire needs no report and no dialog.
   putStore([OLD_REC, att])
-  expect(JSON.stringify(await $.tool.call(leadCall('retire', { lane: 'ATT' })))).toContain('lane_retire refused: adopted-record')
-  expect(JSON.stringify(await $.tool.call(leadCall('terminate', { lane: 'ATT' })))).toContain('lane_terminate refused: adopted-record')
-  expect(storeJson().lanes).toEqual([OLD_REC, att])
+  expect(stopText(await $.tool.call(leadCall('retire', { lane: 'ATT' })))).toBe('lane ATT retired and removed: it had no live session. Its .archive/ATT/ folder and report stay.')
+  expect(storeJson().lanes).toEqual([OLD_REC])
   expect(askCount).toBe(asked)
 })
 
@@ -8497,7 +8501,7 @@ test('lane_unpark writes <LANE>.reopen with the record\'s sid, waits for ok, and
   await unparker($, on, stdins, argv)
   expect(toolDefs.filter((d) => d.includes('"lane_unpark"')).at(-1)).toContain("Reopen a lane's saved conversation in its VS Code window, with its full history. Use it for a parked lane, or one whose session was closed. Not for a retired lane: retire is final, so lane_open starts a new conversation for it. The session becomes the lane again by itself within a few seconds; then call lane_resume. lane: the lane name.")
   expect(toolDefs.filter((d) => d.includes('"lane_retire"')).at(-1)).toContain('Retire is final: the conversation cannot be reopened with lane_unpark. Use lane_park for a lane you may need again, the only stop that keeps the lane.')
-  expect(toolDefs.filter((d) => d.includes('"lane_retire"')).at(-1)).toContain("Once the session has stopped, the lane's record is deleted too (the .archive/<LANE> folder and signed report stay; a lane a session joined keeps its record). A lane with no live session is removed directly, with no signed report.")
+  expect(toolDefs.filter((d) => d.includes('"lane_retire"')).at(-1)).toContain("Once the session has stopped, the lane's record is deleted too (the .archive/<LANE> folder and signed report stay; a lane a session joined keeps its record while a session carries it; a second stop removes it once the session is gone). A lane with no live session is removed directly, with no signed report.")
   expect(toolDefs.filter((d) => d.includes('"lane_retire"')).at(-1)).toContain("The call itself waits up to 40 seconds for the idle time, so call it right after the lane's last turn; if it still refuses not-idle, wait the seconds it names and try once, never in a loop.")
   windowAnswers(`ok ${OTHER}\n`)
   const r = await unparkCall($)
@@ -10432,7 +10436,8 @@ test('S2: lane_create stamps the lead name; another lead (or this one renamed) n
   const both = `${mdBox('**Lead LEADA** · live · app', [api])}\n\n${mdBox(ANY, [old])}`
   expect(await bareList($)).toBe(both)
   sessions = { ...selfAs('LEADB'), ...cueSession(OTHER, 'OLD', SVC, { pid: 4500 }) }
-  expect(await bareList($)).toBe(mdBox(ANY, [['OLD', 'svc', 'live', '–']]))
+  // The lane that names LEADA is told by name, for the person's /callboard claim: LEADA is not running.
+  expect(await bareList($)).toBe(`${mdBox(ANY, [['OLD', 'svc', 'live', '–']])}\n\n${CLAIM_HINT(['API'])}`)
   for (const verb of ['resume', 'compact', 'start', 'rename', 'park', 'retire', 'terminate', 'open', 'unpark'])
     expect(JSON.stringify(await $.tool.call(leadCall(verb, { lane: 'API' })))).toContain(`lane_${verb} refused: other-lead: that lane belongs to another lead. Only that lead can reach it.`)
   expect((await $.tool.call(leadCall('resume', { lane: 'OLD' }))).result).toContain('cue resume acted')
@@ -15302,4 +15307,368 @@ test('prompts PR2 hook: a request names the lead the lane is bound to; a decisio
   }), stop(30_000))
   expect(await startReq($)).toEqual({})
   expect(hookKinds()).toContain('dropped by-sid')
+})
+
+// ---- stuck lanes (2026-11-08): an attached lane no live session carries can be removed; a lead's rename carries the lanes its session joined; /callboard claim ----
+// A lane a session joined whose session is gone (a lead's records of lanes it was joined to) could not be retired or terminated: only /callboard lane off in the gone session
+// detached it. A lead that was renamed lost the lanes naming its old name.
+const GONE_ATT = (name = 'ATT', extra: Record<string, unknown> = {}) => attRec(SID, name, { leadName: 'LEAD', ...extra })
+const REMOVED_NO_SESSION = (verb: string, name = 'ATT') => `lane ${name} ${verb === 'retire' ? 'retired' : 'terminated'} and removed: it had no live session. Its .archive/${name}/ folder and report stay.`
+
+test('stuck lanes: lane_retire of an attached lane no live session carries removes its record, with no dialog, no report and no signal; its cleared session id changes nothing', async ($, on) => {
+  const stdins: string[] = []
+  const argv: string[][] = []
+  await leadAt($, on, stdins, { argv })
+  putStore([OLD_REC, GONE_ATT('ATT', { sid: OTHER }), GONE_ATT('KEEP')])
+  reportFile = undefined
+  const asked = askCount
+  expect(stopText(await $.tool.call(leadCall('retire', { lane: 'ATT' })))).toBe(REMOVED_NO_SESSION('retire'))
+  expect(storeJson().lanes.map((l: any) => l.name)).toEqual(['OLD', 'KEEP'])
+  expect(askCount).toBe(asked)
+  expect(killed(argv)).toEqual([])
+  expect(logged(stdins)).toContain('lane-removed:ATT')
+  expect(noArchiveRm(argv)).toBe(true)
+})
+
+test('stuck lanes: lane_terminate of an attached lane no live session carries asks the Remove question every time; Cancel and a timeout remove nothing; Remove removes the record', async ($, on) => {
+  const argv: string[][] = []
+  await leadAt($, on, [], { argv, clock: true })
+  putStore([GONE_ATT()])
+  askAnswer = NO
+  expect(JSON.stringify(await $.tool.call(leadCall('terminate', { lane: 'ATT' })))).toContain('lane_terminate refused: the person did not confirm. Nothing was removed.')
+  expect(lastQuestion).toBe('Remove lane ATT in ~/code/app? It has no live session.')
+  expect(lastHeader).toBe('Stop Lane')
+  expect(askedOptions[askedOptions.length - 1]).toEqual(['Remove', 'Cancel'])
+  expect(storeJson().lanes.length).toBe(1)
+  askHang = new Promise<string>(() => undefined)
+  const t = JSON.stringify(await unanswered($.tool.call(leadCall('terminate', { lane: 'ATT' }))))
+  askHang = undefined
+  expect(t).toContain('question timed out')
+  expect(storeJson().lanes.length).toBe(1)
+  askAnswer = YES
+  expect(stopText(await $.tool.call(leadCall('terminate', { lane: 'ATT' })))).toBe(REMOVED_NO_SESSION('terminate'))
+  expect(storeJson().lanes).toEqual([])
+  expect(killed(argv)).toEqual([])
+})
+
+test('stuck lanes: a live session that carries an attached record keeps it: by its name, or by the session id the record names under another name', async ($, on) => {
+  const argv: string[][] = []
+  await leadAt($, on, [], { argv, sess: { ...leadSelfReg(), ...cueSession(OTHER, 'renamed-by-hand', SVC, { pid: 4500 }) } })
+  putStore([GONE_ATT('ATT', { sid: OTHER })])
+  expect(JSON.stringify(await $.tool.call(leadCall('retire', { lane: 'ATT' })))).toContain('lane_retire refused: name-in-use: a live session already has that lane name.')
+  expect(JSON.stringify(await $.tool.call(leadCall('terminate', { lane: 'ATT' })))).toContain('lane_terminate refused: name-in-use')
+  expect(storeJson().lanes.length).toBe(1)
+  expect(killed(argv)).toEqual([])
+})
+
+test('stuck lanes: a session that carries the attached record by the time the person clicks keeps it (checked again inside the store lock)', async ($, on) => {
+  const argv: string[][] = []
+  await leadAt($, on, [], { argv })
+  putStore([GONE_ATT()])
+  askScript = async () => {
+    sessions = { ...leadSelfReg(), ...ATTSESS() }
+    return YES
+  }
+  expect(JSON.stringify(await $.tool.call(leadCall('terminate', { lane: 'ATT' })))).toContain('lane_terminate refused: name-in-use')
+  askScript = undefined
+  expect(storeJson().lanes.length).toBe(1)
+  expect(killed(argv)).toEqual([])
+})
+
+test('stuck lanes: the refusal of an attached lane for open names no route that needs the gone session', async ($, on) => {
+  await leadAt($, on, [])
+  putStore([GONE_ATT()])
+  const t = JSON.stringify(await $.tool.call(leadCall('open', { lane: 'ATT' })))
+  expect(t).toContain('adopted-record: an attached lane keeps its own session: no rename, start or open. Use lane_resume to prompt it. lane_retire or lane_terminate ends it.')
+  expect(t).not.toContain('/callboard lane off')
+})
+
+test('stuck lanes: a stop of a live attached lane keeps the record and says how to remove it; the second stop, with the session gone, removes it', async ($, on) => {
+  const argv: string[][] = []
+  await leadAt($, on, [], { argv, sess: { ...leadSelfReg(), ...ATTSESS() } })
+  putStore([attRec(SID, 'ATT', { sid: OTHER, leadName: 'LEAD' })])
+  askAnswer = 'Force stop'
+  expect(stopText(await $.tool.call(leadCall('terminate', { lane: 'ATT' })))).toBe('lane ATT terminated: SIGTERM sent to process 4500. The record stays because a session joined it. With that session gone, call lane_terminate again to remove it.')
+  expect(storeJson().lanes.map((l: any) => [l.name, l.sid])).toEqual([['ATT', undefined]])
+  sessions = leadSelfReg()
+  askAnswer = YES
+  expect(stopText(await $.tool.call(leadCall('terminate', { lane: 'ATT' })))).toBe(REMOVED_NO_SESSION('terminate'))
+  expect(storeJson().lanes).toEqual([])
+})
+
+test('stuck lanes: the manager removes an attached lane no live session carries (lane_retire and lane_terminate both ask), whatever lead the record names', async ($, on) => {
+  const stdins: string[] = []
+  const argv: string[][] = []
+  await mgrAt($, on, stdins, { argv, sess: MGR_NOAPI() })
+  putStore([ckLane({ sid: APISID }), GONE_ATT('ATT', { leadName: 'LEADX' }), GONE_ATT('ATT2', { leadName: 'old-aa' })])
+  askAnswer = NO
+  expect(JSON.stringify(await $.tool.call(mgrCall('retire', 'ATT')))).toContain('the person did not confirm')
+  expect(lastQuestion).toBe('Remove lane ATT in ~/code/app? It has no live session.')
+  expect(storeNames()).toEqual(['API', 'ATT', 'ATT2'])
+  askAnswer = YES
+  expect(JSON.parse(await $.tool.call(mgrCall('retire', 'ATT')).then(JSON.stringify)).result).toBe(REMOVED_NO_SESSION('retire'))
+  expect(JSON.parse(await $.tool.call(mgrCall('terminate', 'ATT2')).then(JSON.stringify)).result).toBe(REMOVED_NO_SESSION('terminate', 'ATT2'))
+  expect(storeNames()).toEqual(['API'])
+  expect(killed(argv)).toEqual([])
+  expect(logged(stdins)).toContain('lane-removed:ATT')
+})
+
+test('stuck lanes: the manager still refuses an attached record a live session carries', async ($, on) => {
+  await mgrAt($, on, [], { sess: { ...MGR_NOAPI(), ...cueSession(APISID, 'whatever', SVC, { pid: 4500 }) } })
+  putStore([ckLane({ sid: OTHER }), GONE_ATT('ATT', { sid: APISID })])
+  expect(JSON.stringify(await $.tool.call(mgrCall('terminate', 'ATT')))).toContain('name-in-use')
+  expect(storeNames()).toEqual(['API', 'ATT'])
+})
+
+test('stuck lanes: the conductor force stops (asks, removes) an attached lane no live session carries, and still never retires', async ($, on) => {
+  const argv: string[][] = []
+  await condOn($, on, [], { argv })
+  putStore([ckLane({ sid: APISID }), GONE_ATT('ATT', { leadName: 'old-aa' })])
+  expect(JSON.stringify(await $.tool.call(mgrCall('retire', 'ATT')))).toContain('the conductor may only list lanes, compact leads and lanes, and force stop a lane')
+  askAnswer = NO
+  expect(JSON.stringify(await $.tool.call(mgrCall('terminate', 'ATT')))).toContain('the person did not confirm')
+  expect(lastQuestion).toBe('Remove lane ATT in ~/code/app? It has no live session.')
+  expect(storeNames()).toEqual(['API', 'ATT'])
+  askAnswer = YES
+  expect((await $.tool.call(mgrCall('terminate', 'ATT'))).result).toBe(REMOVED_NO_SESSION('terminate'))
+  expect(storeNames()).toEqual(['API'])
+  expect(killed(argv)).toEqual([])
+})
+
+// ---- the rename carry ----
+test('stuck lanes: a lead renamed carries the attached records its own session joined to its new name, and no other record', async ($, on) => {
+  const stdins: string[] = []
+  await leadAt($, on, stdins, { clock: true })
+  const made = { name: 'MADE', folder: SVC, brief: `${SVC}/B.md`, createdAt: 1, leadName: 'LEAD' }
+  putStore([GONE_ATT('MINE'), attRec(OTHERLEAD, 'THEIRS', { leadName: 'LEAD' }), made, GONE_ATT('ELSE', { leadName: 'elsewhere' }), attRec(SID, 'LEGACY')])
+  const names = () => Object.fromEntries((storeJson().lanes as any[]).map((l) => [l.name, l.leadName]))
+  sessions = selfAs('LEAD2')
+  await clock!.advance(2000)
+  expect(names()).toEqual({ MINE: 'LEAD2', THEIRS: 'LEAD', MADE: 'LEAD', ELSE: 'elsewhere', LEGACY: undefined })
+  expect(logged(stdins)).toContain('lead-rename-carried:1')
+  // The new name is cached: the next rename carries from it.
+  sessions = selfAs('LEAD3')
+  await clock!.advance(12_000)
+  expect(names().MINE).toBe('LEAD3')
+  // No usable name (reserved, or a twin row in another letter case) carries nothing, and keeps the name cached.
+  sessions = selfAs('MANAGER')
+  await clock!.advance(12_000)
+  expect(names().MINE).toBe('LEAD3')
+  sessions = { ...selfAs('LEAD4'), ...regAs(OTHER, 4600, 'lead4') }
+  await clock!.advance(12_000)
+  expect(names().MINE).toBe('LEAD3')
+  sessions = selfAs('LEAD4')
+  await clock!.advance(12_000)
+  expect(names().MINE).toBe('LEAD4')
+  expect(names().MADE).toBe('LEAD')
+})
+
+test('stuck lanes: a rename that changes nothing, or a lead that never had a name, writes no store', async ($, on) => {
+  await leadAt($, on, [], { clock: true })
+  putStore([GONE_ATT('MINE')])
+  const before = storeFiles.get(STOREFILE)
+  await clock!.advance(30_000)
+  expect(storeFiles.get(STOREFILE)).toBe(before)
+})
+
+// ---- /callboard claim ----
+const MADE_OLD = (name = 'API', leadName = 'old-aa') => ({ name, folder: `${PIN}/api`, brief: `${PIN}/api/BRIEF.md`, createdAt: 1, leadName })
+const claim = ($: any, origin: unknown = PERSON) => $.command.run(lane('claim', origin))
+const leadNames = () => Object.fromEntries((storeJson().lanes as any[]).map((l) => [l.name, l.leadName]))
+
+test('stuck lanes: lane_list tells a lead the lanes that name a lead nobody runs; /callboard claim asks, then makes them the lead\'s, all or none', async ($, on) => {
+  const stdins: string[] = []
+  await leadAt($, on, stdins)
+  putStore([MADE_OLD(), attRec(OTHERLEAD, 'ATT', { leadName: 'old-bb' }), GONE_ATT('MINE'), { name: 'LEG', folder: SVC, brief: `${SVC}/B.md`, createdAt: 1 }])
+  expect(JSON.stringify(await $.tool.call(listCall()))).toContain(CLAIM_HINT(['API', 'ATT']))
+  const asked = askCount
+  // Only the person's own prompt or phone.
+  for (const kind of ['plugin', 'peer', 'script']) expect((await claim($, { kind })).text).toBe(CLAIM_NOT_PERSON)
+  expect(askCount).toBe(asked)
+  askAnswer = NO
+  expect((await claim($)).text).toBe('Cancelled. Nothing changed.')
+  expect(lastQuestion).toBe(claimQuestion(['API', 'ATT'], PIN, ['old-aa', 'old-bb'], 'LEAD', HOME))
+  expect(lastQuestion).toBe('Claim lanes API, ATT in ~/code/app for lead LEAD? They name leads that are not running (old-aa, old-bb). They answer LEAD afterwards.')
+  expect(lastHeader).toBe('Claim Lanes')
+  expect(askedOptions[askedOptions.length - 1]).toEqual(['Claim', 'Cancel'])
+  expect(leadNames()).toEqual({ API: 'old-aa', ATT: 'old-bb', MINE: 'LEAD', LEG: undefined })
+  askAnswer = YES
+  expect((await claim($, { kind: 'bridge' })).text).toBe(claimedText(['API', 'ATT'], 'LEAD'))
+  expect(leadNames()).toEqual({ API: 'LEAD', ATT: 'LEAD', MINE: 'LEAD', LEG: undefined })
+  // Nothing else of the records changed.
+  expect(storeJson().lanes[0]).toEqual({ ...MADE_OLD(), leadName: 'LEAD' })
+  expect(logged(stdins)).toContain('lanes-claimed:2')
+  expect(JSON.stringify(await $.tool.call(listCall()))).not.toContain('/callboard claim')
+  expect((await claim($)).text).toBe(CLAIM_NONE)
+})
+
+test('stuck lanes: a lead name a live session carries (any letter case) is not claimed; one that appears while the dialog is open stops the claim', async ($, on) => {
+  await leadAt($, on, [], { sess: { ...leadSelfReg(), ...regAs(OTHER, 4600, 'OLD-AA') } })
+  putStore([MADE_OLD(), attRec(OTHERLEAD, 'ATT', { leadName: 'old-bb' })])
+  askAnswer = YES
+  expect((await claim($)).text).toBe(claimedText(['ATT'], 'LEAD'))
+  expect(leadNames()).toEqual({ API: 'old-aa', ATT: 'LEAD' })
+  putStore([MADE_OLD('API', 'old-aa'), MADE_OLD('API2', 'old-bb')])
+  sessions = leadSelfReg()
+  askScript = async () => {
+    sessions = { ...leadSelfReg(), ...regAs(OTHER, 4600, 'old-bb') }
+    return YES
+  }
+  expect((await claim($)).text).toBe(claimRefusedText('changed'))
+  askScript = undefined
+  expect(leadNames()).toEqual({ API: 'old-aa', API2: 'old-bb' })
+})
+
+test('stuck lanes: a lane the lead made that a live session carries is not claimed (its hash would break); one carried when the person clicks stops the whole claim', async ($, on) => {
+  await leadAt($, on, [], { sess: { ...leadSelfReg(), ...ckRow() } })
+  putStore([MADE_OLD('API', 'old-aa'), MADE_OLD('B', 'old-aa')].map((l, i) => (i === 0 ? { ...l, sid: OTHER } : l)))
+  // lane_list tells only the lanes the claim would take.
+  expect(JSON.stringify(await $.tool.call(listCall()))).toContain(CLAIM_HINT(['B']))
+  askAnswer = YES
+  expect((await claim($)).text).toBe(claimedText(['B'], 'LEAD'))
+  expect(leadNames()).toEqual({ API: 'old-aa', B: 'LEAD' })
+  putStore([MADE_OLD('B', 'old-aa'), MADE_OLD('C', 'old-aa')])
+  sessions = leadSelfReg()
+  // A session carrying C right after the click is caught by the re-plan.
+  askScript = async () => {
+    sessions = { ...leadSelfReg(), ...cueSession(OTHER, 'C', `${PIN}/api`, { pid: 4500 }) }
+    return YES
+  }
+  expect((await claim($)).text).toBe(claimRefusedText('changed'))
+  askScript = undefined
+  expect(leadNames()).toEqual({ B: 'old-aa', C: 'old-aa' })
+  // And one that appears after the re-plan, as the store lock is taken, by the check inside the lock.
+  sessions = leadSelfReg()
+  lockHook = (event) => {
+    if (event === 'mkdir') sessions = { ...leadSelfReg(), ...cueSession(OTHER, 'C', `${PIN}/api`, { pid: 4500 }) }
+  }
+  expect((await claim($)).text).toBe(claimRefusedText('name-in-use'))
+  lockHook = undefined
+  expect(leadNames()).toEqual({ B: 'old-aa', C: 'old-aa' })
+})
+
+test('stuck lanes: claim needs a named lead; a conductor and the manager have no claim (their reach ignores the lead name)', async ($, on) => {
+  await leadAt($, on, [])
+  putStore([MADE_OLD()])
+  sessions = selfAs('LEAD A')
+  expect((await claim($)).text).toBe(CLAIM_UNNAMED)
+  expect(leadNames()).toEqual({ API: 'old-aa' })
+})
+
+test('stuck lanes: claim in a session that holds no lead grant, a conductor or the manager says so', async ($, on) => {
+  await mgrAt($, on, [], { sess: MGR_NOAPI() })
+  expect((await claim($)).text).toBe(CLAIM_NOT_LEAD)
+})
+
+test('stuck lanes: an attached lane bound before this change (its hash includes the lead name) still takes resume and detaches whole', async ($, on) => {
+  const trace: Trace = { log: [], failCounters: false }
+  const stdins: string[] = []
+  await attacher($, on, stdins, { clock: true, trace })
+  await doLane($, 'lane svc-api')
+  const rec = storeJson().lanes[0]
+  expect(rec.leadName).toBe('LEAD')
+  const b = trace.st!.get('lane')!
+  const old = fakeSha(recordTextLegacy({ name: rec.name, folder: rec.folder, brief: rec.brief, repo: PIN, adopted: true, lead: rec.lead, leadName: rec.leadName }))
+  expect(old).not.toBe((b.value as { rec: string }).rec)
+  trace.st!.set('lane', { value: { ...(b.value as object), rec: old }, version: b.version + 1 })
+  cueFile = { ino: 91, text: 'resume\n', present: true }
+  await tickTwice()
+  expect(resultFiles.get(RESULT)).toBe('resume ok - 91\n')
+  // The first read of the record upgraded the binding to the current hash, so a later change of the lead name (a rename carry, a claim) keeps it matching.
+  expect(logged(stdins)).toContain('hash-upgraded:')
+  expect((trace.st!.get('lane')!.value as { rec: string }).rec).toBe(fakeSha(recordText({ name: rec.name, folder: rec.folder, brief: rec.brief, repo: PIN, adopted: true, lead: rec.lead, leadName: rec.leadName })))
+  putStore([{ ...storeJson().lanes[0], leadName: 'LEAD2' }])
+  expect((await doLane($, 'lane off')).text).toBe('This session is no longer lane svc-api.')
+  expect(storeJson().lanes).toEqual([])
+})
+
+test('stuck lanes: a claim leaves out the lanes of a live lead (attached record whose lead session runs), and waits while another live lead of the repo has no usable name', async ($, on) => {
+  await leadAt($, on, [])
+  putStore([GONE_ATT('ATT', { leadName: 'old-bb', lead: OTHERLEAD }), MADE_OLD()])
+  // The lead session OTHERLEAD runs, under a name that is not valid (so no lane can name it any more): its attached lane is not up for claim.
+  leadFiles.set(`${ROOT}/leads/${OTHERLEAD}.json`, { text: JSON.stringify({ sid: OTHERLEAD, pid: 4700, procStart: LEADPS, repo: PIN }) })
+  sessions = { ...leadSelfReg(), ...cueSession(OTHERLEAD, 'lead b', PIN, { pid: 4700 }) }
+  askAnswer = YES
+  expect((await claim($)).text).toBe(CLAIM_OTHER_UNNAMED)
+  expect(leadNames()).toEqual({ ATT: 'old-bb', API: 'old-aa' })
+  // A live lead with a usable name that is not the one the records name leaves the old names claimable; its own session's attached lane is still not.
+  sessions = { ...leadSelfReg(), ...cueSession(OTHERLEAD, 'LEADB', PIN, { pid: 4700 }) }
+  expect((await claim($)).text).toBe(claimedText(['API'], 'LEAD'))
+  expect(leadNames()).toEqual({ ATT: 'old-bb', API: 'LEAD' })
+})
+
+test('stuck lanes: the claim checks the other leads again inside the store lock: one that appears unnamed, one whose attached lane is claimed, or an unreadable leads folder stops it', async ($, on) => {
+  await leadAt($, on, [])
+  const leadFile = () => leadFiles.set(`${ROOT}/leads/${OTHERLEAD}.json`, { text: JSON.stringify({ sid: OTHERLEAD, pid: 4700, procStart: LEADPS, repo: PIN }) })
+  askAnswer = YES
+  // A second lead, with no usable name, that comes up as the store lock is taken.
+  putStore([MADE_OLD()])
+  leadFile()
+  lockHook = (event) => {
+    if (event === 'mkdir') sessions = { ...leadSelfReg(), ...cueSession(OTHERLEAD, 'lead b', PIN, { pid: 4700 }) }
+  }
+  expect((await claim($)).text).toBe(claimRefusedText('other-lead-unnamed'))
+  lockHook = undefined
+  expect(leadNames()).toEqual({ API: 'old-aa' })
+  // The lead session an attached record names comes up (named) as the lock is taken: that lane is its lead's.
+  sessions = leadSelfReg()
+  putStore([attRec(OTHERLEAD, 'ATT', { leadName: 'old-bb' })])
+  lockHook = (event) => {
+    if (event === 'mkdir') sessions = { ...leadSelfReg(), ...cueSession(OTHERLEAD, 'LEADB', PIN, { pid: 4700 }) }
+  }
+  expect((await claim($)).text).toBe(claimRefusedText('changed'))
+  lockHook = undefined
+  expect(leadNames()).toEqual({ ATT: 'old-bb' })
+  // A session that carries the old lead name comes up as the lock is taken: that name is live again, so the lanes are its.
+  sessions = leadSelfReg()
+  putStore([MADE_OLD()])
+  lockHook = (event) => {
+    if (event === 'mkdir') sessions = { ...leadSelfReg(), ...regAs(OTHER, 4600, 'old-aa') }
+  }
+  expect((await claim($)).text).toBe(claimRefusedText('changed'))
+  lockHook = undefined
+  expect(leadNames()).toEqual({ API: 'old-aa' })
+  // The leads folder cannot be listed as the lock is taken: nothing is claimed.
+  sessions = leadSelfReg()
+  putStore([MADE_OLD()])
+  lockHook = (event) => {
+    if (event === 'mkdir')
+      leadsListHook = async () => {
+        throw new Error('list')
+      }
+  }
+  expect((await claim($)).text).toBe(claimRefusedText('registry-unreadable'))
+  lockHook = undefined
+  leadsListHook = undefined
+  expect(leadNames()).toEqual({ API: 'old-aa' })
+})
+
+test('stuck lanes: a lead can claim its own attached lanes that still name its old lead name (a re-grant under a new name); lane_list tells them', async ($, on) => {
+  await leadAt($, on, [])
+  putStore([attRec(SID, 'ATT', { leadName: 'old-bb' })])
+  expect(JSON.stringify(await $.tool.call(listCall()))).toContain(CLAIM_HINT(['ATT']))
+  askAnswer = YES
+  expect((await claim($)).text).toBe(claimedText(['ATT'], 'LEAD'))
+  expect(leadNames()).toEqual({ ATT: 'LEAD' })
+})
+
+test('stuck lanes: a lead renamed only in letter case can claim the lanes it made under the old case', async ($, on) => {
+  await leadAt($, on, [], { sess: selfAs('Twin') })
+  putStore([MADE_OLD('API', 'Twin')])
+  sessions = selfAs('TWIN')
+  askAnswer = YES
+  expect((await claim($)).text).toBe(claimedText(['API'], 'TWIN'))
+  expect(leadNames()).toEqual({ API: 'TWIN' })
+})
+
+test('stuck lanes: a removal whose record was remade or re-pointed at another lead while the question was open removes nothing', async ($, on) => {
+  await leadAt($, on, [])
+  putStore([GONE_ATT()])
+  askScript = async () => {
+    putStore([GONE_ATT('ATT', { leadName: 'LEAD', lead: OTHERLEAD })])
+    return YES
+  }
+  expect(JSON.stringify(await $.tool.call(leadCall('terminate', { lane: 'ATT' })))).toContain('changed')
+  askScript = undefined
+  expect(storeJson().lanes.length).toBe(1)
 })

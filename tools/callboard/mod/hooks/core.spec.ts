@@ -593,7 +593,7 @@ test('every dialog is a verb plus Cancel; off has its own pair; restore follows 
   assert.ok(c.restoreQuestion('API').startsWith('Restore this session'))
 })
 
-import { recOk, reservedHit, parseStore, pinRefusal, createRefusal, recordText, STORE_MAX_LANES, STORE_MAX_BYTES } from './core.ts'
+import { recOk, reservedHit, parseStore, pinRefusal, createRefusal, recordText, recordTextLegacy, STORE_MAX_LANES, STORE_MAX_BYTES } from './core.ts'
 
 test('reserved names are matched by skeleton, not only by exact name', () => {
   for (const n of ['MANAGER', 'manager', 'Manager_', 'MANAGER-2', 'MANAGER2', 'MANAG3R', 'MANA6ER', 'rnANAGER', 'MANAGER1']) assert.equal(reservedHit(n), true, n)
@@ -1632,11 +1632,17 @@ test('parseStore takes a valid leadName on any record and refuses a bad or reser
   for (const bad of ['', 'a b', 'x'.repeat(41), 'MANAGER', 'manager_', 5, null]) assert.equal((parseStore(store({ ...lane, leadName: bad })) as any).reason, 'store-shape', JSON.stringify(bad))
 })
 
-test('recordText: a record without leadName is byte-identical to before; leadName changes it (levels S2)', () => {
+test('recordText: a made record without leadName is byte-identical to before; its leadName changes it; an attached record leaves the name out (levels S2, stuck lanes)', () => {
+  const made = { name: 'A', folder: '/f', brief: '/f/b', repo: '/r', model: 'opus' as const }
+  assert.equal(recordText(made), `A\n/f\n/f/b\n/r\nmodel\nopus`)
+  assert.equal(recordText({ ...made, leadName: 'LEADA' }), `A\n/f\n/f/b\n/r\nmodel\nopus\nleadName\nLEADA`)
+  assert.notEqual(recordText({ ...made, leadName: 'LEADA' }), recordText({ ...made, leadName: 'LEADB' }))
+  // An attached record is identified by its lead's session id; its lead's name follows the lead through a rename, so a rename never changes the hash.
   const att = { name: 'A', folder: '/f', brief: '/f/b', repo: '/r', adopted: true as const, lead: LEAD, model: 'opus' as const }
   assert.equal(recordText(att), `A\n/f\n/f/b\n/r\nadopted\n${LEAD}\nmodel\nopus`)
-  assert.equal(recordText({ ...att, leadName: 'LEADA' }), `A\n/f\n/f/b\n/r\nadopted\n${LEAD}\nmodel\nopus\nleadName\nLEADA`)
-  assert.notEqual(recordText({ ...att, leadName: 'LEADA' }), recordText({ ...att, leadName: 'LEADB' }))
+  assert.equal(recordText({ ...att, leadName: 'LEADA' }), recordText(att))
+  assert.equal(recordText({ ...att, leadName: 'LEADA' }), recordText({ ...att, leadName: 'LEADB' }))
+  assert.notEqual(recordText(att), recordText({ ...att, lead: '6a1b2c3d-0000-4000-8000-123456789abc' }))
 })
 
 test('inReach and leadLane: a lead reaches a lane naming it or none; other-lead for a lane naming another (levels S2)', () => {
@@ -2370,7 +2376,8 @@ test('v15.3 the stop texts', () => {
   assert.equal(c.stoppedText('retire', 'API', 4242, 'removed'), 'lane API retired and removed: SIGTERM sent to process 4242. Its .archive/API/ folder and report stay.')
   assert.equal(c.stoppedText('terminate', 'API', 4242, 'removed'), 'lane API terminated and removed: SIGTERM sent to process 4242. Its .archive/API/ folder and report stay.')
   assert.equal(c.stoppedText('terminate', 'API', 4242, 'alive'), 'lane API terminated: SIGTERM sent to process 4242, but the session was still running 10 seconds later, so its record stays. Call lane_terminate again if it does not end.')
-  assert.equal(c.stoppedText('retire', 'API', 4242, 'kept'), 'lane API retired: SIGTERM sent to process 4242. The record stays: a lane a session joined keeps it.')
+  assert.equal(c.stoppedText('retire', 'API', 4242, 'kept'), 'lane API retired: SIGTERM sent to process 4242. The record stays because a session joined it. With that session gone, call lane_retire again to remove it.')
+  assert.equal(c.stoppedText('terminate', 'API', 4242, 'kept'), 'lane API terminated: SIGTERM sent to process 4242. The record stays because a session joined it. With that session gone, call lane_terminate again to remove it.')
   assert.equal(c.stoppedText('terminate', 'API', 4242, { unremoved: 'changed' }), 'lane API terminated: SIGTERM sent to process 4242. Its record could not be removed (changed); call lane_terminate again to remove it.')
   assert.equal(c.removedNoSessionText('retire', 'API'), 'lane API retired and removed: it had no live session. Its .archive/API/ folder and report stay.')
 })
@@ -2393,4 +2400,45 @@ test('v15.4 register.ts waits only through pause(): the only $.clock.sleep left 
   const hits = src.split('\n').filter((l) => /clock\s*(\.\s*|\[\s*['"])sleep|\{[^}]*\bsleep\b[^}]*\}\s*=\s*\$\.clock/.test(l) && !l.trim().startsWith('//'))
   assert.equal(hits.length, 2)
   assert.ok(hits.every((l) => l.includes('Promise.race(')), hits.join('\n'))
+})
+
+// ---- stuck lanes: refusal text, claimable ----
+test('stuck lanes: the adopted-record refusal names no route that needs the gone session', () => {
+  const t = c.reasonWhy('adopted-record')
+  assert.equal(t, 'adopted-record: an attached lane keeps its own session: no rename, start or open. Use lane_resume to prompt it. lane_retire or lane_terminate ends it.')
+  assert.ok(!t.includes('/callboard lane off'))
+})
+
+test('stuck lanes: claimable takes the store lanes of the lead\'s own repo that name a lead no live session carries, in any letter case', () => {
+  const lane = (name: string, leadName?: string, extra: Record<string, unknown> = {}) => ({ name, folder: '/w/repo', brief: '/w/repo/B.md', repo: '/w/repo', src: 'k', ...(leadName ? { leadName } : {}), ...extra })
+  const lanes = [lane('legacy'), lane('mine', 'NEW'), lane('dead', 'old-aa'), lane('alive', 'ALIVE'), lane('other-case', 'Twin'), lane('far', 'old-bb', { repo: '/w/repo/sub' }), lane('nosrc', 'old-cc', { src: undefined })]
+  const names = (g: c.Grant, live: string[]) => c.claimable(lanes, g, live).map((l) => l.name)
+  assert.deepEqual(names(c.leadGrant('/w/repo', 'NEW'), ['NEW', 'ALIVE', 'twin']), ['dead'])
+  assert.deepEqual(names(c.leadGrant('/w/repo', 'NEW'), ['NEW', 'ALIVE', 'TWIN', 'OLD-AA']), [])
+  // A lead with no usable name, a conductor and the manager claim nothing.
+  assert.deepEqual(names(c.leadGrant('/w/repo', ''), []), [])
+  assert.deepEqual(names({ level: 'conductor', pins: ['/w/repo'], name: 'C' }, []), [])
+  assert.deepEqual(names({ level: 'manager', pins: [], name: 'MANAGER' }, []), [])
+})
+
+test('stuck lanes: the claim question names the lanes, the old lead names and the claiming lead', () => {
+  assert.equal(c.claimQuestion(['A', 'B'], '/Users/x/code/app', ['old-aa'], 'NEW', '/Users/x'), 'Claim lanes A, B in ~/code/app for lead NEW? They name a lead that is not running (old-aa). They answer NEW afterwards.')
+  assert.equal(c.claimQuestion(['A'], '/Users/x/code/app', ['p', 'q'], 'NEW', '/Users/x'), 'Claim lane A in ~/code/app for lead NEW? It names leads that are not running (p, q). It answers NEW afterwards.')
+  assert.equal(c.parseCommandArgs('claim'), 'claim')
+  assert.equal(c.parseCommandArgs(' claim  '), 'claim')
+  assert.equal(c.parseCommandArgs('claim x'), undefined)
+})
+
+test('stuck lanes: recordTextLegacy is the hash an attached record had before: it differs from recordText only when the record has a lead name', () => {
+  const att = { name: 'A', folder: '/f', brief: '/f/b', repo: '/r', adopted: true as const, lead: LEAD }
+  assert.equal(recordTextLegacy(att), recordText(att))
+  assert.equal(recordTextLegacy({ ...att, leadName: 'LEADA' }), `A\n/f\n/f/b\n/r\nadopted\n${LEAD}\nleadName\nLEADA`)
+  assert.notEqual(recordTextLegacy({ ...att, leadName: 'LEADA' }), recordText({ ...att, leadName: 'LEADA' }))
+  const made = { name: 'A', folder: '/f', brief: '/f/b', repo: '/r', leadName: 'LEADA' }
+  assert.equal(recordTextLegacy(made), recordText(made))
+})
+
+test('stuck lanes: claimable, given the live names without the claimer\'s own, still offers a lane the lead made under its old letter case', () => {
+  const lane = { name: 'M', folder: '/w/repo', brief: '/w/repo/B.md', repo: '/w/repo', src: 'k', leadName: 'Twin' }
+  assert.deepEqual(c.claimable([lane], c.leadGrant('/w/repo', 'TWIN'), []).map((l) => l.name), ['M'])
 })
