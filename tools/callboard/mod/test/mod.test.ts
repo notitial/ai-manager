@@ -14145,6 +14145,22 @@ test('prompts: no live lead: no request, an abandoned no-tier row, the dialog st
   expect(rowKinds()).toEqual(['abandoned no-tier'])
   expect(reqFiles().length).toBe(0)
 })
+test('review r2: the lead is resolved record first: a record that names a lead is reached by the live lead of that name only, whatever lead the binding holds', async ($, on) => {
+  await answerer($, on, [])
+  expect((storeJson().lanes as { leadName?: string }[])[0].leadName).toBe('LEAD')
+  // The lead the lane was bound to is still live by its presence file, but under another registry name now: the record names LEAD, so nobody can be asked.
+  await askCheck($)
+  sessions = { ...leadReg({ name: 'LEADX' }), ...ownReg({ status: 'waiting', waitingFor: 'permission prompt', statusUpdatedAt: T0 + 500 }) }
+  driveClock()
+  expect(await startReq($)).toEqual({})
+  expect(rowKinds()).toEqual(['abandoned no-tier'])
+  expect(reqFiles().length).toBe(0)
+})
+test('review r2: a record that names its lead finds it by the registry name, so the request carries that name', async ($, on) => {
+  await answerer($, on, [])
+  expect((await runRequest($, [at(4000, () => handDecision(readReq()))]))).toEqual({ decision: { behavior: 'allow' } })
+  expect(rowKinds()).toEqual(['requested', 'answered allow', 'returned allow'])
+})
 test('prompts: a lead\'s own prompt starts at the conductor, which does not exist yet: no request', async ($, on) => {
   await answerer($, on, [], { asLead: true })
   expect(await runRequest($, [])).toEqual({})

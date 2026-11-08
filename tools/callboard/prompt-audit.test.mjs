@@ -211,6 +211,23 @@ test('c: transcripts are read only inside the folder: a symlinked folder is not 
   assert.equal(rep.scanned.transcriptFiles, 1)
   assert.deepEqual(rules(rep), ['hook-decision-unmatched'])
   assert.equal(rep.anomalies[0].file, 'big.jsonl')
+  // A line that was not read may have held a decision: the run is incomplete, not clean.
+  assert.ok(rep.problems.some((p) => /big\.jsonl: 1 line\(s\) over \d+ bytes were skipped/.test(p)), rep.problems.join('|'))
+  assert.match(render(rep), /INCOMPLETE: \d+ problem/)
+})
+test('review r2: a transcripts folder that is itself a symlink to a real folder is read, not skipped', () => {
+  const fx = fixture()
+  ledger(fx, [ON(), ...clean()])
+  const real = mkdtempSync(join(tmpdir(), 'pa-real-'))
+  transcript({ projects: real }, SID, { at: BASE + 20 * 60_000 })
+  const link = join(fx.d, 'projects-link')
+  symlinkSync(real, link)
+  for (const explicit of [false, true]) {
+    const rep = audit({ root: fx.root, projects: link, projectsExplicit: explicit, now: NOW })
+    assert.equal(rep.scanned.transcriptFiles, 1, `explicit ${explicit}`)
+    assert.deepEqual(rep.problems, [], `explicit ${explicit}`)
+    assert.deepEqual(rep.notes.filter((n) => /not a readable folder/.test(n)), [], `explicit ${explicit}`)
+  }
 })
 
 test('c: a hook allow with no PermissionRequest record is another hook event, counted and not flagged', () => {
@@ -254,14 +271,30 @@ test('c: --since keeps old transcripts out', () => {
   assert.deepEqual(run(fx, { since: BASE - 3600_000 }).anomalies, [])
 })
 
-test('d: a floor row for the same tool and hash makes a later request an anomaly', () => {
+test('d: a floor row for the same tool, hash and floor context makes a later request an anomaly', () => {
   const fx = fixture()
-  const rows = [ON(), R('floor', BASE - 1000, { ...T, code: 'merge' }), ...clean()]
+  const C1 = 'c'.repeat(16)
+  const rows = [ON(), R('floor', BASE - 1000, { ...T, ctx: C1, code: 'merge' }), ...clean(uid(1), BASE, uid(101), { ctx: C1 })]
   ledger(fx, rows)
   assert.deepEqual(rules(run(fx)), ['floor-row-then-asked'])
-  const other = [ON(), R('floor', BASE - 1000, { ...T, hash: H('b'), code: 'merge' }), ...clean()]
+  const other = [ON(), R('floor', BASE - 1000, { ...T, hash: H('b'), ctx: C1, code: 'merge' }), ...clean(uid(1), BASE, uid(101), { ctx: C1 })]
   ledger(fx, other)
   assert.deepEqual(run(fx).anomalies, [])
+})
+test('review r2: the same input asked under another branch or config (another floor context) is not an anomaly; rows with no context are a note', () => {
+  const fx = fixture()
+  // A push floored on main, the identical call asked after a checkout of a feature branch.
+  const changed = [ON(), R('floor', BASE - 1000, { ...T, ctx: 'a'.repeat(16), code: 'protected-push' }), ...clean(uid(1), BASE, uid(101), { ctx: 'b'.repeat(16) })]
+  ledger(fx, changed)
+  let rep = run(fx)
+  assert.deepEqual(rep.anomalies, [])
+  assert.deepEqual(rep.notes.filter((n) => /floor context/.test(n)), [])
+  // Rows from before the context was recorded cannot be compared: a note, not an anomaly.
+  const old = [ON(), R('floor', BASE - 1000, { ...T, code: 'protected-push' }), ...clean()]
+  ledger(fx, old)
+  rep = run(fx)
+  assert.deepEqual(rep.anomalies, [])
+  assert.ok(rep.notes.some((n) => /1 request\(s\) share a tool and input hash with a floor row that recorded no floor context/.test(n)), rep.notes.join('|'))
 })
 
 test('d: a request that looks like a floor item by its tool or path is an anomaly', () => {

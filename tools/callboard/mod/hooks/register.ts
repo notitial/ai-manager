@@ -5069,8 +5069,11 @@ async function promptLeadOf($: any, level: 'lane' | 'lead', sid: string, cwd: st
   const live = await registryEntries($)
   if (!live) return undefined
   const leads = (await leadsFor($, live, cwd).catch(() => [] as c.LeadFile[])).filter((l) => l.sid !== sid)
-  // The lead the lane is bound to, if it is live; with no binding, the one live lead of the repo. Two leads and no binding: nobody can be asked.
-  const lead = bound !== undefined ? leads.find((l) => l.sid === bound) : leads.length === 1 ? leads[0] : undefined
+  // Record first, as the briefing does (S2): a lane record that names its lead is reached by the live lead of that registry name and no other (none live: nobody).
+  // Else the lead the lane is bound to, if it is live; with no binding, the one live lead of the repo. Two leads and no binding: nobody can be asked.
+  const rec = await reportLaneOf($, sid).catch(() => undefined)
+  const rows = live.map((r) => r.j)
+  const lead = rec?.leadName !== undefined ? leads.find((l) => c.leadNameOf(rows, l.sid) === rec.leadName) : bound !== undefined ? leads.find((l) => l.sid === bound) : leads.length === 1 ? leads[0] : undefined
   if (!lead) return undefined
   return { sid: lead.sid, name: c.leadNameOf(live.map((r) => r.j), lead.sid) ?? undefined }
 }
@@ -5184,8 +5187,10 @@ async function promptHook($: any, e: any, nextOnce: (x: any) => Promise<any>, si
     const ecwd = typeof e.cwd === 'string' && e.cwd.startsWith('/') ? e.cwd : undefined
     const fo = await promptFloorOpts($, tool, input, ecwd ?? cwd, homeOf(p), ecwd !== undefined)
     const floor = pr.floorCheck(tool, input, fo)
+    // What the floor read besides the input: the audit compares it between a floor row and a later request of the same input.
+    const ctx = (await sha($, JSON.stringify(fo)).catch(() => '')).slice(0, 16)
     if (floor !== undefined) {
-      await ledgerAdd($, { ...base, kind: 'floor', code: floor })
+      await ledgerAdd($, { ...base, ...(ctx ? { ctx } : {}), kind: 'floor', code: floor })
       return beneath
     }
     // 7. A live tier. Only the lead's is built (PR 3 adds the others), and only for a lane: a lead's own prompt starts at the conductor.
@@ -5217,7 +5222,7 @@ async function promptHook($: any, e: any, nextOnce: (x: any) => Promise<any>, si
     reqDir.id = id
     openReqs.set(tid as string, { sid, id, dir })
     if (doneIds.has(tid as string)) await promptDone($, { tool_use_id: tid })
-    const row = { ...base, id, tier: 'lead' }
+    const row = { ...base, ...(ctx ? { ctx } : {}), id, tier: 'lead' }
     // Without a `requested` row no decision could ever pass the ledger check: the dialog is left to the person.
     if (!(await ledgerAdd($, { ...row, kind: 'requested', nonce }))) throw new Error('ledger-unwritable')
     return await promptWait($, e, beneath, signal, { sid, tid: tid as string, id, nonce, dir, hash, input, tool, cwd, ecwd, home: homeOf(p), p, started, row, req, leadName, cap: pr.claudeCap(tool, input) })

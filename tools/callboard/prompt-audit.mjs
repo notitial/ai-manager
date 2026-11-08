@@ -46,7 +46,7 @@ const LIST_MAX = 200
 
 const ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const KINDS = new Set(['requested', 'answered', 'escalated', 'dropped', 'returned', 'superseded', 'expired-denied', 'off', 'abandoned', 'floor', 'not-judgeable', 'no-tier', 'floor-confirmed', 'floor-off', 'answering-on', 'answering-off'])
-const FIELDS = ['code', 'id', 'lane', 'repo', 'tool', 'pattern', 'hash', 'tier', 'why', 'nonce', 'tuid', 'by']
+const FIELDS = ['code', 'id', 'lane', 'repo', 'tool', 'pattern', 'hash', 'ctx', 'tier', 'why', 'nonce', 'tuid', 'by']
 const ENDS = new Set(['returned', 'superseded', 'expired-denied', 'off', 'abandoned'])
 // A `dropped` row with one of these codes is a decision the hook refused as forged or wrong: an anomaly. The others are ordinary.
 const DROP_ANOMALY = new Set(['no-answered-row', 'id', 'hash', 'nonce', 'by-sid'])
@@ -347,6 +347,7 @@ function scanTranscripts(projects, since, notes, problems, budget) {
       for (let i = first; i < decisions.length; i++) decisions[i].permissionRequest = decisions[i].toolUseId !== undefined && permReq.has(decisions[i].toolUseId)
       scanned++
       total += s.bytes
+      if (s.skippedLong > 0) problems.push(`transcripts: ${basename(f.path)}: ${s.skippedLong} line(s) over ${TRANSCRIPT_LINE_MAX} bytes were skipped, so a decision on one was not checked`)
       if (s.truncated && room < TRANSCRIPT_MAX_BYTES) {
         problems.push(`transcripts: the byte budget of ${budget} was used up inside ${basename(f.path)}; the rest of it and ${files.length - n - 1} more file(s) were not read`)
         break
@@ -469,6 +470,7 @@ export function audit({ root, projects, since, now = Date.now(), projectsExplici
   for (const r of abandonedNoId) abandoned.push({ id: '', t: r.t, code: r.code ?? '', tool: r.tool ?? '' })
 
   // d. the floor.
+  let floorCtxUnknown = 0
   const floorRows = rows.filter((r) => r.kind === 'floor' && r.hash !== undefined && r.tool !== undefined)
   for (const g of groups) {
     const probe = g.rows.find((r) => (r.kind === 'requested' || r.kind === 'answered' || r.kind === 'returned') && r.tool !== undefined)
@@ -476,10 +478,16 @@ export function audit({ root, projects, since, now = Date.now(), projectsExplici
     const touched = g.requested.length > 0 || g.answered.length > 0
     if (!touched) continue
     const hit = probe.hash !== undefined ? floorRows.find((f) => f.tool === probe.tool && f.hash === probe.hash && Math.abs(f.ms - probe.ms) <= DAY_MS) : undefined
-    if (hit) flag('d', 'floor-row-then-asked', `request ${g.id} (${probe.tool}) shares its tool and input hash with a floor row (${hit.code ?? '?'}) within 24 h`, { id: g.id, t: probe.t })
+    // The floor reads the branch, the push config and the folder as well as the input: the same input is floored under one and asked under another. Both rows
+    // record a hash of that context; the same input in the same context is the anomaly. A row without one (written before it was recorded) is only a note.
+    if (hit && hit.ctx !== undefined && probe.ctx !== undefined) {
+      if (hit.ctx === probe.ctx) flag('d', 'floor-row-then-asked', `request ${g.id} (${probe.tool}) shares its tool, input hash and floor context with a floor row (${hit.code ?? '?'}) within 24 h`, { id: g.id, t: probe.t })
+    } else if (hit) floorCtxUnknown++
     const shape = floorShape(probe.tool, probe.pattern ?? '')
     if (shape) flag('d', 'floor-shape-asked', `request ${g.id} was asked of an agent but looks like a floor item (${shape})`, { id: g.id, t: probe.t })
   }
+
+  if (floorCtxUnknown > 0) notes.push(`${floorCtxUnknown} request(s) share a tool and input hash with a floor row that recorded no floor context; not counted as anomalies (the branch or config may differ)`)
 
   // e. answering must have been turned on before the first request.
   const firstOn = rows.find((r) => r.kind === 'answering-on')
@@ -520,8 +528,10 @@ export function audit({ root, projects, since, now = Date.now(), projectsExplici
   let tx = { decisions: [], scanned: 0, filesFound: 0 }
   if (projects !== undefined) {
     try {
-      if (!lstatSync(projects).isDirectory()) throw new Error('not a directory')
-      tx = scanTranscripts(realpathSync(projects), since, notes, problems, transcriptBudget)
+      // The folder may itself be a link (a dotfiles setup): its real path is what is checked and read, as for the prompts root.
+      const projectsReal = realpathSync(projects)
+      if (!lstatSync(projectsReal).isDirectory()) throw new Error('not a directory')
+      tx = scanTranscripts(projectsReal, since, notes, problems, transcriptBudget)
     } catch {
       // A folder named with --projects that cannot be read is a problem (rule c did not run); the default folder may simply not exist.
       if (projectsExplicit) problems.push(`--projects ${projects}: not a readable folder; rule c was not checked`)

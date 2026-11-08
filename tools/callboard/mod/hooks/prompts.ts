@@ -1038,22 +1038,26 @@ function judgeText(text: string, j: J, cur: B[]): FloorCategory | undefined {
 }
 // Wrappers (xargs, env, nohup, time, command, exec, docker exec, find -exec ...): the command they run starts at some word after options, so every later word is judged as
 // a command's start. A variable where the command would stand is the floor. reparse: the words are handed to a shell again (ssh), so they are read as text too.
-function wrapScan(args: Word[], it: Item, cur: B[], j: J, reparse: boolean): FloorCategory | undefined {
-  if (args.length > WRAP_MAX) return 'destructive'
+// It returns a category, or the folders the commands it wraps act in (eff: a wrapped `git -C ../app` runs in app), which the caller judges as if the command were its own.
+type Wrapped = { cat?: FloorCategory; eff?: B[] }
+function wrapScan(args: Word[], it: Item, cur: B[], j: J, reparse: boolean): Wrapped {
+  if (args.length > WRAP_MAX) return { cat: 'destructive' }
+  const effs: B[] = []
   // A remote command (ssh) runs elsewhere: its relative paths are not the local folder, so it is judged with no folder known and outside the live-checkout rule.
   const here = reparse ? [''] : cur
   let cmdPos = true
   for (let k = 0; k < args.length; k++) {
     const w = args[k]
-    if (w.asg && envBad(w)) return 'settings'
+    if (w.asg && envBad(w)) return { cat: 'settings' }
     if (w.dyn || w.glob) {
-      if (cmdPos && !w.asg && !w.t.startsWith('-')) return 'destructive'
+      if (cmdPos && !w.asg && !w.t.startsWith('-')) return { cat: 'destructive' }
     } else {
       const r = dispatch(baseName(w.t), w, args.slice(k + 1), it, here, j, true)
-      if (r.cat) return r.cat
+      if (r.cat) return { cat: r.cat }
+      if (r.eff) effs.push(...r.eff)
       if (/\s/.test(w.t) || (reparse && META.test(w.t))) {
         const c = judgeText(w.t, j, here)
-        if (c) return c
+        if (c) return { cat: c }
       }
     }
     if (!(w.t.startsWith('-') || w.asg || /^\d+(\.\d+)?[smhd]?$/.test(w.t))) cmdPos = false
@@ -1061,10 +1065,10 @@ function wrapScan(args: Word[], it: Item, cur: B[], j: J, reparse: boolean): Flo
   if (reparse) {
     for (let k = 0; k < Math.min(args.length, 12); k++) {
       const c = judgeText(args.slice(k).map((x) => x.t).join(' '), j, here)
-      if (c) return c
+      if (c) return { cat: c }
     }
   }
-  return undefined
+  return effs.length > 0 ? { eff: capB(effs) } : {}
 }
 
 // The options of gh that take a value as the next word (a flag that takes none is not listed).
@@ -1315,9 +1319,12 @@ function dispatch(v: string, verb: Word, args: Word[], it: Item, cur: B[], j: J,
         }
       }
     }
+    // GNU find reads its start folders from a file with -files0-from (- is stdin), and stdin that is piped or redirected may hold them: no word shows where find starts.
+    if (x >= 0 && (args.some((w) => /^-files0-from/.test(w.t)) || it.before === '|' || it.before === '|&' || it.redirs.some((r) => r.op.startsWith('<')))) return SETT
     if (x >= 0 && !noWrap) {
-      const c = wrapScan(args.slice(x + 1), it, cur, j, false)
-      if (c) return { cat: c }
+      const w = wrapScan(args.slice(x + 1), it, cur, j, false)
+      if (w.cat) return { cat: w.cat }
+      if (w.eff) return { ro: false, eff: w.eff }
     }
     return { ro: roOk(v, args) }
   }
@@ -1334,7 +1341,8 @@ function dispatch(v: string, verb: Word, args: Word[], it: Item, cur: B[], j: J,
     const remote = npos >= 2
     if (stdin && !remote) return DEST
     if (noWrap) return {}
-    const c = wrapScan(args, it, cur, j, true)
+    // The remote command runs on another host: the folders it names there are not local ones.
+    const c = wrapScan(args, it, cur, j, true).cat
     return c ? { cat: c } : { ro: remote && !stdin }
   }
   if (v === 'rsync') {
@@ -1351,13 +1359,18 @@ function dispatch(v: string, verb: Word, args: Word[], it: Item, cur: B[], j: J,
   if (v === 'env' && args.length === 0) return { ro: true }
   // env -C DIR (or --chdir) runs the command in another folder; not followed, so the command is the floor.
   if (v === 'env' && args.some((w) => w.t === '-C' || /^--chdir/.test(w.t) || /^-[A-Za-z]*C./.test(w.t))) return SETT
-  if (SH_WRAP.test(v)) return noWrap ? {} : { cat: wrapScan(args, it, cur, j, false) }
+  if (SH_WRAP.test(v)) {
+    if (noWrap) return {}
+    const w = wrapScan(args, it, cur, j, false)
+    return w.cat ? { cat: w.cat } : w.eff ? { eff: w.eff } : {}
+  }
   if (SH_CONT.test(v)) {
     if (args.some((w) => INFRA_WORD.test(w.t)) || opaque(args.find((w) => !w.t.startsWith('-')) ?? mkWord())) return DEST
     const x = args.findIndex((w) => w.t === '--' || w.t === 'exec' || w.t === 'run')
     if (x >= 0 && !noWrap) {
-      const c = wrapScan(args.slice(x + 1), it, cur, j, false)
-      if (c) return { cat: c }
+      const w = wrapScan(args.slice(x + 1), it, cur, j, false)
+      if (w.cat) return { cat: w.cat }
+      if (w.eff) return { ro: false, eff: w.eff }
     }
     return { ro: false }
   }
@@ -1843,8 +1856,10 @@ export function applyCheck(a: ApplyIn): ApplyOut {
 // ---- the ledger (PLAN §3.5): machine-wide, one JSON row per line, no input text ----
 export type RowKind = 'requested' | 'answered' | 'escalated' | 'dropped' | 'returned' | 'superseded' | 'expired-denied' | 'off' | 'abandoned' | 'floor' | 'not-judgeable' | 'no-tier' | 'floor-confirmed' | 'floor-off' | 'answering-on' | 'answering-off'
 // cap and target: set on an `answered` and a `returned` row of a call that carries an `@claude` body (claudeCap), so the standing comment cap can be counted.
+// ctx: a short hash of what the floor read besides the input (folder, branch, push target, roots), on `floor` and `requested` rows, so the audit can tell a floor row
+// from a later request of the same input under another branch or config.
 // by: the session id of the lead that answered (on `answered` and `returned`, so the apply and the audit can bind a decision file to its row); tuid: the call's tool_use_id (on `returned`).
-export type LedgerRow = { t: string; kind: RowKind; code?: string; id?: string; lane?: string; repo?: string; tool?: string; pattern?: string; hash?: string; tier?: string; why?: string; nonce?: string; cap?: CapKind; target?: string; by?: string; tuid?: string }
+export type LedgerRow = { t: string; kind: RowKind; code?: string; id?: string; lane?: string; repo?: string; tool?: string; pattern?: string; hash?: string; ctx?: string; tier?: string; why?: string; nonce?: string; cap?: CapKind; target?: string; by?: string; tuid?: string }
 export function ledgerLine(row: LedgerRow): string {
   const r: LedgerRow = { ...row }
   if (r.why !== undefined) r.why = capBytes(redact(r.why).replace(/[\r\n]+/g, ' '), WHY_MAX).text
