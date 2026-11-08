@@ -2279,9 +2279,10 @@ async function nudgeTick($: any, sid: string) {
     if (await laneSignedDone($, sid)) return drop('lane-done')
     kind = c.thresholdKind(tokens, await cfgGet($, sid))
     if (!kind) return drop('below-level')
-    // v14: the kind follows the size now; one that fell back to the soft text (a compaction meanwhile) keeps the gap.
-    if (!c.nudgeAllowed(await counts($), now, kind === 'working', due.again === true)) return drop('nudge-limit')
   }
+  // v14: the kind follows the size now; one that fell back to the soft text (a compaction meanwhile) keeps the gap. Every kind is checked here, not only a threshold one
+  // (review, 2026-11-08): a lead's or cache nudge recorded while a mid-turn nudge was being claimed would otherwise go out after it, inside the gap.
+  if (!c.nudgeAllowed(await counts($), now, kind === 'working', due.again === true)) return drop('nudge-limit')
   if ((await $.state.set(nudgeDueRef, null, { ifVersion: read.version })).isSet === false) return
   await bump($, (ct) => ({ ...ct, lastNudgeMs: now, lastNudgeKind: kind!, nudgeTimes: [...(ct.nudgeTimes ?? []).filter((t) => t <= now && now - t < c.HOUR_MS), now] }))
   await $.state.set(nudgedAtRef, now)

@@ -7101,6 +7101,23 @@ test('a lead nudge to a busy lane is recorded and goes out once the lane is idle
   expect(nudges()).toEqual([nudgeText('lead')])
 })
 
+test('a lead nudge recorded while a mid-turn nudge was being claimed is dropped at idle: nudge-limit, not a second nudge inside the gap (review, 2026-11-08)', async ($, on) => {
+  const stdins: string[] = []
+  const trace: Trace = { log: [], failCounters: false }
+  await renameThroughTick($, on, stdins, 1, trace)
+  sessions = { [REGFILE]: REG({ status: 'busy' }) }
+  cueFile = { ino: 63, text: 'compact\n', present: true }
+  await tickTwice()
+  expect(resultFiles.get(RESULT)).toBe('compact held nudged 63\n')
+  // The mid-turn hook's claim lands after the lead's check read the old counters.
+  trace.st!.set('counters', { value: { lastNudgeMs: nowMs - 1000, nudgeTimes: [nowMs - 1000], lastNudgeKind: 'idle' }, version: 91 })
+  tokensNow = 350_000
+  sessions = { [REGFILE]: REG() }
+  await ticks(2)
+  expect(nudges()).toEqual([])
+  expect(logged(stdins)).toContain('nudge-dropped:nudge-limit')
+})
+
 test('no lead nudge while the lane has a request in any phase: the answer stays no-request', async ($, on) => {
   const trace: Trace = { log: [], failCounters: false }
   await renameThroughTick($, on, [], 1, trace)
