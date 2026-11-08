@@ -593,7 +593,7 @@ test('every dialog is a verb plus Cancel; off has its own pair; restore follows 
   assert.ok(c.restoreQuestion('API').startsWith('Restore this session'))
 })
 
-import { recOk, reservedHit, parseStore, pinRefusal, createRefusal, recordText, STORE_MAX_LANES, STORE_MAX_BYTES } from './core.ts'
+import { recOk, reservedHit, parseStore, pinRefusal, createRefusal, recordText, recordTextLegacy, STORE_MAX_LANES, STORE_MAX_BYTES } from './core.ts'
 
 test('reserved names are matched by skeleton, not only by exact name', () => {
   for (const n of ['MANAGER', 'manager', 'Manager_', 'MANAGER-2', 'MANAGER2', 'MANAG3R', 'MANA6ER', 'rnANAGER', 'MANAGER1']) assert.equal(reservedHit(n), true, n)
@@ -2427,4 +2427,18 @@ test('stuck lanes: the claim question names the lanes, the old lead names and th
   assert.equal(c.parseCommandArgs('claim'), 'claim')
   assert.equal(c.parseCommandArgs(' claim  '), 'claim')
   assert.equal(c.parseCommandArgs('claim x'), undefined)
+})
+
+test('stuck lanes: recordTextLegacy is the hash an attached record had before: it differs from recordText only when the record has a lead name', () => {
+  const att = { name: 'A', folder: '/f', brief: '/f/b', repo: '/r', adopted: true as const, lead: LEAD }
+  assert.equal(recordTextLegacy(att), recordText(att))
+  assert.equal(recordTextLegacy({ ...att, leadName: 'LEADA' }), `A\n/f\n/f/b\n/r\nadopted\n${LEAD}\nleadName\nLEADA`)
+  assert.notEqual(recordTextLegacy({ ...att, leadName: 'LEADA' }), recordText({ ...att, leadName: 'LEADA' }))
+  const made = { name: 'A', folder: '/f', brief: '/f/b', repo: '/r', leadName: 'LEADA' }
+  assert.equal(recordTextLegacy(made), recordText(made))
+})
+
+test('stuck lanes: claimable, given the live names without the claimer\'s own, still offers a lane the lead made under its old letter case', () => {
+  const lane = { name: 'M', folder: '/w/repo', brief: '/w/repo/B.md', repo: '/w/repo', src: 'k', leadName: 'Twin' }
+  assert.deepEqual(c.claimable([lane], c.leadGrant('/w/repo', 'TWIN'), []).map((l) => l.name), ['M'])
 })
