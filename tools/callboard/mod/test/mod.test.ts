@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 import * as prm from '../hooks/prompts'
-import { recordTextLegacy, CLAIM_OTHER_UNNAMED } from '../hooks/core'
+import { recordText, recordTextLegacy, CLAIM_OTHER_UNNAMED } from '../hooks/core'
 import { CLAIM_HINT, CLAIM_NOT_PERSON, CLAIM_NOT_LEAD, CLAIM_UNNAMED, CLAIM_NONE, claimQuestion, claimedText, claimRefusedText } from '../hooks/core'
 import { LEAD_MANAGER_TEXT, HINT_PREFIX, MANAGER_RESTORE_QUESTION, MANAGER_RESTORED_TOAST, MANAGER_UNANSWERED_TOAST, HINT_REFRESH_MS } from '../hooks/core'
 import { reserveShowText, reserveAddedText, reserveRemovedText, reserveNotListedText, reserveManagerText, RESERVE_NOT_PERSON, RESERVE_USAGE } from '../hooks/core'
@@ -15522,6 +15522,8 @@ test('stuck lanes: a lead name a live session carries (any letter case) is not c
 test('stuck lanes: a lane the lead made that a live session carries is not claimed (its hash would break); one carried when the person clicks stops the whole claim', async ($, on) => {
   await leadAt($, on, [], { sess: { ...leadSelfReg(), ...ckRow() } })
   putStore([MADE_OLD('API', 'old-aa'), MADE_OLD('B', 'old-aa')].map((l, i) => (i === 0 ? { ...l, sid: OTHER } : l)))
+  // lane_list tells only the lanes the claim would take.
+  expect(JSON.stringify(await $.tool.call(listCall()))).toContain(CLAIM_HINT(['B']))
   askAnswer = YES
   expect((await claim($)).text).toBe(claimedText(['B'], 'LEAD'))
   expect(leadNames()).toEqual({ API: 'old-aa', B: 'LEAD' })
@@ -15572,6 +15574,10 @@ test('stuck lanes: an attached lane bound before this change (its hash includes 
   cueFile = { ino: 91, text: 'resume\n', present: true }
   await tickTwice()
   expect(resultFiles.get(RESULT)).toBe('resume ok - 91\n')
+  // The first read of the record upgraded the binding to the current hash, so a later change of the lead name (a rename carry, a claim) keeps it matching.
+  expect(logged(stdins)).toContain('hash-upgraded:')
+  expect((trace.st!.get('lane')!.value as { rec: string }).rec).toBe(fakeSha(recordText({ name: rec.name, folder: rec.folder, brief: rec.brief, repo: PIN, adopted: true, lead: rec.lead, leadName: rec.leadName })))
+  putStore([{ ...storeJson().lanes[0], leadName: 'LEAD2' }])
   expect((await doLane($, 'lane off')).text).toBe('This session is no longer lane svc-api.')
   expect(storeJson().lanes).toEqual([])
 })
@@ -15635,6 +15641,15 @@ test('stuck lanes: the claim checks the other leads again inside the store lock:
   lockHook = undefined
   leadsListHook = undefined
   expect(leadNames()).toEqual({ API: 'old-aa' })
+})
+
+test('stuck lanes: a lead can claim its own attached lanes that still name its old lead name (a re-grant under a new name); lane_list tells them', async ($, on) => {
+  await leadAt($, on, [])
+  putStore([attRec(SID, 'ATT', { leadName: 'old-bb' })])
+  expect(JSON.stringify(await $.tool.call(listCall()))).toContain(CLAIM_HINT(['ATT']))
+  askAnswer = YES
+  expect((await claim($)).text).toBe(claimedText(['ATT'], 'LEAD'))
+  expect(leadNames()).toEqual({ ATT: 'LEAD' })
 })
 
 test('stuck lanes: a lead renamed only in letter case can claim the lanes it made under the old case', async ($, on) => {

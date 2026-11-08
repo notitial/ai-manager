@@ -2961,6 +2961,20 @@ async function sidSyncDue($: any, sid: string): Promise<Bound | undefined> {
   sidSynced.set(sid, key)
   return b
 }
+// A binding made before the lead name left an attached record's hash holds the older hash. It is rewritten to the current one the first time the record is read
+// (this sync runs once per binding, from the first tick after a reload), so a later carry or claim of the lead name never leaves that lane with no matching hash.
+async function hashUpgraded($: any, sid: string, b: Bound & { name: string }, l: c.Lane): Promise<Bound & { name: string }> {
+  if (l.adopted !== true || b.rec === undefined) return b
+  const cur = await sha($, c.recordText(l))
+  if (c.recOk(b.rec, cur)) return b
+  const now = (await $.state.get(lane)).value as Bound | null | undefined
+  if (!now || now.name !== b.name || now.at !== b.at || now.rec !== b.rec) return b
+  const up = { ...now, name: b.name, rec: cur }
+  await $.state.set(lane, up)
+  sidSynced.set(sid, `${up.name}\n${up.at}\n${up.rec}`)
+  await log($, sid, 'hash-upgraded')
+  return up
+}
 async function sidSync($: any, sid: string, b: Bound & { name: string }) {
   const failed = (code: string) => log($, sid, 'sid-heal-failed', code)
   const lanes = await loadLanes($)
@@ -2968,6 +2982,7 @@ async function sidSync($: any, sid: string, b: Bound & { name: string }) {
   const l = lanes.find((x) => x.name === b.name)
   if (!l || !l.src) return
   if (!(await recMatch($, b.rec, l))) return failed('record-changed')
+  b = await hashUpgraded($, sid, b, l)
   if ((await sessionRoot($)) !== l.folder) return failed('wrong-folder')
   if (l.sid === sid && l.parked === undefined) return
   const same = async () => {
@@ -3354,7 +3369,7 @@ async function laneTable($: any, sid: string) {
   const leads = await leadsInReach($, base.live, base.g).catch(() => [])
   const text = c.laneListText(base.lanes.filter((l) => c.inReach(base.g, l)), base.live.map(regEntry), await $.clock.now(), { level: base.g.level, name: base.g.name, conductors, leads })
   // A lead's own list shows only the lanes that name it; the ones that name a lead no live session carries are told by name, for the person's /callboard claim.
-  const orphans = c.claimable(base.lanes, base.g, otherNames(base.live, sid)).map((l) => l.name)
+  const orphans = (await claimLanes($, base.live, base.lanes, base.g, sid).catch(() => [])).map((l) => l.name)
   return { text: orphans.length > 0 ? `${text}\n\n${c.CLAIM_HINT(orphans)}` : text }
 }
 
@@ -3590,7 +3605,13 @@ async function claimBlocked($: any, live: RegRow[], sid: string, pin: string): P
   return leads.some((x) => c.leadNameOf(rows, x.sid) === undefined) ? 'other-unnamed' : undefined
 }
 // An attached record whose lead session is live is that lead's, whatever name it carries now.
-const leadLiveFor = (live: RegRow[], l: { adopted?: true | boolean; lead?: string }): boolean => l.adopted === true && l.lead !== undefined && live.some((r) => r.j.sessionId === l.lead)
+const leadLiveFor = (live: RegRow[], l: { adopted?: true | boolean; lead?: string }, own: string): boolean => l.adopted === true && l.lead !== undefined && l.lead !== own && live.some((r) => r.j.sessionId === l.lead)
+// The records /callboard claim would take now: claimable, minus an attached record whose lead is another live session and a lane the lead made that a live session carries.
+async function claimLanes($: any, live: RegRow[], lanes: c.Lane[], g: c.Grant, sid: string): Promise<c.Lane[]> {
+  const out: c.Lane[] = []
+  for (const l of c.claimable(lanes, g, otherNames(live, sid))) if (!leadLiveFor(live, l, sid) && (l.adopted || (await laneLive($, live, l)) === undefined)) out.push(l)
+  return out
+}
 
 // What /callboard claim would claim now: the lead's grant and name, and the claimable records of its one store. A record still names a lead no live session carries.
 type ClaimPlan = { g: c.Grant; lanes: c.Lane[]; key: string; repo: string }
@@ -3601,9 +3622,8 @@ async function claimPlan($: any, sid: string): Promise<{ text: string } | ClaimP
   if (base.g.name === '') return { text: c.CLAIM_UNNAMED }
   const blocked = await claimBlocked($, base.live, sid, base.g.pins[0])
   if (blocked) return { text: blocked === 'unreadable' ? c.CLAIM_UNREADABLE : c.CLAIM_OTHER_UNNAMED }
-  const lanes: c.Lane[] = []
   // A lane the lead made that a live session carries is left out: its stored hash would break (an attached record's does not hold the lead name).
-  for (const l of c.claimable(base.lanes, base.g, otherNames(base.live, sid))) if (!leadLiveFor(base.live, l) && (l.adopted || (await laneLive($, base.live, l)) === undefined)) lanes.push(l)
+  const lanes = await claimLanes($, base.live, base.lanes, base.g, sid)
   if (lanes.length === 0) return { text: c.CLAIM_NONE }
   // One repo has one store: every claimable record comes from it.
   return { g: base.g, lanes, key: lanes[0].src!, repo: base.g.pins[0] }
@@ -3649,7 +3669,7 @@ async function claimCommand($: any, sid: string, code: c.OriginCode, busy: () =>
     const held = await claimBlocked($, rows, sid, plan.repo)
     if (held) return { no: held === 'unreadable' ? 'registry-unreadable' : 'other-lead-unnamed' }
     for (const l of recs) {
-      if (l.leadName !== want.get(l.name) || live.includes(l.leadName!.toLowerCase()) || leadLiveFor(rows, l)) return { no: 'changed' }
+      if (l.leadName !== want.get(l.name) || live.includes(l.leadName!.toLowerCase()) || leadLiveFor(rows, l, sid)) return { no: 'changed' }
       if (!l.adopted) {
         const busyLane = await laneLive($, rows, l)
         if (busyLane) return { no: busyLane }
