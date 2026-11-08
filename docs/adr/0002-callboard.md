@@ -279,6 +279,7 @@ Probes named by the design and the README. Status as recorded; "open" means not 
   - cues carry no text; every submitted turn is fixed text that carries no approval;
   - the target runs its own checks (binding, record hash, folder, birth window, idle, empty box, background work, signed report);
   - limits in the reader: 12 resumes an hour, one compaction per 30 minutes over 100k tokens, one nudge per 30 minutes and 3 an hour, 16 pings per idle stretch, 12 notices an hour, 12 creates an hour, 16 lanes per repo, 6 panels a minute and 8 live sessions per repo;
+  - each prompt notice to a lead is a full-context cache read on that session; capped at 30 notices an hour per lead (its own counter, separate from the lanes-changed counter); at the cap with a 200k context that is about 6M cached tokens an hour, normal load about a quarter of that;
   - every force stop and every remove asks the person; retire and park need the target's own confirmation; a stopped session is resumable from history;
   - the read-only stores folder switches off the lead-less chain.
 - **Accepted residual: other plugins.** Another plugin loaded in the session can run `/callboard` and may answer its dialogs. The install rule is that callboard is the only plugin on `CLAUDE_CODE_PLUGIN_DIRS`; plugins that load from a repo's `.claude/skills` remain an open gap.
