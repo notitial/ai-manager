@@ -2215,21 +2215,26 @@ async function reservedGet($: any, sid: string, force = false): Promise<readonly
   return c.localReservedNames()
 }
 
-// The self-threshold's state, judged by the tick (process and report reads, too slow for a hook): a bound lane signed done (its report signed and
+// A bound lane whose report is signed and current. Not a lane: false.
+async function laneSignedDone($: any, sid: string): Promise<boolean> {
+  if ((await $.state.get(lane)).value == null) return false
+  const l = await reportLaneOf($, sid)
+  return !!l && (await retireReportCheck($, sid, l)) === undefined
+}
+
+// The session's state, judged by the tick (process and report reads, too slow for a hook): a bound lane signed done (its report signed and
 // current) is not nudged by its own level; working is a bound lane not signed done since its last prompt, or a background agent or shell still
-// running. A check that cannot tell counts as working.
+// running. A check that cannot tell counts as working. v16: the state no longer changes which level nudges (the size alone does); the cache nudge
+// still goes only to an idle one.
 async function thresholdState($: any, sid: string): Promise<'done' | 'working' | 'idle'> {
-  if ((await $.state.get(lane)).value != null) {
-    const l = await reportLaneOf($, sid)
-    return l && (await retireReportCheck($, sid, l)) === undefined ? 'done' : 'working'
-  }
+  if ((await $.state.get(lane)).value != null) return (await laneSignedDone($, sid)) ? 'done' : 'working'
   if (await busyAgents($)) return 'working'
   if ((await backgroundShells($, sid, ownRegOnce($))) !== undefined) return 'working'
   return 'idle'
 }
 
 // The self-threshold, at the end of a main-agent answer of a person's (interactive) session: past the idle level, one `threshold` nudge is recorded.
-// The hook reads only the tokens and the cheap state; the tick decides idle or working.
+// The hook reads only the tokens and the cheap state; the tick picks the kind from the size and skips a lane signed done.
 async function thresholdNudge($: any, sid: string) {
   if ((await $.state.get(request)).value) return
   const dueRead = await $.state.get(nudgeDueRef)
@@ -2240,16 +2245,16 @@ async function thresholdNudge($: any, sid: string) {
   const lv = await cfgGet($, sid)
   // v14 (2026-11-04): at or past the working level a soft nudge inside the gap may be followed by one hard one.
   if (!c.nudgeAllowed(ct, now, tokens >= lv.workingK * 1000)) return
-  // A lead is nudged by its own level only at the working level (2026-11-02): no record below it, so no nudge-due and nudge-dropped every turn.
-  if (tokens < (grants.has(sid) ? lv.workingK : lv.idleK) * 1000 || c.compactAllowed(ct, tokens, now)) return
+  // v16 (2026-11-08): every session, a lead too, is nudged from the idle level on.
+  if (tokens < lv.idleK * 1000 || c.compactAllowed(ct, tokens, now)) return
   // After the level, so a turn below it reads no registry.
   if (!(await mayNudge($, sid))) return
   await recordNudge($, sid, 'threshold', now, dueRead.version)
 }
 
 // The tick's step: a recorded nudge is dropped once stale (10 minutes), once the session has a request of its own, or once it may not compact;
-// it waits only while the session is not idle. A `threshold` nudge then gets its kind: none for a lane signed done, working at the working level while work runs
-// or for a lead, else idle; below the working level it is dropped. It is cleared and stamped, and the grant (nudgedAt) set, before the submit (as the compaction
+// it waits only while the session is not idle (v16: a busy session's nudge may instead be taken by the PostToolUse hook, midTurnNudge). A `threshold` nudge then gets
+// its kind from the size alone (thresholdKind): none for a lane signed done; below the idle level it is dropped. It is cleared and stamped, and the grant (nudgedAt) set, before the submit (as the compaction
 // resume is), so a submit slower than the timeout still goes out once and is never retried; only a submit that threw takes the grant back.
 async function nudgeTick($: any, sid: string) {
   const read = await $.state.get(nudgeDueRef)
@@ -2271,11 +2276,9 @@ async function nudgeTick($: any, sid: string) {
   if ((await idleCheck($, sid, ownReg($))) !== undefined) return
   let kind: c.NudgeKind | undefined = due.kind === 'threshold' ? undefined : due.kind
   if (due.kind === 'threshold') {
-    const st = await thresholdState($, sid)
-    if (st === 'done') return drop('lane-done')
-    // A lead waits for the working level whether or not work runs, and gets its text.
-    kind = c.thresholdKind(tokens, st === 'working' || grants.has(sid), await cfgGet($, sid))
-    if (!kind) return drop('below-working')
+    if (await laneSignedDone($, sid)) return drop('lane-done')
+    kind = c.thresholdKind(tokens, await cfgGet($, sid))
+    if (!kind) return drop('below-level')
     // v14: the kind follows the size now; one that fell back to the soft text (a compaction meanwhile) keeps the gap.
     if (!c.nudgeAllowed(await counts($), now, kind === 'working')) return drop('nudge-limit')
   }
@@ -2286,6 +2289,66 @@ async function nudgeTick($: any, sid: string) {
   if (sent === 'failed') await $.state.set(nudgedAtRef, null)
   if (sent === 'failed') turnKind.delete(sid)
   await log($, sid, sent === 'ok' ? 'nudged' : sent === 'timeout' ? 'nudge-unconfirmed' : 'nudge-failed', kind!)
+}
+
+// v16 (2026-11-08): the nudge in the middle of a turn. A session that crosses a level inside a long turn would otherwise learn of it only when the turn ends
+// (thresholdNudge) and the tick submits it, and a lane keeps working past 400k meanwhile. After a main-agent tool call (PostToolUse, or its failure) the hook
+// below returns the nudge text as additionalContext, which the model reads with the tool's result, before its next step. Same limits as the tick's nudge:
+// no request of the session's own, a person's interactive session, not a lane signed done, nudgeAllowed (30-minute gap, one hard after a soft, 3 an hour),
+// compactAllowed. A recorded `threshold` nudge is taken over (cleared by version, so the tick's submit and this hook cannot both send it); a lead or cache one is
+// left to the tick. The check order is cheap first: the token count, then state reads; a session that may not be nudged is not looked at again for a minute.
+// The idle submit stays as the fallback for a turn that ends without a tool call after the level.
+const midTurnBusy = new Set<string>()
+const midTurnSkip = new Map<string, number>()
+const MID_TURN_SKIP_MS = 60_000
+// No timer here: a hook has 10 s of its own time and a $.clock.sleep counts against it (see pause), while the $ calls below do not. The claim is the last step before the
+// text is returned, so a throw before it consumes nothing; one after it (the log) is caught and cannot cost the nudge.
+async function midTurnNudge($: any, e: any): Promise<string | undefined> {
+  if (typeof e?.agent_id === 'string' && e.agent_id !== '') return undefined
+  const sid = await $.session.id()
+  if (typeof sid !== 'string' || !c.SID_RE.test(sid) || midTurnBusy.has(sid)) return undefined
+  midTurnBusy.add(sid)
+  try {
+    const now = await $.clock.now()
+    if ((midTurnSkip.get(sid) ?? 0) > now) return undefined
+    const lv = await cfgGet($, sid)
+    const tokens = (await $.session.usage()).context.tokens ?? 0
+    // The cheap gate: most tool calls end here.
+    const kind = c.thresholdKind(tokens, lv)
+    if (!kind) return undefined
+    if ((await $.state.get(request)).value) return undefined
+    const read = await $.state.get(nudgeDueRef)
+    const due = read.value as c.NudgeDue | null | undefined
+    if (due != null && due.kind !== 'threshold') return undefined
+    const ct = await counts($)
+    if (!c.nudgeAllowed(ct, now, kind === 'working') || c.compactAllowed(ct, tokens, now)) return undefined
+    if (!(await mayNudge($, sid)) || (await laneSignedDone($, sid))) {
+      midTurnSkip.set(sid, now + MID_TURN_SKIP_MS)
+      return undefined
+    }
+    const text = c.nudgeText(kind, lv)
+    // Cleared by version when a nudge was recorded; else the claim is the stamp below, and midTurnBusy keeps a second hook of the same batch out.
+    if (due != null && (await $.state.set(nudgeDueRef, null, { ifVersion: read.version })).isSet === false) return undefined
+    await bump($, (x) => ({ ...x, lastNudgeMs: now, lastNudgeKind: kind, nudgeTimes: [...(x.nudgeTimes ?? []).filter((t) => t <= now && now - t < c.HOUR_MS), now] }))
+    await $.state.set(nudgedAtRef, now)
+    await log($, sid, 'nudged', `${kind} mid-turn`).catch(() => undefined)
+    return text
+  } catch {
+    await log($, sid, 'error', 'mid-turn-nudge').catch(() => undefined)
+    return undefined
+  } finally {
+    midTurnBusy.delete(sid)
+  }
+}
+
+// The PostToolUse and PostToolUseFailure hook: the prompt answering's done mark (doneHook), then the mid-turn nudge added to the result's additionalContext.
+async function postToolHook($: any, e: any, next: any): Promise<any> {
+  await promptDone($, e).catch(() => undefined)
+  const r = await next(e)
+  const text = await midTurnNudge($, e)
+  if (typeof text !== 'string') return r
+  const extra = (r as { additionalContext?: unknown } | null | undefined)?.additionalContext
+  return { ...(r ?? {}), additionalContext: [...(Array.isArray(extra) ? extra : []), text] }
 }
 
 // v13.2 (2026-11-02): the keepalive ping. The prompt cache lives an hour from the last call, and a turn's last call is at its end, so a session left idle past
@@ -2344,7 +2407,7 @@ async function keepaliveTick($: any, sid: string, submitsAtStart: number) {
   if (st === 'done') return log($, sid, 'keepalive-skipped', 'lane-done')
   const tokens = (await $.session.usage()).context.tokens ?? 0
   const ct = await counts($)
-  const kind = c.thresholdKind(tokens, st === 'working' || grants.has(sid), k)
+  const kind = c.thresholdKind(tokens, k)
   // The reads since the idle check take time: a submit or a draft that came meanwhile wins, and this gap is missed (review c1).
   const draft = (await $.prompt.read()).text
   if (submits !== submitsAtStart || draft !== '' || (lastSubmitAt.get(sid) ?? 0) > gapStart) return kaOnce($, sid, `late:${gapStart}`, 'keepalive-skipped', 'late')
@@ -2365,7 +2428,7 @@ async function keepaliveTick($: any, sid: string, submitsAtStart: number) {
 
 // The lead's lane_compact with no request of the session's own: a session that may be nudged, the same limits as a compaction, no background agents,
 // the nudge throttle; then one nudge is recorded. A fresh nudge already pending is answered nudged as it stands (its time is kept, so the lead cannot
-// stretch its 10 minutes); a pending `threshold` one becomes a lead nudge, so it goes out whatever the working level.
+// stretch its 10 minutes); a pending `threshold` one becomes a lead nudge (the lead text, not the size's).
 async function leadNudge($: any, sid: string, now: number, answer: Answer, refuse: (reason: string) => Promise<void>) {
   // A cue's path: the plain registry, as every cue check (a lead's cue never reaches a session whose row is only in another config folder).
   if (!(await personRow($, sid, regOnce($)))) return refuse('not-interactive')
@@ -6774,8 +6837,8 @@ export const register: Register = (on) => {
     }
   }).catch(($, e, next) => next(e))
 
-  on('classic.PostToolUse', doneHook).catch(($, e, next) => next(e))
-  on('classic.PostToolUseFailure', doneHook).catch(($, e, next) => next(e))
+  on('classic.PostToolUse', postToolHook).catch(($, e, next) => next(e))
+  on('classic.PostToolUseFailure', postToolHook).catch(($, e, next) => next(e))
   on('classic.PermissionDenied', doneHook).catch(($, e, next) => next(e))
 
   on('classic.PostCompact', async ($, e, next) => {

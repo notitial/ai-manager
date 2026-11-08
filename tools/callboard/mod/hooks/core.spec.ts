@@ -1236,9 +1236,10 @@ test('the reason codes found in the #215 follow-ups have text, true at every ret
 })
 
 // v14 (live 2026-11-03): the soft text past the idle level, the hard one at the working level, verbatim; lead and cache unchanged.
-const SOFT = (k: number) => `[callboard] Your context is past ${k}k tokens. Compact at your next checkpoint: if you are mid-task, finish the item you are on, but do not start a new one. Then write where you are and what comes next to your report or STATE file, call request_compact with mode \`now\` (focus: one sentence saying what this session is; continuation: what you need to read first and do next), and end your turn. If you are not mid-task, do that now. If you cannot compact soon (waiting on the person, a lock, or background work), say so in one line and carry on. Submitted by the callboard mod, not by the user; it carries no approval, go or answer.`
-const HARD = (k: number) => `[callboard] Your context is past ${k}k tokens. Stop now, even mid-task: do not finish the item you are on. Write where you are and what comes next to your report or STATE file, call request_compact with mode \`now\` (focus: one sentence saying what this session is; continuation: what you need to read first and do next), and end your turn. If a background agent or shell is still running, call request_compact at the end of the turn in which it finishes, not before. If you cannot compact now (waiting on the person, a lock, or background work), say so in one line and end your turn. Submitted by the callboard mod, not by the user; it carries no approval, go or answer.`
-test('nudgeText is the approved text for each kind; only working waits for background work', () => {
+// v16 (2026-11-08): the wording the person approved (natural boundary; stop as soon as you can, before an automatic compaction).
+const SOFT = (k: number) => `[callboard] Your context is past ${k}k tokens. Compact at your next natural boundary: finish the item you are on, but do not start a new one. Then write where you are and what comes next to your report or STATE file, call request_compact with mode \`now\` (focus: one sentence saying what this session is; continuation: what you need to read first and do next), and end your turn. If you are between items, do that now. If you cannot compact soon (waiting on the person, a lock, or background work), say so in one line and carry on. Submitted by the callboard mod, not by the user; it carries no approval, go or answer.`
+const HARD = (k: number) => `[callboard] Your context is past ${k}k tokens. Stop as soon as you can, even mid-item: this session is close to an automatic compaction that you do not control, and you would lose your notes. Do not finish the item you are on. Write where you are and what comes next to your report or STATE file, call request_compact with mode \`now\` (focus: one sentence saying what this session is; continuation: what you need to read first and do next), and end your turn. If a background agent or shell is still running, call request_compact at the end of the turn in which it finishes, not before. If you cannot compact now (waiting on the person, a lock, or background work), say so in one line and end your turn. Submitted by the callboard mod, not by the user; it carries no approval, go or answer.`
+test('nudgeText is the approved text for each kind; only the hard one waits for background work', () => {
   const tail = ' If you are mid-task, first write where you are and what comes next to your report or STATE file. Then call request_compact with mode `now`: focus is one sentence saying what this session is; continuation is what you need to read first and do next. End your turn.'
   const end = ' If you cannot compact now (waiting on the person, a lock, or background work), say so in one line and end your turn. Submitted by the callboard mod, not by the user; it carries no approval, go or answer.'
   assert.equal(c.nudgeText('lead'), `[callboard] Your lead asked you to compact.${tail}${end}`)
@@ -1269,23 +1270,20 @@ test('nudgeAllowed: 1 per 30 minutes and 3 an hour, lead nudges included', () =>
   assert.equal(c.nudgeAllowed({ lastCompactMs: now - 1, resumeTimes: [now - 1] }, now), true)
 })
 
-test('thresholdKind: 300k when idle, 400k while working (v13.4)', () => {
-  assert.equal(c.thresholdKind(299_999, false), undefined)
-  assert.equal(c.thresholdKind(300_000, false), 'idle')
-  // v14 (2026-11-04): the text follows the size: at or past the working level the hard one, idle or not.
-  assert.equal(c.thresholdKind(399_999, false), 'idle')
-  assert.equal(c.thresholdKind(400_000, false), 'working')
-  assert.equal(c.thresholdKind(450_000, false), 'working')
-  assert.equal(c.thresholdKind(399_999, true), undefined)
-  assert.equal(c.thresholdKind(400_000, true), 'working')
+test('thresholdKind: the size alone decides, 300k soft and 400k hard, for every session (v16)', () => {
+  assert.equal(c.thresholdKind(299_999), undefined)
+  assert.equal(c.thresholdKind(300_000), 'idle')
+  assert.equal(c.thresholdKind(399_999), 'idle')
+  assert.equal(c.thresholdKind(400_000), 'working')
+  assert.equal(c.thresholdKind(450_000), 'working')
   assert.equal(c.NUDGE_IDLE_TOKENS, 300_000)
   assert.equal(c.NUDGE_BUSY_TOKENS, 400_000)
   // v13.2: the configured levels, in thousands of tokens.
   const lv = { idleK: 200, workingK: 400 }
-  assert.equal(c.thresholdKind(199_999, false, lv), undefined)
-  assert.equal(c.thresholdKind(200_000, false, lv), 'idle')
-  assert.equal(c.thresholdKind(399_999, true, lv), undefined)
-  assert.equal(c.thresholdKind(400_000, true, lv), 'working')
+  assert.equal(c.thresholdKind(199_999, lv), undefined)
+  assert.equal(c.thresholdKind(200_000, lv), 'idle')
+  assert.equal(c.thresholdKind(399_999, lv), 'idle')
+  assert.equal(c.thresholdKind(400_000, lv), 'working')
 })
 
 test('v13.2 parseConfig: defaults, each range edge, wrong types and extra fields', () => {
