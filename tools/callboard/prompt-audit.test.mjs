@@ -200,7 +200,7 @@ test('lost race in the ledger: a returned row and a superseded row for one reque
   assert.equal(rep.table[0].outcome, 'returned')
 })
 
-test('c: transcripts are read only inside the folder: a symlinked folder is not followed, a huge line is skipped', () => {
+test('c: transcripts are read only inside the folder: a symlinked folder is not followed, a line over 1 MB is read like any other', () => {
   const fx = fixture()
   ledger(fx, [ON(), ...clean()])
   const outside = mkdtempSync(join(tmpdir(), 'pa-out-'))
@@ -211,9 +211,39 @@ test('c: transcripts are read only inside the folder: a symlinked folder is not 
   assert.equal(rep.scanned.transcriptFiles, 1)
   assert.deepEqual(rules(rep), ['hook-decision-unmatched'])
   assert.equal(rep.anomalies[0].file, 'big.jsonl')
-  // A line that was not read may have held a decision: the run is incomplete, not clean.
-  assert.ok(rep.problems.some((p) => /big\.jsonl: 1 line\(s\) over \d+ bytes were skipped/.test(p)), rep.problems.join('|'))
-  assert.match(render(rep), /INCOMPLETE: \d+ problem/)
+  // Live test A, finding 4: a 1 MB line is no longer skipped, so it no longer makes the run INCOMPLETE.
+  assert.deepEqual(rep.problems, [])
+})
+test('finding 4: a line over the cap with no decision text is streamed past and noted; one that holds decision text is a problem', () => {
+  const fx = fixture()
+  ledger(fx, [ON(), ...clean()])
+  const dir = join(fx.projects, '-Users-x-api')
+  mkdirSync(dir, { recursive: true })
+  // The marker sits across a 64 KB chunk border in the second line, and in the middle of the first one never.
+  writeFileSync(join(dir, 'a.jsonl'), `${'x'.repeat(300_000)}\n${'y'.repeat(65_530)}permissionDecision${'y'.repeat(300_000)}\n${'z'.repeat(10)}\n`)
+  writeFileSync(join(dir, 'b.jsonl'), `${'x'.repeat(300_000)}\n`)
+  const rep = run(fx, { transcriptLineMax: 100_000 })
+  assert.equal(rep.scanned.transcriptFiles, 2)
+  assert.equal(rep.problems.length, 1)
+  assert.match(rep.problems[0], /a\.jsonl: 1 line\(s\) over 100000 bytes held permission-decision text/)
+  assert.ok(rep.notes.some((n) => /2 line\(s\) over 100000 bytes held no permission-decision text/.test(n)), rep.notes.join('|'))
+  assert.match(render(rep), /INCOMPLETE/)
+  // Without any marker the run is complete.
+  rmSync(join(dir, 'a.jsonl'))
+  const rep2 = run(fx, { transcriptLineMax: 100_000 })
+  assert.deepEqual(rep2.problems, [])
+  assert.match(render(rep2), /ANOMALIES \(must be empty\)\nnone/)
+})
+test('eachLine: markers are found across chunk borders in a skipped line, and not in one that has none', () => {
+  const d = mkdtempSync(join(tmpdir(), 'pa-m-'))
+  const p = join(d, 'f.jsonl')
+  writeFileSync(p, `${'a'.repeat(65_536 - 5)}needle${'b'.repeat(200_000)}\n${'c'.repeat(200_000)}\nneedle\n`)
+  const got = []
+  const s = eachLine(p, { maxLine: 100_000, markers: ['needle'] }, (l) => got.push(l))
+  assert.deepEqual(got, ['needle'])
+  assert.equal(s.skippedLong, 2)
+  assert.equal(s.skippedMarked, 1)
+  rmSync(d, { recursive: true })
 })
 test('review r2: a transcripts folder that is itself a symlink to a real folder is read, not skipped', () => {
   const fx = fixture()
@@ -626,4 +656,70 @@ test('review: a transcript folder that cannot be listed is a problem', () => {
   } finally {
     chmodSync(bad, 0o700)
   }
+})
+
+// ---- live test A fixes ----
+const LEAD = 'bbbbbbbb-0000-4000-8000-123456789abc'
+// The lead's own transcript: one assistant line per prompt_answer call, as Claude Code writes a tool_use block.
+function leadTranscript(fx, sid, calls, name = 'mcp__callboard__prompt_answer') {
+  const dir = join(fx.projects, '-Users-x-lead')
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, `${sid}.jsonl`), lines(calls.map((id, i) => ({ type: 'assistant', sessionId: sid, timestamp: iso(BASE + 30_000 + i), message: { content: [{ type: 'tool_use', id: `toolu_${i}`, name, input: { id, decision: 'allow', why: 'reads only' } }] } }))))
+}
+test('finding 3: an answered row by a lead needs a prompt_answer call for its id in that lead\'s transcript', () => {
+  const fx = fixture()
+  ledger(fx, [ON(), ...clean(uid(1), BASE, uid(101), { by: LEAD })])
+  leadTranscript(fx, LEAD, [uid(1)])
+  assert.deepEqual(run(fx).anomalies, [])
+  assert.deepEqual(run(fx).problems, [])
+  // A forged pair of row and file: the lead made no such call.
+  leadTranscript(fx, LEAD, [uid(2)])
+  const rep = run(fx)
+  assert.deepEqual(rules(rep), ['answered-without-prompt-answer'])
+  assert.equal(rep.anomalies[0].rule, 'c')
+  assert.equal(rep.anomalies[0].id, uid(1))
+  // A call to another tool of the same name tail by another server still counts only by the callboard tool's name.
+  leadTranscript(fx, LEAD, [uid(1)], 'mcp__other__not_prompt_answer')
+  assert.deepEqual(rules(run(fx)), ['answered-without-prompt-answer'])
+})
+test('finding 3: a lead transcript that cannot be found makes the run incomplete, and no transcript folder leaves the check unrun', () => {
+  const fx = fixture()
+  ledger(fx, [ON(), ...clean(uid(1), BASE, uid(101), { by: LEAD })])
+  mkdirSync(join(fx.projects, '-Users-x-lead'), { recursive: true })
+  const rep = run(fx)
+  assert.deepEqual(rep.anomalies, [])
+  assert.ok(rep.problems.some((p) => p.includes(LEAD) && /not found/.test(p)), rep.problems.join('|'))
+  const none = audit({ root: fx.root, projects: undefined, now: NOW })
+  assert.deepEqual(none.anomalies, [])
+  assert.deepEqual(none.problems, [])
+})
+test('finding 3: the check is per lead session: a call by one lead does not vouch for another lead\'s answer', () => {
+  const fx = fixture()
+  const OTHER = 'cccccccc-0000-4000-8000-123456789abc'
+  ledger(fx, [ON(), ...clean(uid(1), BASE, uid(101), { by: LEAD })])
+  leadTranscript(fx, OTHER, [uid(1)])
+  leadTranscript(fx, LEAD, [])
+  assert.deepEqual(rules(run(fx)), ['answered-without-prompt-answer'])
+})
+test('finding 1: a request with no ending row and no request file is a fault; with its file, or young, or on a lone ledger, it is not', () => {
+  const fx = fixture()
+  ledger(fx, [ON(), R('requested', BASE, { ...T, id: uid(1), nonce: uid(101), tier: 'lead' })])
+  // A ledger alone (no session folders): absence of files says nothing.
+  assert.deepEqual(run(fx).anomalies, [])
+  const sdir = join(fx.root, SID)
+  mkdirSync(sdir)
+  const rep = run(fx)
+  assert.deepEqual(rules(rep), ['request-closed-without-row'])
+  assert.equal(rep.table[0].outcome, 'closed-no-row')
+  // Young: the mod's tick has not had its time yet.
+  assert.deepEqual(run(fx, { now: BASE + 5 * 60_000 }).anomalies, [])
+  // The file is there: the request is open, not closed.
+  writeFileSync(join(sdir, `${uid(1)}.request.json`), '{}')
+  const open = run(fx)
+  assert.deepEqual(open.anomalies, [])
+  assert.equal(open.table[0].outcome, 'open')
+  // An ending row of any kind closes it.
+  rmSync(join(sdir, `${uid(1)}.request.json`))
+  ledger(fx, [ON(), R('requested', BASE, { ...T, id: uid(1), nonce: uid(101), tier: 'lead' }), R('superseded', BASE + 20_000, { ...T, id: uid(1) })])
+  assert.deepEqual(run(fx).anomalies, [])
 })

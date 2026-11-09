@@ -32,7 +32,12 @@ import { pathToFileURL } from 'node:url'
 
 export const LEDGER_MAX_BYTES = 16 * 1024 * 1024
 export const LEDGER_LINE_MAX = 64 * 1024
-export const TRANSCRIPT_LINE_MAX = 1024 * 1024
+// A transcript line holds a whole tool result or attachment, so real ones pass 1 MB (live test A: three sessions). Lines up to this size are read and tested like any other;
+// a longer one is streamed past, looking only for the text a decision needs (TRANSCRIPT_MARKERS), and is a problem only if it holds one.
+export const TRANSCRIPT_LINE_MAX = 32 * 1024 * 1024
+const TRANSCRIPT_MARKERS = ['permissionDecision', 'hook_permission_decision']
+// A request whose hook ended without a row is closed by the mod's tick within seconds; a request with no ending row and no request file after this long is a fault.
+export const CLOSE_GRACE_MS = 10 * 60 * 1000
 export const TRANSCRIPT_MAX_BYTES = 1024 * 1024 * 1024
 export const TRANSCRIPT_TOTAL_MAX_BYTES = 2 * 1024 * 1024 * 1024
 export const TRANSCRIPT_FILES_MAX = 2000
@@ -71,20 +76,20 @@ class AuditError extends Error {}
 
 // ---- bounded, symlink-refusing reads ----
 // Reads a regular file line by line through O_NOFOLLOW and an fstat of the open descriptor. A line over maxLine is skipped, never
-// buffered whole. Throws AuditError('symlink' | 'not-a-file' | 'too-large' | ...) with a short code in .code.
+// buffered whole (with `markers`, it is streamed past and counted in skippedMarked when it held one of them). Throws AuditError('symlink' | 'not-a-file' | 'too-large' | ...) with a short code in .code.
 function codeErr(code, path) {
   const e = new AuditError(`${code}: ${path}`)
   e.code = code
   return e
 }
-export function eachLine(path, { maxLine, maxFileBytes, maxRead }, onLine) {
+export function eachLine(path, { maxLine, maxFileBytes, maxRead, markers = [] }, onLine) {
   let fd
   try {
     fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW)
   } catch (e) {
     throw codeErr(e.code === 'ELOOP' ? 'symlink' : e.code === 'ENOENT' ? 'missing' : 'unreadable', path)
   }
-  const stats = { skippedLong: 0, truncated: false, bytes: 0 }
+  const stats = { skippedLong: 0, skippedMarked: 0, truncated: false, bytes: 0 }
   try {
     const st = fstatSync(fd)
     if (!st.isFile()) throw codeErr('not-a-file', path)
@@ -93,12 +98,27 @@ export function eachLine(path, { maxLine, maxFileBytes, maxRead }, onLine) {
     let parts = []
     let len = 0
     let skipping = false
+    // A line being skipped is searched for the markers across chunk borders: the last bytes of what was seen are kept and put before the next piece.
+    const mk = markers.map((m) => Buffer.from(m))
+    const keep = Math.max(0, ...mk.map((m) => m.length - 1))
+    let marked = false
+    let tail = Buffer.alloc(0)
+    const scan = (seg) => {
+      if (mk.length === 0) return
+      const hay = tail.length > 0 ? Buffer.concat([tail, seg]) : seg
+      if (!marked && mk.some((m) => hay.includes(m))) marked = true
+      tail = Buffer.from(hay.subarray(Math.max(0, hay.length - keep)))
+    }
     const flush = () => {
-      if (skipping) stats.skippedLong++
-      else if (len > 0) onLine(Buffer.concat(parts, len).toString('utf8'))
+      if (skipping) {
+        stats.skippedLong++
+        if (marked) stats.skippedMarked++
+      } else if (len > 0) onLine(Buffer.concat(parts, len).toString('utf8'))
       parts = []
       len = 0
       skipping = false
+      marked = false
+      tail = Buffer.alloc(0)
     }
     for (;;) {
       if (maxRead !== undefined && stats.bytes >= maxRead) {
@@ -118,10 +138,11 @@ export function eachLine(path, { maxLine, maxFileBytes, maxRead }, onLine) {
           len += end - from
           if (len > maxLine) {
             skipping = true
+            scan(Buffer.concat([...parts, chunk.subarray(from, end)]))
             parts = []
             len = 0
           } else parts.push(Buffer.from(chunk.subarray(from, end)))
-        }
+        } else scan(chunk.subarray(from, end))
         if (nl === -1) break
         flush()
         from = nl + 1
@@ -290,8 +311,12 @@ function collectTranscriptFiles(projects, since, problems) {
   return found
 }
 
-function scanTranscripts(projects, since, notes, problems, budget) {
+function scanTranscripts(projects, since, notes, problems, budget, lineMax) {
   const decisions = []
+  // The prompt_answer calls each session made (session id -> request ids), and the sessions whose transcript was read at all (rule c2).
+  const answerCalls = new Map()
+  const sessions = new Set()
+  let longUnmarked = 0
   let scanned = 0
   let total = 0
   const files = collectTranscriptFiles(projects, since, problems)
@@ -307,8 +332,11 @@ function scanTranscripts(projects, since, notes, problems, budget) {
     const permReq = new Set()
     const first = decisions.length
     let lineNo = 0
+    const fileSid = basename(f.path, '.jsonl')
+    // The sessions this file speaks for, counted as read only once the whole file was (a partly read transcript says nothing about a missing call).
+    const fileSessions = new Set([fileSid])
     try {
-      const s = eachLine(f.path, { maxLine: TRANSCRIPT_LINE_MAX, maxRead: Math.min(TRANSCRIPT_MAX_BYTES, room) }, (line) => {
+      const s = eachLine(f.path, { maxLine: lineMax, maxRead: Math.min(TRANSCRIPT_MAX_BYTES, room), markers: TRANSCRIPT_MARKERS }, (line) => {
         lineNo++
         const hasPd = line.includes('permissionDecision')
         const hasAtt = line.includes('hook_permission_decision')
@@ -322,7 +350,20 @@ function scanTranscripts(projects, since, notes, problems, budget) {
         if (!j || typeof j !== 'object') return
         // A tool_use block names the tool; its result line (which holds the decision) does not.
         const content = j.message?.content
-        if (Array.isArray(content)) for (const b of content) if (b && b.type === 'tool_use' && typeof b.id === 'string' && typeof b.name === 'string' && names.size < 100000) names.set(b.id, b.name.slice(0, 200))
+        if (Array.isArray(content)) {
+          for (const b of content) {
+            if (!b || b.type !== 'tool_use') continue
+            if (typeof b.id === 'string' && typeof b.name === 'string' && names.size < 100000) names.set(b.id, b.name.slice(0, 200))
+            // A lead's answer is a prompt_answer call of the callboard tool, whose input names the request id.
+            if (typeof b.name === 'string' && /(^|__)prompt_answer$/.test(b.name) && typeof b.input?.id === 'string') {
+              const sidKey = typeof j.sessionId === 'string' ? j.sessionId : fileSid
+              fileSessions.add(sidKey)
+              let set = answerCalls.get(sidKey)
+              if (!set) answerCalls.set(sidKey, (set = new Set()))
+              if (set.size < 100000) set.add(b.input.id.slice(0, 100))
+            }
+          }
+        }
         const att = j.attachment
         if (hasAtt && att && typeof att === 'object' && att.type === 'hook_permission_decision' && att.hookEvent === 'PermissionRequest' && typeof att.toolUseID === 'string' && permReq.size < 100000) permReq.add(att.toolUseID.slice(0, 100))
         if (!hasPd) return
@@ -347,7 +388,9 @@ function scanTranscripts(projects, since, notes, problems, budget) {
       for (let i = first; i < decisions.length; i++) decisions[i].permissionRequest = decisions[i].toolUseId !== undefined && permReq.has(decisions[i].toolUseId)
       scanned++
       total += s.bytes
-      if (s.skippedLong > 0) problems.push(`transcripts: ${basename(f.path)}: ${s.skippedLong} line(s) over ${TRANSCRIPT_LINE_MAX} bytes were skipped, so a decision on one was not checked`)
+      if (!s.truncated) for (const k of fileSessions) sessions.add(k)
+      if (s.skippedMarked > 0) problems.push(`transcripts: ${basename(f.path)}: ${s.skippedMarked} line(s) over ${lineMax} bytes held permission-decision text and were not parsed, so a decision on one was not checked`)
+      longUnmarked += s.skippedLong - s.skippedMarked
       if (s.truncated && room < TRANSCRIPT_MAX_BYTES) {
         problems.push(`transcripts: the byte budget of ${budget} was used up inside ${basename(f.path)}; the rest of it and ${files.length - n - 1} more file(s) were not read`)
         break
@@ -357,7 +400,8 @@ function scanTranscripts(projects, since, notes, problems, budget) {
       problems.push(`transcripts: ${basename(f.path)}: ${e instanceof AuditError ? e.code : e.message}, not read`)
     }
   }
-  return { decisions, scanned, filesFound: files.length }
+  if (longUnmarked > 0) notes.push(`transcripts: ${longUnmarked} line(s) over ${lineMax} bytes held no permission-decision text and were streamed past unparsed`)
+  return { decisions, scanned, filesFound: files.length, answerCalls, sessions }
 }
 
 // ---- stats ----
@@ -371,7 +415,7 @@ function waitStats(values) {
 }
 
 // ---- the audit ----
-export function audit({ root, projects, since, now = Date.now(), projectsExplicit = false, transcriptBudget = TRANSCRIPT_TOTAL_MAX_BYTES }) {
+export function audit({ root, projects, since, now = Date.now(), projectsExplicit = false, transcriptBudget = TRANSCRIPT_TOTAL_MAX_BYTES, transcriptLineMax = TRANSCRIPT_LINE_MAX }) {
   const problems = []
   const notes = []
   let rootReal
@@ -498,12 +542,17 @@ export function audit({ root, projects, since, now = Date.now(), projectsExplici
 
   // f. request files older than 24 h, by age only (the live-session test is not applied here).
   let requestFiles = 0
+  const requestIds = new Set()
+  let sessionDirs = 0
+  let unlisted = 0
   for (const d of entries) {
     if (!d.isDirectory() || !ID_RE.test(d.name)) continue
+    sessionDirs++
     let inner
     try {
       inner = list(join(rootReal, d.name))
     } catch {
+      unlisted++
       continue
     }
     for (const f of inner) {
@@ -515,7 +564,23 @@ export function audit({ root, projects, since, now = Date.now(), projectsExplici
         continue
       }
       requestFiles++
+      requestIds.add(f.name.slice(0, 36))
       if (st.isFile() && now - st.mtimeMs > DAY_MS) flag('f', 'stale-request-file', `${d.name}/${f.name} is ${Math.floor((now - st.mtimeMs) / 3600000)} h old`, { id: f.name.slice(0, 36) })
+    }
+  }
+
+  // b2. a request with no ending row whose request file is gone: the hook (or a sweep) removed the files without a closing row. The mod writes the row first and keeps the
+  // files until it has, so this is a fault. Only judged when the folder holds session folders at all: a copy of the ledger alone shows no files, and absence says nothing there.
+  // A folder that could not be listed hides its request files: the check is not run then, and the run says so.
+  if (unlisted > 0) problems.push(`${unlisted} session folder(s) under the prompts folder could not be listed; requests closed without a row were not checked`)
+  if (sessionDirs > 0 && unlisted === 0) {
+    for (const g of groups) {
+      const req = g.requested[0]
+      if (req && g.ends.length === 0 && !requestIds.has(g.id) && now - req.ms > CLOSE_GRACE_MS && now - req.ms <= DAY_MS) {
+        flag('b', 'request-closed-without-row', `request ${g.id} (${req.tool ?? '?'}) has no ending row and no request file ${Math.floor((now - req.ms) / 60000)} min on`, { id: g.id, t: req.t })
+        const row = table.find((t) => t.id === g.id)
+        if (row && row.outcome === 'open') row.outcome = 'closed-no-row'
+      }
     }
   }
 
@@ -525,13 +590,15 @@ export function audit({ root, projects, since, now = Date.now(), projectsExplici
   //  - A returned row without `tuid` (an older ledger) backs the nearest decision within 10 minutes with the same tool (the tool named by
   //    the tool_use block of the same tool_use_id in the same file; when that block is not seen, any tool). The ledger holds no session id.
   // Decisions are taken in time order, so the result does not depend on file order.
-  let tx = { decisions: [], scanned: 0, filesFound: 0 }
+  let tx = { decisions: [], scanned: 0, filesFound: 0, answerCalls: new Map(), sessions: new Set() }
+  let txRan = false
   if (projects !== undefined) {
     try {
       // The folder may itself be a link (a dotfiles setup): its real path is what is checked and read, as for the prompts root.
       const projectsReal = realpathSync(projects)
       if (!lstatSync(projectsReal).isDirectory()) throw new Error('not a directory')
-      tx = scanTranscripts(projectsReal, since, notes, problems, transcriptBudget)
+      tx = scanTranscripts(projectsReal, since, notes, problems, transcriptBudget, transcriptLineMax)
+      txRan = true
     } catch {
       // A folder named with --projects that cannot be read is a problem (rule c did not run); the default folder may simply not exist.
       if (projectsExplicit) problems.push(`--projects ${projects}: not a readable folder; rule c was not checked`)
@@ -579,6 +646,24 @@ export function audit({ root, projects, since, now = Date.now(), projectsExplici
       const b = backing(d, undefined, false)
       if (b && d.source === 'user_temporary') lostRaces.push({ id: b.id ?? '', t: new Date(d.ms).toISOString(), via: 'transcript', detail: `${d.file}:${d.line}: ${d.source} while the ledger returned a decision at ${b.t}` })
     }
+  }
+
+  // c2. a lead's answer must be a real call: for each answered row, the answering lead's own transcript holds a prompt_answer call for that request id. This is what shows a
+  // decision file and an answered row written by hand (PLAN 8.7). Its bound: someone who also writes that call into the lead's transcript passes, as does one who
+  // writes both with the lead's own tool; it is a check against a forged row, not against a forger who can rewrite files the lead's session owns.
+  if (txRan) {
+    const missingLead = new Set()
+    for (const g of groups) {
+      for (const a of g.answered) {
+        if (a.by === undefined || a.id === undefined) continue
+        if (!tx.sessions.has(a.by)) {
+          missingLead.add(a.by)
+          continue
+        }
+        if (!tx.answerCalls.get(a.by)?.has(a.id)) flag('c', 'answered-without-prompt-answer', `request ${g.id}: the answered row (${a.t}) names lead session ${a.by}, whose transcript holds no prompt_answer call for it`, { id: g.id, t: a.t })
+      }
+    }
+    for (const sidMissing of missingLead) problems.push(`transcripts: the transcript of lead session ${sidMissing} was not found, so its answered rows were not checked against a prompt_answer call`)
   }
 
   anomalies.sort((x, y) => (x.rule < y.rule ? -1 : x.rule > y.rule ? 1 : 0))
