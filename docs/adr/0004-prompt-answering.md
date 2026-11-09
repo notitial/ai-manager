@@ -31,6 +31,11 @@ Facts that bound the options (Claude Code 2.1.319 unless noted):
 - Any process running as the person can write every file here (ADR 0002, Consequences). That includes the asking
   lane's own shell.
 
+Prior art: agent-dispatch's conductor answered its workers' prompts. Its decisions are in the archived ai-tooling
+repository (https://github.com/notitial/ai-tooling/tree/main/docs/adr): ADR 0016 (the conductor), 0017 (the tool-call
+recorder and audit log, the source of "a decision with no log row"), 0022 (work classes read, propose and land, and the
+land floor), 0025 (the read class) and 0028 (STEWARD, a proposed blocker broker that judged pushes).
+
 ## Options Considered
 
 1. **Status quo.** Safe, and the person answers everything.
