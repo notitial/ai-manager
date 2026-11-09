@@ -14363,6 +14363,8 @@ test('prompts: a closing row that could not be written keeps the request files; 
   expect(rowKinds()).toEqual(['requested'])
   expect(reqFiles().length).toBe(1)
   const first = readReq().id
+  // It is marked closed at once: a lead cannot list or answer a request nobody waits for.
+  expect(pfs.has(`${PDIR}/${first}.done`)).toBe(true)
   // The next prompt of the session retries first: the row is written, the files go, then the new request goes on as usual.
   const c3 = callOf('Bash', { command: 'ssh other uptime' })
   await askCheck($, { ...c3.check, tool_use_id: 'tu2' })

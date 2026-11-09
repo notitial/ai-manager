@@ -5370,6 +5370,11 @@ async function promptRemoveFiles($: any, dir: string, id: string): Promise<void>
   await run($, [RM, '-f', '--', `${dir}/${id}.request.json`, `${dir}/${id}.decision.json`, `${dir}/${id}.escalate.json`, `${dir}/${id}.done`]).catch(() => undefined)
 }
 
+// The marker prompt_list, the lead's notice and prompt_answer read as "closed": no hook waits for this request any more.
+async function promptMarkDone($: any, dir: string, id: string): Promise<void> {
+  await run($, [INSTALL, '-m', '600', '/dev/null', `${dir}/${id}.done`]).catch(() => undefined)
+}
+
 // The tick's retry for a request whose closing row could not be written when its hook ended (a No click cuts the dispatch off; a ledger can fail for a moment).
 async function promptCloseTick($: any): Promise<void> {
   for (const [id, u] of [...unclosed]) {
@@ -5378,8 +5383,8 @@ async function promptCloseTick($: any): Promise<void> {
     const ok = await ledgerAdd($, u.row).catch(() => false)
     if (ok) await promptRemoveFiles($, u.dir, id)
     else if (++u.tries < UNCLOSED_TRIES) unclosed.set(id, u)
-    // Given up: the files stay for the sweep, marked closed so that prompt_list and the notice do not show a request whose hook is gone.
-    else await run($, [INSTALL, '-m', '600', '/dev/null', `${u.dir}/${id}.done`]).catch(() => undefined)
+    // Given up: the files stay for the sweep, marked closed (again) so that prompt_list and the notice do not show a request whose hook is gone.
+    else await promptMarkDone($, u.dir, id)
   }
 }
 
@@ -5521,6 +5526,8 @@ async function promptHook($: any, e: any, nextOnce: (x: any) => Promise<any>, si
       unclosed.set(reqDir.id, { dir: reqDir.dir, row: st.pending ?? { kind: 'abandoned', code: 'hook-failed', id: reqDir.id }, tries: 0 })
       openReqs.delete(tid ?? '')
       doneIds.delete(tid ?? '')
+      // No hook waits for it any more: marked closed at once, so a lead cannot list or answer it while the row is owed (promptRemoveFiles takes the marker away again).
+      await promptMarkDone($, reqDir.dir, reqDir.id)
     } else await promptCleanup($, reqDir.dir, reqDir.id, tid ?? '')
   }
 }
