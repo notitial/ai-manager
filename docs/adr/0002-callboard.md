@@ -30,7 +30,9 @@ So a lead needs one outside input that selects an action and its moment, and the
 7. **A root-owned VS Code launcher with a clean environment.** Built, then removed: VS Code re-reads the login shell's environment, the flag that stops it is undocumented, and the settings `env` line reaches every session. The terminal wrapper `claude-callboard` stays for testing.
 8. **A session that ends itself.** Not built: it needs its own pid, which only a forgeable registry file gives. The target confirms; the lead signals.
 9. **`/callboard on`, a per-session enable.** Built in v7, retired in v13.5: every capability it guarded found its own route (below), and a session that is not a lane now takes no lead cue at all.
-10. **A mod in each session, driven by cue files: chosen.**
+10. **An in-session pane for lead controls.** Dropped: a rival plugin can relabel a pane's buttons and swallow its presses, and a plugin cannot call `$.ui.press` to answer for itself.
+11. **A graceful `lane_close`** (a stop the lane carries out itself). Not built: no mechanism was found.
+12. **A mod in each session, driven by cue files: chosen.**
 
 ## Decision
 
@@ -126,6 +128,8 @@ Each addition is part of the decision above; these sections hold what it decided
 - Store rules: authority in the person's own callboard folder, the file name is the hash of the repo it names, no walk-up from any folder, the repo is its own real path, a git root (a `.git` folder holding `HEAD`, or a `gitdir: ` file; not a link) and not too broad (not the home folder, its standard folders, `/tmp`, a volume root). A store with one bad record is ignored whole; a name in two stores is dropped from both. A lane folder may not sit in a dot folder of the repo (`folder-dot`).
 - A bound session keeps a hash of its lane record; `start` and `resume` refuse `record-changed` or `wrong-folder`. Folder checks read the folder the session started in (`$.session.root()`), so a shell `cd` does not move a lane.
 - **The lane model (v12).** `model` is `opus`, `sonnet`, `haiku` or `fable` (default `sonnet`). At `start` the lane runs `/model` in itself and reads the name back; a mismatch refuses `model-failed` and the lane is not started.
+- **The task text.** `lane_create` refuses a task that is empty, over 8000 characters, or holds a control character other than newline and tab or an invisible format character that can hide or reorder text (zero-width, bidi, byte-order mark, tag characters). An existing `BRIEF.md` is replaced only when it is a plain file of the person's with one link whose first line is the mod's own header.
+- **The birth bind.** The registry writes `nameSource: auto` even after a `/rename`, so the `user-named` check of the birth rename rarely fires. `start` compares the session's turn count with the count read at the bind for equality, and the 120 s window runs from the session's first sighting, so a `/rewind` or `/compact` that brings the count back to that value inside the window passes `start`.
 - **Residuals.** The lead-less chain: any process running as the person can write a store record, an open request and the cues, and so start a session on a brief of its choice in a git repo, with no lead. Bounds: the 120 s birth window, 6 panels a minute and 10 s per name in the extension, 8 live sessions per repo, 12 creates an hour. To switch the chain off, keep `~/.claude/callboard/lanes` absent or read-only (mode 0500): `lane_create` then fails and no forged store is possible without a chmod. A brief is the first instructions of a started session, at the trust level of the repo's `CLAUDE.md` plus the lead model that wrote it. Lanes outlive the grant.
 
 ### Design addition v11, PR two: an existing session joins as a lane
@@ -159,6 +163,7 @@ Each addition is part of the decision above; these sections hold what it decided
 
 - Decisions: the mod sends the keepalive the manager sent by hand, and the manager stops (D1); a session past its level is nudged instead of pinged, never both (D2); only the person changes a setting (D3); every interactive session is pinged (D4, amended in v13.5 from "only sessions with callboard on"); a lane signed done is not pinged (D5).
 - **What is real work.** The ping, nudge, notice, check-in and lanes-changed turns are not; the person's prompts, a peer's message, a lead's start and resume and the compaction continuation are. The engine skips a plugin's own hooks for that plugin's own submits and hands `turn.start` the text in a fixed frame ("The callboard plugin sent a message:"), so the mod tells its own turns by their text. If the engine changes the frame, own turns read as real again: the stop clock never runs out and a ping moves a lane's turn mark.
+- **Own-turn recognition is by text.** A person who types the exact text of a mod turn that is still pending is read as the mod's turn: it does not restart the stop clock, and the exact keepalive text leaves the lane's turn mark alone. A timed-out own submit stays counted, because it may still go out; the next turn that carries the text takes the count down. A signed report therefore stays current across such a turn, which is what `lane_retire` checks.
 - **A late change wins.** Right before a ping or nudge the step reads the box and the submits again; any change misses that gap.
 - **Sleep.** A gap of more than 5 minutes between two timer calls means the machine slept; that idle gap gets no ping.
 - **`CLAUDE_CONFIG_DIR` (v13.3).** A session's own row is looked up under that variable only when it is exactly `~/.claude` or a clean folder under `~/.claude-conductor`, its own real path; anything else gives no row and logs `error config-dir-rejected`. Everything about other sessions and cues still reads `~/.claude/sessions` alone, so lanes and leads must start without the variable.
@@ -275,12 +280,23 @@ Probes named by the design and the README. Status as recorded; "open" means not 
 
 **Engine findings (probed, engine 2.1.316).** A plugin's own `$.prompt.submit` skips that plugin's own `prompt.submit` hook; `turn.start` carries the submitted text inside a fixed frame. `prompt.compose` renders once per conversation, so a mid-session grant needs the user-role note.
 
+**Hook time budget (v15.4, 2026-11-06).** A hook has 10 s of its own time per dispatch. `$.clock.sleep` counts against it and a `$` call does not. A hook past the limit is cut off, but the code it was running goes on unseen. So every wait inside a tool call sleeps through `/bin/sleep` as a process call (`pause`), and a call the engine abandoned sends no signal and removes nothing (`abandoned`). This is also why the 40 s idle wait of `lane_retire` and `lane_park` (v15.3) is safe.
+
 ## Not verified live
 
 - The cue-to-action paths (tick, claim, rename, start, resume, compact, the PostCompact resume, the deferred `now` compaction) run against mocks only. The installer's sudo branches run in tests only through `--no-sudo`.
 - Every design addition from v12 on is built and mock-tested, not live-tested: the nudge and its texts, park, unpark and the rebind, the keepalive and `/callboard config`, the `CLAUDE_CONFIG_DIR` lookup (and whether `$.store` follows the config root), the check-ins, the manager level and `lane_remove`, the conductor level.
 - Checked live: the Join dialog in a panel and in a terminal, the deferred rename, `lane_list`, the lanes-changed turn, the `adopted-record` refusal, detach and the presence file's removal at session end (2026-10-30); the short dialogs and `lane_remove` of a made and an attached lane (2026-10-31); the default load from the settings `env` line with VS Code opened from the Dock (2026-11-01); `lane_start` answering within its 6 s deadline (lab).
 - Still owed: a stop in the middle of a tool call; a hot reload with a pending request; the real `ps` and `kill` paths of both stops; the terminate re-check after a click; whether the tab label equals the registry name; an install-time check that no other hook-capable plugin loads.
+
+## Open
+
+Questions the design left unanswered; none is decided.
+
+- **Lead-less start.** Should a lane a lead made accept `start` only while a live lead grant exists for its repo? That would close the lead-less chain (v10 residuals). Today only an attached lane needs a live lead for its cues; a made lane has the mode-0500 switch alone.
+- **Live test before install.** Should a live-test pass gate every install? Under [ADR 0003](0003-symlinked-install.md) every merge is an install.
+- **Stacked dialogs.** After the 90 s timeout the engine's dialog stays on screen while the mod frees its slot, so a second question can stack beside it. Owed as a lab probe.
+- **Unmeasured or unbounded.** `QUESTION_MAX` (1000 characters) was never measured against what a dialog shows. A conductor restore that waits for the session to idle has no expiry of its own and holds `conductor-holder` meanwhile. Whether `$.env.get` answers a string or `undefined` for an unset variable was never verified live.
 
 ## Consequences
 
@@ -293,6 +309,8 @@ Probes named by the design and the README. Status as recorded; "open" means not 
   - each prompt notice to a lead is a full-context cache read on that session; capped at 30 notices an hour per lead (its own counter, separate from the lanes-changed counter); at the cap with a 200k context that is about 6M cached tokens an hour, normal load about a quarter of that;
   - every force stop and every remove asks the person; retire and park need the target's own confirmation; a stopped session is resumable from history;
   - the read-only stores folder switches off the lead-less chain.
+- **Accepted residual: presence leaks.** The refusal texts a lead sees tell it something about the person: `timed-out` says the person is away from a dialog, and `draft-in-box` says they are typing.
+- **Accepted residual: rollback and ownerless volumes.** A mod older than the `leadName` field (S2a) drops it when it writes a store, so a made lane bound by a newer mod, whose record hash includes the name, gets `record-changed`. Rolling back needs those lanes rebound. Under ADR 0003 a rollback is a checkout, so this matters more than it did under the installer. Cloud-synced folders and volumes mounted without owners are not refused; there the owner checks prove nothing.
 - **Accepted residual: other plugins.** Another plugin loaded in the session can run `/callboard` and may answer its dialogs. The install rule is that callboard is the only plugin on `CLAUDE_CODE_PLUGIN_DIRS`; plugins that load from a repo's `.claude/skills` remain an open gap.
 - **Accepted residual: briefs and messages.** A brief, a lead's message or a lane's report is data at the trust level of its writer; risk-list work still needs the person's own turn.
 - Ask rules cannot gate mod tools, so `request_compact` and `lane_retire` run unattended; their safeguards are the self-only content path, the idle check, the signed report and the repo scope.
