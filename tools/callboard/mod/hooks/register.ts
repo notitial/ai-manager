@@ -3148,6 +3148,7 @@ async function tick($: any) {
     // v15: a pending conductor restore, and a running conductor's reach and saved grant.
     await conductorTick($, sid).catch(() => log($, sid, 'error', 'conductor-tick').catch(() => undefined))
     // ADR 0004: close the requests of sessions that are gone, and any older than a day.
+    await promptCloseTick($).catch(() => log($, sid, 'error', 'prompt-close').catch(() => undefined))
     await promptSweep($).catch(() => log($, sid, 'error', 'prompt-sweep').catch(() => undefined))
     // v15.3: a pending manager restore, and a running manager's saved grant.
     await managerTick($, sid).catch(() => log($, sid, 'error', 'manager-tick').catch(() => undefined))
@@ -5112,6 +5113,12 @@ const checks = new Map<string, CheckEntry>()
 // The calls whose request is open (or about to be), by tool_use_id: the three done events mark them, so a person's Yes (which fires no signal) is seen.
 const openReqs = new Map<string, { sid: string; id?: string; dir?: string }>()
 const doneIds = new Set<string>()
+// Requests whose hook ended with no closing row written (the write failed, or the dispatch was cut off by the person's No): the files stay and the tick writes the
+// row, so every closed request ends with one. After UNCLOSED_TRIES failed tries the files are left to the sweep (session-gone, or swept after a day).
+const unclosed = new Map<string, { dir: string; row: Omit<pr.LedgerRow, 't'>; tries: number }>()
+const UNCLOSED_TRIES = 5
+// What a request's hook has done about its closing row: `closed` once one is in the ledger (or the sweep wrote it), `pending` the row it still owes.
+type CloseState = { closed: boolean; requested: boolean; pending?: Omit<pr.LedgerRow, 't'> }
 let lastSweepAt = 0
 let sweepFrom = 0
 
@@ -5356,7 +5363,29 @@ async function promptCleanup($: any, dir: string | undefined, id: string | undef
   openReqs.delete(tid)
   doneIds.delete(tid)
   if (!dir || !id) return
+  await promptRemoveFiles($, dir, id)
+}
+
+async function promptRemoveFiles($: any, dir: string, id: string): Promise<void> {
   await run($, [RM, '-f', '--', `${dir}/${id}.request.json`, `${dir}/${id}.decision.json`, `${dir}/${id}.escalate.json`, `${dir}/${id}.done`]).catch(() => undefined)
+}
+
+// The marker prompt_list, the lead's notice and prompt_answer read as "closed": no hook waits for this request any more.
+async function promptMarkDone($: any, dir: string, id: string): Promise<void> {
+  await run($, [INSTALL, '-m', '600', '/dev/null', `${dir}/${id}.done`]).catch(() => undefined)
+}
+
+// The tick's retry for a request whose closing row could not be written when its hook ended (a No click cuts the dispatch off; a ledger can fail for a moment).
+async function promptCloseTick($: any): Promise<void> {
+  for (const [id, u] of [...unclosed]) {
+    // Taken out first, so a tick and a hook start that overlap cannot both write the row (or both count a try).
+    if (!unclosed.delete(id)) continue
+    const ok = await ledgerAdd($, u.row).catch(() => false)
+    if (ok) await promptRemoveFiles($, u.dir, id)
+    else if (++u.tries < UNCLOSED_TRIES) unclosed.set(id, u)
+    // Given up: the files stay for the sweep, marked closed (again) so that prompt_list and the notice do not show a request whose hook is gone.
+    else await promptMarkDone($, u.dir, id)
+  }
 }
 
 // A tool's end, or a No click's PermissionDenied, closes the dialog: the hook's wait learns of a click by this id (a Yes fires no signal).
@@ -5379,6 +5408,8 @@ async function doneHook($: any, e: any, next: any): Promise<any> {
 async function promptHook($: any, e: any, nextOnce: (x: any) => Promise<any>, signal: AbortSignal): Promise<any> {
   const sid = await $.session.id()
   if (!c.SID_RE.test(sid)) return nextOnce(e)
+  // A request left without its closing row is retried here as well as on the tick (a no-op while none is owed).
+  if (unclosed.size > 0) await promptCloseTick($).catch(() => undefined)
   // 1. The switch and the session's kind. The emergency file wins over the switch.
   const cov = await promptCoverage($, sid)
   if (!cov || (await promptsOff($))) return nextOnce(e)
@@ -5406,6 +5437,7 @@ async function promptHook($: any, e: any, nextOnce: (x: any) => Promise<any>, si
     doneIds.delete(tid)
   }
   const reqDir: { dir?: string; id?: string } = {}
+  const st: CloseState = { closed: false, requested: false }
   try {
     // 3. The chain beneath: any non-empty result stands and is returned whole (a settings hook's deny, another plugin's answer).
     const beneath = await nextOnce(e)
@@ -5477,23 +5509,47 @@ async function promptHook($: any, e: any, nextOnce: (x: any) => Promise<any>, si
     const row = { ...base, ...(ctx ? { ctx } : {}), id, tier: 'lead' }
     // Without a `requested` row no decision could ever pass the ledger check: the dialog is left to the person.
     if (!(await ledgerAdd($, { ...row, kind: 'requested', nonce }))) throw new Error('ledger-unwritable')
-    return await promptWait($, e, beneath, signal, { sid, tid: tid as string, id, nonce, dir, hash, input, tool, cwd, ecwd, home: homeOf(p), p, started, row, req, leadName, cap: pr.claudeCap(tool, input) })
+    st.requested = true
+    return await promptWait($, e, beneath, signal, { sid, tid: tid as string, id, nonce, dir, hash, input, tool, cwd, ecwd, home: homeOf(p), p, started, row, req, leadName, cap: pr.claudeCap(tool, input), st })
   } catch (err) {
     // A failing hook answers nothing: the dialog stays (the caller returns what the chain beneath gives).
-    await ledgerAdd($, { kind: 'abandoned', code: 'hook-failed', id: reqDir.id }).catch(() => undefined)
+    if (!st.closed) {
+      const row = { kind: 'abandoned' as const, code: 'hook-failed', id: reqDir.id }
+      st.pending = row
+      if (await ledgerAdd($, row).catch(() => false)) st.closed = true
+    }
     throw err
   } finally {
-    await promptCleanup($, reqDir.dir, reqDir.id, tid ?? '')
+    // The files go only with a closing row in the ledger. Without one (the write failed, or the person's No cut this dispatch off) they stay, and the tick writes it.
+    // A request that never got its `requested` row has nothing to close: its files go as before.
+    if (reqDir.id && reqDir.dir && st.requested && !st.closed) {
+      unclosed.set(reqDir.id, { dir: reqDir.dir, row: st.pending ?? { kind: 'abandoned', code: 'hook-failed', id: reqDir.id }, tries: 0 })
+      openReqs.delete(tid ?? '')
+      doneIds.delete(tid ?? '')
+      // No hook waits for it any more: marked closed at once, so a lead cannot list or answer it while the row is owed (promptRemoveFiles takes the marker away again).
+      await promptMarkDone($, reqDir.dir, reqDir.id)
+    } else await promptCleanup($, reqDir.dir, reqDir.id, tid ?? '')
   }
 }
 
-type WaitCtx = { sid: string; tid: string; id: string; nonce: string; dir: string; hash: string; input: unknown; tool: string; cwd: string; home: string; p: { uid: number; root: string; own?: string }; started: number; row: Omit<pr.LedgerRow, 't' | 'kind'>; req: pr.Request; leadName?: string; cap?: { kind: pr.CapKind; target: string }; ecwd?: string }
+type WaitCtx = { sid: string; tid: string; id: string; nonce: string; dir: string; hash: string; input: unknown; tool: string; cwd: string; home: string; p: { uid: number; root: string; own?: string }; started: number; row: Omit<pr.LedgerRow, 't' | 'kind'>; req: pr.Request; leadName?: string; cap?: { kind: pr.CapKind; target: string }; ecwd?: string; st: CloseState }
 
 // The wait (§3.1a, §6.1). Each poll: a click, the switch, the dialog's own row, expiry, then a decision file. The awake clock adds each gap, capped.
 async function promptWait($: any, e: any, beneath: any, signal: AbortSignal, w: WaitCtx): Promise<any> {
   const end = async (kind: pr.RowKind, code?: string) => {
-    await ledgerAdd($, { ...w.row, kind, ...(code ? { code } : {}) })
+    const row = { ...w.row, kind, ...(code ? { code } : {}) }
+    w.st.pending = row
+    if (await ledgerAdd($, row)) w.st.closed = true
     return beneath
+  }
+  // The dialog counts as closed only once the own row has been seen waiting for this request and is then empty; a row that is missing or ambiguous is unknown.
+  const clickSeen = async (): Promise<boolean> => {
+    const rowNow = await promptOwnRow($, w).catch(() => undefined)
+    if (!rowNow) return false
+    const waiting = rowNow.status === 'waiting' && (rowNow.waitingFor ?? null) !== null
+    if (waiting && typeof rowNow.statusUpdatedAt === 'number' && rowNow.statusUpdatedAt >= w.started) seenWaiting = true
+    else if (seenWaiting && !waiting) return true
+    return false
   }
   // The switch is read again at each poll and before an answer is returned: off, an OFF file, or a scope that no longer covers this lane ends the wait.
   const stillOn = async (): Promise<boolean> => {
@@ -5509,16 +5565,13 @@ async function promptWait($: any, e: any, beneath: any, signal: AbortSignal, w: 
   for (;;) {
     if (signal.aborted || doneIds.has(w.tid)) return end('superseded')
     // The request file is gone (the sweep closed it): the sweep's row is the closing one, and the dialog is left to the person.
-    if ((await statR($, `${w.dir}/${w.id}.request.json`)) === 'absent') return beneath
+    if ((await statR($, `${w.dir}/${w.id}.request.json`)) === 'absent') {
+      w.st.closed = true
+      return beneath
+    }
     // Off stops the wait whichever way it was turned off: the emergency file or /callboard answering off.
     if (!(await stillOn())) return end('off')
-    // The dialog counts as closed only once the own row has been seen waiting for this request and is then empty; a row that is missing or ambiguous is unknown.
-    const rowNow = await promptOwnRow($, w).catch(() => undefined)
-    if (rowNow) {
-      const waiting = rowNow.status === 'waiting' && (rowNow.waitingFor ?? null) !== null
-      if (waiting && typeof rowNow.statusUpdatedAt === 'number' && rowNow.statusUpdatedAt >= w.started) seenWaiting = true
-      else if (seenWaiting && !waiting) return end('superseded')
-    }
+    if (await clickSeen()) return end('superseded')
     if (awake >= pr.expiresAfter(false)) return end('abandoned', 'expired')
     // Passed up with no tier above the lead (PR 3 adds them): it is the person's now, and the lead's right ends. An escalate file wins over a decision beside it.
     if ((await statR($, `${w.dir}/${w.id}.escalate.json`)) !== 'absent') return end('abandoned', 'escalated')
@@ -5549,7 +5602,13 @@ async function promptWait($: any, e: any, beneath: any, signal: AbortSignal, w: 
           if (!(await stillOn())) return end('off')
           // A pass-up that landed while the decision was being checked still wins: the lead was told its right to answer had ended.
           if ((await statR($, `${w.dir}/${w.id}.escalate.json`)) !== 'absent') return end('abandoned', 'escalated')
-          if (!(await ledgerAdd($, { ...w.row, kind: 'returned', code: d.decision, why: d.why, tier: d.by.level, by: d.by.sid, tuid: w.tid, ...(w.cap ? { cap: w.cap.kind, target: w.cap.target } : {}) }))) return beneath
+          // Live test A, 4c: the person's Yes can land in the moments the decision was being checked, and the engine sends the hook no signal for it. The dialog's own
+          // row is read once more right before the decision goes back, so a click already on it wins; one that has not reached the row yet is a lost race (README).
+          if (await clickSeen()) return end('superseded')
+          const back = { ...w.row, kind: 'returned' as const, code: d.decision, why: d.why, tier: d.by.level, by: d.by.sid, tuid: w.tid, ...(w.cap ? { cap: w.cap.kind, target: w.cap.target } : {}) }
+          w.st.pending = { ...w.row, kind: 'abandoned', code: 'hook-failed' }
+          if (!(await ledgerAdd($, back))) return beneath
+          w.st.closed = true
           const decision = d.decision === 'allow' ? { behavior: 'allow' as const } : { behavior: 'deny' as const, message: pr.capBytes(pr.redact(`Denied by the ${d.by.level} ${d.by.name}: ${d.why}`), 300).text }
           return { ...(beneath && typeof beneath === 'object' ? beneath : {}), decision }
         }
@@ -5597,7 +5656,7 @@ async function promptSweep($: any): Promise<void> {
   const dirs = all.slice(sweepFrom, sweepFrom + SWEEP_DIRS_MAX)
   sweepFrom = sweepFrom + SWEEP_DIRS_MAX >= all.length ? 0 : sweepFrom + SWEEP_DIRS_MAX
   const live = await registryEntries($)
-  const busy = new Set([...openReqs.values()].flatMap((o) => (o.id ? [o.id] : [])))
+  const busy = new Set([...openReqs.values()].flatMap((o) => (o.id ? [o.id] : [])).concat([...unclosed.keys()]))
   for (const d of dirs) {
     const files = (await $.fs.list(`${base}/${d.name}`).catch(() => [])) as { name: string; mtimeMs?: number }[]
     const gone = live !== undefined && !live.some((r) => r.j.sessionId === d.name)
@@ -5619,7 +5678,8 @@ async function promptSweep($: any): Promise<void> {
       if (m) {
         if (!pr.ID_RE.test(m[1]) || busy.has(m[1])) continue
         if (!gone && (!old || live === undefined || (await heldByLive(f.name)))) continue
-        await ledgerAdd($, { kind: 'abandoned', code: gone ? 'session-gone' : 'swept', id: m[1] })
+        // No row, no removal: the next sweep tries again.
+        if (!(await ledgerAdd($, { kind: 'abandoned', code: gone ? 'session-gone' : 'swept', id: m[1] }))) continue
         await run($, [RM, '-f', '--', ...['request.json', 'decision.json', 'escalate.json', 'done'].map((x) => `${base}/${d.name}/${m[1]}.${x}`)]).catch(() => undefined)
         continue
       }

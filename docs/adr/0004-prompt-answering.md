@@ -91,7 +91,9 @@ stand, applies the floor, writes a request, and waits on a 2 s poll. **It only r
 `prompt_answer`.** A decision applies only if its id, input hash and nonce match the live call, it hasn't expired, the
 floor still passes, its author is a live tier in reach that isn't the asker, and the ledger holds its row. A click by
 the person ends the wait, seen through the tool's own outcome by `tool_use_id`, `next.signal` for a No, and the
-session's registry row. A late answer after a click returns into nothing, and the audit reports it as a lost race. A
+session's registry row. A late answer after a click returns into nothing, and the audit reports it as a lost race.
+Live test A (2026-11-09) showed the limit: the engine gives the hook no signal for a Yes while it waits, so a Yes that lands
+after the hook's last look at the registry row is a lost race, reported by the audit and not an anomaly. A
 failing hook answers nothing, so the dialog stays. A subagent's ask (its event carries an `agent_id`) is the person's: the
 hook returns the chain beneath at once, with no request, no wait and no notice, because the engine shows a subagent's dialog
 only after the hooks return, so a wait would hide it.
@@ -195,7 +197,8 @@ Off is any origin and no dialog, or a file a terminal can create. It is read at 
 Every event goes to one machine-wide local ledger with tool, a coarse pattern (a command's first word and never its
 arguments, a tool's repository and pull request, a file's path in its repository) and hash, not input. A read-only
 audit script lists every decision and reports anomalies: above all **a decision with no log row**, a decision the hook
-refused for a wrong id, hash, nonce or author, and a hook-sourced decision in a transcript that the ledger never saw.
+refused for a wrong id, hash, nonce or author, a hook-sourced decision in a transcript that the ledger never saw, and (since
+live test A) an `answered` row whose lead's own transcript holds no `prompt_answer` call for that request.
 
 ### Limits
 
@@ -230,7 +233,8 @@ What remains as the guard:
 - the 30-second minimum with the dialog open, counted in awake time, which helps only if the person is looking;
 - `next(e)` first and an observing `tool.check`, so deny rules and guards stand;
 - the ledger, with its "decision with no log row" report, and the audit's check of transcripts, which catch this after
-  the fact unless the forger rewrites those as well;
+  the fact unless the forger rewrites those as well. A forger who writes both the ledger rows and a matching
+  `prompt_answer` call into the lead's transcript still passes the audit;
 - the off switch;
 - two hand-added lines, a deny on the file tools for callboard's folder and an ask rule on a shell command naming it,
   whose prompt no agent can answer; a script, or a path built at run time, gets past both.

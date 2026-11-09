@@ -1918,7 +1918,7 @@ export function answeringQuestion(scope: string, asks: boolean): string {
 export const FLOOR_LINE = 'Floor (never answered by an agent): merges, force pushes, pushes to main, master or production, destructive deletes, edits to settings, hooks and callboard state. The optional merge and force-push items are off.'
 export function answeringState(a: Answering | undefined, offFile: boolean): string {
   const on = a ? `on for ${a.scope === 'all' ? 'all lanes and leads' : a.scope}${a.asks ? ' (asks flag set, no effect yet)' : ''}` : 'off'
-  return `Prompt answering: ${on}.${offFile ? ' The OFF file exists, so it is off whatever is stored; delete it, then run /callboard answering on.' : ''}`
+  return `Prompt answering: ${on}.${offFile ? ' The OFF file exists, so it is off whatever is stored; delete the file and the stored switch applies again.' : ''}`
 }
 
 // ---- PR 2: the lead tier (PLAN §3.5 to §3.6, §6.2, §7.1) ----
