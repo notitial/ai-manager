@@ -14328,6 +14328,52 @@ test('prompts: P-I6: a Yes during the chain beneath ends it with no request: the
   expect(reqFiles().length).toBe(0)
   expect(rowKinds()).toEqual([])
 })
+// Live test A, 4c: a Yes that reached the dialog's own row while the decision was being checked still wins over the lead's answer.
+test('prompts: the dialog\'s own row is read once more right before a decision is returned: a click that came meanwhile wins', async ($, on) => {
+  await answerer($, on, [])
+  let flipped = false
+  const r = await runRequest($, [at(4000, () => {
+    handDecision(readReq())
+    // The row changes while the decision is being checked (the ledger look-up is a grep), after the poll's own row read.
+    pfsFails = (a) => {
+      if (a[0] === '/usr/bin/grep' && nowMs - T0 >= 30_000 && !flipped) {
+        flipped = true
+        sessions = { ...leadReg(), ...ownReg({ status: 'busy', waitingFor: null, statusUpdatedAt: nowMs }) }
+      }
+      return false
+    }
+  })])
+  expect(flipped).toBe(true)
+  expect(r).toEqual({})
+  expect(rowKinds()).toEqual(['requested', 'answered allow', 'superseded'])
+  expect(noFiles()).toBe(true)
+})
+
+// Live test A, 4b and 6: a No click cuts the dispatch off and the closing row could not be written. The files stay, and the tick writes the row, then removes them.
+test('prompts: a closing row that could not be written keeps the request files; the next retry (the tick, or the next prompt) writes the row and removes them', async ($, on) => {
+  await answerer($, on, [])
+  const r = await runRequest($, [at(10_000, () => {
+    pfsFails = (a) => a[0] === '/usr/bin/tee' && a[1] === '-a'
+    pfs.set(OFF_FILE, { text: '', mtimeSec: nowMs / 1000 })
+  })])
+  expect(r).toEqual({})
+  pfsFails = undefined
+  pfs.delete(OFF_FILE)
+  // No closing row yet, and the request is still on disk.
+  expect(rowKinds()).toEqual(['requested'])
+  expect(reqFiles().length).toBe(1)
+  const first = readReq().id
+  // The next prompt of the session retries first: the row is written, the files go, then the new request goes on as usual.
+  const c3 = callOf('Bash', { command: 'ssh other uptime' })
+  await askCheck($, { ...c3.check, tool_use_id: 'tu2' })
+  sessions = waitingRow(nowMs)
+  driveClock()
+  clockHooks.push(stop(8000))
+  expect(await startReq($, c3.over)).toEqual({})
+  expect(pfs.has(`${PDIR}/${first}.request.json`)).toBe(false)
+  expect(rowKinds()).toEqual(['requested', 'off', 'requested', 'off'])
+  expect(ledgerRows()[1].id).toBe(first)
+})
 test('prompts: after its own answer the hook\'s next done event is the tool\'s own: nothing is read as a click', async ($, on) => {
   await answerer($, on, [])
   const r = await runRequest($, [at(4000, () => handDecision(readReq()))])
