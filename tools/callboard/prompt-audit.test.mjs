@@ -723,3 +723,107 @@ test('finding 1: a request with no ending row and no request file is a fault; wi
   ledger(fx, [ON(), R('requested', BASE, { ...T, id: uid(1), nonce: uid(101), tier: 'lead' }), R('superseded', BASE + 20_000, { ...T, id: uid(1) })])
   assert.deepEqual(run(fx).anomalies, [])
 })
+
+// ---- tiers and the person relay (PR 3) ----
+const MGR = 'dddddddd-0000-4000-8000-123456789abc'
+const SHORT = uid(1).slice(0, 8)
+// The relaying tier's transcript: its AskUserQuestion with header `Relay <short>` and the tool result carrying the person's answer, as Claude Code writes them.
+function relayTranscript(fx, sid, { short = SHORT, header = `Relay ${short}`, answer = 'Yes', viaText = false } = {}) {
+  const dir = join(fx.projects, '-Users-x-mgr')
+  mkdirSync(dir, { recursive: true })
+  const use = { type: 'assistant', sessionId: sid, timestamp: iso(BASE + 30_000), message: { content: [{ type: 'tool_use', id: 'toolu_q', name: 'AskUserQuestion', input: { questions: [{ question: 'Allow it?', header, options: [{ label: 'Yes' }, { label: 'No' }] }] } }] } }
+  const res = viaText
+    ? { type: 'user', sessionId: sid, timestamp: iso(BASE + 40_000), message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_q', content: `User has answered your questions: "Allow it?"="${answer}". You can now continue.` }] } }
+    : { type: 'user', sessionId: sid, timestamp: iso(BASE + 40_000), message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_q', content: 'ok' }] }, toolUseResult: { answers: { 'Allow it?': answer } } }
+  writeFileSync(join(dir, `${sid}.jsonl`), lines([use, res]))
+}
+const personRows = (extra = {}) => [
+  R('requested', BASE, { ...T, id: uid(1), nonce: uid(101), tier: 'lead' }),
+  R('relayed', BASE + 20_000, { ...T, id: uid(1), nonce: uid(101), code: 'manager', short: SHORT, by: MGR }),
+  R('answered', BASE + 40_000, { ...T, id: uid(1), nonce: uid(101), tier: 'manager', why: 'the person said yes', code: 'allow', by: MGR, via: 'person', short: SHORT, ...extra }),
+  R('returned', BASE + 45_000, { ...T, id: uid(1), code: 'allow', tier: 'manager', why: 'the person said yes', by: MGR, via: 'person', short: SHORT, ...extra }),
+]
+test('tiers: the person\'s answer through a relay is checked against the relaying tier\'s `Relay <short>` question, and needs no prompt_answer call', () => {
+  const fx = fixture()
+  ledger(fx, [ON(), ...personRows()])
+  relayTranscript(fx, MGR)
+  const rep = run(fx)
+  assert.deepEqual(rep.anomalies, [])
+  assert.deepEqual(rep.problems, [])
+  assert.equal(rep.notAnomalies.relay.relayed.n, 1)
+  assert.equal(rep.notAnomalies.relay.personAnswers.n, 1)
+  // The answer is also read from the result's text when the structured answers are not there.
+  relayTranscript(fx, MGR, { viaText: true })
+  assert.deepEqual(run(fx).anomalies, [])
+  // A different question text with the same answer is not enough: the header must be `Relay <short>` of this request.
+  relayTranscript(fx, MGR, { header: 'Question' })
+  assert.deepEqual(rules(run(fx)), ['person-answer-without-relay-question'])
+  relayTranscript(fx, MGR, { short: 'ffffffff' })
+  assert.deepEqual(rules(run(fx)), ['person-answer-without-relay-question'])
+  // An answer other than Yes does not back an allow; No backs a deny only.
+  relayTranscript(fx, MGR, { answer: 'No' })
+  assert.deepEqual(rules(run(fx)), ['person-answer-without-relay-question'])
+  relayTranscript(fx, MGR, { answer: 'Maybe' })
+  assert.deepEqual(rules(run(fx)), ['person-answer-without-relay-question'])
+  ledger(fx, [ON(), ...personRows({ code: 'deny' })])
+  relayTranscript(fx, MGR, { answer: 'No' })
+  assert.deepEqual(run(fx).anomalies, [])
+})
+test('tiers: the relaying tier\'s transcript missing makes the run incomplete', () => {
+  const fx = fixture()
+  ledger(fx, [ON(), ...personRows()])
+  mkdirSync(join(fx.projects, '-Users-x-mgr'), { recursive: true })
+  const rep = run(fx)
+  assert.deepEqual(rep.anomalies, [])
+  assert.ok(rep.problems.some((p) => p.includes(MGR) && /not found/.test(p)), rep.problems.join('|'))
+})
+test('tiers: an agent\'s answer while the request is with the person is an anomaly, unless a relay-lost row came first', () => {
+  const fx = fixture()
+  const rows = (lost) => [
+    R('requested', BASE, { ...T, id: uid(1), nonce: uid(101), tier: 'lead' }),
+    R('relayed', BASE + 20_000, { ...T, id: uid(1), nonce: uid(101), code: 'manager', short: SHORT, by: MGR }),
+    ...(lost ? [R('relay-lost', BASE + 30_000, { ...T, id: uid(1), code: 'not-asked', short: SHORT, by: MGR, tier: 'manager' })] : []),
+    R('answered', BASE + 40_000, { ...T, id: uid(1), nonce: uid(101), tier: 'lead', why: 'reads only', code: 'allow', by: LEAD }),
+    R('returned', BASE + 45_000, { ...T, id: uid(1), code: 'allow', tier: 'lead', why: 'reads only', by: LEAD }),
+  ]
+  ledger(fx, [ON(), ...rows(false)])
+  assert.deepEqual(rules(run(fx)), ['answered-while-relayed', 'returned-while-relayed'])
+  ledger(fx, [ON(), ...rows(true)])
+  const ok = run(fx)
+  assert.deepEqual(ok.anomalies, [])
+  assert.equal(ok.notAnomalies.relay['relay-lost'].n, 1)
+  assert.deepEqual(ok.notAnomalies.relay['relay-lost'].codes, { 'not-asked': 1 })
+})
+test('tiers: a tier that passed a request up does not answer it afterwards; another tier does', () => {
+  const fx = fixture()
+  const rows = (answerer) => [
+    R('requested', BASE, { ...T, id: uid(1), nonce: uid(101), tier: 'lead' }),
+    R('escalated', BASE + 20_000, { ...T, id: uid(1), code: 'lead', tier: 'lead', why: 'unsure' }),
+    R('answered', BASE + 40_000, { ...T, id: uid(1), nonce: uid(101), tier: answerer, why: 'reads only', code: 'allow', by: LEAD }),
+    R('returned', BASE + 45_000, { ...T, id: uid(1), code: 'allow', tier: answerer, why: 'reads only', by: LEAD }),
+  ]
+  ledger(fx, [ON(), ...rows('lead')])
+  assert.deepEqual(rules(run(fx)), ['answered-after-own-pass-up'])
+  ledger(fx, [ON(), ...rows('conductor')])
+  assert.deepEqual(run(fx).anomalies, [])
+})
+test('tiers: relay-left, relay-late, expired-denied and deny-unclear are listed and counted, never anomalies', () => {
+  const fx = fixture()
+  ledger(fx, [
+    ON(),
+    R('requested', BASE, { ...T, id: uid(1), nonce: uid(101), tier: 'lead' }),
+    R('relayed', BASE + 20_000, { ...T, id: uid(1), nonce: uid(101), code: 'conductor', short: SHORT, by: MGR }),
+    R('relay-left', BASE + 30_000, { id: uid(1), short: SHORT, by: MGR, tier: 'conductor' }),
+    R('relay-late', BASE + 40_000, { short: 'ffffffff', by: MGR, code: 'closed' }),
+    R('expired-denied', BASE + 50_000, { ...T, id: uid(1), code: 'timeout' }),
+    R('deny-unclear', BASE + 60_000, { ...T, id: uid(2), nonce: uid(102), code: 'deny', by: LEAD }),
+  ])
+  const rep = run(fx)
+  assert.deepEqual(rep.anomalies, [])
+  const r = rep.notAnomalies.relay
+  assert.deepEqual([r.relayed.n, r['relay-left'].n, r['relay-late'].n, r['expired-denied'].n, r['deny-unclear'].n], [1, 1, 1, 1, 1])
+  const text = render(rep)
+  assert.match(text, /relay-late: 1 \(closed 1\)/)
+  assert.match(text, /expired-denied: 1 \(timeout 1\)/)
+  assert.match(text, /relayed: 1 \(conductor 1\)/)
+})
