@@ -5456,12 +5456,18 @@ async function promptRelayAsked($: any, sid: string, shorts: string[]): Promise<
   if (!(await dirOk($, `${p.root}/prompts/asking`, p.uid))) return
   await promptPut($, `${p.root}/prompts/asking/${sid}`, '{}')
 }
-// The tiers this mod marked asking: only they have a file to remove, so a turn of any other session costs nothing. After a reload the memory is empty and a stale
-// file stays until its session ends (the sweep removes it).
+// The asked mark is spent by the question it marked: an answer, a dismissal or a question a hook beneath answered leaves none, so the next question needs its own.
+async function promptRelayAskedClear($: any, sid: string, shorts: string[]): Promise<void> {
+  const p = await where($)
+  if (!p) return
+  for (const r of await promptOpenRelays($, p, sid).catch(() => [])) if (shorts.includes(r.relay.short)) await run($, [RM, '-f', '--', `${r.dir}/${r.relay.id}.asked`]).catch(() => undefined)
+}
+// The tiers this mod marked asking: only they have a file to remove at a turn's end, so a turn of any other session costs nothing. A relay question's own end removes
+// it whatever the memory holds (`always`), which covers a reload while the question was open.
 const askingSids = new Set<string>()
 // The tier is no longer asking: its question is over (answered, dismissed) or its turn ended.
-async function promptAskingClear($: any, sid: string): Promise<void> {
-  if (!askingSids.delete(sid)) return
+async function promptAskingClear($: any, sid: string, always = false): Promise<void> {
+  if (!askingSids.delete(sid) && !always) return
   const p = await where($)
   if (p) await run($, [RM, '-f', '--', `${p.root}/prompts/asking/${sid}`]).catch(() => undefined)
 }
@@ -5477,7 +5483,9 @@ async function promptHook($: any, e: any, nextOnce: (x: any) => Promise<any>, si
   if (String(e.tool_name) === 'AskUserQuestion' && relayShorts(e.tool_input).length > 0) {
     const under = await nextOnce(e)
     // The question is the person's only if nothing beneath answered it (a hook that does is not the person): then it is not marked asked, and an answer to it lands nothing.
-    if (!(under && typeof under === 'object' && Object.keys(under).length > 0)) await promptRelayAsked($, sid, relayShorts(e.tool_input)).catch(() => undefined)
+    const u = (under && typeof under === 'object' ? under : {}) as { decision?: unknown; hookSpecificOutput?: { decision?: unknown } }
+    if (u.decision === undefined && u.hookSpecificOutput?.decision === undefined) await promptRelayAsked($, sid, relayShorts(e.tool_input)).catch(() => undefined)
+    else await promptRelayAskedClear($, sid, relayShorts(e.tool_input))
     return under
   }
   // 1. The switch and the session's kind. The emergency file wins over the switch.
@@ -5745,8 +5753,10 @@ async function promptWait($: any, e: any, beneath: any, signal: AbortSignal, w: 
             if (!(await ledgerAdd($, back))) return beneath
             w.st.closed = true
             const unclear = d.decision === 'deny' && d.via !== 'person' && pr.isUnclear(d.why)
-            const text = d.via === 'person' ? `Denied by the person via the ${d.by.level} ${d.by.name}.` : `Denied by the ${d.by.level} ${d.by.name}: ${d.why}${unclear ? pr.UNCLEAR_SUFFIX : ''}`
-            const decision = d.decision === 'allow' ? { behavior: 'allow' as const } : { behavior: 'deny' as const, message: pr.capBytes(pr.redact(text), unclear ? 420 : 300).text }
+            const text = d.via === 'person' ? `Denied by the person via the ${d.by.level} ${d.by.name}.` : `Denied by the ${d.by.level} ${d.by.name}: ${d.why}`
+            // The cleaner-command text is appended after the cap, so a long reason or name never cuts it off.
+            const message = pr.capBytes(pr.redact(text), 300).text + (unclear ? pr.UNCLEAR_SUFFIX : '')
+            const decision = d.decision === 'allow' ? { behavior: 'allow' as const } : { behavior: 'deny' as const, message }
             return { ...(beneath && typeof beneath === 'object' ? beneath : {}), decision }
           }
         }
@@ -5822,7 +5832,8 @@ async function promptRelayPost($: any, e: any): Promise<string | undefined> {
   const p = await where($)
   if (!c.SID_RE.test(sid) || !p) return undefined
   // The question is over, whatever the answer: this tier is free for new requests.
-  await promptAskingClear($, sid)
+  // Whatever the memory holds: a reload while the question was open leaves the file with nothing marking it.
+  await promptAskingClear($, sid, true)
   const open = await promptOpenRelays($, p, sid)
   let late = false
   for (const a of pr.relayAnswers(qin, e.tool_response, open.map((r) => ({ id: r.relay.id, short: r.relay.short })))) {
@@ -5886,6 +5897,8 @@ async function promptRelayPost($: any, e: any): Promise<string | undefined> {
       late = true
     }
   }
+  // The mark is spent: a later question for the same relay needs a fresh one.
+  await promptRelayAskedClear($, sid, shorts)
   return late ? pr.RELAY_LATE_LINE : undefined
 }
 

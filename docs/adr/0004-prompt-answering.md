@@ -244,7 +244,7 @@ and the next tier opens by the clock. Per pull request, at most 2
 request's input copy is redacted and removed on close; each string in it is capped at 10 KB and the whole input at 32 KB, so
 an ordinary pull request body (about 8 KB) reaches the lead whole. Past a cap the input is marked truncated, and the
 rubric then lets the lead deny it but never allow it. A truncated input is never relayed either (a deny of it is
-allowed). New files per request: `<id>.relay.json` (who asked the person), `<id>.asked` (the question was seen),
+allowed). New files per request: `<id>.relay.json` (who asked the person), `<id>.asked` (the question was seen; each question spends it),
 `<id>.left`, and per session `prompts/asking/<sid>`; a tier's pass-up is `<id>.escalate-<level>.json`. A tier's prompt
 notice reaches it when its own window opens, and a request with a relay is told to no tier.
 

@@ -13984,6 +13984,15 @@ test('prompts: a lead\'s answer after 30 s of awake time is returned, the ledger
   expect(JSON.stringify(ledgerRows())).not.toContain('uptime')
 })
 
+test('prompts PR3 hook: the cleaner-command text ends a long unclear deny, however long the reason is', async ($, on) => {
+  await answerer($, on, [])
+  const why = prm.unclearMessage('é'.repeat(100)).slice(0, 190)
+  const r = await runRequest($, [at(4000, () => handDecision(readReq(), { decision: 'deny', why }))])
+  expect(r.decision.behavior).toBe('deny')
+  expect(r.decision.message.endsWith(prm.UNCLEAR_SUFFIX)).toBe(true)
+  expect(new TextEncoder().encode(r.decision.message).length).toBeLessThanOrEqual(300 + prm.UNCLEAR_SUFFIX.length)
+})
+
 test('prompts: a decision of deny comes back as a deny with the tier named, and never as updatedPermissions', async ($, on) => {
   await answerer($, on, [])
   const r = await runRequest($, [at(4000, () => handDecision(readReq(), { decision: 'deny', why: 'not this one' }))])
@@ -16424,6 +16433,37 @@ test('prompts PR3 asked mark: a relay question that a hook beneath answered is n
   const q = relayQ(TID)
   await $.classic.PermissionRequest({ tool_name: 'AskUserQuestion', tool_input: { questions: [q] } } as any)
   expect(pfs.has(`${LDIR()}/${TID}.asked`)).toBe(false)
+  expect(pfs.has(`${PROMPTS_DIR}/asking/${SID}`)).toBe(false)
+})
+
+test('prompts PR3 asked mark: a hook beneath that returns no decision still lets the relay be marked; one that returns a decision removes an older mark', async ($, on) => {
+  on('classic.PermissionRequest', () => ({ systemMessage: 'x' }))
+  await tier($, on)
+  putQ({ id: TID })
+  putRelayT({ level: 'lead', sid: SID, name: 'LEAD' }, TID)
+  const q = relayQ(TID)
+  await $.classic.PermissionRequest({ tool_name: 'AskUserQuestion', tool_input: { questions: [q] } } as any)
+  expect(pfs.has(`${LDIR()}/${TID}.asked`)).toBe(true)
+})
+
+test('prompts PR3 asked mark: an answer spends the mark; a later question for the same relay needs its own, and a question a hook beneath answered clears the old one', async ($, on) => {
+  await relayFixture($, on)
+  const q = relayQ(TID)
+  await $.classic.PostToolUse(askPost([q], { [q.question]: 'Maybe' }))
+  expect(pfs.has(`${LDIR()}/${TID}.asked`)).toBe(false)
+  expect(pfs.has(`${LDIR()}/${TID}.decision.json`)).toBe(false)
+  pfs.delete(`${LDIR()}/${TID}.left`)
+  await $.classic.PostToolUse(askPost([q], { [q.question]: 'Yes' }))
+  expect(pfs.has(`${LDIR()}/${TID}.decision.json`)).toBe(false)
+  expect(ledgerRows().filter((x) => x.kind === 'relay-late')).toEqual([expect.objectContaining({ id: TID, code: 'not-asked' })])
+})
+
+test('prompts PR3 asked mark: a relay question that ends clears the asking file even when the mod has no memory of marking it (a reload while it was open)', async ($, on) => {
+  await relayFixture($, on)
+  pdirs.add(`${PROMPTS_DIR}/asking`)
+  pfs.set(`${PROMPTS_DIR}/asking/${SID}`, { text: '{}', mtimeSec: T0 / 1000 })
+  const q = relayQ(TID)
+  await $.classic.PostToolUse(askPost([q], { [q.question]: 'Yes' }))
   expect(pfs.has(`${PROMPTS_DIR}/asking/${SID}`)).toBe(false)
 })
 

@@ -863,6 +863,15 @@ test('tiers: a person answer needs a relayed row of the same tier session and th
   ledger(fx, [ON(), ...personRows({ short: 'ffffffff' })])
   assert.deepEqual(rules(run(fx)), ['person-answer-short-mismatch'])
 })
+test('tiers: a person answer through the second tier is backed by that tier\'s own relayed row, not the first (the first relay was lost)', () => {
+  const fx = fixture()
+  const COND = '00000000-0000-4000-8000-0000000000c1'
+  const rows = personRows({}).map((r) => (r.kind === 'answered' || r.kind === 'returned' ? { ...r, by: COND, tier: 'conductor' } : r))
+  rows.splice(2, 0, R('relayed', BASE + 30_000, { ...T, id: uid(1), nonce: uid(101), code: 'conductor', short: SHORT, by: COND }))
+  ledger(fx, [ON(), ...rows])
+  relayTranscript(fx, COND)
+  assert.deepEqual(run(fx).anomalies, [])
+})
 test('tiers: the relayed questions are listed with the request\'s tool and pattern, as the tier asked them', () => {
   const fx = fixture()
   ledger(fx, [ON(), ...personRows()])

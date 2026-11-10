@@ -730,8 +730,8 @@ export function audit({ root, projects, since, now = Date.now(), projectsExplici
           // The short id is the request's own (its first eight characters), never the row's say-so.
           const short = a.id.slice(0, 8)
           if (a.short !== undefined && a.short !== short) flag('c', 'person-answer-short-mismatch', `request ${g.id}: the answered row (${a.t}) carries the short id ${a.short}, not the request's ${short}`, { id: g.id, t: a.t })
-          const rel = g.relayed.find((x) => x.ms <= a.ms)
-          if (!rel || rel.by !== a.by || (rel.short ?? short) !== short) flag('c', 'person-answer-without-relayed-row', `request ${g.id}: the answered row (${a.t}) is the person's, but no relayed row of tier session ${a.by} with that short id came before it`, { id: g.id, t: a.t })
+          const rel = g.relayed.find((x) => x.ms <= a.ms && x.by === a.by && (x.short ?? short) === short)
+          if (!rel) flag('c', 'person-answer-without-relayed-row', `request ${g.id}: the answered row (${a.t}) is the person's, but no relayed row of tier session ${a.by} with that short id came before it`, { id: g.id, t: a.t })
           const labels = tx.relayAsks.get(a.by)?.get(short)
           const want = a.code === 'allow' ? 'Yes' : a.code === 'deny' ? 'No' : undefined
           if (!labels || want === undefined || !labels.includes(want)) flag('c', 'person-answer-without-relay-question', `request ${g.id}: the answered row (${a.t}) is the person's ${a.code ?? '?'} through tier session ${a.by}, whose transcript holds no "Relay ${short}" question answered ${want ?? '?'}`, { id: g.id, t: a.t })

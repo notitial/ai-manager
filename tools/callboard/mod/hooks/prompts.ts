@@ -2015,6 +2015,12 @@ export function relayAnswers(input: unknown, response: unknown, open: { id: stri
   // Question texts key the answers: two questions with one text cannot be told apart, so neither is answered (both are left).
   const seen = new Map<string, number>()
   for (const q of qs.slice(0, 8)) seen.set(String(obj(q).question), (seen.get(String(obj(q).question)) ?? 0) + 1)
+  // One question per relay: a header that two questions carry is answered by neither (a decoy first would otherwise carry the Yes).
+  const heads = new Map<string, number>()
+  for (const q of qs.slice(0, 8)) {
+    const m = RELAY_HEADER.exec(str(obj(q).header) ?? '')
+    if (m) heads.set(m[1], (heads.get(m[1]) ?? 0) + 1)
+  }
   for (const q of qs.slice(0, 8)) {
     const m = RELAY_HEADER.exec(str(obj(q).header) ?? '')
     if (!m) continue
@@ -2026,8 +2032,8 @@ export function relayAnswers(input: unknown, response: unknown, open: { id: stri
     const hit = matches[0]
     // The options must be exactly Yes and No and the question single-choice, else a "Yes" could carry another meaning; an answer the mod cannot trust is left.
     const opts = obj(q).options
-    const optsOk = !Array.isArray(opts) || (opts.length === 2 && opts.every((o) => obj(o).label === RELAY_YES || obj(o).label === RELAY_NO) && obj(opts[0]).label !== obj(opts[1]).label)
-    const trusted = matches.length === 1 && seen.get(String(obj(q).question)) === 1 && optsOk && obj(q).multiSelect !== true
+    const optsOk = Array.isArray(opts) && (opts.length === 2 && opts.every((o) => obj(o).label === RELAY_YES || obj(o).label === RELAY_NO) && obj(opts[0]).label !== obj(opts[1]).label)
+    const trusted = matches.length === 1 && heads.get(m[1]) === 1 && seen.get(String(obj(q).question)) === 1 && optsOk && obj(q).multiSelect !== true
     const a = trusted && Object.prototype.hasOwnProperty.call(answers, String(obj(q).question)) ? answers[String(obj(q).question)] : undefined
     out.push({ short: m[1], id: hit.id, outcome: a === RELAY_YES ? 'allow' : a === RELAY_NO ? 'deny' : 'left' })
   }

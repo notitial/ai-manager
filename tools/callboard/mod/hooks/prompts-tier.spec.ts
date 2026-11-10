@@ -258,6 +258,14 @@ test('light link: only a `Relay <short>` question naming an open relay counts, a
   assert.deepEqual(two.map((x) => x.outcome), ['allow', 'deny'])
   assert.equal(p.relayAnswers({ questions: 'x' }, resp({}), open).length, 0)
 })
+test('light link: a question without an options list, or a second question under one relay header, is never answered', () => {
+  const open = [{ id: RID, short: p.shortOf(RID) }]
+  const resp = (answers: Record<string, string>) => ({ questions: [], answers })
+  const yn = [{ label: 'Yes' }, { label: 'No' }]
+  assert.equal(p.relayAnswers({ questions: [{ header: 'Relay 2a1b2c3d', question: 'A?' }] }, resp({ 'A?': 'Yes' }), open)[0].outcome, 'left')
+  const two = p.relayAnswers({ questions: [{ header: 'Relay 2a1b2c3d', question: 'Decoy?', options: yn }, { header: 'Relay 2a1b2c3d', question: 'Allow?', options: yn }] }, resp({ 'Decoy?': 'Yes', 'Allow?': 'Yes' }), open)
+  assert.deepEqual(two.map((x) => x.outcome), ['left', 'left'])
+})
 test('relayLostStep: two clear nos in a row lose the relay; a yes resets; a failed check counts as still live', () => {
   let s = p.relayLostStep(0, 'no')
   assert.deepEqual(s, { noCount: 1, lost: false })
