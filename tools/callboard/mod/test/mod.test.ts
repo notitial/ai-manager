@@ -14493,14 +14493,14 @@ test('prompts: a wait whose /bin/sleep fails ends at once, abandoned hook-failed
 })
 test('prompts: redaction: the request file holds a redacted, capped copy; the ledger holds neither input nor secret', async ($, on) => {
   await answerer($, on, [])
-  const secret = `curl -H "Authorization: Bear${'er abc123xyz'}" https://x.example/${'y'.repeat(3000)}`
+  const secret = `curl -H "Authorization: Bear${'er abc123xyz'}" https://x.example/${'y'.repeat(prm.STRING_CAP + 1000)}`
   const c2 = callOf('Bash', { command: secret })
   await runRequest($, [at(4000, () => {
     const q = readReq()
     expect(JSON.stringify(q)).not.toContain('abc123xyz')
     expect(q.input.command).toContain('[REDACTED]')
     expect(q.truncated).toBe(true)
-    expect(new TextEncoder().encode(q.input.command).length).toBeLessThanOrEqual(2000)
+    expect(new TextEncoder().encode(q.input.command).length).toBeLessThanOrEqual(prm.STRING_CAP)
   }), stop(8000)], c2.over, c2.check)
   expect(JSON.stringify(ledgerRows())).not.toContain('abc123xyz')
   expect(ledgerRows()[0].pattern).toBe('curl')
@@ -15064,6 +15064,153 @@ test('prompts PR2: at most 30 notices an hour; a capped one stays owed, is logge
   expect(logged(stdins).filter((e) => e === 'notice-capped:prompts').length).toBe(1)
   await clock!.advance(3_600_000)
   expect(promptNotices()).toBe(31)
+})
+
+// ---- the notice in the middle of a turn: a busy lead reads it beside a tool's result; the idle submit stays the fallback ----
+// The tick's scan marks a request owed (busy lead or not); the hook only claims the mark. Time moves in tick-sized steps.
+test('prompts: a busy lead is told of a waiting prompt beside a tool result, once for every open request, and no turn is submitted for it', async ($, on) => {
+  postBeneath(on)
+  const stdins: string[] = []
+  await tier($, on, stdins, { clock: true })
+  swapLead('busy')
+  expect(await midCtx($)).toEqual([])
+  putQ()
+  putQ({ id: TID2 })
+  await ticks(2)
+  expect(await midCtx($)).toEqual([prm.PROMPT_NOTICE_TEXT])
+  expect(logged(stdins)).toContain('notice:prompts mid-turn')
+  expect(await midCtx($)).toEqual([])
+  expect(await midCtx($, 'PostToolUseFailure')).toEqual([])
+  // The idle submit has nothing left to say: the requests are told.
+  swapLead('idle')
+  await tickTwice()
+  await tickTwice()
+  expect(promptNotices()).toBe(0)
+  // A request that comes later is told, mid-turn again.
+  swapLead('busy')
+  putQ({ id: '1a1b2c3d-4444-4000-8000-123456789abc' })
+  await ticks(2)
+  expect(await midCtx($)).toEqual([prm.PROMPT_NOTICE_TEXT])
+})
+
+test('prompts: a request is not told mid-turn before the tick has found it, and a request told mid-turn is not told again by the idle tick', async ($, on) => {
+  postBeneath(on)
+  await tier($, on, [], { clock: true })
+  swapLead('busy')
+  expect(await midCtx($)).toEqual([])
+  putQ()
+  expect(await midCtx($)).toEqual([])
+  await ticks(2)
+  expect(await midCtx($)).toEqual([prm.PROMPT_NOTICE_TEXT])
+  putQ({ id: TID2 })
+  swapLead('idle')
+  await ticks(2)
+  expect(promptNotices()).toBe(1)
+  await tickTwice()
+  expect(promptNotices()).toBe(1)
+})
+
+test('prompts: a request found by the tick while the lead is busy is told by the idle submit when the turn ends with no tool call (the fallback)', async ($, on) => {
+  postBeneath(on)
+  await tier($, on, [], { clock: true })
+  swapLead('busy')
+  putQ()
+  await ticks(2)
+  expect(promptNotices()).toBe(0)
+  swapLead('idle')
+  await ticks(2)
+  expect(promptNotices()).toBe(1)
+  expect(await midCtx($)).toEqual([])
+})
+
+test('prompts: a tool call that owes both a nudge and a notice carries two texts, the nudge first, never one merged', async ($, on) => {
+  postBeneath(on)
+  await tier($, on, [], { clock: true })
+  swapLead('busy')
+  expect(await midCtx($)).toEqual([])
+  putQ()
+  await ticks(2)
+  tokensNow = 300_000
+  expect(await midCtx($)).toEqual([nudgeText('idle'), prm.PROMPT_NOTICE_TEXT])
+  expect(await midCtx($)).toEqual([])
+})
+
+test('prompts: a notice told mid-turn in a turn that ends with the request still open is told once more as the idle turn, and no more (the fallback)', async ($, on) => {
+  postBeneath(on)
+  await tier($, on, [], { clock: true })
+  swapLead('busy')
+  putQ()
+  await ticks(2)
+  expect(await midCtx($)).toEqual([prm.PROMPT_NOTICE_TEXT])
+  await $.turn.complete(TURN as any)
+  // The next turn starts before the idle tick: the request is owed again but is the idle turn's to send, not a second mid-turn one.
+  expect(await midCtx($)).toEqual([])
+  swapLead('idle')
+  await ticks(2)
+  expect(promptNotices()).toBe(1)
+  // The resend is not a mid-turn one: nothing more follows, in a later turn or beside a later tool result.
+  swapLead('busy')
+  expect(await midCtx($)).toEqual([])
+  await $.turn.complete(TURN as any)
+  swapLead('idle')
+  await ticks(3)
+  expect(promptNotices()).toBe(1)
+})
+
+test('prompts: a subagent\'s turn end leaves the marks of a mid-turn notice alone', async ($, on) => {
+  postBeneath(on)
+  await tier($, on, [], { clock: true })
+  swapLead('busy')
+  putQ()
+  await ticks(2)
+  expect(await midCtx($)).toEqual([prm.PROMPT_NOTICE_TEXT])
+  await $.turn.complete({ ...TURN, agentId: 'sub-1' } as any)
+  swapLead('idle')
+  await ticks(3)
+  expect(promptNotices()).toBe(0)
+})
+
+test('prompts: a notice told mid-turn for a request that closed before the turn ended is not told again', async ($, on) => {
+  postBeneath(on)
+  await tier($, on, [], { clock: true })
+  swapLead('busy')
+  putQ()
+  await ticks(2)
+  expect(await midCtx($)).toEqual([prm.PROMPT_NOTICE_TEXT])
+  putFile(`${TID}.done`)
+  await $.turn.complete(TURN as any)
+  swapLead('idle')
+  await ticks(3)
+  expect(promptNotices()).toBe(0)
+})
+
+test('prompts: no notice is told mid-turn while the session has a compaction request of its own', async ($, on) => {
+  postBeneath(on)
+  await tier($, on, [], { clock: true })
+  swapLead('busy')
+  expect((await $.tool.call(GOOD as any)).result).toBe('queued')
+  putQ()
+  await ticks(2)
+  expect(await midCtx($)).toEqual([])
+})
+
+test('prompts: no mid-turn notice for a subagent\'s tool call, nor while answering is off, nor for a request that is not the lead\'s', async ($, on) => {
+  postBeneath(on)
+  await tier($, on, [], { clock: true })
+  swapLead('busy')
+  expect(await midCtx($)).toEqual([])
+  putQ()
+  await ticks(2)
+  expect(await midCtx($, 'PostToolUse', { agent_id: 'sub-1' })).toEqual([])
+  store.delete('answering')
+  expect(await midCtx($)).toEqual([])
+  store.set('answering', { scope: 'all', asks: false, savedAt: T0 })
+  expect(await midCtx($)).toEqual([prm.PROMPT_NOTICE_TEXT])
+  putQ({ id: TID2, leadName: 'ANOTHER' })
+  putQ({ id: '1a1b2c3d-5555-4000-8000-123456789abc' })
+  putFile('1a1b2c3d-5555-4000-8000-123456789abc.done')
+  await ticks(2)
+  expect(await midCtx($)).toEqual([])
 })
 
 // ---- the lead's section ----

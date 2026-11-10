@@ -2366,14 +2366,15 @@ async function midTurnFallback($: any, sid: string) {
   await recordNudge($, sid, 'threshold', await $.clock.now(), read.version, false, true)
 }
 
-// The PostToolUse and PostToolUseFailure hook: the prompt answering's done mark (doneHook), then the mid-turn nudge added to the result's additionalContext.
+// The PostToolUse and PostToolUseFailure hook: the prompt answering's done mark (doneHook), then the mid-turn nudge and the lead's mid-turn prompt notice added to the result's additionalContext.
 async function postToolHook($: any, e: any, next: any): Promise<any> {
   await promptDone($, e).catch(() => undefined)
   const r = await next(e)
-  const text = await midTurnNudge($, e)
-  if (typeof text !== 'string') return r
+  // Two texts, never one merged: the nudge, then the notice. Each path claims its own before it returns the text.
+  const texts = [await midTurnNudge($, e), await promptMidTurnNotice($, e).catch(() => undefined)].filter((t): t is string => typeof t === 'string')
+  if (texts.length === 0) return r
   const extra = (r as { additionalContext?: unknown } | null | undefined)?.additionalContext
-  return { ...(r ?? {}), additionalContext: [...(Array.isArray(extra) ? extra : []), text] }
+  return { ...(r ?? {}), additionalContext: [...(Array.isArray(extra) ? extra : []), ...texts] }
 }
 
 // v13.2 (2026-11-02): the keepalive ping. The prompt cache lives an hour from the last call, and a turn's last call is at its end, so a session left idle past
@@ -5933,7 +5934,7 @@ async function promptAnswerTool($: any, e: any, answer: boolean): Promise<{ resu
   }
 }
 
-// The tick's notice (§6.2): one fixed turn, only to an idle lead, covering every open request in reach. A request is told once; a notice over the hourly cap stays owed
+// The tick's notice (§6.2): one fixed turn to an idle lead (a busy one gets the text mid-turn, promptMidTurnNotice), covering every open request in reach. A request is told once; a notice over the hourly cap stays owed
 // (the next tick tries again). Nothing is read while answering is off, but one store read.
 // Per lead: request id to 0 (told) or to the time it was found not to be in reach (looked at again after PROMPT_RECHECK_MS: a check that failed once must not
 // hide a request for good).
@@ -5992,16 +5993,84 @@ async function promptNoticeTick($: any, sid: string, submitsAtStart: number): Pr
   // A pending request (a compaction that is armed or waiting to resume) or a due nudge has the idle moment first.
   if ((await $.state.get(request)).value != null || (await $.state.get(nudgeDueRef)).value != null) return
   if ((await idleCheck($, sid)) !== undefined) return
-  // Every read is behind us: nothing is awaited between this guard and the submit.
+  // Every read is behind us: nothing is awaited between this guard and the submit. A request the mid-turn path told meanwhile is not told again.
   if (dialogOpen.has(sid) || submits !== submitsAtStart) return
-  for (const id of mine) told.set(id, 0)
+  const owed = mine.filter((id) => told.get(id) === -1)
+  if (owed.length === 0) return
+  for (const id of owed) told.set(id, 0)
   promptCapLogged.delete(sid)
-  promptNotices.set(sid, [...times.filter((t) => t <= now && now - t < c.HOUR_MS), now])
+  promptNotices.set(sid, [...(promptNotices.get(sid) ?? times).filter((t) => t <= now && now - t < c.HOUR_MS), now])
   await submitOwn($, pr.PROMPT_NOTICE_TEXT, false).catch(async () => {
-    for (const id of mine) told.set(id, -1)
+    for (const id of owed) told.set(id, -1)
     turnKind.delete(sid)
     await log($, sid, 'notice-failed', 'prompts')
   })
+}
+
+// The fallback (like midTurnFallback): the engine may not surface the context, or the model may read it and not act. When the turn that carried a mid-turn notice ends,
+// each request of it still open is owed again, once, and the idle tick sends it as the idle turn; that resend is not a mid-turn one (promptMidRetold), so it
+// is told twice at most. A request that closed meanwhile is dropped by the tick's scan and its marks here with it.
+const promptMidSent = new Map<string, Set<string>>()
+const promptMidRetold = new Map<string, Set<string>>()
+function promptMidFallback(sid: string) {
+  const told = promptTold.get(sid)
+  const sent = promptMidSent.get(sid)
+  promptMidSent.delete(sid)
+  const retold = promptMidRetold.get(sid)
+  if (retold) {
+    for (const id of [...retold]) if (!told?.has(id)) retold.delete(id)
+    if (retold.size === 0) promptMidRetold.delete(sid)
+  }
+  if (!told || !sent) return
+  for (const id of sent) {
+    if (told.get(id) === 0) {
+      told.set(id, -1)
+      const r = promptMidRetold.get(sid) ?? new Set<string>()
+      r.add(id)
+      promptMidRetold.set(sid, r)
+    }
+  }
+}
+// The notice in the middle of a turn (like midTurnNudge): a busy lead would learn of a waiting prompt only when its turn ends, and the lane behind it waits meanwhile.
+// After a main-agent tool call of a lead, the hook returns PROMPT_NOTICE_TEXT as additionalContext, which the model reads with the tool's result. It reads no file:
+// the tick's scan (promptNoticeTick) has already marked the requests owed a notice (-1), busy lead or not, so this only claims them. Same hourly cap, same told
+// marks: a request is told once, by whichever path comes first, and the idle submit stays the fallback for a lead whose turn ends without a tool call.
+async function promptMidTurnNotice($: any, e: any): Promise<string | undefined> {
+  if (typeof e?.agent_id === 'string' && e.agent_id !== '') return undefined
+  const sid = await $.session.id()
+  if (typeof sid !== 'string' || !c.SID_RE.test(sid) || grantOf(sid)?.level !== 'lead') return undefined
+  const told = promptTold.get(sid)
+  const retold = promptMidRetold.get(sid)
+  if (!told || ![...told].some(([id, v]) => v === -1 && !retold?.has(id))) return undefined
+  try {
+    // A compaction that is armed or waiting to resume would take the text with it: the notice stays owed, as for the tick's submit.
+    if ((await $.state.get(request)).value != null) return undefined
+    const now = await $.clock.now()
+    const times = promptNotices.get(sid) ?? []
+    if (!c.noticeAllowed(times, now, pr.PROMPT_NOTICES_PER_HOUR)) {
+      if (!promptCapLogged.has(sid)) {
+        promptCapLogged.add(sid)
+        await log($, sid, 'notice-capped', 'prompts')
+      }
+      return undefined
+    }
+    // Answering turned off since the tick looked: nothing is told.
+    if (!pr.parseAnswering(await $.store.get(ANSWERING_KEY).catch(() => undefined)) || (await promptsOff($))) return undefined
+    // Nothing is awaited between this read of the marks and their change.
+    const owed = [...told].filter(([id, v]) => v === -1 && !promptMidRetold.get(sid)?.has(id)).map(([id]) => id)
+    if (owed.length === 0) return undefined
+    for (const id of owed) told.set(id, 0)
+    const sent = promptMidSent.get(sid) ?? new Set<string>()
+    for (const id of owed) sent.add(id)
+    promptMidSent.set(sid, sent)
+    promptCapLogged.delete(sid)
+    promptNotices.set(sid, [...(promptNotices.get(sid) ?? []).filter((t) => t <= now && now - t < c.HOUR_MS), now])
+    await log($, sid, 'notice', 'prompts mid-turn').catch(() => undefined)
+    return pr.PROMPT_NOTICE_TEXT
+  } catch {
+    await log($, sid, 'error', 'mid-turn-prompt-notice').catch(() => undefined)
+    return undefined
+  }
 }
 
 export const register: Register = (on) => {
@@ -6926,6 +6995,8 @@ export const register: Register = (on) => {
     laneBrief.delete(sid)
     laneBriefed.delete(sid)
     midDelivered.delete(sid)
+    promptMidSent.delete(sid)
+    promptMidRetold.delete(sid)
     // v14 (2026-11-04, review c2, CR1): what a lead last saw of a manager goes with the session.
     managerSeen.delete(sid)
     managerSeenBusy.delete(sid)
@@ -6964,6 +7035,7 @@ export const register: Register = (on) => {
         await log($, sid, 'error', 'turn-end').catch(() => undefined)
       }
       const mid = midDelivered.delete(sid)
+      promptMidFallback(sid)
       if (kind !== 'ping' && e.reason === 'answer') {
         if (mid) await midTurnFallback($, sid).catch(() => log($, sid, 'error', 'nudge-fallback').catch(() => undefined))
         else await thresholdNudge($, sid).catch(() => log($, sid, 'error', 'nudge-check').catch(() => undefined))

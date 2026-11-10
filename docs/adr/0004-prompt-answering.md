@@ -202,10 +202,14 @@ live test A) an `answered` row whose lead's own transcript holds no `prompt_answ
 
 ### Limits
 
-30 notices an hour per tier, covering all open requests in one fixed turn, sent from the tier's own tick while idle.
-Over the cap a notice stays owed, and the next tier opens by the clock. Per pull request, at most 2
+30 notices an hour per tier, covering all open requests in one fixed turn, sent from the tier's own tick while idle, or,
+for a lead in the middle of a turn, as the same fixed text beside its next tool result (the idle turn stays the fallback, and
+resends once a request still open when that turn ends; both count against the same 30). Over the cap a notice stays owed,
+and the next tier opens by the clock. Per pull request, at most 2
 `@claude review --comments` and 1 other `@claude` comment are approved by an agent, counted from the ledger. A
-request's input copy is redacted, capped at 16 KB and removed on close.
+request's input copy is redacted and removed on close; each string in it is capped at 10 KB and the whole input at 32 KB, so
+an ordinary pull request body (about 8 KB) reaches the lead whole. Past a cap the input is marked truncated, and the
+rubric then lets the lead deny it but never allow it.
 
 ## Consequences
 
