@@ -661,13 +661,26 @@ test('capInput: strings redacted and capped, the whole kept under the cap, trunc
   const secret = p.capInput({ command: j('curl -H "Authorization: Bear', 'er abc123"') })
   assert.match(JSON.stringify(secret.input), /\[REDACTED\]/)
   assert.doesNotMatch(JSON.stringify(secret.input), /abc123/)
-  const long = p.capInput({ s: 'x'.repeat(5000) })
+  // A normal PR body (6 KB, with a code block and lines) arrives whole and is not marked cut.
+  const body = `## Summary\n${'- a line of the description\n'.repeat(240)}\n\`\`\`ts\nconst a = 1\n\`\`\`\n`
+  assert.ok(new TextEncoder().encode(body).length > 6 * 1024 && new TextEncoder().encode(body).length < 8 * 1024)
+  assert.deepEqual(p.capInput({ title: 'fix: a thing', body }), { input: { title: 'fix: a thing', body }, truncated: false })
+  const atCap = p.capInput({ s: 'x'.repeat(p.STRING_CAP) })
+  assert.equal(atCap.truncated, false)
+  const long = p.capInput({ s: 'x'.repeat(p.STRING_CAP + 1) })
   assert.equal(long.truncated, true)
   assert.ok(new TextEncoder().encode((long.input as any).s).length <= p.STRING_CAP)
   const wide = p.capInput({ list: Array.from({ length: 150 }, (_, i) => `${'y'.repeat(1900)}${i}`) })
   assert.equal(wide.truncated, true)
   assert.ok(new TextEncoder().encode(JSON.stringify(wide.input)).length <= p.INPUT_CAP)
   assert.equal(p.capInput({ f: () => 1 } as any).truncated, true)
+  // What prompt_list would have to cut is marked truncated here too, so prompt_answer refuses an allow of it: `<` is escaped to six bytes, and the list is indented.
+  const angle = p.capInput({ a: '<'.repeat(10_000), b: '<'.repeat(10_000), c: '<'.repeat(10_000) })
+  assert.equal(angle.truncated, true)
+  // The head kept of an input over INPUT_CAP fits INPUT_CAP once the request file escapes it again.
+  const quotes = p.capInput({ a: Array.from({ length: 150 }, () => '"'.repeat(1900)) })
+  assert.equal(quotes.truncated, true)
+  assert.ok(new TextEncoder().encode(JSON.stringify(quotes.input)).length <= p.INPUT_CAP)
   // A cut never lands inside a character.
   assert.ok(!p.capBytes('é'.repeat(20), 5).text.includes('�'))
 })

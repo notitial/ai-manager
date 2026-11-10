@@ -132,9 +132,30 @@ test('promptListText: at most 20 requests are shown and the rest is counted; the
   const t = p.promptListText(many, { on: true })
   assert.equal(t.split('### ').length - 1, 20)
   assert.ok(t.includes('5 more are open'))
-  const big = p.promptListText(Array.from({ length: 20 }, () => item({ input: { command: 'x'.repeat(p.INPUT_CAP) } })), { on: true })
-  assert.ok(new TextEncoder().encode(big).length <= p.LIST_TEXT_MAX + 64)
+  const big = p.promptListText(Array.from({ length: 20 }, () => item({ input: { command: 'x'.repeat(p.INPUT_CAP / 2) } })), { on: true })
+  assert.ok(new TextEncoder().encode(big).length <= p.LIST_TEXT_MAX)
   assert.ok(big.endsWith(p.RUBRIC))
+  // Whole requests only: the ones that do not fit are counted, and none is cut without the TRUNCATED mark.
+  const shown = big.split('### ').length - 1
+  assert.ok(shown >= 1 && shown < 20)
+  assert.ok(big.includes(`${20 - shown} more are open`))
+  assert.ok(!big.includes('TRUNCATED'))
+  assert.equal(big.split('<untrusted-input>').length, big.split('</untrusted-input>').length)
+  // One request alone over the budget is cut and marked, with its frame closed.
+  const huge = p.promptListText([item({ input: { command: '<'.repeat(p.INPUT_CAP) } })], { on: true })
+  assert.ok(new TextEncoder().encode(huge).length <= p.LIST_TEXT_MAX)
+  assert.ok(huge.includes('TRUNCATED'))
+  assert.ok(huge.includes('</untrusted-input>\n\n' + p.RUBRIC.slice(0, 20)))
+  // Whatever capInput leaves unmarked is listed whole: no cut, no TRUNCATED.
+  for (const raw of [{ command: 'x'.repeat(p.STRING_CAP) }, { a: '<'.repeat(p.STRING_CAP / 6) }, { l: Array.from({ length: 10 }, () => 'y'.repeat(p.STRING_CAP - 100)) }]) {
+    const c = p.capInput(raw)
+    const t = p.promptListText([item({ input: c.input, truncated: c.truncated })], { on: true })
+    assert.equal(t.includes('TRUNCATED'), c.truncated)
+    assert.ok(new TextEncoder().encode(t).length <= p.LIST_TEXT_MAX)
+  }
+  const marked = p.capInput({ a: '<'.repeat(10_000), b: '<'.repeat(10_000), c: '<'.repeat(10_000) })
+  assert.equal(marked.truncated, true)
+  assert.ok(p.promptListText([item({ input: marked.input, truncated: marked.truncated })], { on: true }).includes('TRUNCATED'))
 })
 test('promptListText: the anomaly hint is carried', () => {
   assert.ok(p.promptListText([], { on: true, hint: 'HINT' }).includes('HINT'))
