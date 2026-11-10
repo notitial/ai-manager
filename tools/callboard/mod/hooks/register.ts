@@ -5540,7 +5540,7 @@ async function promptHook($: any, e: any, nextOnce: (x: any) => Promise<any>, si
     const leadName = lead?.name
     const own = await registryOf($, sid, ownReg($))
     const liveNow = await registryEntries($)
-    const reach = own && typeof own.pid === 'number' && typeof own.procStart === 'string' && liveNow ? await promptReachTiers($, liveNow, cov.a, { sid, pid: own.pid, procStart: own.procStart, level: cov.level, lane: cov.lane ?? cov.self, ...(leadName ? { leadName } : {}), repo: cwd }).catch(() => [] as pr.Tier[]) : ([] as pr.Tier[])
+    const reach = own && typeof own.pid === 'number' && typeof own.procStart === 'string' && liveNow ? await promptReachTiers($, liveNow, cov.a, { sid, pid: own.pid, procStart: own.procStart, level: cov.level, lane: cov.lane ?? cov.self, ...(leadName ? { leadName } : {}), repo: cwd }, cov.level === 'lane' && lead === undefined).catch(() => [] as pr.Tier[]) : ([] as pr.Tier[])
     if (reach.length === 0 && own && typeof own.pid === 'number' && typeof own.procStart === 'string') {
       await ledgerAdd($, { ...base, kind: 'abandoned', code: 'no-tier' })
       return beneath
@@ -5795,7 +5795,9 @@ async function promptApply($: any, w: WaitCtx, d: pr.Decision, awake: number, gr
 // a prompt that has closed, or whose decision is already in, is `relay-late` and the tier is told in one fixed line. The question's wording is never read.
 async function promptRelayPost($: any, e: any): Promise<string | undefined> {
   if (String(e?.tool_name) !== 'AskUserQuestion' || (typeof e?.agent_id === 'string' && e.agent_id !== '')) return undefined
-  const shorts = relayShorts(e.tool_input)
+  // The questions as asked: the call's input, or (probed on the engine) the response, which repeats them with their headers.
+  const qin = Array.isArray(e.tool_input?.questions) ? e.tool_input : e.tool_response && typeof e.tool_response === 'object' ? e.tool_response : e.tool_input
+  const shorts = relayShorts(qin)
   if (shorts.length === 0) return undefined
   const sid = await $.session.id()
   const p = await where($)
@@ -5804,7 +5806,7 @@ async function promptRelayPost($: any, e: any): Promise<string | undefined> {
   await run($, [RM, '-f', '--', `${p.root}/prompts/asking/${sid}`]).catch(() => undefined)
   const open = await promptOpenRelays($, p, sid)
   let late = false
-  for (const a of pr.relayAnswers(e.tool_input, e.tool_response, open.map((r) => ({ id: r.relay.id, short: r.relay.short })))) {
+  for (const a of pr.relayAnswers(qin, e.tool_response, open.map((r) => ({ id: r.relay.id, short: r.relay.short })))) {
     const r = open.find((x) => x.relay.id === a.id)
     if (a.outcome === 'unknown' || !r) {
       late = true
@@ -6005,14 +6007,15 @@ async function promptRequests($: any, p: { uid: number; root: string }, accept?:
 
 // The tiers a request reaches (PLAN-PR3 §2.1), lead first, then the conductors, then the manager: the asker must be a live row under the pid and start the request
 // names; a lead is a live lead of the repo (narrowed to the lead the request names), a conductor one whose approved pins hold the request's folder, the manager a
-// trusted one. The switch's scope applies to each. Nobody is the asker. Empty: nobody can be asked, and the prompt stays the person's.
+// trusted one. The switch's scope applies to each. Nobody is the asker. noLead: the lane's own lead could not be resolved (its record names another, or none is
+// found), so no lead is asked, whichever leads are live. Empty: nobody can be asked, and the prompt stays the person's.
 type ReachQ = Pick<pr.Request, 'sid' | 'pid' | 'procStart' | 'level' | 'lane' | 'leadName' | 'repo'>
-async function promptReachTiers($: any, live: RegRow[], a: pr.Answering, q: ReachQ): Promise<pr.Tier[]> {
+async function promptReachTiers($: any, live: RegRow[], a: pr.Answering, q: ReachQ, noLead = false): Promise<pr.Tier[]> {
   if (!live.some((r) => r.j.sessionId === q.sid && String(r.j.pid) === r.pid && r.pid === String(q.pid) && r.j.procStart === q.procStart)) return []
   const rows = live.map((r) => r.j)
   const tiers: pr.Tier[] = []
   // A lead's own prompt starts at the conductor: no lead tier for it.
-  if (q.level === 'lane') {
+  if (q.level === 'lane' && !noLead) {
     for (const l of await leadsFor($, live, q.repo).catch(() => [] as c.LeadFile[])) {
       const name = c.leadNameOf(rows, l.sid) ?? ''
       if (l.sid === q.sid || (q.leadName !== undefined && (name === '' || q.leadName !== name))) continue
