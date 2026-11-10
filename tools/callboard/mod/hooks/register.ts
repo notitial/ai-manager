@@ -5462,6 +5462,15 @@ async function promptRelayAskedClear($: any, sid: string, shorts: string[]): Pro
   if (!p) return
   for (const r of await promptOpenRelays($, p, sid).catch(() => [])) if (shorts.includes(r.relay.short)) await run($, [RM, '-f', '--', `${r.dir}/${r.relay.id}.asked`]).catch(() => undefined)
 }
+// A tier's turn has ended with relay questions it had asked still open: each is left (`.left`, a `relay-left` row), as a dismissal is.
+async function promptRelayTurnEnd($: any, sid: string): Promise<void> {
+  const p = await where($)
+  if (!p) return
+  for (const r of await promptOpenRelays($, p, sid)) {
+    if ((await statR($, `${r.dir}/${r.relay.id}.asked`)) === 'absent') continue
+    if ((await promptLinkOnce($, `${r.dir}/${r.relay.id}.left`, '{}')) === 'ok') await ledgerAdd($, { kind: 'relay-left', id: r.relay.id, short: r.relay.short, by: sid, tier: r.relay.by.level })
+  }
+}
 // The tiers this mod marked asking: only they have a file to remove at a turn's end, so a turn of any other session costs nothing. A relay question's own end removes
 // it whatever the memory holds (`always`), which covers a reload while the question was open.
 const askingSids = new Set<string>()
@@ -7439,7 +7448,11 @@ export const register: Register = (on) => {
       const mid = midDelivered.delete(sid)
       promptMidFallback(sid)
       // A turn that ended has no question open: the tier is no longer asking (a dismissal that fired no hook of its own).
+      const wasAsking = askingSids.has(sid)
       await promptAskingClear($, sid).catch(() => undefined)
+      // The question cannot outlive the turn: one still unanswered was dismissed without a hook of its own (probed: the person's X fires neither PostToolUseFailure nor
+      // PermissionDenied, and the model only reads "Denied by user"). Its relay is left, so the wait ends and the dialog stays with the person.
+      if (wasAsking) await promptRelayTurnEnd($, sid).catch(() => undefined)
       if (kind !== 'ping' && e.reason === 'answer') {
         if (mid) await midTurnFallback($, sid).catch(() => log($, sid, 'error', 'nudge-fallback').catch(() => undefined))
         else await thresholdNudge($, sid).catch(() => log($, sid, 'error', 'nudge-check').catch(() => undefined))

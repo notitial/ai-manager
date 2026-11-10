@@ -16458,6 +16458,26 @@ test('prompts PR3 asked mark: an answer spends the mark; a later question for th
   expect(ledgerRows().filter((x) => x.kind === 'relay-late')).toEqual([expect.objectContaining({ id: TID, code: 'not-asked' })])
 })
 
+test('prompts PR3 asked mark: a turn that ends with its relay questions still open (a dismissal fires no hook) leaves each relay: the left mark and one relay-left row apiece', async ($, on) => {
+  await relayFixture($, on, [TID, TID2])
+  await $.classic.PermissionRequest({ tool_name: 'AskUserQuestion', tool_input: { questions: [relayQ(TID), relayQ(TID2)] } } as any)
+  expect(pfs.has(`${LDIR()}/${TID}.asked`)).toBe(true)
+  expect(pfs.has(`${LDIR()}/${TID2}.asked`)).toBe(true)
+  await $.turn.complete(TURN as any)
+  expect(pfs.has(`${LDIR()}/${TID}.left`)).toBe(true)
+  expect(pfs.has(`${LDIR()}/${TID2}.left`)).toBe(true)
+  expect(ledgerRows().filter((x) => x.kind === 'relay-left').map((x) => x.id).sort()).toEqual([TID, TID2].sort())
+  expect(pfs.has(`${PROMPTS_DIR}/asking/${SID}`)).toBe(false)
+})
+
+test('prompts PR3 asked mark: a turn that ends with no relay question asked leaves a relay that was never asked alone', async ($, on) => {
+  await relayFixture($, on)
+  pfs.delete(`${LDIR()}/${TID}.asked`)
+  await $.turn.complete(TURN as any)
+  expect(pfs.has(`${LDIR()}/${TID}.left`)).toBe(false)
+  expect(ledgerRows().filter((x) => x.kind === 'relay-left')).toEqual([])
+})
+
 test('prompts PR3 asked mark: a relay question that ends clears the asking file even when the mod has no memory of marking it (a reload while it was open)', async ($, on) => {
   await relayFixture($, on)
   pdirs.add(`${PROMPTS_DIR}/asking`)
