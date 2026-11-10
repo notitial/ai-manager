@@ -1877,7 +1877,7 @@ export const MANAGER_QUESTION = 'Let this session manage every lane on this mach
 export const MANAGER_YES = 'Manager'
 export const MANAGER_NO = 'Cancel'
 // The manager's tools, as the engine names them: never create, open, rename, start, park or unpark. v14.1 added lane_remove (2026-11-04); v15.3 (2026-11-06) dropped it again: retire and terminate remove the record.
-export const MANAGER_TOOLS = ['lane_list', 'lane_resume', 'lane_compact', 'lane_terminate', 'lane_retire'].map((t) => `mcp__callboard__${t}`)
+export const MANAGER_TOOLS = ['lane_list', 'lane_resume', 'lane_compact', 'lane_terminate', 'lane_retire', 'prompt_list', 'prompt_answer', 'prompt_escalate'].map((t) => `mcp__callboard__${t}`)
 // v14 (2026-11-04, review c1, W1): the cues those tools send (terminate is a signal, not a cue); an adopted lane with no live lead takes these from a live manager.
 export const MANAGER_CUE_VERBS: readonly Verb[] = ['resume', 'compact', 'retire']
 // The person's words for a refused /callboard manager (fixed text only).
@@ -2094,7 +2094,7 @@ export function parseConductorHint(raw: unknown, now: number, homeDir: string): 
 // ---- v15 S6b: the conductor grant, its tools, its texts ----
 // The conductor's tools, as the engine names them: list, compact (a lead of its repos that asked on-cue, or a lane in reach) and force stop. Never create,
 // open, rename, start, resume, park, unpark, retire or remove.
-export const CONDUCTOR_TOOLS = ['lane_list', 'lane_compact', 'lane_terminate'].map((t) => `mcp__callboard__${t}`)
+export const CONDUCTOR_TOOLS = ['lane_list', 'lane_compact', 'lane_terminate', 'prompt_list', 'prompt_answer', 'prompt_escalate'].map((t) => `mcp__callboard__${t}`)
 export const CONDUCTOR_ON_TEXT = 'Conductor is on from your next prompt.\nEvery stop asks you.'
 export const CONDUCTOR_FAILED = 'Conductor could not be set up.'
 export const CONDUCTOR_OFF_QUESTION = 'Turn conductor off for this session? Its saved conductor grant is deleted.'

@@ -2037,8 +2037,9 @@ test('v14 the manager texts: the question, the buttons and header, the stop ques
   assert.ok(c.conductorBriefing('C', '/w/repo-a', []).includes('the person confirms every stop in a dialog'))
   assert.ok(c.managerBriefing('a`b').includes('(`MANAGER`)'), 'a name that is not a reserved one never enters the text')
   assert.equal(c.managerBriefingNote('MANAGER'), `${c.LEAD_BRIEFING_NOTE}\n\n${c.managerBriefing('MANAGER')}`)
-  // v15.3 (2026-11-06): lane_remove is gone again: five tools.
-  assert.deepEqual(c.MANAGER_TOOLS, ['lane_list', 'lane_resume', 'lane_compact', 'lane_terminate', 'lane_retire'].map((t) => `mcp__callboard__${t}`))
+  // v15.3 (2026-11-06): lane_remove is gone again: five lane tools; PR 3 adds the three prompt tools to the manager's and the conductor's lists.
+  assert.deepEqual(c.MANAGER_TOOLS, ['lane_list', 'lane_resume', 'lane_compact', 'lane_terminate', 'lane_retire', 'prompt_list', 'prompt_answer', 'prompt_escalate'].map((t) => `mcp__callboard__${t}`))
+  assert.deepEqual(c.CONDUCTOR_TOOLS, ['lane_list', 'lane_compact', 'lane_terminate', 'prompt_list', 'prompt_answer', 'prompt_escalate'].map((t) => `mcp__callboard__${t}`))
   for (const code of ['busy', 'grant-changed', 'manager-tool', 'lane-or-lead', 'manager-holder']) {
     assert.ok(c.hasText(code), code)
     assert.match(code, /^[a-z-]{1,24}$/)

@@ -2233,6 +2233,13 @@ export function promptListText(items: ListItem[], o: { on: boolean; hint?: strin
   const more = left > 0 ? `\n${left} more are open; answer these and call prompt_list again.` : ''
   return `${head}\n\n${parts.join('\n\n')}${more}\n\n${RUBRIC}`
 }
+// The line prompt_list puts under each request: where it stands for this tier (PLAN-PR3 §3.1).
+export function turnLine(o: { relay?: { level: string; name: string }; top: boolean; above?: { level: string; name: string }; opensInSec?: number }): string {
+  const who = (t: { level: string; name: string }): string => `the ${word(t.level, 'tier')}${t.name === '' ? '' : ` ${word(t.name, '(odd name)')}`}`
+  if (o.relay) return `With the person: ${who(o.relay)} is asking them. Nothing for you to do; no tier answers it now.`
+  const base = o.top || !o.above ? 'You are the top tier for this prompt: answer it by the rubric, or put it to the person with prompt_escalate.' : `${who(o.above)[0].toUpperCase()}${who(o.above).slice(1)} is above you. Answer it by the rubric, or pass it up with prompt_escalate.`
+  return o.opensInSec !== undefined && o.opensInSec > 0 ? `${base} Your window opens in ${Math.ceil(o.opensInSec)} s; an answer before then is refused.` : base
+}
 export const PROMPT_REFUSE: Record<string, string> = {
   'bad-input': 'the arguments are not what the tool takes (id, decision allow or deny, and a one-line why of at most 200 characters).',
   off: 'prompt answering is off on this Mac.',
