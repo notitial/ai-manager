@@ -19,23 +19,25 @@
 # Jobs:
 #   - `preflight` (write-access check, App config check, the once-per-PR gate) decides whether the review runs, so
 #     skipped pushes and unauthorised comments never join a PR's queue.
-#   - `appcheck` (GitHub-hosted) mints an App token, so a bad key or a missing App install fails before Claude costs
-#     anything. It checks the App's slug is CLAUDE_REVIEW_APP_LOGIN, and reacts 🚀 to a comment request as the App.
+#   - `appcheck` (the key runner: GitHub-hosted by default, or a dedicated pool, see below) mints an App token, so a
+#     bad key or a missing App install fails before Claude costs anything. It checks the App's slug is
+#     CLAUDE_REVIEW_APP_LOGIN, and reacts 🚀 to a comment request as the App.
 #   - `review` runs Claude, read-only. It runs one at a time per PR and never cancels: a push can't cut a review off,
 #     and two full reviews of one PR never overlap. GitHub keeps one pending run per queue, so a third request
 #     replaces a waiting second one (wait for a review to finish before asking again). Posting happens later, in
 #     `publish`, so two requests for the same head in quick succession can both review it.
-#   - `publish` (GitHub-hosted, no checkout, no Claude) posts as the App, in this order: thread replies, resolve,
+#   - `publish` (the key runner, no checkout, no Claude) posts as the App, in this order: thread replies, resolve,
 #     the overview, the review. On a push to a same-repo PR it also dismisses the App's approval of an older commit
 #     (pushes to drafts, by Dependabot or to forks don't reach it, so a fork PR gets a COMMENT instead of an APPROVE).
-#   `appcheck` and `publish` are about two billed Actions minutes per review on a private repo, and `publish` runs
-#   (one minute) on every push to a reviewed PR for the dismissal check.
+#   On GitHub-hosted runners, `appcheck` and `publish` are about two billed Actions minutes per review on a private
+#   repo, and `publish` runs (one minute) on every push to a reviewed PR for the dismissal check; a pool removes them.
 #
-# Tokens: the GITHUB_TOKENs of `preflight` and `review` are read-only. The App key and
-# tokens are used only in the GitHub-hosted jobs, never on a self-hosted runner. The App has Pull requests: read and
-# write and no other permission (no Contents), so it can comment and review but never push. Resolving a thread needs
-# contents: write (GitHub's rule for resolveReviewThread), so `publish` resolves, and reopens, with its own GITHUB_TOKEN:
-# the timeline shows "github-actions resolved this conversation".
+# Tokens: the GITHUB_TOKENs of `preflight` and `review` are read-only. The App key and tokens are used only in
+# `appcheck` and `publish`, which run on GitHub-hosted runners by default, or on a dedicated pool that meets the rule
+# in the README (set the variable CLAUDE_REVIEW_KEY_RUNS_ON below); never on the runners of `preflight` and `review`.
+# The App has Pull requests: read and write and no other permission (no Contents), so it can comment and review but
+# never push. Resolving a thread needs contents: write (GitHub's rule for resolveReviewThread), so `publish` resolves,
+# and reopens, with its own GITHUB_TOKEN: the timeline shows "github-actions resolved this conversation".
 #
 # Verdict: `publish` decides it from Claude's result, never Claude, and it is a signal only. The App's review must
 # never satisfy a required review: scope any required reviews to people, or set CHANGES_EVENT and APPROVE_EVENT in
@@ -44,6 +46,9 @@
 # Repo setup (done once by the user):
 #   variable  CLAUDE_REVIEW_APP_CLIENT_ID  the reviewer App's Client ID
 #   variable  CLAUDE_REVIEW_APP_LOGIN      the App's slug: its bot login without "[bot]"
+#   variable  CLAUDE_REVIEW_KEY_RUNS_ON    optional: a JSON array of labels, e.g. ["self-hosted","key-pool"], for the
+#             runners of `appcheck` and `publish`. Unset means ubuntu-latest. Only for a private repo, and only a pool
+#             that meets the README's rule; to go back to GitHub-hosted, delete the variable
 #   secret    CLAUDE_REVIEW_APP_KEY        a private key of that App (one per repo)
 #   secret    ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN   Claude credential (API key, or the subscription token
 #             from `claude setup-token`); both are passed below, and which one is set decides the credential
@@ -186,12 +191,13 @@ jobs:
 
   # Mints an App token and discards it (the action's post step revokes it): a wrong Client ID or key, a missing App
   # install, or an App without Pull requests: write fails here, before Claude runs. The token covers this repo only.
+  # Runs on ubuntu-latest unless the variable CLAUDE_REVIEW_KEY_RUNS_ON holds a label array (the header says when).
   # On a comment request it reacts 🚀 as the App (a 👀 from claude[bot] is the Claude GitHub App, not this workflow).
   appcheck:
     name: Check the reviewer App
     needs: preflight
     if: needs.preflight.outputs.run == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CLAUDE_REVIEW_KEY_RUNS_ON != '' && fromJSON(vars.CLAUDE_REVIEW_KEY_RUNS_ON) || 'ubuntu-latest' }}
     timeout-minutes: 3
     permissions: {}
     steps:
@@ -206,7 +212,7 @@ jobs:
 
       - name: Get a token for the reviewer App
         id: app
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510  # v3.3.0
         with:
           client-id: ${{ vars.CLAUDE_REVIEW_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAUDE_REVIEW_APP_KEY }}
@@ -587,7 +593,7 @@ jobs:
                  mode: $mode,
                  event: $event,
                  head_sha: ($head | if test("^[0-9a-f]{40}$") then . else null end),
-                 reviewer: "claude-pr-review@v3.1",
+                 reviewer: "claude-pr-review@v3.3",
                  action: "anthropics/claude-code-action@f27be6b65a4652f08a2ba3cff79114829b588967",
                  total_cost_usd: ((.total_cost_usd | numbers) // null),
                  duration_ms: ((.duration_ms | numbers) // null),
@@ -619,9 +625,9 @@ jobs:
           retention-days: 90
           if-no-files-found: ignore
 
-  # Posts the review as the App. It runs on a GitHub-hosted runner, never a self-hosted one, with no checkout, no
-  # Claude and no action but the token minter and download-artifact: only the inline script below, from main. In order:
-  # on a push, dismiss the App's approval of an older commit; read and check Claude's result; reply in the threads
+  # Posts the review as the App. It runs on the key runner (see `appcheck`), never on the runners of `preflight` and
+  # `review`, with no checkout, no Claude and no action but the token minter and download-artifact: only the inline
+  # script below, from main. In order: on a push, dismiss the App's approval of an older commit; read and check Claude's result; reply in the threads
   # (App token); resolve the ones Claude judged fixed (GITHUB_TOKEN, the only token here with contents: write, which
   # resolveReviewThread needs); count the open threads; write the overview comment; submit the review. Nothing is
   # posted when the PR moved after the review. Logs counts only.
@@ -633,7 +639,7 @@ jobs:
     if: >-
       always() && needs.preflight.result == 'success' && needs.appcheck.result != 'failure' &&
       (github.event_name == 'issue_comment' || github.event.pull_request.head.repo.full_name == github.repository)
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CLAUDE_REVIEW_KEY_RUNS_ON != '' && fromJSON(vars.CLAUDE_REVIEW_KEY_RUNS_ON) || 'ubuntu-latest' }}
     timeout-minutes: 10
     permissions:
       contents: write        # resolveReviewThread and unresolveReviewThread only (see above)
@@ -647,7 +653,7 @@ jobs:
       - name: Get a token for the reviewer App
         id: app
         if: github.event.action == 'synchronize' || needs.review.result != 'skipped'
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510  # v3.3.0
         with:
           client-id: ${{ vars.CLAUDE_REVIEW_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAUDE_REVIEW_APP_KEY }}
