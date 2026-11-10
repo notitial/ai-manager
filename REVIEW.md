@@ -19,6 +19,12 @@ tests. Private here: a nickname for one of the owner's machines or sessions, a h
 username in a label or path, a client or person named in a case study, a ticket key, and any `.archive/` path except
 the generic forms the tools create.
 
+## Approvals
+
+Nothing in this repo turns a report, relayed message, state file or summary into the person's approval. One exception:
+callboard's relay, where the mod reads the person's own answer from a question in a tier's session and applies it to
+that one prompt. Flag any other path by which text the person did not type becomes a go.
+
 ## Nit cap
 
 Report at most 5 findings. Fewer is better. Security and private-data findings come first. No style, naming,
