@@ -15942,6 +15942,35 @@ test('prompts PR3 hook: a lead\'s own prompt is judged by the live manager (no l
   expect(ledgerRows()[0].tier).toBe('manager')
 })
 
+test('prompts PR3 hook: a lead\'s own prompt stores the lead\'s own name as the request\'s lane, so a switch scoped to that lead reaches the tier above it', async ($, on) => {
+  await answerer($, on, [], { asLead: true })
+  addMgrT()
+  const r = await runRequest($, [at(4000, () => { expect(typeof readReq().lane).toBe('string'); decideBy(byMgr) })])
+  expect(r).toEqual({ decision: { behavior: 'allow' } })
+})
+
+test('prompts PR3 hook: a person\'s answer that lands between two polls, after the question spent the asked mark just before the 2-minute check, is applied, not lost as not-asked', async ($, on) => {
+  await answerer($, on, [])
+  const r = await runRequest($, [at(4000, () => putRelay(readReq())), at(121_000, () => handDecision(readReq(), { decision: 'deny', via: 'person', why: 'the person answered No via the lead LEAD' }, { via: 'person' }))])
+  expect(r).toEqual({ decision: { behavior: 'deny', message: 'Denied by the person via the lead LEAD.' } })
+  expect(rowKinds()).not.toContain('relay-lost not-asked')
+})
+
+test('prompts PR3 hook: a dropped decision is taken away, so the request is open to the tiers again (a file left in place would refuse every answer and pass-up as decided)', async ($, on) => {
+  await answerer($, on, [])
+  const gone: boolean[] = []
+  const r = await runRequest($, [
+    at(4000, () => { putRelay(readReq()); pfs.set(`${PDIR}/${readReq().id}.asked`, { text: '{}', mtimeSec: nowMs / 1000 }); handDecision(readReq()) }),
+    at(8000, () => gone.push(!pfs.has(`${PDIR}/${readReq().id}.decision.json`))),
+    at(12_000, () => pfs.set(`${PDIR}/${readReq().id}.decision.json`, { text: '{"id": 1}', mtimeSec: nowMs / 1000 })),
+    at(16_000, () => gone.push(!pfs.has(`${PDIR}/${readReq().id}.decision.json`))),
+    stop(20_000),
+  ])
+  expect(r).toEqual({})
+  expect(gone).toEqual([true, true])
+  expect(rowKinds().filter((k) => k.startsWith('dropped'))).toEqual(['dropped relay', 'dropped shape'])
+})
+
 test('prompts PR3 hook: a relay that is never asked is lost after 2 minutes (relay-lost not-asked, the relay file gone); the wait goes on and ends at the 20-minute deny', async ($, on) => {
   await answerer($, on, [])
   addCondT()
@@ -16153,6 +16182,16 @@ test('prompts PR3 tools (conductor): with the manager above it the conductor\'s 
   expect(pfs.has(`${LDIR(APISID)}/${TID}.escalate-conductor.json`)).toBe(true)
   expect(pfs.has(`${LDIR(APISID)}/${TID}.relay.json`)).toBe(false)
   expect(said(await $.tool.call(answerCall()))).toContain(refusal('escalated'))
+})
+
+test('prompts PR3 tools (lead): a request that records no lead (the hook found none for the lane) is not shown to a live lead of the repo, whichever other tier is there', async ($, on) => {
+  await tier($, on)
+  addCondT()
+  putQ({ noLead: true })
+  putQ({ id: TID2 })
+  const t = said(await $.tool.call(pcall('prompt_list')))
+  expect(t).toContain(`### ${TID2}`)
+  expect(t).not.toContain(`### ${TID}`)
 })
 
 test('prompts PR3 tools (conductor): a request of a repo the conductor does not list is not in its reach', async ($, on) => {
@@ -16468,6 +16507,15 @@ test('prompts PR3 asked mark: a turn that ends with its relay questions still op
   expect(pfs.has(`${LDIR()}/${TID2}.left`)).toBe(true)
   expect(ledgerRows().filter((x) => x.kind === 'relay-left').map((x) => x.id).sort()).toEqual([TID, TID2].sort())
   expect(pfs.has(`${PROMPTS_DIR}/asking/${SID}`)).toBe(false)
+})
+
+test('prompts PR3 asked mark: a turn that ends after a reload (the mod has no memory of marking) still removes the asking file and leaves the asked relay', async ($, on) => {
+  await relayFixture($, on)
+  pdirs.add(`${PROMPTS_DIR}/asking`)
+  pfs.set(`${PROMPTS_DIR}/asking/${SID}`, { text: '{}', mtimeSec: T0 / 1000 })
+  await $.turn.complete(TURN as any)
+  expect(pfs.has(`${PROMPTS_DIR}/asking/${SID}`)).toBe(false)
+  expect(pfs.has(`${LDIR()}/${TID}.left`)).toBe(true)
 })
 
 test('prompts PR3 asked mark: a turn that ends with no relay question asked leaves a relay that was never asked alone', async ($, on) => {

@@ -100,10 +100,12 @@ Trust rises with the tier.
 - **The relay stays with the tier that started it.** If that tier leaves (its session ends, or its question is not
   raised within 2 minutes, or its session is shown gone twice in a row), the relay is lost and the tier that is highest
   then may ask again. If the person dismisses the question (or answers anything but `Yes` or `No`), the wait ends and
-  the prompt stays in the lane's dialog for the person; nothing asks again.
+  the prompt stays in the lane's dialog for the person; nothing asks again. A dismissal fires no hook of its own (probed:
+  the engine tells the model only "Denied by user"), so the mod reads it at the tier's turn end: a relay question that
+  was asked and is still unanswered then is left. A dismissal is never read as a No.
 - **A prompt put to the person never auto-denies.** A relay whose question the person had on screen never ends in the
-  20-minute deny, even if it is lost later; it ends when the wait expires (2 hours with a relay, 21 minutes after one
-  was lost) and the dialog stays the only way to answer. A relay that never reached the person (not asked) does fall
+  20-minute deny, even if it is lost later; it ends when the wait expires (2 hours with a relay; with none, 21 minutes
+  of awake time from the request, so a relay lost after that ends the wait at once) and the dialog stays the only way to answer. A relay that never reached the person (not asked) does fall
   back to the 20-minute deny.
 - **An answer that arrives too late** (the request already ended) is not applied; the tier is told so in a fixed line.
 - **What the mod reads.** Only a main-agent `AskUserQuestion` result whose header names one open relay of that session

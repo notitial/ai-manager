@@ -1797,8 +1797,11 @@ export type Request = {
   pid: number
   procStart: string
   level: 'lane' | 'lead'
+  // The lane's name; for a lead's own prompt (level 'lead') the lead's own name.
   lane?: string
   leadName?: string
+  // The lane's own lead could not be resolved when the request was raised (its record names a lead that is not live, or none is found): no lead is asked, whichever leads are live.
+  noLead?: boolean
   repo: string
   tool: string
   agentType?: string
@@ -2179,8 +2182,8 @@ export function parseRequest(text: string): Request | undefined {
   if (typeof o.repo !== 'string' || typeof o.tool !== 'string' || typeof o.inputHash !== 'string' || !HASH_RE.test(o.inputHash) || typeof o.nonce !== 'string' || o.nonce === '') return undefined
   if (o.raisedBy !== 'mode' && o.raisedBy !== 'rule' && o.raisedBy !== 'guard') return undefined
   if (!finite(o.at) || !finite(o.expiresAt) || typeof o.truncated !== 'boolean') return undefined
-  if ((o.lane !== undefined && typeof o.lane !== 'string') || (o.leadName !== undefined && typeof o.leadName !== 'string') || (o.agentType !== undefined && typeof o.agentType !== 'string') || (o.cwd !== undefined && typeof o.cwd !== 'string')) return undefined
-  return { id: o.id, sid: o.sid, pid: o.pid as number, procStart: o.procStart, level: o.level, lane: o.lane as string | undefined, leadName: o.leadName as string | undefined, repo: o.repo, tool: o.tool, agentType: o.agentType as string | undefined, cwd: o.cwd as string | undefined, inputHash: o.inputHash, raisedBy: o.raisedBy, at: o.at, expiresAt: o.expiresAt, nonce: o.nonce, input: o.input, truncated: o.truncated }
+  if ((o.lane !== undefined && typeof o.lane !== 'string') || (o.leadName !== undefined && typeof o.leadName !== 'string') || (o.agentType !== undefined && typeof o.agentType !== 'string') || (o.cwd !== undefined && typeof o.cwd !== 'string') || (o.noLead !== undefined && typeof o.noLead !== 'boolean')) return undefined
+  return { id: o.id, sid: o.sid, pid: o.pid as number, procStart: o.procStart, level: o.level, lane: o.lane as string | undefined, leadName: o.leadName as string | undefined, ...(o.noLead === true ? { noLead: true } : {}), repo: o.repo, tool: o.tool, agentType: o.agentType as string | undefined, cwd: o.cwd as string | undefined, inputHash: o.inputHash, raisedBy: o.raisedBy, at: o.at, expiresAt: o.expiresAt, nonce: o.nonce, input: o.input, truncated: o.truncated }
 }
 // prompt_escalate by position (PR 3): a tier that is not the top passes the request up, and its right to answer ends. The file is `<id>.escalate-<level>.json`
 // (level: the tier that passed it; sid: that tier's session). An old `<id>.escalate.json` (tier 'person', no level) still parses: it ended the lead's right.
