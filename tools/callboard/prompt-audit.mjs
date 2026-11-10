@@ -322,6 +322,8 @@ function scanTranscripts(projects, since, notes, problems, budget, lineMax) {
   const answerCalls = new Map()
   // The person-relay questions each session asked (session id -> short -> the labels it was answered with): an AskUserQuestion whose header is `Relay <8 hex>`.
   const relayAsks = new Map()
+  // Every relay question as the tier asked it, with the answer it got (for the list the person reads, plan section 4).
+  const relayQs = []
   const sessions = new Set()
   let longUnmarked = 0
   let scanned = 0
@@ -368,7 +370,12 @@ function scanTranscripts(projects, since, notes, problems, budget, lineMax) {
                 if (!m) continue
                 const sidKey = typeof j.sessionId === 'string' ? j.sessionId : fileSid
                 fileSessions.add(sidKey)
-                relayIds.set(b.id, { sid: sidKey, short: m[1] })
+                // One call may carry several relay questions (a tier coalesces): each is kept with its own text, which keys its answer.
+                const list = relayIds.get(b.id) ?? []
+                const entry = { sid: sidKey, short: m[1], question: typeof q.question === 'string' ? q.question : '' }
+                list.push(entry)
+                if (relayQs.length < 5000) relayQs.push({ ...entry, label: undefined })
+                relayIds.set(b.id, list)
                 let per = relayAsks.get(sidKey)
                 if (!per) relayAsks.set(sidKey, (per = new Map()))
                 if (!per.has(m[1])) per.set(m[1], [])
@@ -387,17 +394,23 @@ function scanTranscripts(projects, since, notes, problems, budget, lineMax) {
         // The answer to a relay question: the labels of the tool result (toolUseResult.answers, or the quoted pairs of its text).
         if (relayIds.size > 0 && Array.isArray(content)) {
           for (const b of content) {
-            const ask = b && b.type === 'tool_result' && typeof b.tool_use_id === 'string' ? relayIds.get(b.tool_use_id) : undefined
-            if (!ask) continue
-            const labels = []
+            const asks = b && b.type === 'tool_result' && typeof b.tool_use_id === 'string' ? relayIds.get(b.tool_use_id) : undefined
+            if (!asks) continue
+            // Each answer belongs to the question whose text keys it (the result's `answers` is keyed by question text); with the structured form missing, to the
+            // quoted `"question"="label"` pair of the result's text. Never pooled across the call's questions.
             const ans = j.toolUseResult?.answers
-            if (ans && typeof ans === 'object') for (const v of Object.values(ans)) if (typeof v === 'string') labels.push(v.slice(0, 100))
-            if (labels.length === 0) {
-              const text = typeof b.content === 'string' ? b.content : Array.isArray(b.content) ? b.content.map((x) => (typeof x?.text === 'string' ? x.text : '')).join('\n') : ''
-              for (const m of text.matchAll(/="([^"]{0,100})"/g)) labels.push(m[1])
+            const text = typeof b.content === 'string' ? b.content : Array.isArray(b.content) ? b.content.map((x) => (typeof x?.text === 'string' ? x.text : '')).join('\n') : ''
+            for (const ask of asks) {
+              let label
+              if (ans && typeof ans === 'object' && Object.prototype.hasOwnProperty.call(ans, ask.question) && typeof ans[ask.question] === 'string') label = ans[ask.question].slice(0, 100)
+              else if (!ans && ask.question !== '') {
+                const at = text.indexOf(`"${ask.question}"="`)
+                if (at !== -1) label = /^[^"]{0,100}/.exec(text.slice(at + ask.question.length + 4))?.[0]
+              }
+              if (label !== undefined) relayAsks.get(ask.sid)?.get(ask.short)?.push(label)
+              const rec = relayQs.find((x) => x.sid === ask.sid && x.short === ask.short && x.question === ask.question && x.label === undefined)
+              if (rec) rec.label = label
             }
-            const per = relayAsks.get(ask.sid)
-            per?.get(ask.short)?.push(...labels)
           }
         }
         const att = j.attachment
@@ -437,7 +450,7 @@ function scanTranscripts(projects, since, notes, problems, budget, lineMax) {
     }
   }
   if (longUnmarked > 0) notes.push(`transcripts: ${longUnmarked} line(s) over ${lineMax} bytes held no permission-decision text and were streamed past unparsed`)
-  return { decisions, scanned, filesFound: files.length, answerCalls, relayAsks, sessions }
+  return { decisions, scanned, filesFound: files.length, answerCalls, relayAsks, relayQs, sessions }
 }
 
 // ---- stats ----
@@ -642,7 +655,7 @@ export function audit({ root, projects, since, now = Date.now(), projectsExplici
   //  - A returned row without `tuid` (an older ledger) backs the nearest decision within 10 minutes with the same tool (the tool named by
   //    the tool_use block of the same tool_use_id in the same file; when that block is not seen, any tool). The ledger holds no session id.
   // Decisions are taken in time order, so the result does not depend on file order.
-  let tx = { decisions: [], scanned: 0, filesFound: 0, answerCalls: new Map(), relayAsks: new Map(), sessions: new Set() }
+  let tx = { decisions: [], scanned: 0, filesFound: 0, answerCalls: new Map(), relayAsks: new Map(), relayQs: [], sessions: new Set() }
   let txRan = false
   if (projects !== undefined) {
     try {
@@ -714,9 +727,14 @@ export function audit({ root, projects, since, now = Date.now(), projectsExplici
         }
         // The person's own answer (via person) is not a prompt_answer call: the relaying tier's transcript must hold the `Relay <short>` question, answered Yes (allow) or No (deny).
         if (a.via === 'person') {
-          const labels = tx.relayAsks.get(a.by)?.get(a.short ?? a.id.slice(0, 8))
+          // The short id is the request's own (its first eight characters), never the row's say-so.
+          const short = a.id.slice(0, 8)
+          if (a.short !== undefined && a.short !== short) flag('c', 'person-answer-short-mismatch', `request ${g.id}: the answered row (${a.t}) carries the short id ${a.short}, not the request's ${short}`, { id: g.id, t: a.t })
+          const rel = g.relayed.find((x) => x.ms <= a.ms)
+          if (!rel || rel.by !== a.by || (rel.short ?? short) !== short) flag('c', 'person-answer-without-relayed-row', `request ${g.id}: the answered row (${a.t}) is the person's, but no relayed row of tier session ${a.by} with that short id came before it`, { id: g.id, t: a.t })
+          const labels = tx.relayAsks.get(a.by)?.get(short)
           const want = a.code === 'allow' ? 'Yes' : a.code === 'deny' ? 'No' : undefined
-          if (!labels || want === undefined || !labels.includes(want)) flag('c', 'person-answer-without-relay-question', `request ${g.id}: the answered row (${a.t}) is the person's ${a.code ?? '?'} through tier session ${a.by}, whose transcript holds no "Relay ${a.short ?? a.id.slice(0, 8)}" question answered ${want ?? '?'}`, { id: g.id, t: a.t })
+          if (!labels || want === undefined || !labels.includes(want)) flag('c', 'person-answer-without-relay-question', `request ${g.id}: the answered row (${a.t}) is the person's ${a.code ?? '?'} through tier session ${a.by}, whose transcript holds no "Relay ${short}" question answered ${want ?? '?'}`, { id: g.id, t: a.t })
           continue
         }
         if (!tx.answerCalls.get(a.by)?.has(a.id)) flag('c', 'answered-without-prompt-answer', `request ${g.id}: the answered row (${a.t}) names lead session ${a.by}, whose transcript holds no prompt_answer call for it`, { id: g.id, t: a.t })
@@ -756,6 +774,18 @@ export function audit({ root, projects, since, now = Date.now(), projectsExplici
     for (const r of mine) codes[r.code ?? '(none)'] = (codes[r.code ?? '(none)'] ?? 0) + 1
     relayCounts[k] = { n: mine.length, codes }
   }
+  // Each relayed request with the question as the tier put it to the person, from the tier's own transcript, beside the request's tool and pattern: the one place a tier's
+  // wrong summary can be seen after the fact. Needs the tier's transcript (rule c); without it the question reads "(transcript not read)".
+  const relayedList = []
+  for (const g of groups) {
+    for (const r of g.relayed) {
+      if (!inRange(r.ms) || relayedList.length >= LIST_MAX) continue
+      const short = g.id.slice(0, 8)
+      const qs = tx.relayQs.filter((x) => x.sid === r.by && x.short === short)
+      const req = g.requested[0] ?? g.rows[0]
+      relayedList.push({ id: g.id, t: r.t, tier: r.code ?? '', tool: req.tool ?? '', pattern: req.pattern ?? '', questions: qs.length > 0 ? qs.map((x) => ({ question: x.question.slice(0, 400), answer: x.label ?? '(none)' })) : [{ question: '(transcript not read)', answer: '' }] })
+    }
+  }
   const personAnswers = rows.filter((r) => r.kind === 'answered' && r.via === 'person' && inRange(r.ms)).length
   relayCounts.personAnswers = { n: personAnswers, codes: {} }
 
@@ -770,6 +800,7 @@ export function audit({ root, projects, since, now = Date.now(), projectsExplici
       abandoned: abandoned.slice(0, LIST_MAX),
       dropped: dropsFine.slice(0, LIST_MAX),
       relay: relayCounts,
+      relayedQuestions: relayedList,
       hookDeniesWithoutRow: hookDenies.length,
       hookDecisionsBacked: hookBacked,
       hookAllowsOtherEvent: hookAllowOther,
@@ -820,6 +851,14 @@ export function render(rep) {
   for (const r of n.dropped) dc[r.code || '(none)'] = (dc[r.code || '(none)'] ?? 0) + 1
   for (const [c, k] of Object.entries(dc).sort()) out.push(`  ${c}: ${k}`)
   for (const [k, v] of Object.entries(n.relay)) out.push(`${k === 'personAnswers' ? 'answered by the person (relay)' : k}: ${v.n}${Object.keys(v.codes).length > 0 ? ` (${Object.entries(v.codes).sort().map(([c, m]) => `${c} ${m}`).join(', ')})` : ''}`)
+  if (n.relayedQuestions.length > 0) {
+    out.push('', 'RELAYED QUESTIONS (as the tier put them to the person; read them: a tier\'s summary is its own)')
+    for (const r of n.relayedQuestions) {
+      out.push(`  ${r.t} ${r.id.slice(0, 8)} ${r.tier} ${r.tool} ${r.pattern}`)
+      for (const x of r.questions) out.push(`    ${x.question.replace(/\s+/g, ' ')}${x.answer ? ` -> ${x.answer}` : ''}`)
+    }
+    out.push('')
+  }
   out.push(`hook decisions in transcripts backed by a returned row: ${n.hookDecisionsBacked}`)
   out.push(`hook allows with no PermissionRequest record, not callboard's (see the header, rule c): ${n.hookAllowsOtherEvent}`)
   out.push(`hook denies in transcripts with no returned row (a deny grants nothing): ${n.hookDeniesWithoutRow}`)

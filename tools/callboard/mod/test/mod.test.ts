@@ -15942,16 +15942,16 @@ test('prompts PR3 hook: a relay that is never asked is lost after 2 minutes (rel
   expect(ledgerRows()[1]).toEqual(expect.objectContaining({ tier: 'conductor', by: CNDT, short: expect.stringMatching(/^[0-9a-f]{8}$/) }))
 })
 
-test('prompts PR3 hook: a relaying tier that is not live for two minute-checks in a row loses the relay (relay-lost tier-gone); one passing check in between starts the count again', async ($, on) => {
+test('prompts PR3 hook: a relaying tier that is not live for two minute-checks in a row loses the relay (relay-lost tier-gone); its question was on screen, so the 20-minute deny does not fire: the wait expires and the dialog stays', async ($, on) => {
   await answerer($, on, [])
   addCondT()
   const r = await runRequest($, [
     at(4000, () => { putFileAt(`${readReq().id}.relay.json`, JSON.stringify({ id: readReq().id, short: readReq().id.slice(0, 8), by: byCond, at: nowMs, nonce: readReq().nonce })); putFileAt(`${readReq().id}.asked`) }),
     at(30_000, () => leadFiles.delete(CNDTPATH)),
   ])
-  expect(r).toEqual({ decision: { behavior: 'deny', message: prm.DENY_TIMEOUT_MESSAGE } })
-  expect(rowKinds()).toEqual(['requested', 'relay-lost tier-gone', 'expired-denied timeout'])
-  expect(nowMs - T0).toBe(20 * 60_000)
+  expect(r).toEqual({})
+  expect(rowKinds()).toEqual(['requested', 'relay-lost tier-gone', 'abandoned expired'])
+  expect(nowMs - T0).toBeGreaterThanOrEqual(21 * 60_000)
 })
 
 test('prompts PR3 hook: an asked relay holds the wait for 2 hours of awake time, with no 20-minute deny: abandoned expired, the dialog stays', async ($, on) => {
@@ -16186,6 +16186,7 @@ const relayFixture = async ($: any, on: any, ids: string[] = [TID]) => {
   for (const id of ids) {
     putQ({ id })
     putRelayT({ level: 'lead', sid: SID, name: 'LEAD' }, id)
+    putFile(`${id}.asked`, '{}')
   }
 }
 const decOf = (id = TID) => JSON.parse(decFile(id)!.text)
@@ -16298,6 +16299,7 @@ test('prompts PR3 asked mark: a Relay question raises no request; its Permission
 
 test('prompts PR3 asked mark: a question of any other kind, or for a relay of another tier, marks nothing', async ($, on) => {
   await relayFixture($, on)
+  pfs.delete(`${LDIR()}/${TID}.asked`)
   await $.classic.PermissionRequest({ tool_name: 'AskUserQuestion', tool_input: { questions: [relayQ(TID, 'x', 'Plan')] } } as any)
   putQ({ id: TID2 })
   putRelayT(byMgr, TID2)
@@ -16376,4 +16378,59 @@ test('prompts PR3 briefing: the conductor and the manager get the tier section; 
   expect(prm.tierPromptBriefing('conductor')).toContain(prm.UNCLEAR_PREFIX)
   expect(prm.tierPromptBriefing('manager')).toContain('Relay <')
   expect(prm.LEAD_PROMPT_BRIEFING).toContain(prm.UNCLEAR_PREFIX)
+})
+
+test('prompts PR3 tools (manager): a lead that passed the request up leaves the manager its own 10-minute slot (the conductor between them is live)', async ($, on) => {
+  await mgrAt($, on, [], { clock: true, sess: MGR_SESS({ name: 'MANAGER', nameSource: 'user' }) })
+  store.set('answering', { scope: 'all', asks: false, savedAt: T0 })
+  extraRows = {}
+  addCondT()
+  sessions = { ...sessions, ...extraRows }
+  leadLive()
+  putQ({ sid: APISID, pid: 4500, lane: 'API', repo: `${PIN}/api`, leadName: 'LEAD' })
+  await clock!.set(T0 + 60_000)
+  // Presence files carry a fresh mtime while the fake clock jumps (the live mod rewrites its own every tick).
+  for (const f of leadFiles.values()) f.mtimeSec = Math.floor(nowMs / 1000)
+  expect(turnOf(said(await $.tool.call(pcall('prompt_list'))))).toContain('Your window opens in 540 s')
+  pfs.set(`${LDIR(APISID)}/${TID}.escalate-lead.json`, { text: prm.escalateText({ id: TID, tier: 'up', why: 'x', at: T0 + 45_000, level: 'lead', sid: LEADSID }), mtimeSec: T0 / 1000 })
+  expect(turnOf(said(await $.tool.call(pcall('prompt_list'))))).toContain('Your window opens in 540 s')
+})
+
+test('prompts PR3 light link: an answer to a question the mod never saw raise its permission request (no asked mark) lands nothing: relay-late not-asked, one fixed line', async ($, on) => {
+  await relayFixture($, on)
+  pfs.delete(`${LDIR()}/${TID}.asked`)
+  const q = relayQ(TID)
+  const r = await $.classic.PostToolUse(askPost([q], { [q.question]: 'Yes' }))
+  expect(JSON.stringify(r ?? {})).toContain('closed before your answer')
+  expect(pfs.has(`${LDIR()}/${TID}.decision.json`)).toBe(false)
+  expect(ledgerRows().filter((x) => x.kind === 'relay-late')).toEqual([expect.objectContaining({ id: TID, code: 'not-asked', by: SID })])
+})
+
+test('prompts PR3 light link: a question with other options, a multi-select one, or the same text twice in a call is never answered by the mod (relay-left)', async ($, on) => {
+  await relayFixture($, on, [TID, TID2])
+  const q1 = { ...relayQ(TID), options: [{ label: 'Yes', description: 'a' }, { label: 'Maybe', description: 'b' }] }
+  const q2 = { ...relayQ(TID2), multiSelect: true }
+  await $.classic.PostToolUse(askPost([q1, q2], { [q1.question]: 'Yes', [q2.question]: 'Yes' }))
+  expect(pfs.has(`${LDIR()}/${TID}.decision.json`)).toBe(false)
+  expect(pfs.has(`${LDIR()}/${TID2}.decision.json`)).toBe(false)
+  expect(ledgerRows().filter((x) => x.kind === 'relay-left').map((x) => x.id).sort()).toEqual([TID, TID2].sort())
+})
+
+test('prompts PR3 asked mark: a relay question that a hook beneath answered is not marked asked', async ($, on) => {
+  on('classic.PermissionRequest', () => ({ decision: { behavior: 'allow' } }))
+  await tier($, on)
+  putQ({ id: TID })
+  putRelayT({ level: 'lead', sid: SID, name: 'LEAD' }, TID)
+  const q = relayQ(TID)
+  await $.classic.PermissionRequest({ tool_name: 'AskUserQuestion', tool_input: { questions: [q] } } as any)
+  expect(pfs.has(`${LDIR()}/${TID}.asked`)).toBe(false)
+  expect(pfs.has(`${PROMPTS_DIR}/asking/${SID}`)).toBe(false)
+})
+
+test('prompts PR3 asked mark: a turn that ends clears the tier\'s asking file', async ($, on) => {
+  await relayFixture($, on)
+  await $.classic.PermissionRequest({ tool_name: 'AskUserQuestion', tool_input: { questions: [relayQ(TID)] } } as any)
+  expect(pfs.has(`${PROMPTS_DIR}/asking/${SID}`)).toBe(true)
+  await $.turn.complete(TURN as any)
+  expect(pfs.has(`${PROMPTS_DIR}/asking/${SID}`)).toBe(false)
 })

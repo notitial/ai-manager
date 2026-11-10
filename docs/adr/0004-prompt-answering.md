@@ -97,15 +97,20 @@ Trust rises with the tier.
 - **A call the tier cannot understand** is denied, with a message that asks the lane for a cleaner one. Any tier may
   do this; nothing is put to the person for it.
 - **The risk list may go through the relay.** The floor never reaches any tier.
-- **The relay stays with the tier that started it.** If that tier leaves (its session ends, or it dismisses the
-  question), the tier that is highest then may ask again. A relay that never reached the person (not asked within
-  2 minutes, or the session shown gone twice) is lost the same way.
-- **A prompt put to the person never auto-denies.** A relay that is still open after 2 hours ends and the dialog stays
-  the only way to answer.
+- **The relay stays with the tier that started it.** If that tier leaves (its session ends, or its question is not
+  raised within 2 minutes, or its session is shown gone twice in a row), the relay is lost and the tier that is highest
+  then may ask again. If the person dismisses the question (or answers anything but `Yes` or `No`), the wait ends and
+  the prompt stays in the lane's dialog for the person; nothing asks again.
+- **A prompt put to the person never auto-denies.** A relay whose question the person had on screen never ends in the
+  20-minute deny, even if it is lost later; it ends when the wait expires (2 hours with a relay, 21 minutes after one
+  was lost) and the dialog stays the only way to answer. A relay that never reached the person (not asked) does fall
+  back to the 20-minute deny.
 - **An answer that arrives too late** (the request already ended) is not applied; the tier is told so in a fixed line.
-- **What the mod reads.** Only a main-agent `AskUserQuestion` result whose header names an open relay of that session,
-  answered exactly `Yes` or `No`. Any other answer, or a dismissal, closes the relay as left. The question's wording is
-  never read.
+- **What the mod reads.** Only a main-agent `AskUserQuestion` result whose header names one open relay of that session
+  and whose question the mod saw raise its permission request with nothing beneath answering it (the `asked` mark),
+  single-choice with exactly the options `Yes` and `No`, its text unique in the call, answered exactly `Yes` or `No`.
+  Any other answer, or a dismissal, closes the relay as left; an answer to a question that was not marked asked
+  lands nothing. The question's wording is never read.
 
 A go that must be typed in the session that acts still has to be: the tier sends the person to the lane's panel.
 
@@ -225,7 +230,8 @@ refused for a wrong id, hash, nonce or author, a hook-sourced decision in a tran
 live test A) an `answered` row whose lead's own transcript holds no `prompt_answer` call for that request. With the
 tiers (and the relay) it also reports a person's answer whose relaying tier's transcript holds no `Relay <short>`
 question answered `Yes` or `No`, an agent's answer or a returned decision while the request was with the person (no
-`relay-lost` row before it), and a tier that answers a request after its own pass-up. The new rows (`relayed`,
+`relay-lost` row before it), and a tier that answers a request after its own pass-up. It prints every relayed question as the
+tier put it, beside the request's tool and pattern, so a wrong summary can be read afterwards. The new rows (`relayed`,
 `relay-lost`, `relay-left`, `relay-late`, `expired-denied`, `deny-unclear`) are listed and counted, not anomalies.
 
 ### Limits

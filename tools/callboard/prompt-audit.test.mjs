@@ -827,3 +827,51 @@ test('tiers: relay-left, relay-late, expired-denied and deny-unclear are listed 
   assert.match(text, /expired-denied: 1 \(timeout 1\)/)
   assert.match(text, /relayed: 1 \(conductor 1\)/)
 })
+// One call with two relay questions, answered differently: each answer belongs to its own question.
+function relayTranscript2(fx, sid, pairs) {
+  const dir = join(fx.projects, '-Users-x-mgr')
+  mkdirSync(dir, { recursive: true })
+  const qs = pairs.map((p) => ({ question: p.question, header: `Relay ${p.short}`, options: [{ label: 'Yes' }, { label: 'No' }] }))
+  const use = { type: 'assistant', sessionId: sid, timestamp: iso(BASE + 30_000), message: { content: [{ type: 'tool_use', id: 'toolu_q', name: 'AskUserQuestion', input: { questions: qs } }] } }
+  const answers = Object.fromEntries(pairs.map((p) => [p.question, p.answer]))
+  const res = { type: 'user', sessionId: sid, timestamp: iso(BASE + 40_000), message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_q', content: 'ok' }] }, toolUseResult: { answers } }
+  writeFileSync(join(dir, `${sid}.jsonl`), lines([use, res]))
+}
+test('tiers: with two relay questions in one call each answer backs only its own request; a forged Yes for the one answered No is an anomaly', () => {
+  const fx = fixture()
+  const ID2 = '10000000-0000-4000-8000-000000000002'
+  const S2 = ID2.slice(0, 8)
+  const second = (code) => [
+    R('requested', BASE + 1000, { ...T, id: ID2, nonce: uid(102), tier: 'lead' }),
+    R('relayed', BASE + 21_000, { ...T, id: ID2, nonce: uid(102), code: 'manager', short: S2, by: MGR }),
+    R('answered', BASE + 41_000, { ...T, id: ID2, nonce: uid(102), tier: 'manager', why: 'the person answered', code, by: MGR, via: 'person', short: S2 }),
+    R('returned', BASE + 46_000, { ...T, id: ID2, code, tier: 'manager', why: 'the person answered', by: MGR, via: 'person', short: S2 }),
+  ]
+  const pairs = [{ short: SHORT, question: `[${SHORT}] Allow A?`, answer: 'Yes' }, { short: S2, question: `[${S2}] Allow B?`, answer: 'No' }]
+  ledger(fx, [ON(), ...personRows(), ...second('deny')])
+  relayTranscript2(fx, MGR, pairs)
+  assert.deepEqual(run(fx).anomalies, [])
+  ledger(fx, [ON(), ...personRows(), ...second('allow')])
+  assert.deepEqual(rules(run(fx)), ['person-answer-without-relay-question'])
+  assert.equal(run(fx).anomalies[0].id, ID2)
+})
+test('tiers: a person answer needs a relayed row of the same tier session and the request\'s own short id; the row\'s say-so does not count', () => {
+  const fx = fixture()
+  relayTranscript(fx, MGR)
+  ledger(fx, [ON(), ...personRows().filter((r) => r.kind !== 'relayed')])
+  assert.deepEqual(rules(run(fx)), ['person-answer-without-relayed-row'])
+  ledger(fx, [ON(), ...personRows({ short: 'ffffffff' })])
+  assert.deepEqual(rules(run(fx)), ['person-answer-short-mismatch'])
+})
+test('tiers: the relayed questions are listed with the request\'s tool and pattern, as the tier asked them', () => {
+  const fx = fixture()
+  ledger(fx, [ON(), ...personRows()])
+  relayTranscript(fx, MGR)
+  const rep = run(fx)
+  assert.equal(rep.notAnomalies.relayedQuestions.length, 1)
+  assert.deepEqual(rep.notAnomalies.relayedQuestions[0].questions, [{ question: 'Allow it?', answer: 'Yes' }])
+  const text = render(rep)
+  assert.match(text, /RELAYED QUESTIONS/)
+  assert.match(text, /Allow it\? -> Yes/)
+  assert.match(text, /mcp__github__add_issue_comment/)
+})

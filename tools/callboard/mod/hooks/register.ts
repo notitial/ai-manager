@@ -5451,8 +5451,19 @@ async function promptRelayAsked($: any, sid: string, shorts: string[]): Promise<
   const mine = (await promptOpenRelays($, p, sid)).filter((r) => shorts.includes(r.relay.short))
   if (mine.length === 0) return
   for (const r of mine) await promptLinkOnce($, `${r.dir}/${r.relay.id}.asked`, '{}')
+  askingSids.add(sid)
   await run($, [MKDIR, '-p', '-m', '700', `${p.root}/prompts/asking`]).catch(() => undefined)
+  if (!(await dirOk($, `${p.root}/prompts/asking`, p.uid))) return
   await promptPut($, `${p.root}/prompts/asking/${sid}`, '{}')
+}
+// The tiers this mod marked asking: only they have a file to remove, so a turn of any other session costs nothing. After a reload the memory is empty and a stale
+// file stays until its session ends (the sweep removes it).
+const askingSids = new Set<string>()
+// The tier is no longer asking: its question is over (answered, dismissed) or its turn ended.
+async function promptAskingClear($: any, sid: string): Promise<void> {
+  if (!askingSids.delete(sid)) return
+  const p = await where($)
+  if (p) await run($, [RM, '-f', '--', `${p.root}/prompts/asking/${sid}`]).catch(() => undefined)
 }
 
 // The hook (§3.1). nextOnce runs the chain beneath at most once, so a failure after it never runs it a second time.
@@ -5464,8 +5475,10 @@ async function promptHook($: any, e: any, nextOnce: (x: any) => Promise<any>, si
   // 0. A tier's relay question (PLAN-PR3 §3.5): it is the person's already (AskUserQuestion), so it raises no request. It marks the relay asked and the tier asking,
   // before the coverage gate, so a conductor's or the manager's question is marked too. The chain beneath runs as it always did.
   if (String(e.tool_name) === 'AskUserQuestion' && relayShorts(e.tool_input).length > 0) {
-    await promptRelayAsked($, sid, relayShorts(e.tool_input)).catch(() => undefined)
-    return nextOnce(e)
+    const under = await nextOnce(e)
+    // The question is the person's only if nothing beneath answered it (a hook that does is not the person): then it is not marked asked, and an answer to it lands nothing.
+    if (!(under && typeof under === 'object' && Object.keys(under).length > 0)) await promptRelayAsked($, sid, relayShorts(e.tool_input)).catch(() => undefined)
+    return under
   }
   // 1. The switch and the session's kind. The emergency file wins over the switch.
   const cov = await promptCoverage($, sid)
@@ -5633,6 +5646,8 @@ async function promptWait($: any, e: any, beneath: any, signal: AbortSignal, w: 
   const readRelay = async (): Promise<pr.Relay | 'bad' | undefined> => {
     if ((await statR($, relayPath)) === 'absent') return undefined
     const r = await readSmallR($, relayPath, w.p.uid, pr.DECISION_MAX)
+    // A read that failed or met a swap says nothing about the file: this poll keeps the relay it had (as a decision file read that fails is skipped).
+    if (r.state === 'failed' || r.state === 'changed') return relay ?? undefined
     if (r.state !== 'ok') return r.state === 'absent' ? undefined : 'bad'
     const x = pr.parseRelay(r.text)
     return x && x.id === w.id && x.nonce === w.nonce ? x : 'bad'
@@ -5647,8 +5662,11 @@ async function promptWait($: any, e: any, beneath: any, signal: AbortSignal, w: 
   let askedSeen = false
   let noCount = 0
   let presenceAt = 0
+  // A relay whose question the person had on screen (asked) never ends in the 20-minute deny, even if it is lost later: the prompt stays in the dialog (expired at 21 minutes).
+  let personSaw = false
   const relayLost = async (code: string): Promise<void> => {
     const r = relay
+    if (askedSeen) personSaw = true
     if (!(await ledgerAdd($, { ...w.row, kind: 'relay-lost', code, ...(r ? { short: r.short, by: r.by.sid, tier: r.by.level } : {}) }))) return
     await run($, [RM, '-f', '--', relayPath, askedPath, leftPath]).catch(() => undefined)
     relay = undefined
@@ -5726,15 +5744,16 @@ async function promptWait($: any, e: any, beneath: any, signal: AbortSignal, w: 
             w.st.pending = { ...w.row, kind: 'abandoned', code: 'hook-failed' }
             if (!(await ledgerAdd($, back))) return beneath
             w.st.closed = true
-            const text = d.via === 'person' ? `Denied by the person via the ${d.by.level} ${d.by.name}.` : `Denied by the ${d.by.level} ${d.by.name}: ${d.why}`
-            const decision = d.decision === 'allow' ? { behavior: 'allow' as const } : { behavior: 'deny' as const, message: pr.capBytes(pr.redact(text), 300).text }
+            const unclear = d.decision === 'deny' && d.via !== 'person' && pr.isUnclear(d.why)
+            const text = d.via === 'person' ? `Denied by the person via the ${d.by.level} ${d.by.name}.` : `Denied by the ${d.by.level} ${d.by.name}: ${d.why}${unclear ? pr.UNCLEAR_SUFFIX : ''}`
+            const decision = d.decision === 'allow' ? { behavior: 'allow' as const } : { behavior: 'deny' as const, message: pr.capBytes(pr.redact(text), unclear ? 420 : 300).text }
             return { ...(beneath && typeof beneath === 'object' ? beneath : {}), decision }
           }
         }
       }
     }
     // The 20-minute deny: nobody answered and nobody put it to the person. Some tier was in reach when the request began (the hook did not start the wait otherwise).
-    if (!relay && awake >= pr.DENY_AFTER_MS && (await statR($, relayPath)) === 'absent') {
+    if (!relay && !personSaw && awake >= pr.DENY_AFTER_MS && (await statR($, relayPath)) === 'absent') {
       const stop = await guards()
       if (stop !== undefined) return stop
       w.st.pending = { ...w.row, kind: 'abandoned', code: 'hook-failed' }
@@ -5803,7 +5822,7 @@ async function promptRelayPost($: any, e: any): Promise<string | undefined> {
   const p = await where($)
   if (!c.SID_RE.test(sid) || !p) return undefined
   // The question is over, whatever the answer: this tier is free for new requests.
-  await run($, [RM, '-f', '--', `${p.root}/prompts/asking/${sid}`]).catch(() => undefined)
+  await promptAskingClear($, sid)
   const open = await promptOpenRelays($, p, sid)
   let late = false
   for (const a of pr.relayAnswers(qin, e.tool_response, open.map((r) => ({ id: r.relay.id, short: r.relay.short })))) {
@@ -5819,6 +5838,12 @@ async function promptRelayPost($: any, e: any): Promise<string | undefined> {
     const id = relay.id
     if (a.outcome === 'left') {
       if ((await promptLinkOnce($, `${dir}/${id}.left`, '{}')) === 'ok') await ledgerAdd($, { kind: 'relay-left', id, short: relay.short, by: sid, tier: relay.by.level })
+      continue
+    }
+    // The answer counts only for a question the mod saw raise its permission request with nothing beneath answering it (the asked mark): else nothing lands and the tier is told.
+    if ((await statR($, `${dir}/${id}.asked`)) === 'absent') {
+      late = true
+      await ledgerAdd($, { kind: 'relay-late', id, short: relay.short, by: sid, tier: relay.by.level, code: 'not-asked' })
       continue
     }
     const rr = await readSmallR($, `${dir}/${id}.request.json`, p.uid, pr.REQUEST_MAX)
@@ -5856,7 +5881,10 @@ async function promptRelayPost($: any, e: any): Promise<string | undefined> {
       continue
     }
     const ok = await ledgerAdd($, { id, nonce: q.nonce, lane: q.lane, repo: q.repo, tool: q.tool, pattern: pr.patternOf(q.tool, q.input, q.repo), hash: q.inputHash, tier: relay.by.level, why, kind: 'answered', code: a.outcome, by: sid, via: 'person', short: relay.short })
-    if (!ok) await run($, [RM, '-f', '--', path]).catch(() => undefined)
+    if (!ok) {
+      await run($, [RM, '-f', '--', path]).catch(() => undefined)
+      late = true
+    }
   }
   return late ? pr.RELAY_LATE_LINE : undefined
 }
@@ -5906,7 +5934,7 @@ async function promptSweep($: any): Promise<void> {
       }
       // A file whose request is gone (a crash between the two removals, or a half-written copy), a day old: removed with no row, it names no open request.
       const o = /^([0-9a-f-]{36})\.(decision\.json|done|escalate(?:-lead|-conductor|-manager)?\.json|relay\.json|asked|left)$/.exec(f.name)
-      const orphan = (o !== null && pr.ID_RE.test(o[1]) && !requests.has(o[1]) && !busy.has(o[1])) || /^[0-9a-f-]{36}\.[A-Za-z.]+\.\d+\.tmp$/.test(f.name)
+      const orphan = (o !== null && pr.ID_RE.test(o[1]) && !requests.has(o[1]) && !busy.has(o[1])) || /^[0-9a-f-]{36}\.[A-Za-z.-]+\.\d+\.tmp$/.test(f.name)
       if (orphan && old) await run($, [RM, '-f', '--', `${base}/${d.name}/${f.name}`]).catch(() => undefined)
     }
     // A folder of a session that has ended, with nothing left in it, goes too (rmdir refuses a folder that holds anything).
@@ -6053,7 +6081,8 @@ async function promptStand($: any, p: { uid: number; root: string }, live: RegRo
   const asking = new Set<string>()
   for (const t of tiers) if (t.sid !== relay?.by.sid && (await statR($, `${p.root}/prompts/asking/${t.sid}`)) !== 'absent') asking.add(t.sid)
   const active = tiers.filter((t) => passed[t.level] === undefined && !asking.has(t.sid))
-  const reps = pr.TIER_LEVELS.flatMap((l) => active.filter((t) => t.level === l).slice(0, 1))
+  // The slots follow every live tier in reach, one that has passed the request up included: it is still there, so a tier above keeps its own slot (the manager's 10 minutes).
+  const reps = pr.TIER_LEVELS.flatMap((l) => tiers.filter((t) => t.level === l).slice(0, 1))
   const opens = pr.tierWindows(q.at, reps, passed)
   const windows: Record<string, number> = {}
   for (const t of active) windows[t.sid] = opens[reps.find((r) => r.level === t.level)!.sid]
@@ -7396,6 +7425,8 @@ export const register: Register = (on) => {
       }
       const mid = midDelivered.delete(sid)
       promptMidFallback(sid)
+      // A turn that ended has no question open: the tier is no longer asking (a dismissal that fired no hook of its own).
+      await promptAskingClear($, sid).catch(() => undefined)
       if (kind !== 'ping' && e.reason === 'answer') {
         if (mid) await midTurnFallback($, sid).catch(() => log($, sid, 'error', 'nudge-fallback').catch(() => undefined))
         else await thresholdNudge($, sid).catch(() => log($, sid, 'error', 'nudge-check').catch(() => undefined))
