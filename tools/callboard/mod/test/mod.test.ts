@@ -363,6 +363,7 @@ let lockOwnerWritten: string | undefined
 let lockOwnerFails = false
 let leadMvDelayMs = 0
 let compactHangs = false
+let compactThrows = false
 let submitHangs = false
 // v13.2 review c1: run once inside the next prompt submit, before it succeeds or fails (the engine runs the prompt hooks there); a store call that throws at once.
 let submitHook: ((text: string) => Promise<void>) | undefined
@@ -493,6 +494,7 @@ function engine(on: any, argvSeen: string[][], stdins: string[] = [], clk = fals
   lockOwnerFails = false
   leadMvDelayMs = 0
   compactHangs = false
+  compactThrows = false
   submitHangs = false
   submitHook = undefined
   timerHeld = undefined
@@ -639,6 +641,7 @@ function engine(on: any, argvSeen: string[][], stdins: string[] = [], clk = fals
       // v14: the manager's /color, run from a timer.
       colorRuns.push(e.args)
     } else {
+      if (compactThrows) throw new Error('refused')
       seen.compacted = true
       if (compactHangs) return new Promise(() => undefined)
     }
@@ -7216,6 +7219,60 @@ test('an order past the 30-minute gap of an earlier nudge is sent; a repeat of t
   await tickTwice()
   expect(resultFiles.get(RESULT)).toBe('compact refused nudge-limit 99\n')
   expect(nudges().length).toBe(1)
+})
+
+test('an order stands when the engine refuses the compact command: the stamp is put back, so the deadline notice still comes (review)', async ($, on) => {
+  const stdins: string[] = []
+  await renameThroughTick($, on, stdins, 1)
+  tokensNow = 50_000
+  cueFile = { ino: 120, text: 'compact\n', present: true }
+  await tickTwice()
+  expect(JSON.stringify(await $.tool.call(GOOD as any))).toContain('queued')
+  const at = (store.get(`ord:${SID}`) as { at: number }).at
+  compactThrows = true
+  await $.turn.complete(TURN as any)
+  await ticks(3)
+  expect(seen.compacted).toBe(false)
+  expect(store.get(`ord:${SID}`)).toEqual({ at })
+})
+
+test('a compaction the mod did not start (PostCompact with no request) spends the order too (review)', async ($, on) => {
+  on('classic.PostCompact', () => ({}))
+  await renameThroughTick($, on, [], 1)
+  tokensNow = 50_000
+  cueFile = { ino: 121, text: 'compact\n', present: true }
+  await tickTwice()
+  expect(store.has(`ord:${SID}`)).toBe(true)
+  await ($ as any).classic.PostCompact({ hook_event_name: 'PostCompact', trigger: 'auto', compact_summary: 's' })
+  expect(store.has(`ord:${SID}`)).toBe(false)
+  expect(JSON.stringify(await $.tool.call(GOOD as any))).toContain('Compaction not allowed: context-floor')
+})
+
+test('an order sent again after its first nudge expired unsent restarts the 15 minutes, for the lane and the orderer (review)', async ($, on) => {
+  await renameThroughTick($, on, [], 1)
+  sessions = { [REGFILE]: REG({ status: 'busy' }) }
+  cueFile = { ino: 122, text: 'compact\n', present: true }
+  await tickTwice()
+  expect(resultFiles.get(RESULT)).toBe('compact held nudged 122\n')
+  const first = (store.get(`ord:${SID}`) as { at: number }).at
+  await clock!.advance(11 * MIN)
+  cueFile = { ino: 123, text: 'compact\n', present: true, mtimeSec: nowMs / 1000 }
+  await tickTwice()
+  expect(resultFiles.get(RESULT)).toBe('compact held nudged 123\n')
+  expect((store.get(`ord:${SID}`) as { at: number }).at).toBeGreaterThan(first)
+})
+
+test('a pending nudge of any kind becomes the order and is stamped (review)', async ($, on) => {
+  const trace: Trace = { log: [], failCounters: false }
+  await renameThroughTick($, on, [], 1, trace)
+  tokensNow = 50_000
+  sessions = { [REGFILE]: REG({ status: 'busy' }) }
+  trace.st!.set('nudgeDue', { value: { kind: 'cache', at: nowMs }, version: 50 })
+  cueFile = { ino: 124, text: 'compact\n', present: true }
+  await tickTwice()
+  expect(resultFiles.get(RESULT)).toBe('compact held nudged 124\n')
+  expect(trace.st!.get('nudgeDue')?.value).toEqual({ kind: 'lead', at: expect.any(Number) })
+  expect(store.get(`ord:${SID}`)).toEqual({ at: expect.any(Number) })
 })
 
 const orderNotices = () => submitted.filter((t) => t.includes('did not compact after your order'))

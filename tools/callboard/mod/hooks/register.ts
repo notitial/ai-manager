@@ -684,8 +684,10 @@ async function pruneHints($: any, me: string) {
   let ordDels = 0
   for (const k of all.filter((x) => x.startsWith(c.ORDER_PREFIX)).slice(0, c.HINT_SCAN_MAX)) {
     if (ordDels >= HINT_DELETE_MAX) break
-    const v = await $.store.get(k).catch(() => undefined)
-    const at = (v as { at?: unknown } | null | undefined)?.at
+    // A read that failed is not a missing value: the stamp stays for the next pass (a deleted one would cost the orderer its notice).
+    const v = await Promise.resolve($.store.get(k)).then((x: unknown) => ({ x }), () => null)
+    if (!v) continue
+    const at = (v.x as { at?: unknown } | null | undefined)?.at
     if (typeof at === 'number' && now >= at && now - at <= c.ORDER_STALE_MS) continue
     ordDels++
     await Promise.resolve()
@@ -2515,17 +2517,15 @@ async function keepaliveTick($: any, sid: string, submitsAtStart: number) {
 
 // The lead's lane_compact with no request of the session's own: a session that may be nudged, the same limits as a compaction, no background agents,
 // the nudge throttle; then one nudge is recorded. A fresh nudge already pending is answered nudged as it stands (its time is kept, so the lead cannot
-// stretch its 10 minutes); a pending `threshold` one becomes a lead nudge (the lead text, not the size's).
+// stretch its 10 minutes); a pending one of another kind (size, idle, cache) becomes a lead nudge (the order text, not its own).
 async function leadNudge($: any, sid: string, now: number, answer: Answer, refuse: (reason: string) => Promise<void>) {
   // A cue's path: the plain registry, as every cue check (a lead's cue never reaches a session whose row is only in another config folder).
   if (!(await personRow($, sid, regOnce($)))) return refuse('not-interactive')
   const read = await $.state.get(nudgeDueRef)
   const pending = read.value as c.NudgeDue | null | undefined
   if (c.nudgeDueFresh(pending, now)) {
-    if (pending.kind === 'threshold') {
-      await $.state.set(nudgeDueRef, { kind: 'lead', at: pending.at }, { ifVersion: read.version })
-      await orderStamp($, sid, now)
-    }
+    if (pending.kind !== 'lead') await $.state.set(nudgeDueRef, { kind: 'lead', at: pending.at }, { ifVersion: read.version })
+    await orderStamp($, sid, now)
     await answer('held', 'nudged')
     return log($, sid, 'nudge-pending', pending.kind)
   }
@@ -2539,20 +2539,24 @@ async function leadNudge($: any, sid: string, now: number, answer: Answer, refus
   const ordered = (await $.state.get(orderedAtRef)).value
   if (c.orderFresh(ordered, now) && (ct.lastNudgeMs ?? 0) >= ordered) return refuse('nudge-limit')
   await $.state.set(nudgeDueRef, { kind: 'lead', at: now })
-  await orderStamp($, sid, now)
+  await orderStamp($, sid, now, true)
   await answer('held', 'nudged')
   await log($, sid, 'nudge-due', 'lead')
 }
 
-async function orderSpend($: any, sid: string) {
+// Returns the stamp it spent, so a compaction the engine refused can put it back. The store delete is bounded: a store that does not answer must not hold up a compaction.
+async function orderSpend($: any, sid: string): Promise<number | null> {
+  const was = (await $.state.get(orderedAtRef).catch(() => ({ value: null }))).value
   await $.state.set(orderedAtRef, null).catch(() => undefined)
-  await $.store.delete(`${c.ORDER_PREFIX}${sid}`).catch(() => log($, sid, 'error', 'order-mark').catch(() => undefined))
+  await withTimeout($, Promise.resolve($.store.delete(`${c.ORDER_PREFIX}${sid}`)).catch(() => log($, sid, 'error', 'order-mark').catch(() => undefined)), c.ENGINE_CALL_TIMEOUT_MS)
+  return typeof was === 'number' ? was : null
 }
 
 // The lane's side of an order: the stamp that lets one on-cue request_compact pass the floor and count as cued (c.ORDER_MS), kept from the first order of a
 // stretch so a repeated lane_compact cannot stretch the deadline, and a copy in $.store under the lane's session id that the orderer reads at the deadline.
-async function orderStamp($: any, sid: string, now: number) {
-  if (c.orderFresh((await $.state.get(orderedAtRef)).value, now)) return
+// `restart`: the order is being sent again (the earlier one's nudge expired unsent), so its 15 minutes start over, for the lane and for the orderer's deadline.
+async function orderStamp($: any, sid: string, now: number, restart = false) {
+  if (!restart && c.orderFresh((await $.state.get(orderedAtRef)).value, now)) return
   await $.state.set(orderedAtRef, now)
   await $.store.set(`${c.ORDER_PREFIX}${sid}`, { at: now }).catch(() => log($, sid, 'error', 'order-mark').catch(() => undefined))
   await log($, sid, 'ordered')
@@ -2711,7 +2715,7 @@ async function doCompact($: any, sid: string, req: Request, fromCue: boolean, an
   }
   await $.state.set(request, { ...req, phase: 'compacting', compactingMs: await $.clock.now() })
   // v16.1: a compaction that begins spends the order (whatever request began it): the orderer's deadline finds no stamp. A request that ends without one leaves it.
-  await orderSpend($, sid)
+  const spent = await orderSpend($, sid)
   // v13.1: the mark that survives a restart (c.CMP_PREFIX); set after `compacting`, so a tick in between cannot clear it as left behind.
   cmpMarked.add(sid)
   const markAt = await $.clock.now()
@@ -2722,6 +2726,8 @@ async function doCompact($: any, sid: string, req: Request, fromCue: boolean, an
   try {
     await $.command.run({ command: 'compact', args: req.focus })
   } catch {
+    // The engine refused the command: the lane did not compact, so the order stands (its stamp goes back while it is still fresh).
+    if (spent !== null && c.orderFresh(spent, await $.clock.now())) await orderStamp($, sid, spent, true).catch(() => undefined)
     await failRequest($, sid, 'rejected', true)
   }
 }
@@ -7788,6 +7794,8 @@ export const register: Register = (on) => {
       // v13.1: any compaction that ended clears the mark, whatever the request says (a reload may have dropped it) and even if the step above threw;
       // after the request, so it delays nothing.
       await cmpClear($, sid)
+      // v16.1: a compaction the mod did not start (the engine's own, the person's /compact) ends the order too, so the orderer is not sent after a lane that compacted.
+      await orderSpend($, sid).catch(() => undefined)
     }
     return next(e)
   }).catch(($, e, next) => next(e))
