@@ -1957,7 +1957,11 @@ export function patternOf(tool: string, input0: unknown, repo?: string): string 
 
 // ---- PR 4: questions (PLAN-PR4 §3): what a question may be to reach a tier, the one label helper, the answer text, the questions file ----
 export const QUESTION_TOOL = 'AskUserQuestion'
-const CONTROL_RE = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/
+// A label may not hold a control character, a line or paragraph break, a bidi override or isolate, or a zero-width space, a word joiner or a tag character (text that can hide
+// or reorder what a tier reads). A ZWJ, ZWNJ or direction mark is allowed: emoji and some scripts need them, and the frame shows them escaped.
+const CONTROL_RE = /[\u0000-\u001f\u007f-\u009f\u200b\u2028-\u202e\u2060-\u2069\ufeff\u{e0000}-\u{e007f}]/u
+// What the tier's view of the lane's own text shows as an escape: those, and every other invisible or direction-changing character.
+const INVISIBLE_RE = /[\u0000-\u001f\u007f-\u009f\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180e\u2000-\u200f\u2028-\u202f\u205f-\u206f\u3000\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff9-\ufffb\u{e0000}-\u{e0fff}]/gu
 // A label as every reader sees it: redacted, then trimmed, in that fixed order (`trim(redact(x))` and `redact(trim(x))` can differ). The ONE source for prompt_list's
 // numbering, prompt_answer's echo, applyCheck's live label, step 0's check and relayAnswers.
 export const labelOf = (label: unknown): string => (typeof label === 'string' ? redact(label).trim() : '')
@@ -2424,7 +2428,7 @@ export type ListItem = { id: string; lane?: string; tool: string; repo: string; 
 function questionFramed(v: QuestionView, max = Infinity): string {
   // The lane writes the header, the question and the descriptions: a line break, a bidi or invisible character is shown as an escape, so no line of its own can pose as an option
   // number, a TRUNCATED line or the mod's text.
-  const esc = (t: string): string => t.replace(/</g, '\\u003c').replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)
+  const esc = (t: string): string => t.replace(/</g, '\\u003c').replace(INVISIBLE_RE, (c) => { const n = c.codePointAt(0)!; return n > 0xffff ? `\\u{${n.toString(16)}}` : `\\u${n.toString(16).padStart(4, '0')}` })
   const lines = [`header: ${esc(v.header)}`, `question: ${esc(v.question)}`, ...v.options.map((o, n) => `${n + 1}. ${esc(o.label)}${o.description !== '' ? `: ${esc(o.description)}` : ''}`)]
   const text = lines.join('\n')
   return `<untrusted-input>\n${max === Infinity ? text : capBytes(text, max).text}\n</untrusted-input>`
@@ -2439,9 +2443,9 @@ function listPart(i: ListItem, force: boolean, max = Infinity): string {
   const qv = i.tool === QUESTION_TOOL ? questionView(i.input) : undefined
   return [
     `### ${i.id}`,
-    qv ? `lane: ${word(i.lane, '(unnamed)')} · question · open ${Math.max(0, Math.round(i.ageSec))} s` : `lane: ${word(i.lane, '(unnamed)')} · tool: ${word(i.tool, '(odd name)')} · raised by: ${i.raisedBy} · open ${Math.max(0, Math.round(i.ageSec))} s${i.agentType ? ` · agent: ${word(i.agentType, '(odd)')}` : ''}`,
+    i.tool === QUESTION_TOOL ? `lane: ${word(i.lane, '(unnamed)')} · question · open ${Math.max(0, Math.round(i.ageSec))} s` : `lane: ${word(i.lane, '(unnamed)')} · tool: ${word(i.tool, '(odd name)')} · raised by: ${i.raisedBy} · open ${Math.max(0, Math.round(i.ageSec))} s${i.agentType ? ` · agent: ${word(i.agentType, '(odd)')}` : ''}`,
     i.turn ?? '',
-    i.ageSec < MIN_AGE_MS / 1000 ? `An answer you record now is held until the ${qv ? 'question' : 'prompt'} has been open ${MIN_AGE_MS / 1000} s.` : '',
+    i.ageSec < MIN_AGE_MS / 1000 ? `An answer you record now is held until the ${i.tool === QUESTION_TOOL ? 'question' : 'prompt'} has been open ${MIN_AGE_MS / 1000} s.` : '',
     i.tool === QUESTION_TOOL && (i.truncated || force) ? `TRUNCATED: you have not seen all of it, so you cannot answer it, and it cannot be put to the person here: tell the person, in your own words, that lane ${word(i.lane, '(unnamed)')} asks a question in its panel.` : '',
     i.tool !== QUESTION_TOOL && (i.truncated || force) ? 'TRUNCATED: you have not seen all of it, so you may not allow it, and it cannot be put to the person: deny it with the cleaner-command message (the why starts "Too complex to judge: ").' : '',
     qv ? questionFramed(qv, max) : framed(i.input, max),

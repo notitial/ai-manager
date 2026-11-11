@@ -14139,7 +14139,7 @@ let prBeneath: (($: any) => any) | undefined
 let prBeneathCalls = 0
 // While a test sets up its lane (dialogs ask through the same checks), the hook beneath asks for nothing.
 let prSetup = false
-type Ans = { switchOn?: boolean; verdict?: any; beneath?: ($: any) => any; argv?: string[][]; clock?: boolean; asLead?: boolean; scope?: string; asksScope?: string; asksOld?: boolean }
+type Ans = { switchOn?: boolean; verdict?: any; beneath?: ($: any) => any; argv?: string[][]; clock?: boolean; asLead?: boolean; scope?: string; asksScope?: string; asksOld?: boolean; trace?: Trace }
 async function answerer($: any, on: any, stdins: string[], opts: Ans = {}) {
   extraRows = {}
   prVerdict = opts.verdict ?? { decision: 'ask', rule: 'Bash(ssh:*)' }
@@ -14154,7 +14154,7 @@ async function answerer($: any, on: any, stdins: string[], opts: Ans = {}) {
   })
   if (opts.asLead) await lead($, on, stdins, { argv: opts.argv, clock: opts.clock })
   else {
-    await attacher($, on, stdins, { clock: opts.clock, argv: opts.argv })
+    await attacher($, on, stdins, { clock: opts.clock, argv: opts.argv, trace: opts.trace })
     await doLane($, 'lane svc-api')
   }
   prSetup = false
@@ -17295,6 +17295,19 @@ test('prompts PR4: a running lane whose first prompt was composed earlier still 
   expect(qNoteRows().length).toBe(1)
 })
 
+
+test('prompts PR4: a lane composed at its own first render (the turns it was bound with) is marked: no one-time note; unknown turns prove nothing', async ($, on) => {
+  const trace: Trace = { log: [], failCounters: false }
+  await answerer($, on, [], { clock: true, switchOn: false, trace })
+  await $.session.end({} as any)
+  const cur = trace.st!.get('lane')!
+  const setTurns = (turns: number) => trace.st!.set('lane', { value: { ...(cur.value as object), turns }, version: cur.version + 1 })
+  setTurns(turnsNow)
+  await $.prompt.compose({ ...COMPOSE, traits: [], tools: ['mcp__callboard__request_compact'] })
+  store.set('answering', { scope: 'all', asks: false, asksScope: 'all', savedAt: T0 })
+  await clock!.advance(10_000)
+  expect(qNoteRows().length).toBe(0)
+})
 
 // A marker that no test carries would leave the parts after it empty and drop their tests without a word: fail the file instead.
 if (currentShard !== SHARD_STARTS.length - 1) throw new Error(`mod tests: the shard markers are not all found (stopped at part ${currentShard + 1} of ${SHARD_STARTS.length})`)

@@ -1002,6 +1002,9 @@ test('a question view escapes line breaks and invisible characters, so no line o
   const frame = text.slice(text.indexOf('<untrusted-input>'), text.indexOf('</untrusted-input>'))
   assert.equal(frame.split('\n').filter((l) => /^\d\. /.test(l)).length, 2)
   assert.ok(!frame.split('\n').some((l) => l.startsWith('TRUNCATED')) && frame.includes('\\u000a') && frame.includes('\\u202e'))
+  // ZWJ, ZWNJ and direction marks stay allowed in a label (emoji, Persian, Arabic); they are shown escaped. Tag characters and the soft hyphen are escaped in the view.
+  assert.equal(p.questionShape({ questions: [{ header: 'h', question: 'q', options: [{ label: '\u{1f468}\u200d\u{1f4bb} Dev', description: 'd' }, { label: 'b\u200c', description: 'd' }] }] }).ok, true)
+  assert.ok(p.promptListText([{ id: ID, lane: 'LANE', tool: 'AskUserQuestion', repo: '/r', raisedBy: 'mode', ageSec: 40, truncated: false, input: { questions: [{ header: 'h\u061c\u00ad', question: 'q\u{e0041}', options: [{ label: 'a', description: 'x\u200d' }, { label: 'b', description: 'd' }] }] } }], { on: true }).includes('\\u061c\\u00ad') )
   for (const bad of ['a\u200bb', 'a\u202eb', 'a\u0085b', 'a\u2060b']) assert.equal((p.questionShape({ questions: [{ header: 'h', question: 'q', options: [{ label: bad, description: 'd' }, { label: 'b', description: 'd' }] }] }) as { code?: string }).code, 'question-options')
 })
 test('answerText: a tier answer with no tier is never the person\'s bare label', () => {

@@ -5383,7 +5383,7 @@ async function ledgerHas($: any, p: { uid: number; root: string }, id: string, n
   if (rows === 'unreadable') return 'unreadable'
   // bind: the row must name the same decision and the same author as the file, so a file rewritten after its row (a deny turned allow) is not found. For a question's answer it names
   // the chosen option too (opt, and the label hash lh), so a file rewritten from one option to another is not found either.
-  return rows.some((j) => j.kind === 'answered' && j.id === id && j.nonce === nonce && (bind === undefined || (j.code === bind.code && j.by === bind.by && j.via === bind.via && (bind.opt === undefined || (j.opt === bind.opt && j.lh === bind.lh))))) ? 'found' : 'missing'
+  return rows.some((j) => j.kind === 'answered' && j.id === id && j.nonce === nonce && (bind === undefined || (j.code === bind.code && j.by === bind.by && j.via === bind.via && (bind.opt === undefined || (bind.lh !== undefined && j.opt === bind.opt && j.lh === bind.lh))))) ? 'found' : 'missing'
 }
 
 // The standing comment cap for a call that carries an `@claude` body: the `returned` allow rows of this month and last for the same repo, PR and kind. A failed
@@ -6065,7 +6065,9 @@ async function promptApply($: any, w: WaitCtx, d: pr.Decision, awake: number, gr
     } else unsure = true
     if (presenceErrors !== errsBefore) unsure = true
   }
-  const ledger = await ledgerHas($, w.p, w.id, w.nonce, { code: d.decision, by: d.by.sid, ...(d.via ? { via: d.via } : {}), ...(d.decision === 'answer' && d.answer ? { opt: String(d.answer.index), lh: await labelHash($, w.id, d.answer.label) } : {}) })
+  // A question's answer binds to its row by option and label hash; a hash that cannot be made is an unreadable ledger (held for the next poll), not a drop.
+  const lh = d.decision === 'answer' && d.answer ? await labelHash($, w.id, d.answer.label).catch(() => undefined) : undefined
+  const ledger = d.decision === 'answer' && d.answer && lh === undefined ? 'unreadable' : await ledgerHas($, w.p, w.id, w.nonce, { code: d.decision, by: d.by.sid, ...(d.via ? { via: d.via } : {}), ...(d.answer && lh !== undefined ? { opt: String(d.answer.index), lh } : {}) })
   // Only a call that carries an `@claude` body, and only once the other checks would let the decision through, reads the cap.
   const cap = w.cap && ledger === 'found' && d.decision === 'allow' && d.via !== 'person' ? await capOf($, w.p, w.cap) : undefined
   const out = pr.applyCheck({ req: w.req, decision: d, liveHash, awakeMs: awake, expiresAt: pr.expiresAfter(relay !== undefined), floor: pr.floorCheck(w.tool, w.input, fo), byOk, ...(relay ? { relay } : {}), ...(w.tool === pr.QUESTION_TOOL ? { question: { labels: pr.questionLabels(w.input) } } : {}), ledger, graceMs, cap })
@@ -7883,7 +7885,15 @@ export const register: Register = (on) => {
     const laneText = brief ? c.laneBriefing(brief) : undefined
     // The lane's question bullet is in the first system prompt only when this render is the session's first (no turn yet); the engine keeps the first prompt, so a later render
     // proves nothing and the one-time note stays owed. briefLane's note carries the bullet too (it sets the mark).
-    if (laneText !== undefined && (await $.session.turns().catch(() => NaN)) === 0) laneQSeen.add(sid)
+    if (laneText !== undefined && !laneQSeen.has(sid)) {
+      try {
+        // The lane's own baseline: the turns it had when it was bound (a rename adds one in a panel); unknown (-1) proves nothing. Bounded, like the other turns reads.
+        const b = (await $.state.get(lane)).value as Bound | null | undefined
+        const base = typeof b?.turns === 'number' ? b.turns : 0
+        const t = await withTimeout($, $.session.turns().catch(() => NaN), c.ENGINE_CALL_TIMEOUT_MS)
+        if (base >= 0 && t === base) laneQSeen.add(sid)
+      } catch {}
+    }
     // v14 (2026-11-04, review c1): a lead is told of on-cue compaction only while its tick last saw a live manager (no file read here).
     const leadManager = gated && grants.get(sid)?.level === 'lead' && managerSeen.get(sid)?.live === true
     // v15 S7b: and of a trusted conductor over its repo.
