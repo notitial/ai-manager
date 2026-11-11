@@ -35,6 +35,8 @@ declare module 'claude-code' {
       restAt: number | null
       // v13.6: until when /callboard checkin pause holds this session's check-ins.
       checkinPauseUntil: number | null
+      // When the lead's lane_compact order was sent; it lifts the context floor for one on-cue request (see orderStamp).
+      orderedAt: number | null
     }
   }
 }
