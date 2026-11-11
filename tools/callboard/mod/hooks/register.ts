@@ -50,6 +50,8 @@ const interactiveRef = { plugin: 'callboard', key: 'interactive' } as const
 // When the tick last sent this session a nudge: the grant's start. Only the tick's nudge submit sets it; any stored request_compact, a prompt that is
 // not the mod's own, and /callboard off clear it.
 const nudgedAtRef = { plugin: 'callboard', key: 'nudgedAt' } as const
+// v16.1 (2026-11-11): when a lead, conductor or manager last ordered this lane to compact (c.ORDER_MS).
+const orderedAtRef = { plugin: 'callboard', key: 'orderedAt' } as const
 // v13.2, the keepalive ping: when the last main-agent turn ended, when the last real one ended (not started by a ping, a nudge, a notice or the lanes-changed
 // turn), and when the tick last tried a ping. Kept in the session state: a reload keeps them (the cache is still warm), a restart loses them (unknown: no ping).
 const turnEndRef = { plugin: 'callboard', key: 'turnEndAt' } as const
@@ -678,6 +680,18 @@ async function pruneHints($: any, me: string) {
       dels++
     }
   }
+  // v16.1: an order stamp (ord:<sid>) nobody collected (its orderer is gone) goes after a day, under the same cap.
+  let ordDels = 0
+  for (const k of all.filter((x) => x.startsWith(c.ORDER_PREFIX)).slice(0, c.HINT_SCAN_MAX)) {
+    if (ordDels >= HINT_DELETE_MAX) break
+    const v = await $.store.get(k).catch(() => undefined)
+    const at = (v as { at?: unknown } | null | undefined)?.at
+    if (typeof at === 'number' && now >= at && now - at <= c.ORDER_STALE_MS) continue
+    ordDels++
+    await Promise.resolve()
+      .then(() => $.store.delete(k))
+      .catch(() => undefined)
+  }
   // v13: lead grants (lead:<sid>), with their own caps. The starting session's own is left to the lead restore, which reads it and deletes it itself.
   const p = await where($)
   if (!p) return
@@ -983,6 +997,8 @@ function leadDrop($: any, sid: string): Promise<boolean> {
   attnTold.delete(sid)
   attnCapped.delete(sid)
   obsAt.delete(sid)
+  orders.delete(sid)
+  orderChecked.delete(sid)
   // v14 (2026-11-04, review c2): what the lead last saw of a manager and the manager's lead-less verdicts go too, so a new grant reads afresh.
   managerSeen.delete(sid)
   managerSeenBusy.delete(sid)
@@ -1586,7 +1602,7 @@ async function leadTools($: any, sid: string) {
         verb === 'rename'
           ? 'Bind a brand-new session to a lane: writes a rename cue for the session with this id. sid: its session id. lane: the lane name. The session must be in the lane folder, empty and unnamed, and less than 2 minutes old.'
           : verb === 'compact'
-            ? "Ask the lane's session to compact. If it asked for that with request_compact on-cue, it compacts now; otherwise the plugin nudges it to save its notes and compact itself at the end of its turn. lane: the lane name."
+            ? "Ask the lane's session to compact. If it asked for that with request_compact on-cue, it compacts now; otherwise it orders the lane to compact: the plugin tells it to save its notes and call request_compact on-cue, whatever its context size, and it compacts at the end of that turn. lane: the lane name."
             : `Cue the lane's session to ${verb}. lane: the lane name. The session applies its own limits. A start only works within 2 minutes of the session opening.`,
       inputSchema: {
         type: 'object',
@@ -1707,7 +1723,7 @@ async function managerTools($: any, sid: string) {
   const tools: [string, string, unknown][] = [
     ['lane_list', 'List every lane on this Mac, as one table (a plain header line, then one row per lane with its lead, repo folder name, session and waiting columns; a lead no live session carries is marked not live): each lane, its folder when it is outside the repo root, whether a live session carries its name or it is parked, and how many minutes it has waited on a prompt.', { type: 'object', properties: {} }],
     ['lane_resume', "Cue a lane's session to resume from its own notes. The session applies its own limits. lane: the lane name.", lane],
-    ['lane_compact', "Ask a lane's session to compact: at once if it asked for that with request_compact on-cue, otherwise the plugin nudges it to save its notes and compact itself. lane: the lane name, or the session name of a live lead; a lead compacts only when it asked with request_compact on-cue, and is never nudged.", lane],
+    ['lane_compact', "Ask a lane's session to compact: at once if it asked for that with request_compact on-cue, otherwise it orders the lane to compact (it asks on-cue, whatever its context size, and compacts at the end of its turn). lane: the lane name, or the session name of a live lead; a lead compacts only when it asked with request_compact on-cue, and is never nudged.", lane],
     ['lane_terminate', "Stop a lane's session with SIGTERM, whatever it is doing. Every stop asks the person: they confirm in a dialog that names the lane, its repo, the session and the pid. Once the session has stopped, the lane's record is deleted too (the .archive/<LANE> folder and report stay; a lane a session joined keeps its record while a session carries it; a second stop removes it once the session is gone). A lane with no live session is removed directly. lane: the lane name.", lane],
     ['lane_retire', "Stop a lane's session once it confirms it can end: idle, empty prompt box, no background agents or shells, and its report signed done. Every stop asks the person: they confirm in a dialog first, then the lane must confirm. The call itself waits up to 40 seconds for the idle time, so call it right after the lane's last turn; if it still refuses not-idle, wait the seconds it names and try once, never in a loop. Once the session has stopped, the lane's record is deleted too (the .archive/<LANE> folder and signed report stay; a lane a session joined keeps its record while a session carries it; a second stop removes it once the session is gone). A lane with no live session is removed directly, with no signed report. Retire is final. lane: the lane name.", lane],
   ]
@@ -1998,6 +2014,12 @@ async function cueExchange($: any, sid: string, laneName: string, toSid: string,
     // A retire waits from the cue write (its target answers on its next tick, and the checks before the cue take time), and polls faster to shorten the window before the signal.
     const r = await awaitResult($, resultPath, p.uid, verb, w.ino, retire ? (await $.clock.now()) + c.RETIRE_WAIT_MS : deadline, retire ? c.RETIRE_POLL_MS : c.RESULT_POLL_MS)
     if (!r) return no('no-answer', c.NO_ANSWER)
+    // An order the lane took (held nudged): kept in memory, from its first cue, for the deadline notice (orderTick).
+    if (verb === 'compact' && r.outcome === 'held' && r.reason === 'nudged') {
+      const mine = orders.get(sid) ?? new Map<string, { lane: string; at: number }>()
+      orders.set(sid, mine)
+      if (!mine.has(toSid)) mine.set(toSid, { lane: laneName, at: await $.clock.now() })
+    }
     if (r.outcome !== 'ok') return no(`${r.outcome}-${r.reason}`, c.cueRefusalText(verb, r.outcome, r.reason))
     await log($, sid, 'acted', `${verb} ${laneName}`)
     return undefined
@@ -2313,7 +2335,8 @@ async function nudgeTick($: any, sid: string) {
   if ((await $.state.get(request)).value) return drop('request')
   if (!(await mayNudge($, sid))) return drop('not-interactive')
   const tokens = (await $.session.usage()).context.tokens ?? 0
-  const no = c.compactAllowed(await counts($), tokens, now)
+  // A lead's nudge is an order (v16.1): no context floor, and the 30-minute gap does not apply (the hourly cap does).
+  const no = c.compactAllowed(await counts($), tokens, now, due.kind === 'lead')
   if (no) return drop(no)
   if ((await idleCheck($, sid, ownReg($))) !== undefined) return
   let kind: c.NudgeKind | undefined = due.kind === 'threshold' ? undefined : due.kind
@@ -2324,7 +2347,10 @@ async function nudgeTick($: any, sid: string) {
   }
   // v14: the kind follows the size now; one that fell back to the soft text (a compaction meanwhile) keeps the gap. Every kind is checked here, not only a threshold one
   // (review, 2026-11-08): a lead's or cache nudge recorded while a mid-turn nudge was being claimed would otherwise go out after it, inside the gap.
-  if (!c.nudgeAllowed(await counts($), now, kind === 'working', due.again === true)) return drop('nudge-limit')
+  // An order is sent past the 30-minute gap, but not after a nudge that went out since it was recorded (the race this check was added for).
+  const ct = await counts($)
+  if (kind === 'lead' && (ct.lastNudgeMs ?? 0) >= due.at) return drop('nudge-limit')
+  if (!c.nudgeAllowed(ct, now, kind === 'working', due.again === true || kind === 'lead')) return drop('nudge-limit')
   if ((await $.state.set(nudgeDueRef, null, { ifVersion: read.version })).isSet === false) return
   await bump($, (ct) => ({ ...ct, lastNudgeMs: now, lastNudgeKind: kind!, nudgeTimes: [...(ct.nudgeTimes ?? []).filter((t) => t <= now && now - t < c.HOUR_MS), now] }))
   await $.state.set(nudgedAtRef, now)
@@ -2496,18 +2522,35 @@ async function leadNudge($: any, sid: string, now: number, answer: Answer, refus
   const read = await $.state.get(nudgeDueRef)
   const pending = read.value as c.NudgeDue | null | undefined
   if (c.nudgeDueFresh(pending, now)) {
-    if (pending.kind === 'threshold') await $.state.set(nudgeDueRef, { kind: 'lead', at: pending.at }, { ifVersion: read.version })
+    if (pending.kind === 'threshold') {
+      await $.state.set(nudgeDueRef, { kind: 'lead', at: pending.at }, { ifVersion: read.version })
+      await orderStamp($, sid, now)
+    }
     await answer('held', 'nudged')
     return log($, sid, 'nudge-pending', pending.kind)
   }
+  // The order (v16.1): the context floor does not apply and neither does the 30-minute gap; the compaction gap and the hourly nudge cap do.
   const ct = await counts($)
-  const no = c.compactAllowed(ct, (await $.session.usage()).context.tokens ?? 0, now)
+  const no = c.compactAllowed(ct, (await $.session.usage()).context.tokens ?? 0, now, true)
   if (no) return refuse(no)
   if (await busyAgents($)) return refuse('background-work')
-  if (!c.nudgeAllowed(ct, now)) return refuse('nudge-limit')
+  if (!c.nudgeAllowed(ct, now, false, true)) return refuse('nudge-limit')
+  // A lane that already got this order's text is not sent it again; one whose nudge expired unsent (a long turn) is.
+  const ordered = (await $.state.get(orderedAtRef)).value
+  if (c.orderFresh(ordered, now) && (ct.lastNudgeMs ?? 0) >= ordered) return refuse('nudge-limit')
   await $.state.set(nudgeDueRef, { kind: 'lead', at: now })
+  await orderStamp($, sid, now)
   await answer('held', 'nudged')
   await log($, sid, 'nudge-due', 'lead')
+}
+
+// The lane's side of an order: the stamp that lets one on-cue request_compact pass the floor and count as cued (c.ORDER_MS), kept from the first order of a
+// stretch so a repeated lane_compact cannot stretch the deadline, and a copy in $.store under the lane's session id that the orderer reads at the deadline.
+async function orderStamp($: any, sid: string, now: number) {
+  if (c.orderFresh((await $.state.get(orderedAtRef)).value, now)) return
+  await $.state.set(orderedAtRef, now)
+  await $.store.set(`${c.ORDER_PREFIX}${sid}`, { at: now }).catch(() => log($, sid, 'error', 'order-mark').catch(() => undefined))
+  await log($, sid, 'ordered')
 }
 
 // A restored binding is never a birth binding: turns -1 and startDone keep `start` shut, and it needs its own named confirmation.
@@ -2637,7 +2680,7 @@ async function failRequest($: any, sid: string, reason: string, notice: boolean,
 async function doCompact($: any, sid: string, req: Request, fromCue: boolean, answer: Answer = noAnswer) {
   const now = await $.clock.now()
   const tokens = (await $.session.usage()).context.tokens ?? 0
-  const refuse = c.compactAllowed(await counts($), tokens, now)
+  const refuse = c.compactAllowed(await counts($), tokens, now, req.ordered === true)
   if (refuse) {
     await answer('refused', refuse)
     return failRequest($, sid, refuse, false)
@@ -3252,7 +3295,7 @@ async function tick($: any) {
           }
         }
       }
-      if (req && req.phase === 'armed' && req.mode === 'now') {
+      if (req && req.phase === 'armed' && (req.mode === 'now' || req.ordered === true)) {
         // A request made under the nudge grant keeps its way through every later step (it is the session's own, and only the mod's nudge granted it).
         if (!(req.viaNudge === true || (await isEligible($)))) await dropRequest($, sid, 'not-eligible')
         else {
@@ -3318,6 +3361,13 @@ async function tick($: any) {
         checkinBusy.add(s)
         void withTimeout($, checkinTick($, s, submitsAtStart).finally(() => checkinBusy.delete(s)), ACTION_TIMEOUT_MS)
           .then((r) => (r === 'timeout' ? log($, s, 'error', 'checkin-timeout') : undefined), () => log($, s, 'error', 'checkin-error'))
+          .catch(() => undefined)
+      }
+      // v16.1: the deadline of an order, for a lead, a conductor or the manager; once a minute, and only while the session has an order out.
+      if (await orderDue($, s).catch(() => false)) {
+        orderBusy.add(s)
+        void withTimeout($, orderTick($, s, submitsAtStart).finally(() => orderBusy.delete(s)), ACTION_TIMEOUT_MS)
+          .then((r) => (r === 'timeout' ? log($, s, 'error', 'order-timeout') : undefined), () => log($, s, 'error', 'order-error'))
           .catch(() => undefined)
       }
     }
@@ -3515,14 +3565,62 @@ async function checkinTick($: any, sid: string, submitsAtStart: number) {
   await attentionNotice($, sid, mine, submitsAtStart, ep, signed)
 }
 
+// ---- v16.1 (2026-11-11): the deadline of an order ----
+// What each orderer (lead, conductor or manager) ordered: lane session id to { lane name, time of the first order }, in module memory (lost with the session or a reload,
+// then no notice). Once a minute, an order older than c.ORDER_MS is looked up in $.store: the lane's own stamp (c.ORDER_PREFIX + its session id) is still there only if
+// it never made the on-cue request, so only then the orderer gets one fixed notice, and the stamp goes. Nothing is stopped: the notice sends the orderer to the person.
+const orders = new Map<string, Map<string, { lane: string; at: number }>>()
+const orderChecked = new Map<string, number>()
+const orderBusy = new Set<string>()
+async function orderDue($: any, sid: string): Promise<boolean> {
+  if (!grants.has(sid) || !(orders.get(sid)?.size ?? 0) || orderBusy.has(sid)) return false
+  const now = await $.clock.now()
+  const last = orderChecked.get(sid)
+  if (last !== undefined && now >= last && now - last < c.CHECKIN_EVERY_MS) return false
+  orderChecked.set(sid, now)
+  return true
+}
+async function orderTick($: any, sid: string, submitsAtStart: number) {
+  const mine = orders.get(sid)
+  if (!mine) return
+  const now = await $.clock.now()
+  const ep = epochOf(sid)
+  const owed: c.AttentionItem[] = []
+  for (const [toSid, o] of mine) {
+    if (now < o.at || now - o.at > c.ORDER_STALE_MS) mine.delete(toSid)
+    else if (now - o.at >= c.ORDER_MS) {
+      const stamp = await $.store.get(`${c.ORDER_PREFIX}${toSid}`).then((v: unknown) => v, () => 'error' as const)
+      if (stamp === 'error') continue
+      if (typeof (stamp as { at?: unknown } | null | undefined)?.at === 'number') owed.push({ lane: o.lane, code: 'ordered', since: o.at })
+      else mine.delete(toSid)
+    }
+  }
+  if (owed.length === 0) return
+  const told = attnTold.get(sid) ?? new Set<string>()
+  attnTold.set(sid, told)
+  await attentionNotice($, sid, owed, submitsAtStart, ep, undefined, {
+    render: (items) => c.orderText(items.map((i) => i.lane)),
+    label: 'order-notice',
+    sent: async (items) => {
+      for (const i of items) {
+        const hit = [...mine].find(([, o]) => o.lane === i.lane && o.at === i.since)
+        if (!hit) continue
+        mine.delete(hit[0])
+        await $.store.delete(`${c.ORDER_PREFIX}${hit[0]}`).catch(() => undefined)
+      }
+    },
+  })
+}
+
 // The shared attention notice (§2a; PR 4 reuses it): the caller owns timing and pause, this owns the mechanical gates. One notice per key; the hourly cap is
 // the lanes-changed notice's (a notice over it stays owed, logged once per capped stretch); a submit that throws puts its items back, one that times out does not.
 // filter: the caller's own last reads (the check-in's report signatures), run only once the gates hold.
-async function attentionNotice($: any, sid: string, items: c.AttentionItem[], submitsAtStart: number, ep: number, filter?: (items: c.AttentionItem[]) => Promise<c.AttentionItem[]>) {
+async function attentionNotice($: any, sid: string, items: c.AttentionItem[], submitsAtStart: number, ep: number, filter?: (items: c.AttentionItem[]) => Promise<c.AttentionItem[]>, opts?: { render?: (items: c.AttentionItem[]) => string | undefined; label?: string; sent?: (items: c.AttentionItem[]) => Promise<void> }) {
+  const render = opts?.render ?? c.checkinText
   const told = attnTold.get(sid)
   if (!told) return
   const untold = (xs: c.AttentionItem[]) => xs.filter((i) => !told.has(c.checkinKey(i)))
-  if (c.checkinText(untold(items)) === undefined || dialogOpen.has(sid) || submits !== submitsAtStart) return
+  if (render(untold(items)) === undefined || dialogOpen.has(sid) || submits !== submitsAtStart) return
   const sentAt = lastSubmitAt.get(sid)
   if ((await $.state.get(request)).value != null || (await $.state.get(nudgeDueRef)).value != null) return
   const capped = async () => {
@@ -3549,7 +3647,7 @@ async function attentionNotice($: any, sid: string, items: c.AttentionItem[], su
   const draft = (await $.prompt.read()).text
   if (draft !== '' || dialogOpen.has(sid) || submits !== submitsAtStart || lastSubmitAt.get(sid) !== sentAt || !grants.has(sid) || epochOf(sid) !== ep) return
   const fresh = untold(kept)
-  const text = c.checkinText(fresh)
+  const text = render(fresh)
   if (text === undefined) return
   const keys = fresh.map(c.checkinKey)
   for (const k of keys) told.add(k)
@@ -3561,8 +3659,10 @@ async function attentionNotice($: any, sid: string, items: c.AttentionItem[], su
     turnKind.delete(sid)
     for (const k of keys) told.delete(k)
   }
+  if (sent !== 'failed') await opts?.sent?.(fresh).catch(() => undefined)
   const codes = [...new Set(fresh.map((i) => i.code))].sort().join('+')
-  await log($, sid, sent === 'ok' ? 'checkin' : sent === 'timeout' ? 'checkin-unconfirmed' : 'checkin-failed', `${codes}:${fresh.length}`)
+  const label = opts?.label ?? 'checkin'
+  await log($, sid, sent === 'ok' ? label : sent === 'timeout' ? `${label}-unconfirmed` : `${label}-failed`, `${codes}:${fresh.length}`)
 }
 
 // /callboard checkin pause <N>m|<N>h and checkin on: the person's own, as config (D3); a plugin, another session or a script gets a fixed refusal.
@@ -4658,7 +4758,7 @@ async function conductorTools($: any, sid: string) {
   const lane = { type: 'object', properties: { lane: { type: 'string' } }, required: ['lane'] }
   const tools: [string, string, unknown][] = [
     ['lane_list', "List the lanes of this conductor's repos, as one table under a Conductor header line (one row per lane with its lead, repo folder name, session and waiting columns; a lead no live session carries is marked not live): each lane, its folder when it is outside the repo root, whether a live session carries its name or it is parked, and how many minutes it has waited on a prompt. A live lead of its repos with no lanes is one row with – in the lane cells.", { type: 'object', properties: {} }],
-    ['lane_compact', "Ask a session to compact. lane: the session name of a live lead of your repos (it compacts only when it asked with request_compact on-cue, and is never nudged), or a lane name (at once if it asked on-cue, otherwise the plugin nudges it).", lane],
+    ['lane_compact', "Ask a session to compact. lane: the session name of a live lead of your repos (it compacts only when it asked with request_compact on-cue, and is never nudged), or a lane name (at once if it asked on-cue, otherwise it is ordered to compact).", lane],
     ['lane_terminate', "Stop a lane's session with SIGTERM, whatever it is doing. Every stop asks the person: they confirm in a dialog that names the lane, its repo, the session and the pid. Once the session has stopped, the lane's record is deleted too (the .archive/<LANE> folder and report stay; a lane a session joined keeps its record while a session carries it; a second stop removes it once the session is gone). A lane with no live session is removed directly. lane: the lane name. A lead cannot be stopped.", lane],
   ]
   for (const [name, description, inputSchema] of tools) await $.tool.register({ name, description, inputSchema })
@@ -6924,7 +7024,9 @@ export const register: Register = (on) => {
       return { deny: "request_compact is not enabled for this session: mode on-cue needs a lane, mode now a person's session." }
     }
     const ct = await counts($)
-    const early = c.compactAllowed(ct, (await $.session.usage()).context.tokens ?? 0, now)
+    // An on-cue request within c.ORDER_MS of an order from the lane's lead is ordered: it passes the context floor and counts as cued (the tick compacts it).
+    const ordered = gate === 'eligible' && v.req.mode === 'on-cue' && c.orderFresh((await $.state.get(orderedAtRef)).value, now)
+    const early = c.compactAllowed(ct, (await $.session.usage()).context.tokens ?? 0, now, ordered)
     if (early) {
       await log($, sid, 'refused', early)
       return { deny: c.compactDenyText(early, ct.lastCompactMs, now) }
@@ -6942,8 +7044,14 @@ export const register: Register = (on) => {
       phase: 'called',
       ...(gate === 'nudge' || gate === 'self' ? { viaNudge: true } : {}),
       ...(gate === 'lead' ? { viaLead: true } : {}),
+      ...(ordered ? { ordered: true } : {}),
     })
-    await log($, sid, 'requested', gate === 'nudge' ? `${v.req.mode}-nudged` : gate === 'self' ? `${v.req.mode}-self` : gate === 'lead' ? `${v.req.mode}-lead` : v.req.mode)
+    // The order is spent: the orderer's deadline finds no stamp.
+    if (ordered) {
+      await $.state.set(orderedAtRef, null)
+      await $.store.delete(`${c.ORDER_PREFIX}${sid}`).catch(() => log($, sid, 'error', 'order-mark').catch(() => undefined))
+    }
+    await log($, sid, 'requested', ordered ? 'on-cue-ordered' : gate === 'nudge' ? `${v.req.mode}-nudged` : gate === 'self' ? `${v.req.mode}-self` : gate === 'lead' ? `${v.req.mode}-lead` : v.req.mode)
     return { result: 'queued' } as never
   }).catch(() => ({ deny: 'callboard: request_compact failed closed.' }))
 
@@ -7488,7 +7596,7 @@ export const register: Register = (on) => {
             await $.state.set(request, { ...req, phase: 'armed' })
             await log($, sid, 'armed', req.mode)
           }
-        } else if (req.phase === 'armed' && req.mode === 'on-cue') {
+        } else if (req.phase === 'armed' && req.mode === 'on-cue' && req.ordered !== true) {
           await dropRequest($, sid, 'new-turn')
         }
       }
@@ -7624,7 +7732,7 @@ export const register: Register = (on) => {
       if (kind !== 'ping') await markTurn($, sid)
     }
     const req = (await $.state.get(request)).value as Request | null | undefined
-    if (req && req.phase === 'armed' && req.mode === 'on-cue' && (e as { agentId?: string }).agentId === undefined) await dropRequest($, await $.session.id(), 'new-turn')
+    if (req && req.phase === 'armed' && req.mode === 'on-cue' && req.ordered !== true && (e as { agentId?: string }).agentId === undefined) await dropRequest($, await $.session.id(), 'new-turn')
     return next(e)
   }).catch(($, e, next) => next(e))
 

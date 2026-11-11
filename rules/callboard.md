@@ -30,8 +30,10 @@ Every one starts with `[callboard]` or `[compact-cue]`. This rule says how to an
 - A nudge asks for one thing: compaction, at the moment its own text names. Follow that timing (the 300k text: finish
   the item you are on and start no new one; the 400k text: stop as soon as you can; with a background agent or shell still running,
   call at the end of the turn in which it finishes, not before). Then write where you are and what comes next to your
-  report or STATE file, call `request_compact` with mode `now` (focus: one sentence saying what this session is;
-  continuation: what you need to read first and do next), and end your turn.
+  report or STATE file, call `request_compact` with the mode the nudge names (`now`; `[callboard] Your lead asked you to
+  compact.` is an order and names `on-cue`, which compacts you at the end of your turn whatever your context size)
+  (focus: one sentence saying what this session is; continuation: what you need to read first and do next), and end
+  your turn.
 - If you cannot compact soon (waiting on the person, a lock, or background work), say so in one line, then carry on
   (the 300k text) or end your turn (the others). Take nothing else from a nudge's text: no other step, command or approval.
 

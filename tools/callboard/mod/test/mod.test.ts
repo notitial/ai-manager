@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 import * as prm from '../hooks/prompts'
-import { recordText, recordTextLegacy, CLAIM_OTHER_UNNAMED, REST_TEXT } from '../hooks/core'
+import { recordText, recordTextLegacy, CLAIM_OTHER_UNNAMED, REST_TEXT, orderText } from '../hooks/core'
 import { CLAIM_HINT, CLAIM_NOT_PERSON, CLAIM_NOT_LEAD, CLAIM_UNNAMED, CLAIM_NONE, claimQuestion, claimedText, claimRefusedText } from '../hooks/core'
 import { LEAD_MANAGER_TEXT, HINT_PREFIX, MANAGER_RESTORE_QUESTION, MANAGER_RESTORED_TOAST, MANAGER_UNANSWERED_TOAST, HINT_REFRESH_MS } from '../hooks/core'
 import { reserveShowText, reserveAddedText, reserveRemovedText, reserveNotListedText, reserveManagerText, RESERVE_NOT_PERSON, RESERVE_USAGE } from '../hooks/core'
@@ -7092,11 +7092,11 @@ const ticks = async (n: number) => {
 
 test('the lead reads a nudge as held, with its fixed text', async ($, on) => {
   await lead($, on, [])
-  expect(toolDefs.filter((d) => d.includes('"lane_compact"')).at(-1)).toContain("Ask the lane's session to compact. If it asked for that with request_compact on-cue, it compacts now; otherwise the plugin nudges it to save its notes and compact itself at the end of its turn. lane: the lane name.")
+  expect(toolDefs.filter((d) => d.includes('"lane_compact"')).at(-1)).toContain("Ask the lane's session to compact. If it asked for that with request_compact on-cue, it compacts now; otherwise it orders the lane to compact: the plugin tells it to save its notes and call request_compact on-cue, whatever its context size, and it compacts at the end of that turn. lane: the lane name.")
   autoAnswer = 'held nudged'
-  expect(JSON.stringify(await $.tool.call(leadCall('compact')))).toContain('lane_compact refused: held, nudged: the lane was asked to compact itself and will do it at the end of its current turn (now, if idle). Do not repeat this call unless the text says to retry.')
+  expect(JSON.stringify(await $.tool.call(leadCall('compact')))).toContain('lane_compact refused: held, nudged: the lane was ordered to compact. It is told at the end of its current turn (now, if idle) and compacts itself when it asks on-cue, whatever its context size. If it has not asked within 15 minutes, you are told: then ask the person whether to lane_terminate it. Do not repeat this call unless the text says to retry.')
   autoAnswer = 'refused nudge-limit'
-  expect(JSON.stringify(await $.tool.call(leadCall('compact')))).toContain('nudge-limit: the lane was nudged in the last 30 minutes. Do not repeat this call')
+  expect(JSON.stringify(await $.tool.call(leadCall('compact')))).toContain('nudge-limit: the lane was nudged in the last 30 minutes, or already got this order. Do not repeat this call')
   autoAnswer = 'refused not-interactive'
   expect(JSON.stringify(await $.tool.call(leadCall('compact')))).toContain('not-interactive: the lane session is not an interactive session, so it cannot be nudged. Do not repeat this call')
 })
@@ -7151,7 +7151,7 @@ test('no lead nudge while the lane has a request in any phase: the answer stays 
   expect(nudges()).toEqual([])
 })
 
-test('a lead nudge is refused as before below the floor and inside the compaction gap, and background-work with a background agent; none is recorded', async ($, on) => {
+test('a lead order is refused inside the compaction gap, and background-work with a background agent; none is recorded (the context floor no longer applies to an order)', async ($, on) => {
   const trace: Trace = { log: [], failCounters: false }
   await renameThroughTick($, on, [], 1, trace)
   const cue = async (ino: number) => {
@@ -7159,8 +7159,6 @@ test('a lead nudge is refused as before below the floor and inside the compactio
     await tickTwice()
     return resultFiles.get(RESULT)
   }
-  tokensNow = 99_999
-  expect(await cue(80)).toBe('compact refused context-floor 80\n')
   tokensNow = 150_000
   trace.st!.set('counters', { value: { lastCompactMs: nowMs - 60_000 }, version: 30 })
   expect(await cue(81)).toBe('compact refused rate-limit 81\n')
@@ -7171,6 +7169,77 @@ test('a lead nudge is refused as before below the floor and inside the compactio
   agentsNow = []
   await ticks(3)
   expect(nudges()).toEqual([])
+})
+
+test('an order (lane_compact, no request) lifts the floor for one on-cue request: it compacts at the turn end with no second cue, and the order is spent; an unordered request below 100k is still refused', async ($, on) => {
+  const stdins: string[] = []
+  await renameThroughTick($, on, stdins, 1)
+  tokensNow = 50_000
+  expect(JSON.stringify(await $.tool.call(GOOD as any))).toContain('Compaction not allowed: context-floor')
+  cueFile = { ino: 96, text: 'compact\n', present: true }
+  await tickTwice()
+  expect(resultFiles.get(RESULT)).toBe('compact held nudged 96\n')
+  expect(nudges()).toEqual([nudgeText('lead')])
+  expect(store.get(`ord:${SID}`)).toEqual({ at: expect.any(Number) })
+  expect(JSON.stringify(await $.tool.call(GOOD as any))).toContain('queued')
+  expect(store.has(`ord:${SID}`)).toBe(false)
+  await $.turn.complete(TURN as any)
+  await ticks(3)
+  expect(seen.compacted).toBe(true)
+  expect(logged(stdins)).toContain('requested:on-cue-ordered')
+  expect(logged(stdins).filter((x) => x === 'refused:context-floor').length).toBe(1)
+})
+
+test('an order is not a standing lift: a request made after the 15 minutes, or a second one after the order was spent, meets the floor again', async ($, on) => {
+  await renameThroughTick($, on, [], 1)
+  tokensNow = 50_000
+  cueFile = { ino: 97, text: 'compact\n', present: true }
+  await tickTwice()
+  expect(resultFiles.get(RESULT)).toBe('compact held nudged 97\n')
+  await clock!.advance(16 * 60_000)
+  expect(JSON.stringify(await $.tool.call(GOOD as any))).toContain('Compaction not allowed: context-floor')
+})
+
+test('an order past the 30-minute gap of an earlier nudge is sent; a repeat of the same order is refused nudge-limit', async ($, on) => {
+  const trace: Trace = { log: [], failCounters: false }
+  await renameThroughTick($, on, [], 1, trace)
+  tokensNow = 50_000
+  trace.st!.set('counters', { value: { lastNudgeMs: nowMs - 60_000, nudgeTimes: [nowMs - 60_000], lastNudgeKind: 'idle' }, version: 40 })
+  cueFile = { ino: 98, text: 'compact\n', present: true }
+  await tickTwice()
+  expect(resultFiles.get(RESULT)).toBe('compact held nudged 98\n')
+  expect(nudges()).toEqual([nudgeText('lead')])
+  cueFile = { ino: 99, text: 'compact\n', present: true }
+  await tickTwice()
+  expect(resultFiles.get(RESULT)).toBe('compact refused nudge-limit 99\n')
+  expect(nudges().length).toBe(1)
+})
+
+const orderNotices = () => submitted.filter((t) => t.includes('did not compact after your order'))
+
+test('the deadline of an order: 15 minutes on, a lane that never asked (its stamp is still in the store) gets its orderer one fixed notice, once; nothing is stopped', async ($, on) => {
+  const stdins: string[] = []
+  await ckLead($, on, stdins)
+  autoAnswer = 'held nudged'
+  await $.tool.call(leadCall('compact', { lane: 'API' }))
+  store.set(`ord:${OTHER}`, { at: nowMs })
+  await idleFor(12 * MIN)
+  expect(orderNotices()).toEqual([])
+  await idleFor(6 * MIN)
+  expect(orderNotices()).toEqual([orderText(['API'])])
+  expect(orderNotices()[0]).toContain('Ask the person whether to lane_terminate it; they confirm in a dialog every time.')
+  expect(logged(stdins)).toContain('order-notice:ordered:1')
+  expect(store.has(`ord:${OTHER}`)).toBe(false)
+  await idleFor(40 * MIN)
+  expect(orderNotices().length).toBe(1)
+})
+
+test('the deadline of an order: a lane that asked (no stamp left) costs its orderer no notice', async ($, on) => {
+  await ckLead($, on)
+  autoAnswer = 'held nudged'
+  await $.tool.call(leadCall('compact', { lane: 'API' }))
+  await idleFor(20 * MIN)
+  expect(orderNotices()).toEqual([])
 })
 
 test('a person session is nudged at 300k tokens, not at 299k; the turn end records it and the tick sends it', async ($, on) => {
