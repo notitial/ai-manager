@@ -74,5 +74,7 @@ for f in $FAILS; do
   echo
   echo "--- $f (last 20 lines) ---"
   tail -n 20 "$LOG/$f.log"
+  echo "--- $f (steps, failed tests and totals) ---"
+  grep -E '^== |^\(fail\)|^not ok |^ *[0-9]+ (pass|fail)$|^Ran [0-9]+ tests' "$LOG/$f.log" | head -n 100
 done
 [ -z "$FAILS" ]
