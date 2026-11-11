@@ -1,9 +1,7 @@
 #!/bin/bash
 # Runs every callboard suite. Self-contained: nothing outside tools/callboard.
-# CALLBOARD_SKIP_MOD_TESTS=1 skips only `claude plugin test mod`, and says so. CI sets it: those tests drive a fake clock
-# through thousands of ticks and are timing-sensitive, so on its slower runner some hit the kit's fixed 5 s limit and one
-# ('a declined nudge is not repeated within 30 minutes') is a timing race. Run this script without it, on your own
-# machine, before any PR that touches tools/callboard/mod.
+# CALLBOARD_SKIP_MOD_TESTS=1 skips only `claude plugin test mod` (the slow part: about 4 minutes), and says so. It is for a quick
+# local run; CI does not set it. Run this script without it before any PR that touches tools/callboard/mod.
 set -uo pipefail
 cd "$(dirname "$0")"
 rc=0

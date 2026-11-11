@@ -7,6 +7,14 @@ import { reserveShowText, reserveAddedText, reserveRemovedText, reserveNotListed
 import { conductorFileText, conductorAddQuestion, conductorRefusalText, conductorAddedText, CONDUCTOR_NOT_PERSON, CONDUCTOR_USAGE, conductorQuestion, conductorRestoreQuestion, conductorBriefing, conductorBriefingNote, conductorRestoredToast, conductorUnansweredToast, conductorFileBadToast, conductorNoReposToast, CONDUCTOR_ON_TEXT, CONDUCTOR_OFF_QUESTION, conductorStatus } from '../hooks/core'
 import { LOG_KEEP_MS, LOG_PRUNE_MAX, LOG_MAX_BYTES, folderName, briefingFolder, leadBriefing, mergeCounters, requestExpired, ON_CUE_TTL_MS, RESUME_PER_HOUR, refusalText, attachQuestion, LANES_CHANGED_TEXT, LANES_CHANGED_NOTE, NO_LANE_RECORD, LANE_RECORD_UNKNOWN, STOPPABLE_BY_NAME, OFF_QUESTION, offLeavesLane, DETACH_INCOMPLETE, OFF_YES, OFF_NO, LEAD_YES, LEAD_NO, RESTORE_YES, RESTORE_NO, ATTACH_YES, ATTACH_NO, nudgeText, compactResumeText, SID_KEPT, reboundToast, restoreChangedToast, COMPACT_CUT_NOTE, CONFIG_UNSAVED, CONFIG_UNREADABLE, KEEPALIVE_TEXT, noticeText, configText, configSetText, CONFIG_DEFAULTS, CONFIG_USAGE, CONFIG_NOT_PERSON, CONFIG_RESET_TEXT, LANE_NO_LEAD, REASON_TEXT, LEAD_MORE, LEAD_PICK_QUESTION, OFF_NOTHING, MANAGER_QUESTION, MANAGER_ON_TEXT, MANAGER_ALREADY, MANAGER_H2, managerRefusalText, managerBriefingNote, terminateQuestion, retireQuestion, removeQuestion, leadConductorText } from '../hooks/core'
 
+// A test that simulates an hour or more of the mod's 2 s timer runs thousands of ticks, and each one costs the kit host round trips: half a millisecond to
+// two on a fast machine, by how much the mod does in a tick (280 simulated minutes: 8,400 ticks, 3.5 s; an hour of a lead's ticks: 1,800, 2 to 3.5 s). The kit's 5 s wall-time limit then measures the runner's speed, not whether the test hangs, and a runner
+// 1.5 to 2 times slower, or a busy one, fails a different one of them each run. A test that takes a second or more on a fast machine (about 900 ticks, 30
+// simulated minutes or more, or a long wait stepped through many short timers) is declared with longTest: the same test and assertions, with this limit. A test that
+// hangs still fails, one minute later. A new test that simulates that much time takes longTest too.
+const LONG_TEST_MS = 60_000
+const longTest = (name: string, body: (...args: any[]) => any) => test(name, { timeoutMs: LONG_TEST_MS } as any, body)
+
 // A stand-in hash: any change in the text changes it, which is all the record check needs.
 function fakeSha(text: string): string {
   let h = 2166136261
@@ -228,6 +236,14 @@ function promptFs(a: string[], stdin: string | undefined, now: number): any | un
   return undefined
 }
 let nowMs = T0
+// One turn of the event loop, then more of them for as long as the mod keeps calling the mocks. A hung call makes none, so it does not hold this up.
+const QUIET_ROUNDS_MAX = 1000
+async function quiet() {
+  for (let i = 0, seen = -1; i < QUIET_ROUNDS_MAX && seen !== hostCalls; i++) {
+    seen = hostCalls
+    await new Promise((r) => setTimeout(r, 0))
+  }
+}
 // set (v13): the mock clock jumps to a time without running every tick on the way.
 let clock: { advance: (ms: number) => Promise<void>; set: (ms: number) => Promise<void> } | undefined
 // v13.4: while set, the mock clock's timer asks for no next period (no tick runs): the Mac asleep. See sleepFor.
@@ -375,7 +391,12 @@ type Trace = { log: string[]; failCounters: boolean; setHook?: (key: string) => 
 // Each test's engine gets a generation. A tick of an earlier test's module that is still running when the next test starts would otherwise act on
 // this test's mocks (its cue file, its result and store files): its processes all fail instead.
 let engineGen = 0
-function engine(on: any, argvSeen: string[][], stdins: string[] = [], clk = false, trace?: Trace) {
+// Host calls the mod has made into the mocks so far: the clock helpers wait until none arrives for a whole turn of the event loop, so a tick that is still
+// working through its chain of reads and processes has finished when an advance returns. The kit's own wait for the mod to settle gives up after 500 ms of
+// wall time, which a slow runner can reach in the middle of a tick.
+let hostCalls = 0
+function engine(on0: any, argvSeen: string[][], stdins: string[] = [], clk = false, trace?: Trace) {
+  const on = (name: string, h: any) => on0(name, (...args: any[]) => (hostCalls++, h(...args)))
   const gen = ++engineGen
   seen.compacted = false
   turnsNow = 0
@@ -554,11 +575,11 @@ function engine(on: any, argvSeen: string[][], stdins: string[] = [], clk = fals
           nowMs = due
           if (step > 0) await real.advance(step)
           releaseSleeps()
-          await new Promise((r) => setTimeout(r, 0))
+          await quiet()
           if (nowMs >= target && !sleepWaits.some((w) => w.due <= nowMs)) break
         }
       },
-      set: async (ms: number) => { nowMs = ms; releaseSleeps(); await real.set(ms) },
+      set: async (ms: number) => { nowMs = ms; releaseSleeps(); await real.set(ms); await quiet() },
     }
   } else {
     on('clock.now', () => {
@@ -2372,7 +2393,7 @@ test('v15.3 lane_park waits for the idle time too: a lane idle for 5 s is parked
   expect(killed(argv).length).toBe(1)
 })
 
-test('lane_retire waits for its answer 10 seconds from the cue write; the other cue tools keep 6 seconds from the call', async ($, on) => {
+longTest('lane_retire waits for its answer 10 seconds from the cue write; the other cue tools keep 6 seconds from the call', async ($, on) => {
   const argv: string[][] = []
   const stdins: string[] = []
   await lead($, on, stdins, { argv, clock: true })
@@ -3382,7 +3403,7 @@ const settle = async (p: Promise<any>) => {
   return JSON.stringify(await p)
 }
 
-test('an answer to an older cue, no answer, and an unsafe answer file all end in no-answer by the deadline', async ($, on) => {
+longTest('an answer to an older cue, no answer, and an unsafe answer file all end in no-answer by the deadline', async ($, on) => {
   await lead($, on, [], { clock: true })
   autoIno = 11
   expect(await settle($.tool.call(leadCall('resume')))).toContain('no-answer: the session did not answer in time')
@@ -3454,7 +3475,7 @@ test('a background-work notice goes out at most 3 times an hour', async ($, on) 
   expect(allEvents(stdins).map((e) => `${e.event}:${e.reason}`)).toContain('notice-capped:background-work')
 })
 
-test('a compaction that starts but never confirms is cleared after 15 minutes with one notice that says it may have run', async ($, on) => {
+longTest('a compaction that starts but never confirms is cleared after 15 minutes with one notice that says it may have run', async ($, on) => {
   const stdins: string[] = []
   await started($, on, stdins, { clock: true })
   compactHangs = true
@@ -3494,7 +3515,7 @@ const unanswered = async (p: Promise<any>) => {
   return p
 }
 
-test('a question nobody answers in 90 seconds is not a decision: it says so, logs timed-out and toasts', async ($, on) => {
+longTest('a question nobody answers in 90 seconds is not a decision: it says so, logs timed-out and toasts', async ($, on) => {
   const stdins: string[] = []
   const argv: string[][] = []
   laneSeed.text = LEAD_LANES('/data/x/work')
@@ -4768,7 +4789,7 @@ test('a lane list that is already there when the lead is granted is the baseline
   expect(notices()).toBe(1)
 })
 
-test('at most 12 notices an hour: a capped change stays owed and goes out once a slot frees', async ($, on) => {
+longTest('at most 12 notices an hour: a capped change stays owed and goes out once a slot frees', async ($, on) => {
   const stdins: string[] = []
   await leadAt($, on, stdins, { clock: true })
   for (let i = 1; i <= 15; i++) {
@@ -4787,7 +4808,7 @@ test('at most 12 notices an hour: a capped change stays owed and goes out once a
   await clock!.advance(2000)
   expect(notices()).toBe(13)
 })
-test('a capped change is logged once even when another line is logged in the same tick, and again after a notice went out', async ($, on) => {
+longTest('a capped change is logged once even when another line is logged in the same tick, and again after a notice went out', async ($, on) => {
   const stdins: string[] = []
   await leadAt($, on, stdins, { clock: true })
   for (let i = 1; i <= 13; i++) {
@@ -4811,7 +4832,7 @@ test('a capped change is logged once even when another line is logged in the sam
   }
   expect(capped()).toBe(2)
 })
-test('a change capped at the hourly limit is sent once a slot frees, with no further change', async ($, on) => {
+longTest('a change capped at the hourly limit is sent once a slot frees, with no further change', async ($, on) => {
   const stdins: string[] = []
   await leadAt($, on, stdins, { clock: true })
   for (let i = 1; i <= 12; i++) {
@@ -5282,7 +5303,7 @@ test('a session renamed while the Join question was open is not joined under the
   await noLaneWritten($)
 })
 
-test('a pending rename that did not get a tick within 60 seconds expires with a toast and runs nothing', async ($, on) => {
+longTest('a pending rename that did not get a tick within 60 seconds expires with a toast and runs nothing', async ($, on) => {
   const stdins: string[] = []
   await attacher($, on, stdins, { clock: true })
   askAnswer = 'Join'
@@ -7595,7 +7616,7 @@ test('the resend of a mid-turn nudge is a hard one when the turn ended past the 
   expect(nudges()).toEqual([nudgeText('working')])
 })
 
-test('a declined nudge is not repeated within 30 minutes; after that the next turn can be nudged again', async ($, on) => {
+longTest('a declined nudge is not repeated within 30 minutes; after that the next turn can be nudged again', async ($, on) => {
   await person($, on)
   tokensNow = 310_000
   await $.turn.complete(TURN as any)
@@ -7855,7 +7876,7 @@ test('a bound lane nudged by its lead never gets viaNudge', async ($, on) => {
   expect(trace.st!.get('nudgedAt')?.value).toBe(null)
 })
 
-test('a nudge submit that threw takes the grant back; one that outlasts the timeout keeps it', async ($, on) => {
+longTest('a nudge submit that threw takes the grant back; one that outlasts the timeout keeps it', async ($, on) => {
   const stdins: string[] = []
   const trace: Trace = { log: [], failCounters: false }
   await person($, on, stdins, trace)
@@ -9139,7 +9160,7 @@ test('S2b: a lead restore whose session list stays unreadable for 15 ticks: no l
   expect(store.has(LEADKEY)).toBe(true)
 })
 
-test('S2b: a lead restore whose check for other leads never answers is refused lead-check-slow; the key is kept', async ($, on) => {
+longTest('S2b: a lead restore whose check for other leads never answers is refused lead-check-slow; the key is kept', async ($, on) => {
   const stdins: string[] = []
   const { start } = await leadRestarter($, on, stdins, { noStart: true, seed: () => (leadsListHook = () => new Promise<void>(() => undefined)) })
   let up = false
@@ -9168,7 +9189,7 @@ test('a store record naming the session while the lead restore is pending: the r
   expect(await leadNow($)).toContain('Lane: NONE. Lead: ON.')
 })
 
-test('a lane tool registration that never answers: no lead, the key kept', async ($, on) => {
+longTest('a lane tool registration that never answers: no lead, the key kept', async ($, on) => {
   const stdins: string[] = []
   const { start } = await leadRestarter($, on, stdins, { noStart: true, seed: () => (laneRegisterHang = new Promise(() => undefined)) })
   let started = false
@@ -9349,7 +9370,7 @@ test('/callboard off while a lead restore waits on its tool registration: no lea
   expect(logged(stdins)).not.toContain('lead-restored:')
 })
 
-test('/callboard off while a lead restore times out on its tool registration: it is not tried again', async ($, on) => {
+longTest('/callboard off while a lead restore times out on its tool registration: it is not tried again', async ($, on) => {
   const stdins: string[] = []
   const { start } = await leadRestarter($, on, stdins, { noStart: true, seed: () => (laneRegisterHang = new Promise<void>(() => undefined)) })
   for (let i = 0; i < 3; i++) await clock!.advance(1000)
@@ -9712,7 +9733,7 @@ const kaLog = (stdins: string[]) => logged(stdins).filter((x) => x.startsWith('k
 const sent = (stdins: string[]) => logged(stdins).filter((x) => x === 'keepalive:').length
 const stv = (trace: Trace, key: string) => trace.st!.get(key)?.value
 
-test('v13.2 keepalive: an idle session is pinged 50 minutes after its last turn ended, not at 49, and once per gap', async ($, on) => {
+longTest('v13.2 keepalive: an idle session is pinged 50 minutes after its last turn ended, not at 49, and once per gap', async ($, on) => {
   const stdins: string[] = []
   await warm($, on, stdins)
   await clock!.advance(49 * MIN)
@@ -9726,7 +9747,7 @@ test('v13.2 keepalive: an idle session is pinged 50 minutes after its last turn 
   expect(kaLog(stdins)).toEqual(['keepalive:'])
 })
 
-test('v13.2 keepalive: a prompt that ran no turn also starts a new gap', async ($, on) => {
+longTest('v13.2 keepalive: a prompt that ran no turn also starts a new gap', async ($, on) => {
   await warm($, on)
   await clock!.advance(30 * MIN)
   await $.prompt.submit({ text: 'queued' } as any)
@@ -9736,7 +9757,7 @@ test('v13.2 keepalive: a prompt that ran no turn also starts a new gap', async (
   expect(pings()).toEqual([KEEPALIVE_TEXT])
 })
 
-test('v13.2 keepalive: past 58 minutes the cache is cold: no ping, logged once; the next turn starts a new gap', async ($, on) => {
+longTest('v13.2 keepalive: past 58 minutes the cache is cold: no ping, logged once; the next turn starts a new gap', async ($, on) => {
   const stdins: string[] = []
   await warm($, on, stdins)
   draftNow = 'typing'
@@ -9752,7 +9773,7 @@ test('v13.2 keepalive: past 58 minutes the cache is cold: no ping, logged once; 
   expect(pings()).toEqual([KEEPALIVE_TEXT])
 })
 
-test('/callboard rest: no ping and no cache nudge in this gap, logged once; a reload keeps it; the next real turn restores the pings; any origin may type it', async ($, on) => {
+longTest('/callboard rest: no ping and no cache nudge in this gap, logged once; a reload keeps it; the next real turn restores the pings; any origin may type it', async ($, on) => {
   const stdins: string[] = []
   await warm($, on, stdins)
   await clock!.advance(10 * MIN)
@@ -9789,7 +9810,7 @@ test('/callboard rest: no ping and no cache nudge in this gap, logged once; a re
   expect(pings().length).toBe(2)
 })
 
-test('v13.2 keepalive: after a restart (the session state is gone) nothing is pinged until a turn has been seen to end', async ($, on) => {
+longTest('v13.2 keepalive: after a restart (the session state is gone) nothing is pinged until a turn has been seen to end', async ($, on) => {
   const stdins: string[] = []
   const trace: Trace = { log: [], failCounters: false }
   await warm($, on, stdins, trace)
@@ -9803,7 +9824,7 @@ test('v13.2 keepalive: after a restart (the session state is gone) nothing is pi
   expect(pings()).toEqual([KEEPALIVE_TEXT])
 })
 
-test('v13.2 keepalive: a reload of the mod keeps the gap (the state survives): the ping still comes 50 minutes after the turn', async ($, on) => {
+longTest('v13.2 keepalive: a reload of the mod keeps the gap (the state survives): the ping still comes 50 minutes after the turn', async ($, on) => {
   await warm($, on)
   await clock!.advance(20 * MIN)
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
@@ -9822,7 +9843,7 @@ for (const [what, setup] of [
   ['it waits for a permission', async () => { sessions = KA_ROW({ waitingFor: 'permission' }) }],
   ['keepalive is off', async ($: any) => { expect((await $.command.run(lane('config keepalive off'))).text).toBe(configSetText('keepalive', { ...CONFIG_DEFAULTS, keepalive: false })) }],
 ] as const) {
-  test(`v13.2 keepalive: no ping when ${what}`, async ($, on) => {
+  longTest(`v13.2 keepalive: no ping when ${what}`, async ($, on) => {
     const stdins: string[] = []
     await warm($, on, stdins)
     await setup($)
@@ -9832,7 +9853,7 @@ for (const [what, setup] of [
   })
 }
 
-test('v13.2 keepalive: no ping while a callboard dialog is open', async ($, on) => {
+longTest('v13.2 keepalive: no ping while a callboard dialog is open', async ($, on) => {
   const stdins: string[] = []
   await warm($, on, stdins)
   await clock!.advance(50 * MIN - 30_000)
@@ -9848,7 +9869,7 @@ test('v13.2 keepalive: no ping while a callboard dialog is open', async ($, on) 
   askHang = undefined
 })
 
-test('v13.2 keepalive: no ping while the session has a request of its own', async ($, on) => {
+longTest('v13.2 keepalive: no ping while the session has a request of its own', async ($, on) => {
   await person($, on, [], undefined, true)
   sessions = KA_ROW()
   expect((await $.tool.call(GOOD as any)).result).toBe('queued')
@@ -9857,7 +9878,7 @@ test('v13.2 keepalive: no ping while the session has a request of its own', asyn
   expect(pings()).toEqual([])
 })
 
-test('v13.2 keepalive: no ping while a nudge is recorded', async ($, on) => {
+longTest('v13.2 keepalive: no ping while a nudge is recorded', async ($, on) => {
   const trace: Trace = { log: [], failCounters: false }
   await warm($, on, [], trace)
   await clock!.advance(45 * MIN)
@@ -9869,7 +9890,7 @@ test('v13.2 keepalive: no ping while a nudge is recorded', async ($, on) => {
   expect(nudges()).toEqual([])
 })
 
-test('v13.5 keepalive: a plain interactive session that never ran a callboard command is pinged, and /callboard off does not stop it', async ($, on) => {
+longTest('v13.5 keepalive: a plain interactive session that never ran a callboard command is pinged, and /callboard off does not stop it', async ($, on) => {
   const stdins: string[] = []
   await warm($, on, stdins)
   expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Lead: OFF.')
@@ -9884,7 +9905,7 @@ test('v13.5 keepalive: a plain interactive session that never ran a callboard co
   expect(kaLog(stdins)).toEqual(['keepalive:', 'keepalive:'])
 })
 
-test('v13.2 keepalive: a lead is pinged (D4)', async ($, on) => {
+longTest('v13.2 keepalive: a lead is pinged (D4)', async ($, on) => {
   const stdins: string[] = []
   await person($, on, stdins)
   await $.command.run(lane('off'))
@@ -9901,7 +9922,7 @@ for (const [what, set, line] of [
   ['fails', () => { submitFails = true }, 'keepalive-failed:'],
   ['hangs past the timeout', () => { submitHangs = true }, 'keepalive-unconfirmed:'],
 ] as const) {
-  test(`v13.2 keepalive: a ping whose submit ${what} is logged and not tried again in that gap`, async ($, on) => {
+  longTest(`v13.2 keepalive: a ping whose submit ${what} is logged and not tried again in that gap`, async ($, on) => {
     const stdins: string[] = []
     await warm($, on, stdins)
     set()
@@ -9911,7 +9932,7 @@ for (const [what, set, line] of [
   })
 }
 
-test('v13.2 keepalive: a ping turn moves neither the turn mark nor the stop clock and records no nudge; a lane that signed done stays retire-able (F1)', async ($, on) => {
+longTest('v13.2 keepalive: a ping turn moves neither the turn mark nor the stop clock and records no nudge; a lane that signed done stays retire-able (F1)', async ($, on) => {
   const stdins: string[] = []
   const trace: Trace = { log: [], failCounters: false }
   await renameThroughTick($, on, stdins, 1, trace)
@@ -9950,7 +9971,7 @@ for (const [what, make] of [
     return noticeText('compact-unconfirmed')
   }],
 ] as const) {
-  test(`v13.2 keepalive: ${what} turn is not real work: it moves the gap but not the stop clock (A)`, async ($, on) => {
+  longTest(`v13.2 keepalive: ${what} turn is not real work: it moves the gap but not the stop clock (A)`, async ($, on) => {
     const trace: Trace = { log: [], failCounters: false }
     await warm($, on, [], trace)
     await clock!.advance(10 * MIN)
@@ -9979,7 +10000,7 @@ test('v13.2 keepalive: the lanes-changed turn is not real work either (A)', asyn
   expect(stv(trace, 'turnEndAt')).toBe(nowMs)
 })
 
-test('v13.2 keepalive: a lane a lead started (its start text is real work) and then left idle is pinged', async ($, on) => {
+longTest('v13.2 keepalive: a lane a lead started (its start text is real work) and then left idle is pinged', async ($, on) => {
   const stdins: string[] = []
   await renameThroughTick($, on, stdins, 1)
   extraStat.set('/data/x/work/lab/BRIEF.md', fileStat)
@@ -9992,7 +10013,7 @@ test('v13.2 keepalive: a lane a lead started (its start text is real work) and t
   expect(pings()).toEqual([KEEPALIVE_TEXT])
 })
 
-test('v13.2 keepalive: pings stop 3 hours after the last real turn, logged once; a real turn starts them again', async ($, on) => {
+longTest('v13.2 keepalive: pings stop 3 hours after the last real turn, logged once; a real turn starts them again', async ($, on) => {
   const stdins: string[] = []
   const trace: Trace = { log: [], failCounters: false }
   await warm($, on, stdins, trace)
@@ -10023,7 +10044,7 @@ for (const [what, arrange] of [
   // v13.5: the session is not a lane, so its own request carries viaNudge (self), as one it made itself would.
   ['a compaction resume', (trace: Trace) => trace.st!.set('request', { value: { id: 'r2', phase: 'compacted', mode: 'now', focus: 'f', continuation: 'next', sha256: 'a'.repeat(64), requestedMs: nowMs, compactingMs: nowMs, compactedMs: nowMs, viaNudge: true }, version: 90 })],
 ] as const) {
-  test(`v13.2 keepalive: ${what} due in the same tick as a ping goes out alone: one submit per tick (F2a)`, async ($, on) => {
+  longTest(`v13.2 keepalive: ${what} due in the same tick as a ping goes out alone: one submit per tick (F2a)`, async ($, on) => {
     const trace: Trace = { log: [], failCounters: false }
     await warm($, on, [], trace)
     await clock!.advance(50 * MIN - 2000)
@@ -10035,7 +10056,7 @@ for (const [what, arrange] of [
   })
 }
 
-test('v13.2 keepalive: an idle session past the idle level gets the nudge in place of the ping, and nothing more in that gap (D2)', async ($, on) => {
+longTest('v13.2 keepalive: an idle session past the idle level gets the nudge in place of the ping, and nothing more in that gap (D2)', async ($, on) => {
   const stdins: string[] = []
   await warm($, on, stdins)
   tokensNow = 310_000
@@ -10046,7 +10067,7 @@ test('v13.2 keepalive: an idle session past the idle level gets the nudge in pla
   expect(pings()).toEqual([])
 })
 
-test('v16 keepalive: a session with background work between the two levels gets the soft nudge in place of the ping', async ($, on) => {
+longTest('v16 keepalive: a session with background work between the two levels gets the soft nudge in place of the ping', async ($, on) => {
   const stdins: string[] = []
   await warm($, on, stdins)
   tokensNow = 350_000
@@ -10062,7 +10083,7 @@ for (const [what, arrange] of [
   ['past the idle level, inside the 30-minute nudge gap', (trace: Trace) => { tokensNow = 310_000; trace.st!.set('counters', { value: { lastNudgeMs: nowMs - 10 * MIN, nudgeTimes: [nowMs - 10 * MIN] }, version: 91 }) }],
   ['past the idle level, inside the compaction gap', (trace: Trace) => { tokensNow = 310_000; trace.st!.set('counters', { value: { lastCompactMs: nowMs - 20 * MIN }, version: 91 }) }],
 ] as const) {
-  test(`v13.2 keepalive: ${what}: the plain ping (D2)`, async ($, on) => {
+  longTest(`v13.2 keepalive: ${what}: the plain ping (D2)`, async ($, on) => {
     const stdins: string[] = []
     const trace: Trace = { log: [], failCounters: false }
     await warm($, on, stdins, trace)
@@ -10075,7 +10096,7 @@ for (const [what, arrange] of [
   })
 }
 
-test('v13.2 keepalive: a nudge recorded in place of a ping that is then dropped is logged once as a missed ping, and not recorded again', async ($, on) => {
+longTest('v13.2 keepalive: a nudge recorded in place of a ping that is then dropped is logged once as a missed ping, and not recorded again', async ($, on) => {
   const stdins: string[] = []
   await warm($, on, stdins)
   tokensNow = 310_000
@@ -10094,7 +10115,7 @@ test('v13.2 keepalive: a nudge recorded in place of a ping that is then dropped 
 
 // v13.4: at 200k, past the cache nudge's level and below the idle one, too.
 for (const tokens of [400_000, 200_000]) {
-  test(`v13.2 keepalive: a lane signed done gets neither the ping nor a nudge at ping time (D5), at ${tokens / 1000}k`, async ($, on) => {
+  longTest(`v13.2 keepalive: a lane signed done gets neither the ping nor a nudge at ping time (D5), at ${tokens / 1000}k`, async ($, on) => {
     const stdins: string[] = []
     await retireTarget($, on, stdins)
     sessions = SELFREG({ kind: 'interactive' })
@@ -10181,7 +10202,7 @@ test('v13.2 config: invalid stored fields fall back to their defaults, logged on
   expect(logged(stdins).filter((x) => x.startsWith('config-invalid'))).toEqual(['config-invalid:keepalive', 'config-invalid:pingAfterMin'])
 })
 
-test('v13.2 config: a change another session stored reaches this session within a minute', async ($, on) => {
+longTest('v13.2 config: a change another session stored reaches this session within a minute', async ($, on) => {
   await warm($, on)
   await clock!.advance(MIN)
   store.set('config', { pingAfterMin: 30, savedAt: nowMs })
@@ -10260,7 +10281,7 @@ test('v13.2 config: a lead is nudged from the idle level with the soft text and 
 
 // ---- v13.2 review c1 (code review PASS WITH FIXES, security audit GO WITH FIXES) ----
 for (const [what, tokens] of [['the ping', 150_000], ['the nudge in its place', 310_000]] as const) {
-  test(`v13.2 review c1: a draft typed while the ping step reads stops ${what}: the gap is missed, logged once`, async ($, on) => {
+  longTest(`v13.2 review c1: a draft typed while the ping step reads stops ${what}: the gap is missed, logged once`, async ($, on) => {
     const stdins: string[] = []
     await warm($, on, stdins)
     tokensNow = tokens
@@ -10278,7 +10299,7 @@ for (const [what, tokens] of [['the ping', 150_000], ['the nudge in its place', 
   })
 }
 
-test('v13.2 review c1: a ping whose submit fails after its prompt hook ran leaves no ping mark: the next turn moves the turn mark', async ($, on) => {
+longTest('v13.2 review c1: a ping whose submit fails after its prompt hook ran leaves no ping mark: the next turn moves the turn mark', async ($, on) => {
   const stdins: string[] = []
   const trace: Trace = { log: [], failCounters: false }
   await warm($, on, stdins, trace)
@@ -10338,7 +10359,7 @@ test('v13.2 security c1: a lane_compact nudge to a lane whose own row is kind ba
 
 
 // ---- v13.2 review c2 ----
-test('v13.2 review c2: a ping whose submit hangs past the timeout after its prompt hook ran keeps its mark: its turn is still a ping turn', async ($, on) => {
+longTest('v13.2 review c2: a ping whose submit hangs past the timeout after its prompt hook ran keeps its mark: its turn is still a ping turn', async ($, on) => {
   const stdins: string[] = []
   const trace: Trace = { log: [], failCounters: false }
   await warm($, on, stdins, trace)
@@ -10365,7 +10386,7 @@ test('v13.2 review c2: a ping whose submit hangs past the timeout after its prom
   expect(logged(stdins).some((x) => x.startsWith('nudge-due'))).toBe(false)
 })
 
-test('v13.2 review c2: a prompt the person sends while the ping step reads (the box already empty again) stops the ping: logged late', async ($, on) => {
+longTest('v13.2 review c2: a prompt the person sends while the ping step reads (the box already empty again) stops the ping: logged late', async ($, on) => {
   const stdins: string[] = []
   await warm($, on, stdins)
   await clock!.advance(50 * MIN - 2000)
@@ -10403,7 +10424,7 @@ for (const [what, turnId, personFirst] of [
   ['typed mid-turn (turnId set), its turn first', 'earlier', true],
   ['typed mid-turn (turnId set), the ping\'s turn first', 'earlier', false],
 ] as const) {
-  test(`v13.4 keepalive: a person's prompt ${what}: the person's turn is real, the ping's turn a ping`, async ($, on) => {
+  longTest(`v13.4 keepalive: a person's prompt ${what}: the person's turn is real, the ping's turn a ping`, async ($, on) => {
     const trace: Trace = { log: [], failCounters: false }
     await warm($, on, [], trace)
     await clock!.advance(50 * MIN)
@@ -10434,7 +10455,7 @@ for (const [what, turnId, personFirst] of [
   })
 }
 
-test('v13.4 keepalive: a ping that timed out and never ran leaves no wrong tag: the next person turn and the compaction resume turn are real', async ($, on) => {
+longTest('v13.4 keepalive: a ping that timed out and never ran leaves no wrong tag: the next person turn and the compaction resume turn are real', async ($, on) => {
   const stdins: string[] = []
   const trace: Trace = { log: [], failCounters: false }
   on('classic.PostCompact', () => ({}))
@@ -10462,7 +10483,7 @@ test('v13.4 keepalive: a ping that timed out and never ran leaves no wrong tag: 
   expect(stv(trace, 'lastTurnAt')).not.toEqual(mark)
 })
 
-test('v13.4 keepalive: an own real submit (the compaction resume) starts a real turn, not one tagged by a ping out at the same time', async ($, on) => {
+longTest('v13.4 keepalive: an own real submit (the compaction resume) starts a real turn, not one tagged by a ping out at the same time', async ($, on) => {
   const trace: Trace = { log: [], failCounters: false }
   on('classic.PostCompact', () => ({}))
   await warm($, on, [], trace)
@@ -10484,7 +10505,7 @@ test('v13.4 keepalive: an own real submit (the compaction resume) starts a real 
   expect(stv(trace, 'realEndAt')).toBe(realEnd)
 })
 
-test('v13.4 keepalive: a turn that carries the ping text unframed (an engine that stops framing) is still the ping\'s', async ($, on) => {
+longTest('v13.4 keepalive: a turn that carries the ping text unframed (an engine that stops framing) is still the ping\'s', async ($, on) => {
   const trace: Trace = { log: [], failCounters: false }
   await warm($, on, [], trace)
   const realEnd = stv(trace, 'realEndAt')
@@ -10498,7 +10519,7 @@ test('v13.4 keepalive: a turn that carries the ping text unframed (an engine tha
   expect(stv(trace, 'realEndAt')).toBe(realEnd)
 })
 
-test('v13.4 keepalive: a person\'s prompt that only contains the ping text is real, and leaves the ping\'s count to the ping\'s turn', async ($, on) => {
+longTest('v13.4 keepalive: a person\'s prompt that only contains the ping text is real, and leaves the ping\'s count to the ping\'s turn', async ($, on) => {
   const trace: Trace = { log: [], failCounters: false }
   await warm($, on, [], trace)
   await clock!.advance(50 * MIN)
@@ -10514,7 +10535,7 @@ test('v13.4 keepalive: a person\'s prompt that only contains the ping text is re
   expect(stv(trace, 'realEndAt')).toBe(realEnd)
 })
 
-test('v13.4 keepalive: an engine that does show the mod its own ping (the old hook dispatch) counts it once: the ping turn stays a ping, a second turn with its text is real', async ($, on) => {
+longTest('v13.4 keepalive: an engine that does show the mod its own ping (the old hook dispatch) counts it once: the ping turn stays a ping, a second turn with its text is real', async ($, on) => {
   const stdins: string[] = []
   const trace: Trace = { log: [], failCounters: false }
   await warm($, on, stdins, trace)
@@ -10546,7 +10567,7 @@ async function sleepFor(ms: number) {
   wake()
 }
 
-test('v13.4 keepalive: a gap the Mac slept in (the clock jumped past 5 minutes between two timer calls) gets no ping, logged once; the next turn\'s gap pings again', async ($, on) => {
+longTest('v13.4 keepalive: a gap the Mac slept in (the clock jumped past 5 minutes between two timer calls) gets no ping, logged once; the next turn\'s gap pings again', async ($, on) => {
   const stdins: string[] = []
   await warm($, on, stdins)
   await clock!.advance(20 * MIN)
@@ -10563,7 +10584,7 @@ test('v13.4 keepalive: a gap the Mac slept in (the clock jumped past 5 minutes b
   expect(pings()).toEqual([KEEPALIVE_TEXT])
 })
 
-test('v13.4 keepalive: a sleep before the last turn ended does not stop that gap\'s ping', async ($, on) => {
+longTest('v13.4 keepalive: a sleep before the last turn ended does not stop that gap\'s ping', async ($, on) => {
   await warm($, on)
   await sleepFor(10 * MIN)
   await clock!.advance(MIN)
@@ -10577,7 +10598,7 @@ for (const [what, arrange, cache] of [
   ['an idle session below 150k', () => { tokensNow = 149_999 }, false],
   ['a working session (a background agent) at 200k', () => { tokensNow = 200_000; agentsNow = [{ status: 'running' }] }, false],
 ] as const) {
-  test(`v13.4 keepalive: after 2 pings since the real turn, the third slot of ${what} ${cache ? 'gets the cache nudge in place of the ping' : 'is a ping'}`, async ($, on) => {
+  longTest(`v13.4 keepalive: after 2 pings since the real turn, the third slot of ${what} ${cache ? 'gets the cache nudge in place of the ping' : 'is a ping'}`, async ($, on) => {
     const stdins: string[] = []
     await warm($, on, stdins)
     arrange()
@@ -10603,7 +10624,7 @@ for (const [what, arrange, cache] of [
   })
 }
 
-test('v13.4 keepalive: the ping count starts again at a real turn: its first slot is a ping, not the cache nudge', async ($, on) => {
+longTest('v13.4 keepalive: the ping count starts again at a real turn: its first slot is a ping, not the cache nudge', async ($, on) => {
   const stdins: string[] = []
   await warm($, on, stdins)
   tokensNow = 200_000
@@ -11120,7 +11141,7 @@ const turnEnds = async ($: any) => {
 const touched = (argv: string[][], needle: string) => argv.some((a) => a.some((x) => x.includes(needle)))
 
 for (const env of [undefined, ''] as const) {
-  test(`v13.3 CLAUDE_CONFIG_DIR ${env === undefined ? 'unset' : 'empty'}: the own row is read from the default registry, as before, and the config folder is never touched`, async ($, on) => {
+  longTest(`v13.3 CLAUDE_CONFIG_DIR ${env === undefined ? 'unset' : 'empty'}: the own row is read from the default registry, as before, and the config folder is never touched`, async ($, on) => {
     const stdins: string[] = []
     const argv: string[][] = []
     await configRoot($, on, stdins, env, OWN_ROW(), argv)
@@ -11134,7 +11155,7 @@ for (const env of [undefined, ''] as const) {
   })
 }
 
-test('v13.3 CLAUDE_CONFIG_DIR set to a good folder: the ping and the nudge find the own row there, with no row in the default registry', async ($, on) => {
+longTest('v13.3 CLAUDE_CONFIG_DIR set to a good folder: the ping and the nudge find the own row there, with no row in the default registry', async ($, on) => {
   const stdins: string[] = []
   const argv: string[][] = []
   await configRoot($, on, stdins, CONFIG_ROOT, OWN_ROW(), argv)
@@ -11159,7 +11180,7 @@ test('v13.3 CLAUDE_CONFIG_DIR set: the shell check that picks the idle level rea
   expect(nudges()).toEqual([nudgeText('idle')])
 })
 
-test('v13.3 CLAUDE_CONFIG_DIR set, own row only in the default registry: no ping, no nudge, no self request', async ($, on) => {
+longTest('v13.3 CLAUDE_CONFIG_DIR set, own row only in the default registry: no ping, no nudge, no self request', async ($, on) => {
   const stdins: string[] = []
   await configRoot($, on, stdins, CONFIG_ROOT, {}, [], { interactive: false })
   sessions = OWN_ROW()
@@ -11186,7 +11207,7 @@ for (const bad of [
   '/Users/x/conf\nig',
   `/Users/x/${'a'.repeat(520)}`,
 ]) {
-  test(`v13.3 CLAUDE_CONFIG_DIR ${JSON.stringify(bad.length > 60 ? `${bad.slice(0, 20)}... (${bad.length})` : bad)} is rejected: no own row anywhere, logged once, nothing read`, async ($, on) => {
+  longTest(`v13.3 CLAUDE_CONFIG_DIR ${JSON.stringify(bad.length > 60 ? `${bad.slice(0, 20)}... (${bad.length})` : bad)} is rejected: no own row anywhere, logged once, nothing read`, async ($, on) => {
     const stdins: string[] = []
     const argv: string[][] = []
     await configRoot($, on, stdins, bad, OWN_ROW(), argv)
@@ -11212,7 +11233,7 @@ for (const [what, stat] of [
   ['owned by another user', '0 700 2 Directory 14 64 1700000000\n'],
   ['a file', '501 700 1 Regular File 14 64 1700000000\n'],
 ] as const) {
-  test(`v13.3 CLAUDE_CONFIG_DIR set to a folder whose sessions folder is ${what}: it is not read, so no row`, async ($, on) => {
+  longTest(`v13.3 CLAUDE_CONFIG_DIR set to a folder whose sessions folder is ${what}: it is not read, so no row`, async ($, on) => {
     const stdins: string[] = []
     const argv: string[][] = []
     await configRoot($, on, stdins, CONFIG_ROOT, OWN_ROW(), argv)
@@ -11224,7 +11245,7 @@ for (const [what, stat] of [
   })
 }
 
-test('v13.3 CLAUDE_CONFIG_DIR set: two rows of the session in the config registry give no row, as in the default one', async ($, on) => {
+longTest('v13.3 CLAUDE_CONFIG_DIR set: two rows of the session in the config registry give no row, as in the default one', async ($, on) => {
   const stdins: string[] = []
   await configRoot($, on, stdins, CONFIG_ROOT, { ...OWN_ROW(), '5000.json': JSON.stringify({ ...JSON.parse(AUTO_OWN), pid: 5000, kind: 'interactive' }) })
   await turnEnds($)
@@ -11232,7 +11253,7 @@ test('v13.3 CLAUDE_CONFIG_DIR set: two rows of the session in the config registr
   expect(pings()).toEqual([])
 })
 
-test('v13.3 CLAUDE_CONFIG_DIR set: a background worker row in the config registry is still never pinged or nudged', async ($, on) => {
+longTest('v13.3 CLAUDE_CONFIG_DIR set: a background worker row in the config registry is still never pinged or nudged', async ($, on) => {
   const stdins: string[] = []
   await configRoot($, on, stdins, CONFIG_ROOT, OWN_ROW({ kind: 'bg' }))
   await turnEnds($)
@@ -11265,7 +11286,7 @@ for (const [what, env, inDefault] of [
   ['the row is in the default registry', CONFIG_ROOT, true],
   ['the row is only in the config registry', CONFIG_ROOT, false],
 ] as const) {
-  test(`v13.3 CLAUDE_CONFIG_DIR set: a rename cue is answered from the default registry alone (${what})`, async ($, on) => {
+  longTest(`v13.3 CLAUDE_CONFIG_DIR set: a rename cue is answered from the default registry alone (${what})`, async ($, on) => {
     laneSeed.text = LEAD_LANES('/data/x/work')
     const stdins: string[] = []
     engine(on, [], stdins, true)
@@ -11288,7 +11309,7 @@ for (const [what, env, inDefault] of [
   })
 }
 
-test('v13.3 CLAUDE_CONFIG_DIR set to a config folder that resolves elsewhere (a link in its path): rejected, no row, logged once', async ($, on) => {
+longTest('v13.3 CLAUDE_CONFIG_DIR set to a config folder that resolves elsewhere (a link in its path): rejected, no row, logged once', async ($, on) => {
   const stdins: string[] = []
   const argv: string[][] = []
   await configRoot($, on, stdins, CONFIG_ROOT, OWN_ROW(), argv, { before: () => realMap.set(CONFIG_ROOT, '/Users/x/elsewhere/config') })
@@ -11304,7 +11325,7 @@ for (const [what, hook, rejected] of [
   ['answers a number', () => 5, true],
   ['answers null (read as unset)', () => null, false],
 ] as const) {
-  test(`v13.3 $.env.get ${what}: ${rejected ? 'no own row, logged once' : 'the default registry, as unset'}`, async ($, on) => {
+  longTest(`v13.3 $.env.get ${what}: ${rejected ? 'no own row, logged once' : 'the default registry, as unset'}`, async ($, on) => {
     const stdins: string[] = []
     await configRoot($, on, stdins, undefined, {}, [], { before: () => { envHook = hook as () => unknown } })
     sessions = OWN_ROW()
@@ -11316,7 +11337,7 @@ for (const [what, hook, rejected] of [
 }
 
 for (const [what, row] of [['bg', OWN_ROW({ kind: 'bg' })], ['kind-less', OWN_ROW({ kind: undefined })]] as const) {
-  test(`v13.3 CLAUDE_CONFIG_DIR set: a ${what} row in the config registry does not make a session interactive for the self request or the restores`, async ($, on) => {
+  longTest(`v13.3 CLAUDE_CONFIG_DIR set: a ${what} row in the config registry does not make a session interactive for the self request or the restores`, async ($, on) => {
     const stdins: string[] = []
     await configRoot($, on, stdins, CONFIG_ROOT, row, [], { interactive: false })
     expect(JSON.stringify(await $.tool.call({ ...GOOD, mode: 'now' } as any))).toContain('not enabled')
@@ -11329,7 +11350,7 @@ for (const [what, plain, own, expected] of [
   ['the plain row is a worker, the config row a person', 'background', 'interactive', 'compact refused not-interactive 150\n'],
   ['the plain row is a person', 'interactive', 'background', 'compact held nudged 150\n'],
 ] as const) {
-  test(`v13.3 CLAUDE_CONFIG_DIR set: a lead's compact cue reads the default registry alone (${what})`, async ($, on) => {
+  longTest(`v13.3 CLAUDE_CONFIG_DIR set: a lead's compact cue reads the default registry alone (${what})`, async ($, on) => {
     laneSeed.text = LEAD_LANES('/data/x/work')
     sessions = { [REGFILE]: REG() }
     engine(on, [], [], true)
@@ -12163,7 +12184,7 @@ test('v14 nudge: an idle session at or past the working level gets the hard text
   expect(nudges()[1]).toContain('If a background agent or shell is still running, call request_compact at the end of the turn in which it finishes, not before.')
 })
 
-test('v14 nudge: a soft nudge may be followed by one hard one inside the 30-minute gap, never by a second hard one', async ($, on) => {
+longTest('v14 nudge: a soft nudge may be followed by one hard one inside the 30-minute gap, never by a second hard one', async ($, on) => {
   const stdins: string[] = []
   await person($, on, stdins)
   tokensNow = 310_000
@@ -12189,7 +12210,7 @@ test('v14 nudge: a soft nudge may be followed by one hard one inside the 30-minu
   expect(nudges()).toEqual([nudgeText('idle'), nudgeText('working'), nudgeText('working')])
 })
 
-test('v14 nudge: a hard nudge is not followed by a soft one inside the gap; the numbers in both texts follow the config', async ($, on) => {
+longTest('v14 nudge: a hard nudge is not followed by a soft one inside the gap; the numbers in both texts follow the config', async ($, on) => {
   await person($, on)
   await $.command.run(lane('config idle 200'))
   await $.command.run(lane('config working 300'))
@@ -15270,7 +15291,7 @@ test('prompts PR2: the notice carries no approval and is a turn of the mod\'s ow
   expect(promptNotices()).toBe(1)
 })
 
-test('prompts PR2: at most 30 notices an hour; a capped one stays owed, is logged once, and goes out once a slot frees', async ($, on) => {
+longTest('prompts PR2: at most 30 notices an hour; a capped one stays owed, is logged once, and goes out once a slot frees', async ($, on) => {
   const stdins: string[] = []
   await tier($, on, stdins, { clock: true })
   for (let i = 1; i <= 31; i++) {
@@ -16233,7 +16254,7 @@ test('prompts PR3 hook: a relaying tier that is not live for two minute-checks i
   expect(nowMs - T0).toBeGreaterThanOrEqual(21 * 60_000)
 })
 
-test('prompts PR3 hook: an asked relay holds the wait for 2 hours of awake time, with no 20-minute deny: abandoned expired, the dialog stays', async ($, on) => {
+longTest('prompts PR3 hook: an asked relay holds the wait for 2 hours of awake time, with no 20-minute deny: abandoned expired, the dialog stays', async ($, on) => {
   await answerer($, on, [])
   addCondT()
   const r = await runRequest($, [at(4000, () => { putFileAt(`${readReq().id}.relay.json`, JSON.stringify({ id: readReq().id, short: readReq().id.slice(0, 8), by: byCond, at: nowMs, nonce: readReq().nonce })); putFileAt(`${readReq().id}.asked`) })])

@@ -71,7 +71,9 @@ It checks the manifest's name and publisher, refuses root, and changes no settin
 bash tools/callboard/test.sh
 ```
 
-Runs: core logic (`node --test`), sender, extension race tests (fake VS Code and registry), `claude plugin validate`, `claude plugin test`, and the `link-extension.sh` tests against a throwaway extensions folder.
+Runs: core logic (`node --test`), sender, extension race tests (fake VS Code and registry), `claude plugin validate`, `claude plugin test`, and the `link-extension.sh` tests against a throwaway extensions folder. CI runs all of it, the mod tests included. `CALLBOARD_SKIP_MOD_TESTS=1` skips only `claude plugin test mod`, the slow part (about 4 minutes), for a quick local run.
+
+The mod tests (`mod/test/mod.test.ts`) drive a fake clock, and each simulated 2 s tick costs the test kit half a millisecond to two: a test that simulates an hour runs 1,800 of them. The kit fails a test that takes more than 5 s, so a test that takes a second or more on a fast machine is declared with `longTest`, which gives it 60 s: the same assertions, but a slow runner no longer fails it. A new test that simulates 30 minutes or more takes `longTest` too. The clock helpers (`clock.advance`, `clock.set`) return only when the mod has stopped starting new calls into the mocks, so an assertion after them sees a tick that has finished its reads and processes.
 
 ## Not yet verified against a live engine
 
