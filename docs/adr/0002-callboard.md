@@ -125,7 +125,7 @@ that agents never edit, and `install.sh`, `SHA256SUMS`, `/usr/local/libexec/call
 
 ## Design additions
 
-Each addition is part of the decision above; these sections hold what it decided beyond the summary and its residuals.
+Each addition is part of the decision above; these sections hold what it decided beyond the summary and its residuals. The earlier design record, the callboard amendment to ADR-0029 in the archived ai-tooling repository, is covered by this ADR: its decisions, residuals and open questions are all here.
 
 ### Design addition v10: lanes a lead makes
 
@@ -285,7 +285,7 @@ Probes named by the design and the README. Status as recorded; "open" means not 
 
 **Engine findings (probed, engine 2.1.316).** A plugin's own `$.prompt.submit` skips that plugin's own `prompt.submit` hook; `turn.start` carries the submitted text inside a fixed frame. `prompt.compose` renders once per conversation, so a mid-session grant needs the user-role note.
 
-**Hook time budget (v15.4, 2026-11-06).** A hook has 10 s of its own time per dispatch. `$.clock.sleep` counts against it and a `$` call does not. A hook past the limit is cut off, but the code it was running goes on unseen. So every wait inside a tool call sleeps through `/bin/sleep` as a process call (`pause`), and a call the engine abandoned sends no signal and removes nothing (`abandoned`). This is also why the 40 s idle wait of `lane_retire` and `lane_park` (v15.3) is safe.
+**Hook time budget (v15.4, 2026-11-06).** A hook has 10 s of its own time per dispatch. `$.clock.sleep` counts against it and a `$` call does not. A hook past the limit is cut off, but the code it was running goes on unseen. So every wait inside a tool call sleeps through `/bin/sleep` as a process call (`pause`), and a call the engine abandoned sends no signal and removes nothing (`abandoned`). This is also why the 40 s idle wait of `lane_retire` and `lane_park` (v15.3) is safe. The relay wait of prompt answering has its own budget: see "Hook budget for the relay wait" in [ADR 0004](0004-prompt-answering.md).
 
 ## Not verified live
 
@@ -316,7 +316,7 @@ Questions the design left unanswered; none is decided.
   - every force stop and every remove asks the person; retire and park need the target's own confirmation; a stopped session is resumable from history;
   - the read-only stores folder switches off the lead-less chain.
 - **Accepted residual: presence leaks.** The refusal texts a lead sees tell it something about the person: `timed-out` says the person is away from a dialog, and `draft-in-box` says they are typing.
-- **Accepted residual: rollback and ownerless volumes.** A mod older than the `leadName` field (S2a) drops it when it writes a store, so a made lane bound by a newer mod, whose record hash includes the name, gets `record-changed`. Rolling back needs those lanes rebound. Under ADR 0003 a rollback is a checkout, so this matters more than it did under the installer. Cloud-synced folders and volumes mounted without owners are not refused; there the owner checks prove nothing.
+- **Accepted residual: rollback and ownerless volumes.** A mod older than the `leadName` field (S2a) drops it when it writes a store, so a made lane bound by a newer mod, whose record hash includes the name, gets `record-changed`. Rolling back needs those lanes rebound. Rolling back past #21 (the stuck-lanes change) does the same to attached lanes: a session bound while the newer mod ran holds a record hash without the lead name, which the older mod does not accept (`record-changed`), so those lanes need rebinding too. Under ADR 0003 a rollback is a checkout, so this matters more than it did under the installer. Cloud-synced folders and volumes mounted without owners are not refused; there the owner checks prove nothing.
 - **Accepted residual: other plugins.** Another plugin loaded in the session can run `/callboard` and may answer its dialogs. The install rule is that callboard is the only plugin on `CLAUDE_CODE_PLUGIN_DIRS`; plugins that load from a repo's `.claude/skills` remain an open gap.
 - **Accepted residual: briefs and messages.** A brief, a lead's message or a lane's report is data at the trust level of its writer; risk-list work still needs the person's own turn.
 - Ask rules cannot gate mod tools, so `request_compact` and `lane_retire` run unattended; their safeguards are the self-only content path, the idle check, the signed report and the repo scope.
