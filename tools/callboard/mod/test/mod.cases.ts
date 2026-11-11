@@ -17255,6 +17255,17 @@ test('prompts PR4 tools (manager): the manager at the top relays a question: the
   expect(JSON.parse(pfs.get(`${LDIR(APISID)}/${TID}.decision.json`)!.text)).toMatchObject({ decision: 'answer', answer: { index: 0, label: '3000' }, via: 'person', by: { level: 'manager' } })
 })
 
+test('prompts PR4 hook: a label that redaction changes is returned as the lane wrote it, never as its redacted copy; the questions file holds the redacted one', async ($, on) => {
+  const tok = `${'gh'}p_abc123def`
+  const tokenIn = { questions: [{ question: QTEXT, header: 'Auth', options: [{ label: tok, description: 'd' }, { label: 'no token', description: 'd' }], multiSelect: false }] }
+  const c = callOf('AskUserQuestion', tokenIn)
+  await answerer($, on, [], { verdict: QASK, asksScope: 'all' })
+  const r = await runRequest($, [at(4000, () => handDecision(readReq(), answerBy(0, '[REDACTED_GHTOKEN]')))], c.over, c.check)
+  expect(r).toEqual({ decision: { behavior: 'allow', updatedInput: { ...tokenIn, answers: { [QTEXT]: `${tok} (answered by lead LEAD)` } } } })
+  expect(JSON.stringify(questionsRows())).not.toContain(tok)
+  expect(questionsRows()[0].label).toBe('[REDACTED_GHTOKEN]')
+})
+
 
 // A marker that no test carries would leave the parts after it empty and drop their tests without a word: fail the file instead.
 if (currentShard !== SHARD_STARTS.length - 1) throw new Error(`mod tests: the shard markers are not all found (stopped at part ${currentShard + 1} of ${SHARD_STARTS.length})`)
