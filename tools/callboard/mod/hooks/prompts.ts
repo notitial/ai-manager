@@ -1953,7 +1953,7 @@ export type Tier = { level: TierLevel; sid: string; name: string }
 export const topOf = (tiers: Tier[]): Tier | undefined => [...tiers].sort((a, b) => TIER_RANK[b.level] - TIER_RANK[a.level])[0]
 
 // Windows (PLAN §6.1): the live tiers in order of trust open at 30 s, 5 min and 10 min after the request, so a missing tier moves the next one up. A tier that passes the
-// request up opens the next one at once (the 30 s minimum still binds). Windows open and never close. A request nobody answers is denied at DENY_AFTER_MS.
+// request up opens the next one at once (the 30 s minimum still binds). Windows open and never close, and none moves later once computed (promptStand keeps the earliest time it saw for a tier, so a lower tier that goes live after the request cannot push a told tier's slot back). A request nobody answers is denied at DENY_AFTER_MS.
 export const WINDOW_OPEN_MS: readonly number[] = [MIN_AGE_MS, 5 * 60_000, 10 * 60_000]
 export const DENY_AFTER_MS = 20 * 60_000
 // When (absolute, from the request's `at`) each eligible tier's window opens. passedAt: when each level passed the request up (its escalate file's `at`).

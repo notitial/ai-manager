@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 import * as prm from '../hooks/prompts'
-import { recordText, recordTextLegacy, CLAIM_OTHER_UNNAMED } from '../hooks/core'
+import { recordText, recordTextLegacy, CLAIM_OTHER_UNNAMED, REST_TEXT } from '../hooks/core'
 import { CLAIM_HINT, CLAIM_NOT_PERSON, CLAIM_NOT_LEAD, CLAIM_UNNAMED, CLAIM_NONE, claimQuestion, claimedText, claimRefusedText } from '../hooks/core'
 import { LEAD_MANAGER_TEXT, HINT_PREFIX, MANAGER_RESTORE_QUESTION, MANAGER_RESTORED_TOAST, MANAGER_UNANSWERED_TOAST, HINT_REFRESH_MS } from '../hooks/core'
 import { reserveShowText, reserveAddedText, reserveRemovedText, reserveNotListedText, reserveManagerText, RESERVE_NOT_PERSON, RESERVE_USAGE } from '../hooks/core'
@@ -1210,7 +1210,7 @@ const events = (stdins: string[]) => allEvents(stdins).filter((e) => e.event !==
 
 const PERSON = { kind: 'composer' } as const
 // v13.6: the usage line, which /callboard on now gets too.
-const USAGE = 'Use /callboard off, lead, lanes, claim, status, config, checkin, conductor, reserve, lane [NAME] or lane off.'
+const USAGE = 'Use /callboard off, lead, lanes, claim, status, config, checkin, rest, conductor, reserve, lane [NAME] or lane off.'
 const lane = (args: string, origin: unknown = PERSON) => ({ command: 'callboard', args, origin }) as any
 
 // The mocked engine answers each dialog with `askAnswer` (`restoreAnswer` for the Restore question). v13.5: /callboard on is retired, so a session starts
@@ -4512,10 +4512,22 @@ test('a lead that is not allowed or not in the lane repo gets no presence file f
 })
 
 const listed = async ($: any) => (await $.tool.call(listCall())).result as string
-// v14.1: the list is markdown boxes made with blockquotes, one per (repo, lead); PIN with home as ~ heads each. A row is [lane, folder, session, waiting]; four
-// columns means the box has a Folder column. noNote drops the lanes-changed note, which follows the box after a blank line.
-const ANY = '**Any lead** · app'
-const mdBox = (head: string, rows: string[][]) => ['> ' + head, '>', rows[0].length === 4 ? '> | Lane | Folder | Session | Waiting |' : '> | Lane | Session | Waiting |', rows[0].length === 4 ? '> |---|---|---|---|' : '> |---|---|---|', ...rows.map((r) => `> | ${r.join(' | ')} |`)].join('\n')
+// The list is one table under a plain header line (the fix pass, 2026-11-11): the lead and the repo sit on the first row of their group. A row is [lane, folder, session,
+// waiting]; four columns means the table has a Folder column. noNote drops the lanes-changed note, which follows the table after a blank line.
+const ANY: [string, string] = ['Any lead', 'app']
+const LEADHEAD = '**Lead LEAD** · live'
+const mdTable = (groups: Array<[string, string, string[][]]>, head = LEADHEAD) => {
+  const withFolder = groups.some(([, , rows]) => rows.some((r) => r.length === 4))
+  const cols = ['Lead', 'Repo', 'Lane', ...(withFolder ? ['Folder'] : []), 'Session', 'Waiting']
+  return [
+    head,
+    '',
+    `| ${cols.join(' | ')} |`,
+    `|${cols.map(() => '---').join('|')}|`,
+    ...groups.flatMap(([lead, repo, rows]) => rows.map((r, k) => `| ${[k === 0 ? lead : '', k === 0 ? repo : '', ...r].join(' | ')} |`)),
+  ].join('\n')
+}
+const mdBox = (who: [string, string], rows: string[][], head = LEADHEAD) => mdTable([[who[0], who[1], rows]], head)
 const noNote = (t: string) => t.replace(`\n\n${LANES_CHANGED_NOTE}`, '').replace(` ${LANES_CHANGED_NOTE}`, '')
 
 test('lane_list gives one fixed line per lane of this repo: lanes the lead made, attached lanes, and whether a session carries the name', async ($, on) => {
@@ -9590,6 +9602,43 @@ test('v13.2 keepalive: past 58 minutes the cache is cold: no ping, logged once; 
   expect(pings()).toEqual([KEEPALIVE_TEXT])
 })
 
+test('/callboard rest: no ping and no cache nudge in this gap, logged once; a reload keeps it; the next real turn restores the pings; any origin may type it', async ($, on) => {
+  const stdins: string[] = []
+  await warm($, on, stdins)
+  await clock!.advance(10 * MIN)
+  expect((await $.command.run(lane('rest', { kind: 'plugin', name: 'x' }))).text).toBe(REST_TEXT)
+  await clock!.advance(45 * MIN)
+  expect(pings()).toEqual([])
+  expect(kaLog(stdins)).toEqual(['keepalive-skipped:rest'])
+  // A reload of the mod keeps the state, so the gap stays quiet.
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await clock!.advance(2 * MIN)
+  expect(pings()).toEqual([])
+  expect(kaLog(stdins)).toEqual(['keepalive-skipped:rest'])
+  // A real turn in this session ends it.
+  await realTurn($, 'back')
+  await clock!.advance(50 * MIN)
+  expect(pings()).toEqual([KEEPALIVE_TEXT])
+  await ownTurn($, KEEPALIVE_TEXT)
+  await clock!.advance(10_000)
+  // Typed again, it holds for the new gap only.
+  await $.command.run(lane('rest'))
+  await clock!.advance(10_000)
+  await realTurn($, 'once more')
+  await clock!.advance(50 * MIN)
+  expect(pings().length).toBe(2)
+  await ownTurn($, KEEPALIVE_TEXT)
+  await clock!.advance(10_000)
+  // Typed while a real turn is running, it holds past that turn's end.
+  await $.prompt.submit({ text: 'long job' } as any)
+  await $.turn.start({ turnId: 'real', text: 'long job' } as any)
+  await $.command.run(lane('rest'))
+  await clock!.advance(10_000)
+  await $.turn.complete(TURN as any)
+  await clock!.advance(60 * MIN)
+  expect(pings().length).toBe(2)
+})
+
 test('v13.2 keepalive: after a restart (the session state is gone) nothing is pinged until a turn has been seen to end', async ($, on) => {
   const stdins: string[] = []
   const trace: Trace = { log: [], failCounters: false }
@@ -10433,22 +10482,23 @@ test('S2: lane_create stamps the lead name; another lead (or this one renamed) n
   putStore([...storeJson().lanes, { name: 'OLD', folder: SVC, brief: `${SVC}/B.md`, createdAt: 1 }], storeJson().creates)
   const api = ['API', 'api', 'none', '–']
   const old = ['OLD', 'svc', 'none', '–']
-  const both = `${mdBox('**Lead LEADA** · live · app', [api])}\n\n${mdBox(ANY, [old])}`
+  const both = mdTable([['LEADA', 'app', [api]], ['Any lead', 'app', [old]]], '**Lead LEADA** · live')
   expect(await bareList($)).toBe(both)
   sessions = { ...selfAs('LEADB'), ...cueSession(OTHER, 'OLD', SVC, { pid: 4500 }) }
   // The lane that names LEADA is told by name, for the person's /callboard claim: LEADA is not running.
-  expect(await bareList($)).toBe(`${mdBox(ANY, [['OLD', 'svc', 'live', '–']])}\n\n${CLAIM_HINT(['API'])}`)
+  expect(await bareList($)).toBe(`${mdBox(ANY, [['OLD', 'svc', 'live', '–']], '**Lead LEADB** · live')}\n\n${CLAIM_HINT(['API'])}`)
   for (const verb of ['resume', 'compact', 'start', 'rename', 'park', 'retire', 'terminate', 'open', 'unpark'])
     expect(JSON.stringify(await $.tool.call(leadCall(verb, { lane: 'API' })))).toContain(`lane_${verb} refused: other-lead: that lane belongs to another lead. Only that lead can reach it.`)
   expect((await $.tool.call(leadCall('resume', { lane: 'OLD' }))).result).toContain('cue resume acted')
   // No valid name: legacy lanes only.
   sessions = selfAs('LEAD A')
-  expect(await bareList($)).toBe(mdBox(ANY, [old]))
+  const NOHEAD = '**Lead** · live'
+  expect(await bareList($)).toBe(mdBox(ANY, [old], NOHEAD))
   // A twin row in another letter case voids the name; so does a reserved name.
   sessions = { ...selfAs('LEADA'), ...regAs(OTHER, 4600, 'leada') }
-  expect(await bareList($)).toBe(mdBox(ANY, [old]))
+  expect(await bareList($)).toBe(mdBox(ANY, [old], NOHEAD))
   sessions = selfAs('MANAGER')
-  expect(await bareList($)).toBe(mdBox(ANY, [old]))
+  expect(await bareList($)).toBe(mdBox(ANY, [old], NOHEAD))
   sessions = selfAs('LEADA')
   expect(await bareList($)).toBe(both)
   expect(storeJson().lanes.map((l: any) => [l.name, l.leadName])).toEqual([['API', 'LEADA'], ['OLD', undefined]])
@@ -10606,7 +10656,7 @@ test('S2b: two leads in one repo, two lanes each: lane_list, lane_resume, lane_u
   for (const [me, other, mine, theirs] of [['LEADA', 'LEADB', ['A1', 'A2'], ['B1', 'B2']], ['LEADB', 'LEADA', ['B1', 'B2'], ['A1', 'A2']]] as const) {
     sessions = { ...selfAs(me), ...regAs(OTHERLEAD, 4243, other), ...cueSession(OTHER, mine[0], SVC, { pid: 4500 }) }
     const row = (n: string) => [n, 'svc', n === mine[0] ? 'live' : 'none', '–']
-    expect(await bareList($)).toBe(`${mdBox(`**Lead ${me}** · live · app`, mine.map(row))}\n\n${mdBox(ANY, [row('OLD')])}`)
+    expect(await bareList($)).toBe(mdTable([[me, 'app', mine.map(row)], ['Any lead', 'app', [row('OLD')]]], `**Lead ${me}** · live`))
     for (const n of theirs) for (const verb of ['resume', 'unpark', 'park', 'retire']) expect(JSON.stringify(await $.tool.call(leadCall(verb, { lane: n }))), `${me} ${verb} ${n}`).toContain(`lane_${verb} refused: other-lead`)
     expect((await $.tool.call(leadCall('resume', { lane: mine[0] }))).result).toContain('cue resume acted')
     // v15.3: a retire of a lane no live session carries removes its record, so it is not in this list.
@@ -11219,7 +11269,7 @@ test('v13.6 check-in: a lane signed done is not told, quiet or gone; a parked la
   await ckLead($, on, [], {}, [{ name: 'LAB', folder: `${PIN}/lab`, brief: `${PIN}/lab/B.md`, createdAt: 1 }, ckLane(), { ...madeLane('PARKED'), sid: OTHERLEAD, parked: 5 }])
   reportFile = { text: `notes\nstatus: done ${OTHER}\n`, mtimeSec: T0 / 1000 }
   await idleFor(36 * MIN)
-  expect((await bareList($)).split('\n').filter((l) => l.startsWith('> | ') && !l.startsWith('> | Lane')).map((l) => l.split(' | ')[1])).toEqual(['LAB', 'API', 'PARKED'])
+  expect((await bareList($)).split('\n').slice(4).map((l) => l.split('|')[3].trim())).toEqual(['LAB', 'API', 'PARKED'])
   sessions = leadSelfReg()
   await idleFor(20 * MIN)
   expect(checkins()).toEqual([])
@@ -11605,13 +11655,14 @@ test('v14 manager tools: lane_list and lane_resume reach lanes in every repo; ev
   const argv: string[][] = []
   await mgrAt($, on, [], { argv })
   const list = (await $.tool.call(listCall())).result as string
-  expect(list.startsWith('> **Manager MANAGER** · live\n>\n> > **Any lead** · ')).toBe(true)
-  expect(list).toContain('· work\n> >')
-  expect(list).toContain('· app\n> >')
+  expect(list.startsWith('**Manager MANAGER** · live\n\n| Lead | Repo | Lane | Folder | Session | Waiting |\n')).toBe(true)
+  expect(list).not.toMatch(/^>/m)
+  expect(list).toContain('| Any lead | work | ')
+  expect(list).toContain('| Any lead | app | ')
   expect(list).not.toContain('~/code')
   expect(list).not.toContain('/data/x')
-  expect(list).toContain('> > | LABLANE | ')
-  expect(list).toContain('> > | API | ')
+  expect(list).toContain('| LABLANE | ')
+  expect(list).toContain('| API | ')
   expect((await $.tool.call(mgrCall('resume', 'LABLANE'))).result).toBe('cue resume acted for lane LABLANE.')
   expect((await $.tool.call(mgrCall('resume', 'API'))).result).toBe('cue resume acted for lane API.')
   for (const verb of ['create', 'open', 'rename', 'start', 'park', 'unpark'])
@@ -12948,8 +12999,8 @@ test('v15 S6b (16e): the restore dialog shows a long absolute entry whole', asyn
 test('v15 S6b (26): the conductor\'s lane_list shows its repos\' lanes inside one Conductor box, none of another repo and none of the conductor repo', async ($, on) => {
   await condOn($, on)
   const t = (await $.tool.call(listCall())).result as string
-  expect(t.split('\n')[0]).toBe('> **Conductor COND** · live')
-  expect(t).toContain('· app')
+  expect(t.split('\n')[0]).toBe('**Conductor COND** · live')
+  expect(t).toContain('| Any lead | app | ')
   expect(t).toContain('| API |')
   expect(t).not.toContain('LABLANE')
   expect((await $.command.run(lane('lanes'))).text).toBe(t)
@@ -13089,7 +13140,7 @@ test('v15 S6b (33): the conductor section is in the system prompt while the gran
   const r = await $.prompt.compose(COMPOSE)
   expect(condSections(r).length).toBe(1)
   expect(condSections(r)[0].text).toBe(conductorBriefing('COND', COND, [PIN, APP2]))
-  expect(condSections(r)[0].text).toContain('A lead with no lanes is not listed')
+  expect(condSections(r)[0].text).toContain('A live lead with no lanes is one row with – in the lane cells')
   expect(briefings(r).length).toBe(0)
   await $.command.run(lane('off'))
   expect(condSections(await $.prompt.compose(COMPOSE)).length).toBe(0)
@@ -13137,13 +13188,13 @@ test('v15 S6c (46): the manager\'s list nests a live conductor\'s repos in a Con
   await mgrAt($, on, [], { sess: { ...MGR_SESS(), ...regAs(OTHERLEAD, 4243, 'CONDX') }, seed: () => condPresenceOf(OTHERLEAD, 4243, 'CONDX', [PIN]) })
   const t = (await $.tool.call(listCall())).result as string
   const lines = t.split('\n')
-  expect(lines[0]).toBe('> **Manager MANAGER** · live')
-  expect(lines).toContain('> > **Conductor CONDX** · live')
-  expect(lines).toContain('> > > **Any lead** · app')
-  expect(lines.some((l) => l.startsWith('> > > | API | '))).toBe(true)
-  expect(lines).toContain('> > **Any lead** · work')
-  expect(lines.indexOf('> > **Conductor CONDX** · live')).toBeLessThan(lines.indexOf('> > > **Any lead** · app'))
-  expect(lines.indexOf('> > > **Any lead** · app')).toBeLessThan(lines.indexOf('> > **Any lead** · work'))
+  expect(lines[0]).toBe('**Manager MANAGER** · live')
+  expect(lines[2].startsWith('| Conductor | Lead | Repo | Lane |')).toBe(true)
+  const condRow = lines.findIndex((l) => l.startsWith('| CONDX | Any lead | app | '))
+  const workRow = lines.findIndex((l) => l.startsWith('| – | Any lead | work | '))
+  expect(condRow).toBeGreaterThan(3)
+  expect(lines.some((l) => l.includes('| API | '))).toBe(true)
+  expect(workRow).toBeGreaterThan(condRow)
 })
 
 test('v15 S6c (47): a repo listed by two conductors appears once, under the first, with an also note; the other conductor shows no lanes in its repos', async ($, on) => {
@@ -13155,21 +13206,22 @@ test('v15 S6c (47): a repo listed by two conductors appears once, under the firs
     },
   })
   const t = (await $.tool.call(listCall())).result as string
-  expect(t.split('**Any lead** · app').length).toBe(2)
-  expect(t).toContain('> > > **Any lead** · app · also CONDY')
-  expect(t).toContain('> > **Conductor CONDY** · live\n> >\n> > no lanes in its repos')
-  expect(t.indexOf('**Conductor CONDX**')).toBeLessThan(t.indexOf('**Conductor CONDY**'))
+  expect(t.split('| Any lead | app (also CONDY) | ').length).toBe(2)
+  expect(t).toContain('| CONDX | Any lead | app (also CONDY) | ')
+  expect(t).toMatch(/^\| CONDY \| – \| – \| /m)
+  expect(t.indexOf('| CONDX | ')).toBeLessThan(t.indexOf('| CONDY | '))
 })
 
 test('v15 S6c (48): a conductor file that fails the check gives no box; a leads folder that cannot be read draws the list flat with a note', async ($, on) => {
   await mgrAt($, on, [], { seed: () => condPresenceOf(OTHERLEAD, 4243, 'CONDX', [PIN]) })
   const t = (await $.tool.call(listCall())).result as string
   expect(t).not.toContain('Conductor')
-  expect(t).toContain('> > **Any lead** · app')
+  expect(t).toContain('| Any lead | app | ')
   leadsStatRejects = true
   const flat = (await $.tool.call(listCall())).result as string
-  expect(flat).toContain('> > **Any lead** · app')
-  expect(flat.endsWith('>\n> (conductors could not be read)')).toBe(true)
+  expect(flat).toContain('| Any lead | app | ')
+  expect(flat).not.toContain('Conductor')
+  expect(flat.endsWith('|\n\n(conductors could not be read)')).toBe(true)
 })
 
 // ---- laneless leads: a live lead with no lanes is in the manager's and a conductor's list ----
@@ -13186,11 +13238,11 @@ test('laneless leads (manager): a live lead with no lanes gets a box under its r
     },
   })
   const t = (await $.tool.call(listCall())).result as string
-  expect(t.split('\n')[0]).toBe('> **Manager MANAGER** · live')
-  expect(t).toContain(`> > **Lead LEAD-A** · live · app\n> >\n> > no lanes`)
-  expect(t).toContain('> > **Lead LEAD-B** · live · app2\n> >\n> > no lanes')
-  expect(t).toContain('> > **Any lead** · app')
-  expect(t.split('no lanes').length).toBe(3)
+  expect(t.split('\n')[0]).toBe('**Manager MANAGER** · live')
+  expect(t).toMatch(/^\| LEAD-A \| app \| – \|( – \|)+ – \|$/m)
+  expect(t).toMatch(/^\| LEAD-B \| app2 \| – \|( – \|)+ – \|$/m)
+  expect(t).toContain('| Any lead | app | ')
+  expect(t.match(/^\| LEAD-[AB] \|/gm)?.length).toBe(2)
   expect((await $.command.run(lane('lanes'))).text).toBe(t)
 })
 
@@ -13203,8 +13255,9 @@ test('laneless leads (manager): inside a live conductor\'s Conductor box when th
     },
   })
   const t = (await $.tool.call(listCall())).result as string
-  expect(t).toContain(`> > > **Lead LEAD-A** · live · app\n> > >\n> > > no lanes`)
-  expect(t.indexOf('**Conductor CONDX**')).toBeLessThan(t.indexOf('**Lead LEAD-A**'))
+  // The conductor's name is on its first row only; the laneless lead's row sits under it.
+  expect(t).toMatch(/^\| CONDX \| Any lead \| app \| /m)
+  expect(t).toMatch(/^\|  \| LEAD-A \| app \| – \|( – \|)+ – \|$/m)
 })
 
 test('laneless leads (conductor): a live lead of a listed repo is in the Conductor box, one of a repo it does not list is not; lane_list and /callboard lanes agree', async ($, on) => {
@@ -13218,8 +13271,8 @@ test('laneless leads (conductor): a live lead of a listed repo is in the Conduct
     },
   })
   const t = (await $.tool.call(listCall())).result as string
-  expect(t.split('\n')[0]).toBe('> **Conductor COND** · live')
-  expect(t).toContain(`> > **Lead LEAD-A** · live · app\n> >\n> > no lanes`)
+  expect(t.split('\n')[0]).toBe('**Conductor COND** · live')
+  expect(t).toMatch(/^\| LEAD-A \| app \| – \|( – \|)+ – \|$/m)
   expect(t).not.toContain('LEAD-B')
   expect((await $.command.run(lane('lanes'))).text).toBe(t)
 })
@@ -16212,6 +16265,20 @@ test('prompts PR3 tools (conductor): with a live lead the conductor\'s window op
   putQ({ ...APIQ, id: TID2 })
   pfs.set(`${LDIR(APISID)}/${TID2}.escalate-lead.json`, { text: prm.escalateText({ id: TID2, tier: 'up', why: 'x', at: T0 + 40_000, level: 'lead', sid: LEADSID }), mtimeSec: T0 / 1000 })
   expect(said(await $.tool.call(answerCall({ id: TID2 })))).toContain('Recorded: allow')
+})
+
+test('prompts PR3 tools (conductor): a lower tier that goes live after the request does not move the conductor\'s window later', async ($, on) => {
+  await asConductor($, on)
+  putQ({ ...APIQ })
+  // The conductor is the only tier at first: its window is the 30 s minimum, and the list says so.
+  expect(turnOf(said(await $.tool.call(pcall('prompt_list'))))).toContain('You are the top tier')
+  leadLive()
+  nowMs = T0 + 31_000
+  expect(turnOf(said(await $.tool.call(pcall('prompt_list'))))).not.toContain('window opens')
+  expect(said(await $.tool.call(answerCall()))).toContain('Recorded: allow')
+  // A request first seen with the lead already live still opens the conductor at 5 minutes.
+  putQ({ ...APIQ, id: TID2, at: T0 + 31_000 })
+  expect(said(await $.tool.call(answerCall({ id: TID2 })))).toContain(refusal('window'))
 })
 
 test('prompts PR3 tools (conductor): with the manager above it the conductor\'s prompt_escalate passes up (escalate-conductor.json); the manager\'s window is 10 minutes after the request with a lead and a conductor live', async ($, on) => {

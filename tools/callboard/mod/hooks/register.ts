@@ -55,6 +55,8 @@ const nudgedAtRef = { plugin: 'callboard', key: 'nudgedAt' } as const
 const turnEndRef = { plugin: 'callboard', key: 'turnEndAt' } as const
 const realEndRef = { plugin: 'callboard', key: 'realEndAt' } as const
 const pingAtRef = { plugin: 'callboard', key: 'pingAt' } as const
+// `/callboard rest`: when it was typed. A real turn that starts clears it (turn.start), so the next real turn ends it; one typed while a turn runs holds past that turn's end. A reload keeps it.
+const restRef = { plugin: 'callboard', key: 'restAt' } as const
 // v13.6 (2026-11-03): until when /callboard checkin pause holds this session's check-ins. A reload keeps it, a restart loses it.
 const checkinPauseRef = { plugin: 'callboard', key: 'checkinPauseUntil' } as const
 const ASK_TIMEOUT_MS = 90_000
@@ -1550,8 +1552,18 @@ async function leadRun($: any, e: unknown, body: () => Promise<any>) {
   // v13.6 (review c1, S1): the lead acted on that lane itself (a served call that succeeded), so what the check-in saw of it starts over.
   if (served && typeof out?.result === 'string' && OBS_CLEAR_TOOLS.includes(String((e as { tool?: unknown }).tool))) laneObs.get(sid)?.delete(String((e as { lane?: unknown }).lane))
   if (!moved || !out) return out
-  // v14.1: a lane_list box ends in a table, so the note goes after a blank line, never on a table row.
-  return typeof out.result === 'string' ? { ...out, result: `${out.result}${out.result.startsWith('>') ? '\n\n' : ' '}${c.LANES_CHANGED_NOTE}` } : typeof out.deny === 'string' ? { ...out, deny: `${out.deny} ${c.LANES_CHANGED_NOTE}` } : out
+  // A lane_list text ends in a table, so the note goes after a blank line, never on a table row.
+  return typeof out.result === 'string' ? { ...out, result: `${out.result}${out.result.includes('\n| ') ? '\n\n' : ' '}${c.LANES_CHANGED_NOTE}` } : typeof out.deny === 'string' ? { ...out, deny: `${out.deny} ${c.LANES_CHANGED_NOTE}` } : out
+}
+
+async function restCommand($: any, sid: string, code: string) {
+  try {
+    if ((await $.state.set(restRef, await $.clock.now())).isSet === false) throw new Error('not set')
+  } catch {
+    return { text: c.REST_FAILED }
+  }
+  await log($, sid, 'command', `rest:${code}`).catch(() => undefined)
+  return { text: c.REST_TEXT }
 }
 
 // One registration at a time per session: a /callboard lead after a timed-out one waits for the same registration instead of starting a second.
@@ -1615,7 +1627,7 @@ async function leadTools($: any, sid: string) {
   })
   await $.tool.register({
     name: 'lane_list',
-    description: 'List the lanes of the repo this lead was allowed in, in one box per lead (the box header names the lead, whether it is live, and the repo folder name): each lane, its folder when it is outside the repo root, whether a live session carries its name or it is parked, and how many minutes it has waited on a prompt. Call it when told the lanes changed.',
+    description: 'List the lanes of the repo this lead was allowed in, as one table (a plain header line, then one row per lane with its lead, repo folder name, session and waiting columns; a lead no live session carries is marked not live): each lane, its folder when it is outside the repo root, whether a live session carries its name or it is parked, and how many minutes it has waited on a prompt. Call it when told the lanes changed.',
     inputSchema: { type: 'object', properties: {} },
   })
   // ADR 0004 (prompt answering): the three tools of every tier.
@@ -1693,7 +1705,7 @@ async function managerTools($: any, sid: string) {
   if (managerDeclared.has(sid)) return
   const lane = { type: 'object', properties: { lane: { type: 'string' } }, required: ['lane'] }
   const tools: [string, string, unknown][] = [
-    ['lane_list', 'List every lane on this Mac, in one box per repo and lead (the box header names the lead, whether it is live, and the repo folder name): each lane, its folder when it is outside the repo root, whether a live session carries its name or it is parked, and how many minutes it has waited on a prompt.', { type: 'object', properties: {} }],
+    ['lane_list', 'List every lane on this Mac, as one table (a plain header line, then one row per lane with its lead, repo folder name, session and waiting columns; a lead no live session carries is marked not live): each lane, its folder when it is outside the repo root, whether a live session carries its name or it is parked, and how many minutes it has waited on a prompt.', { type: 'object', properties: {} }],
     ['lane_resume', "Cue a lane's session to resume from its own notes. The session applies its own limits. lane: the lane name.", lane],
     ['lane_compact', "Ask a lane's session to compact: at once if it asked for that with request_compact on-cue, otherwise the plugin nudges it to save its notes and compact itself. lane: the lane name, or the session name of a live lead; a lead compacts only when it asked with request_compact on-cue, and is never nudged.", lane],
     ['lane_terminate', "Stop a lane's session with SIGTERM, whatever it is doing. Every stop asks the person: they confirm in a dialog that names the lane, its repo, the session and the pid. Once the session has stopped, the lane's record is deleted too (the .archive/<LANE> folder and report stay; a lane a session joined keeps its record while a session carries it; a second stop removes it once the session is gone). A lane with no live session is removed directly. lane: the lane name.", lane],
@@ -2436,6 +2448,9 @@ async function keepaliveTick($: any, sid: string, submitsAtStart: number) {
   if (gap < k.pingAfterMin * 60_000) return
   const pingAt = (await $.state.get(pingAtRef)).value
   if (typeof pingAt === 'number' && pingAt >= gapStart) return
+  // `/callboard rest`: the person left this session alone for this gap, so no ping and no cache nudge in its slot; the cache may expire.
+  const restAt = (await $.state.get(restRef)).value
+  if (typeof restAt === 'number') return kaOnce($, sid, `rest:${restAt}`, 'keepalive-skipped', 'rest')
   // v13.5 (2026-11-03): every interactive session, not only a lead, a lane or a session with callboard on; personRow below keeps it to a person's.
   // v13.4 (2026-11-03): the Mac slept in this gap (lid closed, a dark wake): no ping; the next turn's gap pings as usual.
   if (wokeAt !== undefined && wokeAt >= gapStart) return kaOnce($, sid, `asleep:${gapStart}`, 'keepalive-skipped', 'asleep')
@@ -3351,7 +3366,7 @@ async function leadCore($: any, sid: string) {
 }
 
 // S6c: every other session's live conductor file that passes presenceCheck, with its registry name (c.laneLeadOf) or none; display only. A file that fails the
-// check gives no box; a leads folder that cannot be read is 'error' (the list is drawn flat).
+// check gives no box; a leads folder that cannot be read is 'error' (the table is drawn without the Conductor column).
 async function conductorsLive($: any, live: RegRow[], except: string): Promise<c.ConductorView[] | 'error'> {
   const d = await presenceNames($)
   if (d === 'none') return []
@@ -3386,7 +3401,7 @@ async function leadsInReach($: any, live: RegRow[], g: c.Grant): Promise<c.LiveL
 async function laneTable($: any, sid: string) {
   const base = await leadCore($, sid)
   if ('err' in base) return { err: base.err }
-  // S6c (Q6): the manager's list puts each live conductor's repos inside its Conductor box.
+  // S6c (Q6): the manager's list gains a Conductor column naming each live conductor's repos.
   const conductors = base.g.level === 'manager' ? await conductorsLive($, base.live, sid).catch(() => 'error' as const) : undefined
   const leads = await leadsInReach($, base.live, base.g).catch(() => [])
   const text = c.laneListText(base.lanes.filter((l) => c.inReach(base.g, l)), base.live.map(regEntry), await $.clock.now(), { level: base.g.level, name: base.g.name, conductors, leads })
@@ -4642,7 +4657,7 @@ async function conductorTools($: any, sid: string) {
   if (conductorDeclared.has(sid)) return
   const lane = { type: 'object', properties: { lane: { type: 'string' } }, required: ['lane'] }
   const tools: [string, string, unknown][] = [
-    ['lane_list', "List the lanes of this conductor's repos, inside one Conductor box with one box per repo and lead (the box header names the lead, whether it is live, and the repo folder name): each lane, its folder when it is outside the repo root, whether a live session carries its name or it is parked, and how many minutes it has waited on a prompt. A lead with no lanes is not listed.", { type: 'object', properties: {} }],
+    ['lane_list', "List the lanes of this conductor's repos, as one table under a Conductor header line (one row per lane with its lead, repo folder name, session and waiting columns; a lead no live session carries is marked not live): each lane, its folder when it is outside the repo root, whether a live session carries its name or it is parked, and how many minutes it has waited on a prompt. A live lead of its repos with no lanes is one row with – in the lane cells.", { type: 'object', properties: {} }],
     ['lane_compact', "Ask a session to compact. lane: the session name of a live lead of your repos (it compacts only when it asked with request_compact on-cue, and is never nudged), or a lane name (at once if it asked on-cue, otherwise the plugin nudges it).", lane],
     ['lane_terminate', "Stop a lane's session with SIGTERM, whatever it is doing. Every stop asks the person: they confirm in a dialog that names the lane, its repo, the session and the pid. Once the session has stopped, the lane's record is deleted too (the .archive/<LANE> folder and report stay; a lane a session joined keeps its record while a session carries it; a second stop removes it once the session is gone). A lane with no live session is removed directly. lane: the lane name. A lead cannot be stopped.", lane],
   ]
@@ -5113,7 +5128,7 @@ async function reserveCommand($: any, sid: string, code: c.OriginCode, op: c.Res
 }
 
 // v13.6: the usage line, for an unknown word (`on` included since v13.6).
-const USAGE = 'Use /callboard off, lead, lanes, claim, status, config, checkin, conductor, reserve, lane [NAME] or lane off.'
+const USAGE = 'Use /callboard off, lead, lanes, claim, status, config, checkin, rest, conductor, reserve, lane [NAME] or lane off.'
 
 // ---- prompt answering (ADR 0004), PR 1: the hook, the floor, the files and the switch. Off by default; nothing here lets an agent write a decision. ----
 // A PermissionRequest hook in the asking session: it refuses what no agent may answer, writes a request file and waits. Every approval would come from
@@ -6137,10 +6152,17 @@ async function promptStand($: any, p: { uid: number; root: string }, live: RegRo
   // The slots follow every live tier in reach, one that has passed the request up included: it is still there, so a tier above keeps its own slot (the manager's 10 minutes).
   const reps = pr.TIER_LEVELS.flatMap((l) => tiers.filter((t) => t.level === l).slice(0, 1))
   const opens = pr.tierWindows(q.at, reps, passed)
+  // A tier's window never moves later for a request: a lower tier that goes live after the request would push the slots above it back, and a higher tier already
+  // told to act would be refused with `window`. The earliest time computed for the tier stays (memory only; a reload starts over, the same as a fresh request).
+  const seen = windowsSeen.get(q.id) ?? {}
+  if (!windowsSeen.has(q.id) && windowsSeen.size >= WINDOWS_SEEN_MAX) windowsSeen.delete(windowsSeen.keys().next().value as string)
+  windowsSeen.set(q.id, seen)
   const windows: Record<string, number> = {}
-  for (const t of active) windows[t.sid] = opens[reps.find((r) => r.level === t.level)!.sid]
+  for (const t of active) windows[t.sid] = seen[t.sid] = Math.min(seen[t.sid] ?? Infinity, opens[reps.find((r) => r.level === t.level)!.sid])
   return { tiers, active, top: pr.topOf(active), passed, relay, windows }
 }
+const WINDOWS_SEEN_MAX = 512
+const windowsSeen = new Map<string, Record<string, number>>()
 
 // Whether a tier's window for a request has not opened. The first tier's window is the 30-second minimum itself, which the hook holds a decision for; refusing an
 // answer in it would only change what a lead sees, so only a later window refuses.
@@ -6548,7 +6570,7 @@ export const register: Register = (on) => {
     })
     const me = await $.session.id()
     try {
-      await $.command.register({ name: 'callboard', description: 'Give lead, make this session a lane, list the lanes, show status, show or change the settings, or turn lead and lane off for this session', argumentHint: 'off|lead|lanes|status|config [SETTING VALUE]|conductor [add|remove NAME]|reserve [remove] [NAME]|lane [NAME]|lane off|answering [on LANE|LEAD|all|off]|prompts' })
+      await $.command.register({ name: 'callboard', description: 'Give lead, make this session a lane, list the lanes, show status, show or change the settings, or turn lead and lane off for this session', argumentHint: 'off|lead|lanes|status|rest|config [SETTING VALUE]|conductor [add|remove NAME]|reserve [remove] [NAME]|lane [NAME]|lane off|answering [on LANE|LEAD|all|off]|prompts' })
     } catch {
       await log($, me, 'error', 'command-register')
     }
@@ -6638,6 +6660,8 @@ export const register: Register = (on) => {
     const line = typeof rawArgs === 'string' ? rawArgs.trim().replace(/[ \t]+/g, ' ') : ''
     // Prompt answering (ADR 0004): `answering` and `prompts` are read here, so core's parser keeps its own forms.
     if (line === 'prompts') return promptsCommand($)
+    // It only narrows (it stops pings), so any origin may type it, as `answering off`.
+    if (line === 'rest') return restCommand($, sid, c.originCode((e as { origin?: unknown }).origin))
     if (line === 'answering' || line.startsWith('answering ')) return answeringCommand($, sid, c.originCode((e as { origin?: unknown }).origin), pr.parseAnsweringArgs(line.slice(10)))
     const arg = c.parseCommandArgs(rawArgs)
     if (!arg) return { text: USAGE }
@@ -7592,7 +7616,11 @@ export const register: Register = (on) => {
       }
       const sid = await $.session.id()
       if (kind) turnKind.set(sid, kind)
-      else turnKind.delete(sid)
+      else {
+        turnKind.delete(sid)
+        // A real turn ends a `/callboard rest`.
+        if (typeof (await $.state.get(restRef)).value === 'number') await $.state.set(restRef, null).catch(() => undefined)
+      }
       if (kind !== 'ping') await markTurn($, sid)
     }
     const req = (await $.state.get(request)).value as Request | null | undefined

@@ -31,6 +31,8 @@ declare module 'claude-code' {
       turnEndAt: number | null
       realEndAt: number | null
       pingAt: number | null
+      // The fix pass (2026-11-11): when /callboard rest was typed; it holds until a real turn ends (see keepaliveTick).
+      restAt: number | null
       // v13.6: until when /callboard checkin pause holds this session's check-ins.
       checkinPauseUntil: number | null
     }

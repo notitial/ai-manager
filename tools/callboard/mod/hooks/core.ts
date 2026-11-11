@@ -1578,19 +1578,19 @@ export const LANES_CHANGED_NOTE = '(lanes in this repo changed since your last l
 export const lanesOfRepo = (lanes: Lane[], g: Grant): Lane[] => lanes.filter((l) => inReach(g, l))
 // lane_create's reply for a lane that names no lead (S2).
 export const LANE_NO_LEAD = ' It names no lead, so any lead of this repo can reach it.'
-// S3 (v13.6, 2026-11-03), redrawn v14.1 (2026-11-04): markdown boxes made with blockquotes, one per repo and per lead a lane names. What would repeat on every row
-// (the lead, whether it is live, the repo) is written once in the box's header; a lane that names no lead goes under `Any lead`. A lead's view is its own boxes at
-// the top level; a manager's view wraps them all in one box headed with its name (always live). The Folder column appears only in a box with a lane outside the
-// repo root, relative to the repo (`.` for the root). waiting: minutes since the lane's own live row went waiting on a prompt (its statusUpdatedAt; `?` when
-// that is missing or ahead), `–` when it waits on nothing. One text for lane_list and /callboard lanes.
+// S3 (v13.6, 2026-11-03), redrawn v14.1, then as one table (the fix pass, 2026-11-11): blockquote boxes rendered as stray bars and differed between the CLI and
+// VS Code. The text is a plain header line (`**Manager NAME** · live`, `**Conductor NAME** · live` or `**Lead NAME** · live`), a blank line, then ONE table with
+// the columns Lead, Repo, Lane, Session, Waiting. The lead and the repo are written on the first row of their group only (the cells after are blank); a lane that
+// names no lead goes under `Any lead`, a lead no live session carries is `NAME (not live)`, and a live lead with no lanes is one row with `–` in the lane cells.
+// A Folder column (after Lane, relative to the repo, `.` for the root) appears only when a lane is outside its repo root. waiting: minutes since the lane's own
+// live row went waiting on a prompt (its statusUpdatedAt; `?` when that is missing or ahead), `–` when it waits on nothing. One text for lane_list and /callboard lanes.
 const mdEscape = (s: string): string => s.replace(/[\\|*_`><[\]]/g, '\\$&')
-// v14.1 (2026-11-04, review): the box header named the repo by its full path. v15.3 (2026-11-06): it names the repo by its folder name only (folderName), as a
-// path made the header long; a lane's own Folder column is unchanged.
-// v15 (2026-11-05): a conductor's view wraps its boxes in one `**Conductor NAME** · live` box, as the manager's. S6c (Q6): the manager's view puts
-// each live conductor's repos inside a Conductor box (conductors, sorted by name) in the Manager box, then the repos no conductor lists; a repo two conductors
-// list goes under the first, its lead box headers saying `· also NAME2`. conductors 'error': the conductors could not be read, so the list is drawn flat with a note.
+// v15.3 (2026-11-06): the Repo cell names the repo by its folder name only (folderName), as a path made the row long; a lane's own Folder column is relative.
+// v15 (2026-11-05): a conductor's view has its own header. S6c (Q6): the manager's view, when a live conductor lists repos, gains a leading Conductor column (conductors
+// sorted by name, then the repos no conductor lists, with `–`); a repo two conductors list goes under the first, its Repo cell saying `(also NAME2)`. conductors
+// 'error': the conductors could not be read, so the table is drawn without that column and a note follows it.
 // A live lead in reach (its presence file passed every check; the registry gives its name), with the repo it leads. The manager's and a conductor's view draw
-// one for each lead that no lane box already names, so a lead with no lanes is seen: `**Lead NAME** · live · repo` and `no lanes`. A lead's own view ignores them.
+// one for each lead that no lane group already names, so a lead with no lanes is seen. A lead's own view ignores them.
 export type ConductorView = { name?: string; repos: string[] }
 export type LiveLead = { name: string; repo: string }
 export function laneListText(lanes: Lane[], entries: RegEntry[], now: number, view: { level?: 'lead' | 'manager' | 'conductor'; name?: string; conductors?: ConductorView[] | 'error'; leads?: LiveLead[] } = {}): string {
@@ -1609,54 +1609,59 @@ export function laneListText(lanes: Lane[], entries: RegEntry[], now: number, vi
     const rel = within(repo, l.folder) ? l.folder.slice(repo.endsWith('/') ? repo.length : repo.length + 1) : folderName(l.folder)
     return mdEscape(rel.replace(/[\u0000-\u001f\u007f]/g, '') || '.')
   }
-  const quote = (ls: string[]): string[] => ls.map((x) => (x === '' ? '>' : `> ${x}`))
-  const boxes: string[][] = []
-  const boxRepo: string[] = []
+  const withFolder = lanes.some((l) => l.folder !== (l.repo ?? ''))
+  // One group per repo and lead the lanes name (no lanes: a live lead that none names).
+  type Group = { repo: string; lead: string; lanes: Lane[] }
+  const groups: Group[] = []
   for (const repo of new Set([...lanes.map((l) => l.repo ?? ''), ...liveLeads.map((x) => x.repo)])) {
     const here = lanes.filter((l) => (l.repo ?? '') === repo)
-    const where = mdEscape(folderName(repo))
-    for (const lead of new Set(here.map((l) => l.leadName ?? ''))) {
-      const mine = here.filter((l) => (l.leadName ?? '') === lead)
-      const withFolder = mine.some((l) => l.folder !== repo)
-      const row = (l: Lane): string => {
-        const session = names.includes(l.name) ? 'live' : l.parked !== undefined ? 'parked' : 'none'
-        return `| ${l.name} | ${withFolder ? `${folderOf(l)} | ` : ''}${session} | ${waiting(l)} |`
-      }
-      boxRepo.push(repo)
-      boxes.push([
-        lead === '' ? `**Any lead** · ${where}` : `**Lead ${lead}** · ${names.includes(lead) ? 'live' : 'not live'} · ${where}`,
-        '',
-        withFolder ? '| Lane | Folder | Session | Waiting |' : '| Lane | Session | Waiting |',
-        withFolder ? '|---|---|---|---|' : '|---|---|---|',
-        ...mine.map(row),
-      ])
-    }
+    for (const lead of new Set(here.map((l) => l.leadName ?? ''))) groups.push({ repo, lead, lanes: here.filter((l) => (l.leadName ?? '') === lead) })
     const boxed = new Set(here.map((l) => l.leadName ?? ''))
-    for (const lead of [...new Set(liveLeads.filter((x) => x.repo === repo && !boxed.has(x.name)).map((x) => x.name))].sort()) {
-      boxRepo.push(repo)
-      boxes.push([`**Lead ${lead}** · live · ${where}`, '', 'no lanes'])
-    }
+    for (const lead of [...new Set(liveLeads.filter((x) => x.repo === repo && !boxed.has(x.name)).map((x) => x.name))].sort()) groups.push({ repo, lead, lanes: [] })
   }
-  const join = (bs: string[][]): string[] => bs.flatMap((b, i) => [...(i > 0 ? [''] : []), ...quote(b)])
-  let top = join(boxes)
-  if (view.level === 'manager' && Array.isArray(view.conductors) && view.conductors.length > 0) {
-    const conds = [...view.conductors].sort((a, b) => ((a.name ?? '') < (b.name ?? '') ? -1 : (a.name ?? '') > (b.name ?? '') ? 1 : 0))
-    const owner = new Map<string, number>()
-    conds.forEach((cd, i) => cd.repos.forEach((r) => (owner.has(r) ? undefined : owner.set(r, i))))
-    const label = (cd: ConductorView) => (cd.name ? mdEscape(cd.name) : 'a conductor')
-    const withAlso = (b: string[], repo: string, i: number): string[] => {
-      const also = conds.filter((cd, j) => j !== i && cd.repos.includes(repo)).map(label)
-      return also.length === 0 ? b : [`${b[0]} · also ${also.join(', ')}`, ...b.slice(1)]
-    }
-    const condBoxes = conds.map((cd, i) => {
-      const mine = boxes.flatMap((b, k) => (owner.get(boxRepo[k]) === i ? [withAlso(b, boxRepo[k], i)] : []))
-      return [`**Conductor${cd.name ? ` ${mdEscape(cd.name)}` : ''}** · live`, '', ...(mine.length === 0 ? ['no lanes in its repos'] : join(mine))]
+  const conds = view.level === 'manager' && Array.isArray(view.conductors) && view.conductors.length > 0
+    ? [...view.conductors].sort((a, b) => ((a.name ?? '') < (b.name ?? '') ? -1 : (a.name ?? '') > (b.name ?? '') ? 1 : 0))
+    : []
+  const owner = new Map<string, number>()
+  conds.forEach((cd, i) => cd.repos.forEach((r) => (owner.has(r) ? undefined : owner.set(r, i))))
+  const label = (cd: ConductorView) => (cd.name ? mdEscape(cd.name) : 'a conductor')
+  const dash = (n: number): string[] => Array.from({ length: n }, () => '–')
+  // The rows of one group. also: the other conductors that list its repo.
+  const groupRows = (g: Group, also: string): string[][] => {
+    const repo = `${mdEscape(folderName(g.repo))}${also}`
+    const lead = g.lead === '' ? 'Any lead' : `${g.lead}${g.lanes.length === 0 || names.includes(g.lead) ? '' : ' (not live)'}`
+    if (g.lanes.length === 0) return [[lead, repo, ...dash(withFolder ? 4 : 3)]]
+    return g.lanes.map((l, i) => [
+      i === 0 ? lead : '',
+      i === 0 ? repo : '',
+      l.name,
+      ...(withFolder ? [folderOf(l)] : []),
+      names.includes(l.name) ? 'live' : l.parked !== undefined ? 'parked' : 'none',
+      waiting(l),
+    ])
+  }
+  const rows: string[][] = []
+  const withCond = (rs: string[][], cond: string): string[][] => rs.map((r, i) => [i === 0 ? cond : '', ...r])
+  if (conds.length > 0) {
+    conds.forEach((cd, i) => {
+      const mine = groups.filter((g) => owner.get(g.repo) === i).flatMap((g) => groupRows(g, conds.some((o, j) => j !== i && o.repos.includes(g.repo)) ? ` (also ${conds.filter((o, j) => j !== i && o.repos.includes(g.repo)).map(label).join(', ')})` : ''))
+      rows.push(...withCond(mine.length === 0 ? [['–', '–', ...dash(withFolder ? 4 : 3)]] : mine, label(cd)))
     })
-    top = join([...condBoxes, ...boxes.filter((_, k) => !owner.has(boxRepo[k]))])
+    const rest = groups.filter((g) => !owner.has(g.repo)).flatMap((g) => groupRows(g, ''))
+    if (rest.length > 0) rows.push(...withCond(rest, '–'))
+  } else {
+    rows.push(...groups.flatMap((g) => groupRows(g, '')))
   }
-  if (view.level === 'manager' && view.conductors === 'error') top = [...top, '', '(conductors could not be read)']
-  if (view.level !== 'manager' && view.level !== 'conductor') return top.join('\n')
-  return quote([`**${view.level === 'manager' ? 'Manager' : 'Conductor'}${view.name ? ` ${mdEscape(view.name)}` : ''}** · live`, '', ...top]).join('\n')
+  const head = [...(conds.length > 0 ? ['Conductor'] : []), 'Lead', 'Repo', 'Lane', ...(withFolder ? ['Folder'] : []), 'Session', 'Waiting']
+  const level = view.level === 'manager' ? 'Manager' : view.level === 'conductor' ? 'Conductor' : 'Lead'
+  return [
+    `**${level}${view.name ? ` ${mdEscape(view.name)}` : ''}** · live`,
+    '',
+    `| ${head.join(' | ')} |`,
+    `|${head.map(() => '---').join('|')}|`,
+    ...rows.map((r) => `| ${r.join(' | ')} |`),
+    ...(view.level === 'manager' && view.conductors === 'error' ? ['', '(conductors could not be read)'] : []),
+  ].join('\n')
 }
 
 // ---- v13.6 (live 2026-11-03): lead check-ins ----
@@ -1752,6 +1757,10 @@ export function parseCheckinArgs(rest: string): CheckinOp {
   const ms = Number(m[1]) * (m[2] === 'h' ? HOUR_MS : 60_000)
   return ms <= CHECKIN_PAUSE_MAX_MS ? { pauseMs: ms } : 'bad'
 }
+// `/callboard rest` (the fix pass, 2026-11-11): the person is leaving this session alone for hours. Per session and one-time: the keepalive sends no more pings (and no
+// cache nudge in their place) in this idle gap, so the prompt cache expires; the next real turn there ends it. `/callboard config keepalive off` is the Mac-wide switch.
+export const REST_TEXT = 'Rest set for this session: no more keepalive pings in this idle gap, so its prompt cache will expire. The next real turn here turns pings back on. /callboard config keepalive off stops them on this whole Mac.'
+export const REST_FAILED = 'Rest not set: the session state could not be written. Nothing changed.'
 export const CHECKIN_USAGE = 'Use /callboard checkin pause <N>m or <N>h (1 minute to 24 hours), or /callboard checkin on.'
 export const CHECKIN_NOT_PERSON = 'Only you can pause check-ins: type the command yourself.'
 export const CHECKIN_ON_TEXT = 'Check-ins are on again in this session.'
@@ -2118,7 +2127,7 @@ export const conductorBriefing = (name: string, conductorRepo: string, pins: str
   const who = NAME_RE.test(name) ? ` (\`${name}\`)` : ''
   const repos = pins.length === 0 ? 'none in reach now' : pins.map((p) => `\`${briefingFolder(p)}\``).join(', ')
   return `**Callboard conductor.** You are a conductor${who} in \`${briefingFolder(conductorRepo)}\`: a bigger lead, over the leads of these repos: ${repos}. Each repo's work belongs to its leads (one lead per ticket) and their lanes; you work with the leads.
-- \`lane_list\`: the lanes of your repos, grouped by repo and lead. A lead with no lanes is not listed; reach it by message.
+- \`lane_list\`: the lanes of your repos, grouped by repo and lead. A live lead with no lanes is one row with – in the lane cells; reach it by message.
 - \`lane_compact\` with a live lead's session name compacts that lead, only when it asked with \`request_compact\` on-cue.
 - \`lane_terminate\` force stops a lane and, once its session has stopped, deletes the lane's record (a lane a session joined keeps it while a session carries it; a second stop removes it once the session is gone); the person confirms every stop in a dialog. Use it only when they ask, or when a lane is stuck and they agree. You cannot stop a lead: send it a clear message, and tell the person.
 - Reach leads by message (SendMessage to the lead's name). Give each request a token \`[c:<8 hex>]\`, keep open tokens in your notes, and act only on replies that quote one you issued.
