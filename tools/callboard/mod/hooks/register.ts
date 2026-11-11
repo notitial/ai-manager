@@ -2544,6 +2544,11 @@ async function leadNudge($: any, sid: string, now: number, answer: Answer, refus
   await log($, sid, 'nudge-due', 'lead')
 }
 
+async function orderSpend($: any, sid: string) {
+  await $.state.set(orderedAtRef, null).catch(() => undefined)
+  await $.store.delete(`${c.ORDER_PREFIX}${sid}`).catch(() => log($, sid, 'error', 'order-mark').catch(() => undefined))
+}
+
 // The lane's side of an order: the stamp that lets one on-cue request_compact pass the floor and count as cued (c.ORDER_MS), kept from the first order of a
 // stretch so a repeated lane_compact cannot stretch the deadline, and a copy in $.store under the lane's session id that the orderer reads at the deadline.
 async function orderStamp($: any, sid: string, now: number) {
@@ -2705,6 +2710,8 @@ async function doCompact($: any, sid: string, req: Request, fromCue: boolean, an
     return log($, sid, 'dropped', 'cancelled-before-compact')
   }
   await $.state.set(request, { ...req, phase: 'compacting', compactingMs: await $.clock.now() })
+  // v16.1: a compaction that begins spends the order (whatever request began it): the orderer's deadline finds no stamp. A request that ends without one leaves it.
+  await orderSpend($, sid)
   // v13.1: the mark that survives a restart (c.CMP_PREFIX); set after `compacting`, so a tick in between cannot clear it as left behind.
   cmpMarked.add(sid)
   const markAt = await $.clock.now()
@@ -3568,7 +3575,8 @@ async function checkinTick($: any, sid: string, submitsAtStart: number) {
 // ---- v16.1 (2026-11-11): the deadline of an order ----
 // What each orderer (lead, conductor or manager) ordered: lane session id to { lane name, time of the first order }, in module memory (lost with the session or a reload,
 // then no notice). Once a minute, an order older than c.ORDER_MS is looked up in $.store: the lane's own stamp (c.ORDER_PREFIX + its session id) is still there only if
-// it never made the on-cue request, so only then the orderer gets one fixed notice, and the stamp goes. Nothing is stopped: the notice sends the orderer to the person.
+// no compaction began (orderSpend), so only then, and only while the lane's session is live, the orderer gets one fixed notice, and the stamp goes. Nothing is
+// stopped: the notice sends the orderer to the person.
 const orders = new Map<string, Map<string, { lane: string; at: number }>>()
 const orderChecked = new Map<string, number>()
 const orderBusy = new Set<string>()
@@ -3585,14 +3593,21 @@ async function orderTick($: any, sid: string, submitsAtStart: number) {
   if (!mine) return
   const now = await $.clock.now()
   const ep = epochOf(sid)
+  // A lane whose session is gone (stopped, retired) cannot comply: no notice. A registry that cannot be read is not "gone".
+  const live = await registryEntries($)
   const owed: c.AttentionItem[] = []
   for (const [toSid, o] of mine) {
-    if (now < o.at || now - o.at > c.ORDER_STALE_MS) mine.delete(toSid)
+    if (now < o.at || now - o.at > c.ORDER_STALE_MS || (live && !live.some((r) => r.j.sessionId === toSid))) mine.delete(toSid)
     else if (now - o.at >= c.ORDER_MS) {
       const stamp = await $.store.get(`${c.ORDER_PREFIX}${toSid}`).then((v: unknown) => v, () => 'error' as const)
       if (stamp === 'error') continue
-      if (typeof (stamp as { at?: unknown } | null | undefined)?.at === 'number') owed.push({ lane: o.lane, code: 'ordered', since: o.at })
-      else mine.delete(toSid)
+      const at = (stamp as { at?: unknown } | null | undefined)?.at
+      if (typeof at !== 'number') mine.delete(toSid)
+      else {
+        // A newer order of the lane (the orderer ordered again) restarts the 15 minutes.
+        if (at > o.at) o.at = at
+        if (now - o.at >= c.ORDER_MS) owed.push({ lane: o.lane, code: 'ordered', since: o.at })
+      }
     }
   }
   if (owed.length === 0) return
@@ -7046,11 +7061,6 @@ export const register: Register = (on) => {
       ...(gate === 'lead' ? { viaLead: true } : {}),
       ...(ordered ? { ordered: true } : {}),
     })
-    // The order is spent: the orderer's deadline finds no stamp.
-    if (ordered) {
-      await $.state.set(orderedAtRef, null)
-      await $.store.delete(`${c.ORDER_PREFIX}${sid}`).catch(() => log($, sid, 'error', 'order-mark').catch(() => undefined))
-    }
     await log($, sid, 'requested', ordered ? 'on-cue-ordered' : gate === 'nudge' ? `${v.req.mode}-nudged` : gate === 'self' ? `${v.req.mode}-self` : gate === 'lead' ? `${v.req.mode}-lead` : v.req.mode)
     return { result: 'queued' } as never
   }).catch(() => ({ deny: 'callboard: request_compact failed closed.' }))

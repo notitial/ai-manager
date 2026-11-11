@@ -7182,20 +7182,23 @@ test('an order (lane_compact, no request) lifts the floor for one on-cue request
   expect(nudges()).toEqual([nudgeText('lead')])
   expect(store.get(`ord:${SID}`)).toEqual({ at: expect.any(Number) })
   expect(JSON.stringify(await $.tool.call(GOOD as any))).toContain('queued')
-  expect(store.has(`ord:${SID}`)).toBe(false)
+  // The request does not spend the order; the compaction that begins does.
+  expect(store.has(`ord:${SID}`)).toBe(true)
   await $.turn.complete(TURN as any)
   await ticks(3)
   expect(seen.compacted).toBe(true)
+  expect(store.has(`ord:${SID}`)).toBe(false)
   expect(logged(stdins)).toContain('requested:on-cue-ordered')
   expect(logged(stdins).filter((x) => x === 'refused:context-floor').length).toBe(1)
 })
 
-test('an order is not a standing lift: a request made after the 15 minutes, or a second one after the order was spent, meets the floor again', async ($, on) => {
+test('an order is not a standing lift: a request made after the 15 minutes meets the floor again, and a request in mode now never gets the lift', async ($, on) => {
   await renameThroughTick($, on, [], 1)
   tokensNow = 50_000
   cueFile = { ino: 97, text: 'compact\n', present: true }
   await tickTwice()
   expect(resultFiles.get(RESULT)).toBe('compact held nudged 97\n')
+  expect(JSON.stringify(await $.tool.call({ ...GOOD, mode: 'now' } as any))).toContain('Compaction not allowed: context-floor')
   await clock!.advance(16 * 60_000)
   expect(JSON.stringify(await $.tool.call(GOOD as any))).toContain('Compaction not allowed: context-floor')
 })
@@ -7234,12 +7237,33 @@ test('the deadline of an order: 15 minutes on, a lane that never asked (its stam
   expect(orderNotices().length).toBe(1)
 })
 
-test('the deadline of an order: a lane that asked (no stamp left) costs its orderer no notice', async ($, on) => {
+test('the deadline of an order: a lane that compacted (its stamp spent) costs its orderer no notice', async ($, on) => {
   await ckLead($, on)
   autoAnswer = 'held nudged'
   await $.tool.call(leadCall('compact', { lane: 'API' }))
+  store.set(`ord:${OTHER}`, { at: nowMs })
+  await idleFor(5 * MIN)
+  store.delete(`ord:${OTHER}`)
   await idleFor(20 * MIN)
   expect(orderNotices()).toEqual([])
+})
+
+test('the deadline of an order: a newer order of the lane restarts the 15 minutes, and a lane whose session is gone is not reported', async ($, on) => {
+  await ckLead($, on)
+  autoAnswer = 'held nudged'
+  await $.tool.call(leadCall('compact', { lane: 'API' }))
+  store.set(`ord:${OTHER}`, { at: nowMs })
+  await idleFor(10 * MIN)
+  store.set(`ord:${OTHER}`, { at: nowMs })
+  await idleFor(8 * MIN)
+  expect(orderNotices()).toEqual([])
+  await idleFor(8 * MIN)
+  expect(orderNotices()).toEqual([orderText(['API'])])
+  await $.tool.call(leadCall('compact', { lane: 'API' }))
+  store.set(`ord:${OTHER}`, { at: nowMs })
+  sessions = leadSelfReg()
+  await idleFor(20 * MIN)
+  expect(orderNotices().length).toBe(1)
 })
 
 test('a person session is nudged at 300k tokens, not at 299k; the turn end records it and the tick sends it', async ($, on) => {

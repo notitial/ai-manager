@@ -364,7 +364,7 @@ export function compactAllowed(c: Counters, tokens: number, now: number, ordered
 // The order (v16.1, 2026-11-11). A lead, conductor or manager orders a lane to compact with lane_compact on a lane that has no request of its own. The lane's mod
 // stamps the order (orderedAt in its state, and ORDER_PREFIX + its session id in $.store so the orderer can read it), sends the order's nudge text, and for ORDER_MS
 // takes an `on-cue` request_compact as already cued: it passes the context floor and compacts at the end of the turn, with no second cue. An order never lifts the
-// floor for any other request. ORDER_MS is also the deadline: the orderer is told once if the stamp is still there then (the lane never asked).
+// floor for any other request. A compaction that begins spends it. ORDER_MS is also the deadline: the orderer is told once if the stamp is still there then.
 export const ORDER_MS = 15 * 60_000
 export const ORDER_PREFIX = 'ord:'
 export const ORDER_STALE_MS = 24 * HOUR_MS
