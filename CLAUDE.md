@@ -18,9 +18,13 @@ pass/fail table (`--quick` skips the slow `callboard` suite, `NAME…` runs only
 `usage-watcher`, `usage-watcher-install`, `session-peers`; keep its list in step with this one.
 
 - `tools/callboard/` — `bash tools/callboard/test.sh` after changing anything under it. Needs node 22.18 or later
-  and the `claude` CLI (`claude plugin validate`, `claude plugin test`). CI (`.github/workflows/ci.yml`) skips
-  `claude plugin test mod` (it sets `CALLBOARD_SKIP_MOD_TESTS=1`; those tests are timing-sensitive on its runner), so
-  run the script without that variable before any PR that touches `tools/callboard/mod`.
+  and the `claude` CLI (`claude plugin validate`, `claude plugin test`). CI (`.github/workflows/ci.yml`) runs
+  `claude plugin test mod` too, in full. `CALLBOARD_SKIP_MOD_TESTS=1` skips it for a quick local run (it is the slow
+  part, about 2 minutes); run the script without it before any PR that touches `tools/callboard/mod`. The mod tests
+  drive a fake clock through thousands of 2 s ticks: a test that simulates 30 minutes or more is declared with
+  `longTest` in `mod/test/mod.cases.ts`, which gives it a 60 s limit in place of the kit's 5 s, so a slow runner does
+  not fail it. The kit kills a test file's run after 10 minutes, so the tests are split over four files
+  (`mod-N.test.ts`) that it runs side by side; see the top of `mod.cases.ts`.
 - `tools/usage-watcher/` — `/usr/bin/python3 -I tools/usage-watcher/test_watch.py` after changing `watch.py`;
   `bash tools/usage-watcher/test-install.sh` after changing `install.sh`.
 - `tools/session-peers/` — `bash tools/session-peers/test-peers.sh` after changing `peers.sh` (needs jq and python3).
