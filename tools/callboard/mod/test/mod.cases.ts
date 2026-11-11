@@ -409,12 +409,18 @@ type Trace = { log: string[]; failCounters: boolean; setHook?: (key: string) => 
 // Each test's engine gets a generation. A tick of an earlier test's module that is still running when the next test starts would otherwise act on
 // this test's mocks (its cue file, its result and store files): its processes all fail instead.
 let engineGen = 0
+// A host call a test never answers (a hook that returns a promise that never settles) is dropped by the kit when its test ends, and a dropped state write
+// then lands in the kit's own state, at whatever moment a later test is running, and binds that test's session to the lane the earlier test attached. So a
+// call that hangs for good waits on this list instead, and the next engine releases it: the write then finds its engine over and is refused.
+const hangs: (() => void)[] = []
+const hangForever = () => new Promise<void>((r) => hangs.push(r))
 // Host calls the mod has made into the mocks so far: the clock helpers wait until none arrives for a whole turn of the event loop, so a tick that is still
 // working through its chain of reads and processes has finished when an advance returns. The kit's own wait for the mod to settle gives up after 500 ms of
 // wall time, which a slow runner can reach in the middle of a tick.
 let hostCalls = 0
 function engine(on0: any, argvSeen: string[][], stdins: string[] = [], clk = false, trace?: Trace) {
   const on = (name: string, h: any) => on0(name, (...args: any[]) => (hostCalls++, h(...args)))
+  for (const release of hangs.splice(0)) release()
   const gen = ++engineGen
   seen.compacted = false
   turnsNow = 0
@@ -692,6 +698,7 @@ function engine(on0: any, argvSeen: string[][], stdins: string[] = [], clk = fal
     on('state.get', (_: any, e: any) => ({ value: st.get(e.key) ?? { value: undefined, version: 0 } }))
     on('state.set', async (_: any, e: any) => {
       await trace.setHook?.(e.key)
+      if (over()) return { value: { isSet: false } }
       trace.log.push(`${e.key}${e.value === null ? ':null' : ''}`)
       if (e.key === 'counters' && trace.failCounters) return { value: { isSet: false } }
       if (trace.failKeys?.has(e.key)) return { value: { isSet: false } }
@@ -7030,7 +7037,7 @@ test('a restore binds the record as it is after its question: a record rewritten
 test('an attach whose binding write never returns gives up after the limit, unbinds, and frees the mark', async ($, on) => {
   const stdins: string[] = []
   let hung = false
-  const trace: Trace = { log: [], failCounters: false, setHook: (key) => { if (key === 'lane' && !hung) { hung = true; return new Promise<void>(() => undefined) } } }
+  const trace: Trace = { log: [], failCounters: false, setHook: (key) => { if (key === 'lane' && !hung) { hung = true; return hangForever() } } }
   await attacher($, on, stdins, { clock: true, trace })
   const p = doLane($, 'lane API')
   await pause()
