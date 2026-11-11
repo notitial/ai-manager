@@ -4008,11 +4008,13 @@ async function detach($: any, sid: string, b: Bound): Promise<{ whole: boolean; 
   sidSynced.delete(sid)
   laneBrief.delete(sid)
   laneBriefed.delete(sid)
+  laneQSeen.delete(sid)
   const folder = b.adopted && b.rec === undefined ? ((await sessionRoot($).catch(() => undefined)) as string | undefined) : undefined
   await $.state.set(lane, null)
   // Again after the write: facts kept while it was in flight go too.
   laneBrief.delete(sid)
   laneBriefed.delete(sid)
+  laneQSeen.delete(sid)
   try {
     await $.store.delete(`${c.HINT_PREFIX}${sid}`)
   } catch {
@@ -7791,6 +7793,7 @@ export const register: Register = (on) => {
     const sid = await $.session.id()
     laneBrief.delete(sid)
     laneBriefed.delete(sid)
+    laneQSeen.delete(sid)
     midDelivered.delete(sid)
     promptMidSent.delete(sid)
     promptMidRetold.delete(sid)
