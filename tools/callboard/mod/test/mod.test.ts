@@ -15198,6 +15198,26 @@ test('prompts: a notice told mid-turn for a request that closed before the turn 
   expect(promptNotices()).toBe(0)
 })
 
+for (const [what, withCond, text] of [['passed up', true, 'Passed up'], ['relayed', false, 'header exactly']] as const) {
+  test(`prompts: a request the tier ${what} after its mid-turn notice is not told again when the turn ends`, async ($, on) => {
+    postBeneath(on)
+    await tier($, on, [], { clock: true })
+    if (withCond) addCondT()
+    swapLead('busy')
+    if (withCond) sessions = { ...sessions, ...extraRows }
+    putQ()
+    await ticks(2)
+    expect(await midCtx($)).toEqual([prm.PROMPT_NOTICE_TEXT])
+    // Presence files carry a fresh mtime while the fake clock jumps (the live mod rewrites its own every tick).
+    for (const f of leadFiles.values()) f.mtimeSec = Math.floor(nowMs / 1000)
+    expect(said(await $.tool.call(pcall('prompt_escalate', { id: TID, why: 'x' })))).toContain(text)
+    await $.turn.complete(TURN as any)
+    swapLead('idle')
+    await ticks(3)
+    expect(promptNotices()).toBe(0)
+  })
+}
+
 test('prompts: no notice is told mid-turn while the session has a compaction request of its own', async ($, on) => {
   postBeneath(on)
   await tier($, on, [], { clock: true })
@@ -15971,6 +15991,24 @@ test('prompts PR3 hook: a dropped decision is taken away, so the request is open
   expect(rowKinds().filter((k) => k.startsWith('dropped'))).toEqual(['dropped relay', 'dropped shape'])
 })
 
+test('prompts PR3 hook: a decision whose author could not be looked up (a ps that failed) is held, not dropped: it lands at the next poll that can; a clear no is still dropped at once', async ($, on) => {
+  await answerer($, on, [])
+  const r = await runRequest($, [at(4000, () => { handDecision(readReq()); psFail.add('4242') }), at(10_000, () => { expect(pfs.has(`${PDIR}/${readReq().id}.decision.json`)).toBe(true); expect(rowKinds().some((k) => k.startsWith('dropped'))).toBe(false); psFail.clear() })])
+  expect(r).toEqual({ decision: { behavior: 'allow' } })
+  expect(rowKinds()).toEqual(['requested', 'answered allow', 'returned allow'])
+})
+
+test('prompts PR3 hook: a person\'s relay decision is held while the relaying tier\'s presence cannot be read, then lands', async ($, on) => {
+  await answerer($, on, [])
+  const r = await runRequest($, [
+    at(4000, () => { putRelay(readReq()); putFileAt(`${readReq().id}.asked`) }),
+    at(12_000, () => { handDecision(readReq(), { decision: 'allow', via: 'person', why: 'the person answered Yes via the lead LEAD' }, { via: 'person' }); psFail.add('4242') }),
+    at(30_000, () => { expect(pfs.has(`${PDIR}/${readReq().id}.decision.json`)).toBe(true); expect(rowKinds().some((k) => k.startsWith('dropped'))).toBe(false); psFail.clear() }),
+  ])
+  expect(r).toEqual({ decision: { behavior: 'allow' } })
+  expect(rowKinds().some((k) => k.startsWith('dropped'))).toBe(false)
+})
+
 test('prompts PR3 hook: a relay that is never asked is lost after 2 minutes (relay-lost not-asked, the relay file gone); the wait goes on and ends at the 20-minute deny', async ($, on) => {
   await answerer($, on, [])
   addCondT()
@@ -16106,7 +16144,7 @@ test('prompts PR3 tools: a relay refuses when a decision is already there (decid
   expect(pfs.has(`${LDIR()}/${TID2}.decision.json`)).toBe(false)
 })
 
-test('prompts PR3 tools: an answer that lands while a relay is written is taken back (with-person); a relay that lands while a decision is written is taken back (decided)', async ($, on) => {
+test('prompts PR3 tools: an answer that lands while a relay is written is taken back (with-person); a decision that lands while a relay is written is the one taken back, the relay stands (one winner)', async ($, on) => {
   await tier($, on)
   putQ()
   let n = 0
@@ -16118,12 +16156,14 @@ test('prompts PR3 tools: an answer that lands while a relay is written is taken 
   expect(said(await $.tool.call(answerCall()))).toContain(refusal('with-person'))
   expect(decFile()).toBeUndefined()
   pfs.delete(`${LDIR()}/${TID}.relay.json`)
+  // Both sides link before either looks (the relay side sees the decision, the answer side the relay): one winner, the relay. The relay side removes only a decision.
   pfsFails = (a) => {
     if (a[0] === '/bin/ln' && String(a[a.length - 1]).endsWith('.relay.json')) pfs.set(`${LDIR()}/${TID}.decision.json`, { text: '{}', mtimeSec: T0 / 1000 })
     return false
   }
-  expect(said(await $.tool.call(pcall('prompt_escalate', { id: TID, why: 'x' })))).toContain(refusal('decided'))
-  expect(pfs.has(`${LDIR()}/${TID}.relay.json`)).toBe(false)
+  expect(said(await $.tool.call(pcall('prompt_escalate', { id: TID, why: 'x' })))).toContain('You are the top tier here')
+  expect(pfs.has(`${LDIR()}/${TID}.relay.json`)).toBe(true)
+  expect(decFile()).toBeUndefined()
 })
 
 // A conductor as the caller: the lane API in PIN, the lead LEAD live or not.
@@ -16507,6 +16547,19 @@ test('prompts PR3 asked mark: a turn that ends with its relay questions still op
   expect(pfs.has(`${LDIR()}/${TID2}.left`)).toBe(true)
   expect(ledgerRows().filter((x) => x.kind === 'relay-left').map((x) => x.id).sort()).toEqual([TID, TID2].sort())
   expect(pfs.has(`${PROMPTS_DIR}/asking/${SID}`)).toBe(false)
+})
+
+test('prompts PR3 asked mark: an earlier relay question dismissed in a turn whose later question was answered is still left at the turn end', async ($, on) => {
+  await relayFixture($, on, [TID, TID2])
+  await $.classic.PermissionRequest({ tool_name: 'AskUserQuestion', tool_input: { questions: [relayQ(TID)] } } as any)
+  const q2 = relayQ(TID2)
+  await $.classic.PermissionRequest({ tool_name: 'AskUserQuestion', tool_input: { questions: [q2] } } as any)
+  await $.classic.PostToolUse(askPost([q2], { [q2.question]: 'Yes' }))
+  expect(pfs.has(`${PROMPTS_DIR}/asking/${SID}`)).toBe(false)
+  await $.turn.complete(TURN as any)
+  expect(pfs.has(`${LDIR()}/${TID}.left`)).toBe(true)
+  expect(pfs.has(`${LDIR()}/${TID2}.left`)).toBe(false)
+  expect(ledgerRows().filter((x) => x.kind === 'relay-left').map((x) => x.id)).toEqual([TID])
 })
 
 test('prompts PR3 asked mark: a turn that ends after a reload (the mod has no memory of marking) still removes the asking file and leaves the asked relay', async ($, on) => {

@@ -1209,7 +1209,14 @@ async function presenceFileOk($: any, p: { uid: number; root: string }, live: Re
 // v14 (2026-11-04, review c1, L2): the same checks, saying how a file failed them: 'no' for a clear no (gone, not a plain file of ours, stale, another level, no
 // registry row, a dead pid, another start time, not claude), 'error' for a check that could not be made (a read that failed or kept changing, a ps that failed).
 // A trust check (presenceFileOk) takes both as no; manager-exists and a manager's stop count 'error' as a file that holds (fail closed).
+// Presence checks that could not be made, counted: an apply that spans one reads the count before and after its lookups (promptApply).
+let presenceErrors = 0
 async function presenceCheck($: any, p: { uid: number; root: string }, live: RegRow[], sid: string, want: (f: c.PresenceFile) => boolean): Promise<c.PresenceFile | 'no' | 'error'> {
+  const r = await presenceRead($, p, live, sid, want)
+  if (r === 'error') presenceErrors++
+  return r
+}
+async function presenceRead($: any, p: { uid: number; root: string }, live: RegRow[], sid: string, want: (f: c.PresenceFile) => boolean): Promise<c.PresenceFile | 'no' | 'error'> {
   const path = `${p.root}/leads/${sid}.json`
   // A lead rewrites its file by renaming a new one into place: a read that met the swap gets one more try.
   let f = await readSmallR($, path, p.uid, c.LEAD_FILE_MAX)
@@ -5452,6 +5459,7 @@ async function promptRelayAsked($: any, sid: string, shorts: string[]): Promise<
   if (mine.length === 0) return
   for (const r of mine) await promptLinkOnce($, `${r.dir}/${r.relay.id}.asked`, '{}')
   askingSids.add(sid)
+  relayAskedTurn.add(sid)
   await run($, [MKDIR, '-p', '-m', '700', `${p.root}/prompts/asking`]).catch(() => undefined)
   if (!(await dirOk($, `${p.root}/prompts/asking`, p.uid))) return
   await promptPut($, `${p.root}/prompts/asking/${sid}`, '{}')
@@ -5474,6 +5482,9 @@ async function promptRelayTurnEnd($: any, sid: string): Promise<void> {
 // The tiers this mod marked asking. At a turn's end the file is removed when the memory holds the mark or a stat finds the file (a reload loses the memory); a relay
 // question's own end removes it whatever the memory holds (`always`).
 const askingSids = new Set<string>()
+// The tiers that asked a relay question in the turn now running: the turn end sweeps their relays whatever the asking mark says (an answered question spends the mark,
+// and an earlier one that was dismissed in the same turn would otherwise never be left).
+const relayAskedTurn = new Set<string>()
 // The tier is no longer asking: its question is over (answered, dismissed) or its turn ended.
 async function promptAskingClear($: any, sid: string, always = false): Promise<boolean> {
   const marked = askingSids.delete(sid)
@@ -5823,6 +5834,9 @@ async function promptApply($: any, w: WaitCtx, d: pr.Decision, awake: number, gr
   const fo = await promptFloorOpts($, w.tool, w.input, w.ecwd ?? w.cwd, w.home, w.ecwd !== undefined)
   let byOk = false
   let relay: { sid: string; nonce: string } | undefined
+  // A lookup that could not be made (the registry, a presence file, ps) is no verdict on the author or the relay.
+  let unsure = false
+  const errsBefore = presenceErrors
   if (pr.SID.test(d.by.sid) && d.by.sid !== w.sid) {
     const live = await registryEntries($)
     const cv = await promptCoverage($, w.sid)
@@ -5833,13 +5847,16 @@ async function promptApply($: any, w: WaitCtx, d: pr.Decision, awake: number, gr
         // The author is a live tier in reach of this asker that has not passed the request up, and its level is the one its presence gives (never the decision's own).
         byOk = stand.tiers.some((t) => t.sid === d.by.sid && t.level === d.by.level) && stand.passed[d.by.level as pr.TierLevel] === undefined
         if (stand.relay) relay = { sid: stand.relay.by.sid, nonce: stand.relay.nonce }
-      } else byOk = false
-    }
+      } else unsure = true
+    } else unsure = true
+    if (presenceErrors !== errsBefore) unsure = true
   }
   const ledger = await ledgerHas($, w.p, w.id, w.nonce, { code: d.decision, by: d.by.sid, ...(d.via ? { via: d.via } : {}) })
   // Only a call that carries an `@claude` body, and only once the other checks would let the decision through, reads the cap.
   const cap = w.cap && ledger === 'found' && d.decision === 'allow' && d.via !== 'person' ? await capOf($, w.p, w.cap) : undefined
-  return pr.applyCheck({ req: w.req, decision: d, liveHash, awakeMs: awake, expiresAt: pr.expiresAfter(relay !== undefined), floor: pr.floorCheck(w.tool, w.input, fo), byOk, ...(relay ? { relay } : {}), ledger, graceMs, cap })
+  const out = pr.applyCheck({ req: w.req, decision: d, liveHash, awakeMs: awake, expiresAt: pr.expiresAfter(relay !== undefined), floor: pr.floorCheck(w.tool, w.input, fo), byOk, ...(relay ? { relay } : {}), ledger, graceMs, cap })
+  // The two drops that rest on those lookups are held for the next poll when one failed; the final codes (id, hash, nonce, expired, floor, cap) never are.
+  return unsure && 'drop' in out && (out.drop === 'by-sid' || out.drop === 'relay') ? { hold: 'lookup' } : out
 }
 
 // The light link (PLAN-PR3 §3.3): an AskUserQuestion of this tier's own session has ended. For each question headed `Relay <short>` that names a relay of this session,
@@ -6167,7 +6184,7 @@ async function promptFind($: any, t: { p: { uid: number; root: string }; live: R
   if (stand.relay) return { no: 'with-person' }
   // A tier whose own question is open (and not this request's) cannot act; it could not call a tool at all, so this is only a stale view.
   if (!stand.active.some((x) => x.sid === sid)) return { no: 'unknown-request' }
-  // A decision the hook dropped (a cap, the floor at apply) stays in the folder: passing the request up is still open to the tier, answering again is not.
+  // A decision the hook has not yet dropped (it takes a dropped one away after its row) refuses a second answer; passing the request up is still open to the tier.
   if (!allowDecided && names.has(`${id}.decision.json`)) return { no: 'decided' }
   return { file: { dir, req: q, names }, stand, self }
 }
@@ -6309,6 +6326,7 @@ async function promptAnswerTool($: any, e: any, answer: boolean): Promise<{ resu
       await run($, [RM, '-f', '--', path]).catch(() => undefined)
       return refuse('write-failed')
     }
+    promptForget(sid, id)
     return { result: `Passed up: ${id} goes to the next tier, and your right to answer it has ended.` }
   }
   // The top tier: the person decides. A decision already there blocks it; a truncated copy cannot be put to them.
@@ -6321,15 +6339,14 @@ async function promptAnswerTool($: any, e: any, answer: boolean): Promise<{ resu
   if (put === 'exists') return refuse('with-person')
   if (put === 'failed') return refuse('write-failed')
   if (await gone(path)) return refuse('closed')
-  // An agent decision that landed while the relay was written wins: the relay is taken back (the first one in place decides).
-  if ((await statR($, `${dir}/${id}.decision.json`)) !== 'absent') {
-    await run($, [RM, '-f', '--', path]).catch(() => undefined)
-    return refuse('decided')
-  }
+  // The relay wins a race with a decision (prompt_answer takes its own decision back when it finds the relay, and only that side removes anything): a decision that
+  // landed while the relay was written is removed here, so it cannot outlast the relay it lost to.
+  await run($, [RM, '-f', '--', `${dir}/${id}.decision.json`]).catch(() => undefined)
   if (!(await ledgerAdd($, { ...row, kind: 'relayed', code: self.level, short, by: sid }))) {
     await run($, [RM, '-f', '--', path]).catch(() => undefined)
     return refuse('write-failed')
   }
+  promptForget(sid, id)
   return { result: pr.relaySteps(short, q.lane ?? '') }
 }
 
@@ -6437,6 +6454,13 @@ async function promptNoticeTick($: any, sid: string, submitsAtStart: number): Pr
 // is told twice at most. A request that closed meanwhile is dropped by the tick's scan and its marks here with it.
 const promptMidSent = new Map<string, Set<string>>()
 const promptMidRetold = new Map<string, Set<string>>()
+// A tier that passed a request up or relayed it is owed no notice of it: its marks for the id go, so the turn-end fallback cannot owe it again and the tick runs its
+// own check of the request afresh.
+function promptForget(sid: string, id: string) {
+  promptTold.get(sid)?.delete(id)
+  promptMidSent.get(sid)?.delete(id)
+  promptMidRetold.get(sid)?.delete(id)
+}
 function promptMidFallback(sid: string) {
   const told = promptTold.get(sid)
   const sent = promptMidSent.get(sid)
@@ -7462,7 +7486,8 @@ export const register: Register = (on) => {
       const mid = midDelivered.delete(sid)
       promptMidFallback(sid)
       // A turn that ended has no question open: the tier is no longer asking (a dismissal that fired no hook of its own).
-      const wasAsking = await promptAskingClear($, sid).catch(() => false)
+      const askedThisTurn = relayAskedTurn.delete(sid)
+      const wasAsking = (await promptAskingClear($, sid).catch(() => false)) || askedThisTurn
       // The question cannot outlive the turn: one still unanswered was dismissed without a hook of its own (probed: the person's X fires neither PostToolUseFailure nor
       // PermissionDenied, and the model only reads "Denied by user"). Its relay is left, so the wait ends and the dialog stays with the person.
       if (wasAsking) await promptRelayTurnEnd($, sid).catch(() => undefined)

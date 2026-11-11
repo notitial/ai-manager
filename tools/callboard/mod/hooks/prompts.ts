@@ -1856,7 +1856,7 @@ export type ApplyIn = {
   // prompt stays the person's. Absent: the call carries no such body.
   cap?: 'ok' | 'over' | 'unreadable'
 }
-export type ApplyOut = { ok: true } | { hold: 'early' | 'ledger' } | { drop: DropCode }
+export type ApplyOut = { ok: true } | { hold: 'early' | 'ledger' | 'lookup' } | { drop: DropCode }
 export type DropCode = 'id' | 'hash' | 'nonce' | 'expired' | 'floor' | 'by-sid' | 'no-answered-row' | 'ledger-unreadable' | 'cap' | 'relay'
 // Every check, in this order; a failure is a dropped row and the wait goes on. A decision that is early is held, not dropped, so no retry costs a model turn.
 export function applyCheck(a: ApplyIn): ApplyOut {
