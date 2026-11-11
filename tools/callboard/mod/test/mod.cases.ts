@@ -1,4 +1,22 @@
-import { expect, mock, test } from 'claude-code/testing'
+import { expect, mock, test as kitTest } from 'claude-code/testing'
+
+// The tests are split over four files, each run by the kit in a child of its own, side by side: the kit kills a file's run after 10 minutes, and one file
+// holding all of them needs more than that on a slow runner. A shard file (mod-N.test.ts) says which part it runs (shard-N.ts) and imports this module, which
+// declares every test in order and registers those of its part. A part is a run of tests from one marker to the next, so a test that leans on the state an
+// earlier one left stays with it. Only the markers below place a test: a test added anywhere lands in the part around it.
+const SHARD_STARTS = [
+  undefined,
+  'lane_create: the pin is a git root only with a .git folder holding HEAD',
+  'v13.2 keepalive: pings stop 3 hours after the last real turn',
+  'v15 S6a (7): add refuses the conductor repo itself',
+]
+const myShard = (globalThis as any).__modTestShard as number
+let currentShard = 0
+const test: typeof kitTest = ((name: string, ...rest: any[]) => {
+  const next = SHARD_STARTS[currentShard + 1]
+  if (next !== undefined && name.startsWith(next)) currentShard++
+  return currentShard === myShard ? (kitTest as any)(name, ...rest) : undefined
+}) as any
 import * as prm from '../hooks/prompts'
 import { recordText, recordTextLegacy, CLAIM_OTHER_UNNAMED, REST_TEXT, orderText } from '../hooks/core'
 import { CLAIM_HINT, CLAIM_NOT_PERSON, CLAIM_NOT_LEAD, CLAIM_UNNAMED, CLAIM_NONE, claimQuestion, claimedText, claimRefusedText } from '../hooks/core'
@@ -10565,6 +10583,8 @@ async function sleepFor(ms: number) {
   await clock!.set(nowMs + ms)
   timerHeld = undefined
   wake()
+  // The tick the wake lets through runs on its own: wait for it, as advance waits for the ticks it makes.
+  await quiet()
 }
 
 longTest('v13.4 keepalive: a gap the Mac slept in (the clock jumped past 5 minutes between two timer calls) gets no ping, logged once; the next turn\'s gap pings again', async ($, on) => {
@@ -11394,6 +11414,7 @@ async function idleFor(ms: number) {
     await clock!.set(nowMs + Math.min(4 * MIN, left) - 2000)
     timerHeld = undefined
     wake()
+    await quiet()
   }
   await clock!.advance(2000)
 }
@@ -16833,3 +16854,7 @@ test('prompts PR3 asked mark: a turn that ends clears the tier\'s asking file', 
   await $.turn.complete(TURN as any)
   expect(pfs.has(`${PROMPTS_DIR}/asking/${SID}`)).toBe(false)
 })
+
+
+// A marker that no test carries would leave the parts after it empty and drop their tests without a word: fail the file instead.
+if (currentShard !== SHARD_STARTS.length - 1) throw new Error(`mod tests: the shard markers are not all found (stopped at part ${currentShard + 1} of ${SHARD_STARTS.length})`)

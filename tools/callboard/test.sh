@@ -1,6 +1,6 @@
 #!/bin/bash
 # Runs every callboard suite. Self-contained: nothing outside tools/callboard.
-# CALLBOARD_SKIP_MOD_TESTS=1 skips only `claude plugin test mod` (the slow part: about 4 minutes), and says so. It is for a quick
+# CALLBOARD_SKIP_MOD_TESTS=1 skips only `claude plugin test mod` (the slow part: about 2 minutes), and says so. It is for a quick
 # local run; CI does not set it. Run this script without it before any PR that touches tools/callboard/mod.
 set -uo pipefail
 cd "$(dirname "$0")"
