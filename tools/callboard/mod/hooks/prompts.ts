@@ -1957,7 +1957,7 @@ export function patternOf(tool: string, input0: unknown, repo?: string): string 
 
 // ---- PR 4: questions (PLAN-PR4 §3): what a question may be to reach a tier, the one label helper, the answer text, the questions file ----
 export const QUESTION_TOOL = 'AskUserQuestion'
-const CONTROL_RE = /[\u0000-\u001f\u007f]/
+const CONTROL_RE = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/
 // A label as every reader sees it: redacted, then trimmed, in that fixed order (`trim(redact(x))` and `redact(trim(x))` can differ). The ONE source for prompt_list's
 // numbering, prompt_answer's echo, applyCheck's live label, step 0's check and relayAnswers.
 export const labelOf = (label: unknown): string => (typeof label === 'string' ? redact(label).trim() : '')
@@ -1987,6 +1987,8 @@ export function questionShape(input: unknown): QuestionShape {
   if (!Array.isArray(opts) || opts.length < 2 || opts.length > 4) return { ok: false, code: 'question-options' }
   const raw = opts.map((o) => obj(o).label)
   if (raw.some((l) => typeof l !== 'string' || l.trim() === '' || enc.encode(l).length > ANSWER_LABEL_MAX || CONTROL_RE.test(l))) return { ok: false, code: 'question-options' }
+  // The copy a tier reads is redacted, and a redacted label can be longer than its raw form: its bytes are capped too, so a decision naming it is never dropped for size.
+  if (questionLabels(input).some((l) => enc.encode(l).length > ANSWER_LABEL_MAX)) return { ok: false, code: 'question-options' }
   // Two labels the same after trim, or after redact: the copy a tier reads must keep them apart.
   if (new Set((raw as string[]).map((l) => l.trim())).size !== raw.length || new Set(questionLabels(input)).size !== raw.length) return { ok: false, code: 'question-options' }
   if (typeof q.header === 'string' && q.header.trim().toLowerCase() === 'person') return { ok: false, code: 'question-person' }
@@ -2005,7 +2007,8 @@ export function questionView(input: unknown): QuestionView | undefined {
 // The text the lane reads. A tier's answer is the offered label plus `(answered by <level NAME>)`, the name from the presence-checked tier (a name that is not a plain word
 // is left out: the level alone). The person's own pick through the relay is the bare label, as if they had clicked it in the lane.
 export function answerText(label: string, tier: { level: string; name: string } | undefined, viaPerson: boolean): string {
-  if (viaPerson || tier === undefined) return label
+  if (viaPerson) return label
+  if (tier === undefined) return `${label} (answered by tier)`
   return `${label} (answered by ${word(tier.level, 'tier')}${tier.name !== '' && SAFE_WORD.test(tier.name) ? ` ${tier.name}` : ''})`
 }
 
@@ -2419,7 +2422,9 @@ export const LIST_MAX_ITEMS = 20
 export type ListItem = { id: string; lane?: string; tool: string; repo: string; raisedBy: string; ageSec: number; truncated: boolean; agentType?: string; input: unknown; turn?: string }
 // A question is shown as its header, text and numbered options, inside the untrusted frame with `<` escaped (the numbers are what prompt_answer's `option` takes).
 function questionFramed(v: QuestionView, max = Infinity): string {
-  const esc = (t: string): string => t.replace(/</g, '\\u003c')
+  // The lane writes the header, the question and the descriptions: a line break, a bidi or invisible character is shown as an escape, so no line of its own can pose as an option
+  // number, a TRUNCATED line or the mod's text.
+  const esc = (t: string): string => t.replace(/</g, '\\u003c').replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)
   const lines = [`header: ${esc(v.header)}`, `question: ${esc(v.question)}`, ...v.options.map((o, n) => `${n + 1}. ${esc(o.label)}${o.description !== '' ? `: ${esc(o.description)}` : ''}`)]
   const text = lines.join('\n')
   return `<untrusted-input>\n${max === Infinity ? text : capBytes(text, max).text}\n</untrusted-input>`
@@ -2437,8 +2442,8 @@ function listPart(i: ListItem, force: boolean, max = Infinity): string {
     qv ? `lane: ${word(i.lane, '(unnamed)')} · question · open ${Math.max(0, Math.round(i.ageSec))} s` : `lane: ${word(i.lane, '(unnamed)')} · tool: ${word(i.tool, '(odd name)')} · raised by: ${i.raisedBy} · open ${Math.max(0, Math.round(i.ageSec))} s${i.agentType ? ` · agent: ${word(i.agentType, '(odd)')}` : ''}`,
     i.turn ?? '',
     i.ageSec < MIN_AGE_MS / 1000 ? `An answer you record now is held until the ${qv ? 'question' : 'prompt'} has been open ${MIN_AGE_MS / 1000} s.` : '',
-    qv && (i.truncated || force) ? `TRUNCATED: you have not seen all of it, so you cannot answer it, and it cannot be put to the person here: tell the person, in your own words, that lane ${word(i.lane, '(unnamed)')} asks a question in its panel.` : '',
-    !qv && (i.truncated || force) ? 'TRUNCATED: you have not seen all of it, so you may not allow it, and it cannot be put to the person: deny it with the cleaner-command message (the why starts "Too complex to judge: ").' : '',
+    i.tool === QUESTION_TOOL && (i.truncated || force) ? `TRUNCATED: you have not seen all of it, so you cannot answer it, and it cannot be put to the person here: tell the person, in your own words, that lane ${word(i.lane, '(unnamed)')} asks a question in its panel.` : '',
+    i.tool !== QUESTION_TOOL && (i.truncated || force) ? 'TRUNCATED: you have not seen all of it, so you may not allow it, and it cannot be put to the person: deny it with the cleaner-command message (the why starts "Too complex to judge: ").' : '',
     qv ? questionFramed(qv, max) : framed(i.input, max),
   ]
     .filter((l) => l !== '')

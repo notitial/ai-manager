@@ -809,8 +809,8 @@ export function audit({ root, projects, since, now = Date.now(), projectsExplici
           if (!rel) flag('c', 'person-answer-without-relayed-row', `request ${g.id}: the answered row (${a.t}) is the person's, but no relayed row of tier session ${a.by} with that short id came before it`, { id: g.id, t: a.t })
           const labels = tx.relayAsks.get(a.by)?.get(short)
           if (a.code === 'answer') {
-            // Each answer read from the transcript is trimmed and hashed as it is: the tier copied the label from prompt_answer's list, already redacted.
-            if (a.lh !== undefined && labels?.some((l) => labelHash(g.id, l.trim()) === a.lh)) continue
+            // Each answer read from the transcript is trimmed and hashed as it is: the tier copied the label from prompt_list, already redacted; a `<` in it is listed as \\u003c, so that form is tried too.
+            if (a.lh !== undefined && labels?.some((l) => labelHash(g.id, l.trim()) === a.lh || labelHash(g.id, l.trim().replace(/\\u003c/gi, '<')) === a.lh)) continue
             if (a.lh !== undefined && tx.relayUnreadable.has(`${a.by}\n${short}`)) notes.push(`question-label-unverifiable: request ${g.id}: the person's pick through tier session ${a.by} could not be read from the result text (a quote in the label, and no structured answers), so its label hash was not checked`)
             else flag('c', 'person-answer-without-relay-question', `request ${g.id}: the answered row (${a.t}) is the person's pick through tier session ${a.by}, whose transcript holds no "Relay ${short}" question answered with a label that matches the row's label hash`, { id: g.id, t: a.t })
             continue

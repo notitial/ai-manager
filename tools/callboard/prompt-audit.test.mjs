@@ -950,6 +950,15 @@ test('questions: an answer with surrounding spaces matches the lh of its trimmed
   ledger(fx, [ON(), ASKS(), ...qPerson({ lh: lhOf(uid(1), '  Green \t') })])
   assert.deepEqual(rules(run(fx)), ['person-answer-without-relay-question'])
 })
+test('questions: a label holding < is hashed raw by the mod, and found whether the tier copied it raw or in the listed \\u003c form', () => {
+  const fx = fixture()
+  const label = 'List<String>'
+  ledger(fx, [ON(), ASKS(), ...qPerson({ label })])
+  relayTranscript(fx, MGR, { answer: label })
+  assert.deepEqual(run(fx).anomalies, [])
+  relayTranscript(fx, MGR, { answer: 'List\\u003cString>' })
+  assert.deepEqual(run(fx).anomalies, [])
+})
 test('questions: a label holding a quote with no structured answers is a note, not an anomaly; with the structured answers it is checked', () => {
   const fx = fixture()
   const label = 'Say "hi"'

@@ -14169,7 +14169,7 @@ function handDecision(req: any, over: Record<string, unknown> = {}, row: boolean
   const d = { id: req.id, inputHash: req.inputHash, decision: 'allow', why: 'ok', by: { level: 'lead', sid: LEADSID, name: 'LEAD' }, at: nowMs, nonce: req.nonce, ...over }
   if (row) {
     const l = pfs.get(LEDGER_FILE) ?? { text: '', mtimeSec: T0 / 1000 }
-    pfs.set(LEDGER_FILE, { ...l, text: `${l.text}${JSON.stringify({ t: 'x', kind: 'answered', id: req.id, nonce: req.nonce, code: d.decision, by: d.by.sid, ...(row === true ? {} : row) })}\n` })
+    pfs.set(LEDGER_FILE, { ...l, text: `${l.text}${JSON.stringify({ t: 'x', kind: 'answered', id: req.id, nonce: req.nonce, code: d.decision, by: d.by.sid, ...((d as any).answer ? { opt: String((d as any).answer.index), lh: 'a'.repeat(16) } : {}), ...(row === true ? {} : row) })}\n` })
   }
   pfs.set(`${PDIR}/${req.id}.decision.json`, { text: JSON.stringify(d), mtimeSec: nowMs / 1000 })
 }
@@ -17188,8 +17188,10 @@ test('prompts PR4: a lead\'s own question stays the person\'s: no request, not-j
 
 
 const qNoteRows = () => appendRows.filter((m: any) => m?.content?.[0]?.text === laneQuestionNote())
-test('prompts PR4: the one-time lane note: a running lane gets it once when the asks scope first covers it, and never twice', async ($, on) => {
+test('prompts PR4: the one-time lane note: a running lane that has not had the bullet gets it once when the asks scope first covers it, and never twice', async ($, on) => {
   await answerer($, on, [], { clock: true, switchOn: false })
+  // The mod's memory of the lane's briefing is gone (a reload), the lane's record is not: this lane has not been shown the bullet.
+  await $.session.end({} as any)
   await clock!.advance(10_000)
   expect(qNoteRows().length).toBe(0)
   store.set('answering', { scope: 'all', asks: false, asksScope: 'other-lane', savedAt: T0 })
@@ -17264,6 +17266,33 @@ test('prompts PR4 hook: a label that redaction changes is returned as the lane w
   expect(r).toEqual({ decision: { behavior: 'allow', updatedInput: { ...tokenIn, answers: { [QTEXT]: `${tok} (answered by lead LEAD)` } } } })
   expect(JSON.stringify(questionsRows())).not.toContain(tok)
   expect(questionsRows()[0].label).toBe('[REDACTED_GHTOKEN]')
+})
+
+
+for (const [name, row] of [['option', { opt: '0', lh: 'a'.repeat(16) }], ['label hash', { lh: 'b'.repeat(16) }]] as [string, Record<string, unknown>][]) {
+  test(`prompts PR4 hook: a decision file rewritten to another ${name} after its row is dropped no-answered-row: the row binds the option and the label hash`, async ($, on) => {
+    await answerer($, on, [], { verdict: QASK, asksScope: 'all' })
+    const r = await runRequest($, [at(4000, () => handDecision(readReq(), answerBy(1, '8080'), row)), stop(40_000)], QCALL.over, QCALL.check)
+    expect(r).toEqual({})
+    expect(hookKinds()).toEqual(['requested', 'dropped no-answered-row', 'off'])
+  })
+}
+
+test('prompts PR4: a lane that had the briefing note appended at attach needs no one-time note', async ($, on) => {
+  await answerer($, on, [], { clock: true, asksScope: 'all' })
+  await clock!.advance(30_000)
+  expect(qNoteRows().length).toBe(0)
+})
+
+test('prompts PR4: a running lane whose first prompt was composed earlier still gets the one-time note: a later render of the bullet proves nothing', async ($, on) => {
+  await answerer($, on, [], { clock: true, switchOn: false })
+  // The mod's memory of the lane's briefing is gone (a reload), the lane's record is not: this lane has not been shown the bullet.
+  await $.session.end({} as any)
+  turnsNow = 3
+  await $.prompt.compose({ ...COMPOSE, traits: [], tools: ['mcp__callboard__request_compact'] })
+  store.set('answering', { scope: 'all', asks: false, asksScope: 'all', savedAt: T0 })
+  await clock!.advance(10_000)
+  expect(qNoteRows().length).toBe(1)
 })
 
 
