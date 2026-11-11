@@ -108,6 +108,15 @@ Trust rises with the tier.
   of awake time from the request, so a relay lost after that ends the wait at once) and the dialog stays the only way to answer. A relay that never reached the person (not asked) does fall
   back to the 20-minute deny.
 - **An answer that arrives too late** (the request already ended) is not applied; the tier is told so in a fixed line.
+- **Hook budget for the relay wait** (the fix pass, 2026-11-11). A relay holds the PermissionRequest hook for up to 2
+  hours, so the engine's limit on a hook matters. Read from the engine's plugin types and docs: a hook's budget is 10 s
+  of its own time per dispatch, the clock stops while any `$` call is in flight (`$.process.run` included, 10 minutes at
+  most per call), and `$.clock.sleep` is the one wait that counts. The wait therefore sleeps through `/bin/sleep` as a
+  process call (ADR 0002, hook time budget), and the 2 hours do not spend the budget. A hook past its budget is skipped:
+  the plugin's `.catch` runs, which hands the ask to the dialog unchanged, so even a cut-off wait ends with the prompt
+  in the person's own dialog, which is the clean ending. No cap below 2 hours was added, because no documented limit is
+  shorter. Still open: the docs name no wall-clock cap on a PermissionRequest dispatch, and the longest wait probed live
+  is about 22 minutes (above); a 2-hour wait has not been run. Nothing in the repo runs one; it needs a live probe.
 - **What the mod reads.** Only a main-agent `AskUserQuestion` result whose header names one open relay of that session
   and whose question the mod saw raise its permission request with nothing beneath answering it (the `asked` mark),
   single-choice with exactly the options `Yes` and `No`, its text unique in the call, answered exactly `Yes` or `No`.

@@ -1090,13 +1090,13 @@ test('lanesOfRepo follows the reach rule of leadLane and laneListText writes one
   assert.deepEqual(c.lanesOfRepo(all, c.leadGrant('/elsewhere')), [])
   assert.deepEqual(c.lanesOfRepo([...all, { ...made, name: 'MB', leadName: 'LEADB' }], c.leadGrant('/w/repo', 'LEADA')).map((l) => l.name), ['R', 'M', 'ATT'])
   assert.equal(c.laneListText(c.lanesOfRepo(all, c.leadGrant('/w/repo')), [{ sessionId: S3_SID, name: 'M', cwd: '/w/repo/m' }], 0), [
-    '> **Any lead** · repo',
-    '>',
-    '> | Lane | Folder | Session | Waiting |',
-    '> |---|---|---|---|',
-    '> | R | r | none | – |',
-    '> | M | m | live | – |',
-    '> | ATT | a | none | – |',
+    '**Lead** · live',
+    '',
+    '| Lead | Repo | Lane | Folder | Session | Waiting |',
+    '|---|---|---|---|---|---|',
+    '| Any lead | repo | R | r | none | – |',
+    '|  |  | M | m | live | – |',
+    '|  |  | ATT | a | none | – |',
   ].join('\n'))
   assert.equal(c.laneListText([], [], 0), 'no lanes in this repo')
 })
@@ -1474,7 +1474,7 @@ test('watchText: a sid or parked change hashes the same; any other change, and a
 
 test('laneListText: a parked lane shows parked, and a live session wins', () => {
   const made = { name: 'M', folder: '/w/repo/m', brief: '/w/repo/m/B.md', repo: '/w/repo', src: 'k', sid: V13_SID, parked: 5 }
-  const head = '> **Any lead** · repo\n>\n> | Lane | Folder | Session | Waiting |\n> |---|---|---|---|\n> | M | m | '
+  const head = '**Lead** · live\n\n| Lead | Repo | Lane | Folder | Session | Waiting |\n|---|---|---|---|---|---|\n| Any lead | repo | M | m | '
   assert.equal(c.laneListText([made], [], 0), `${head}parked | – |`)
   assert.equal(c.laneListText([made], [{ sessionId: S3_SID, name: 'M' }], 0), `${head}live | – |`)
   assert.equal(c.laneListText([{ ...made, parked: undefined }], [], 0), `${head}none | – |`)
@@ -1757,29 +1757,14 @@ test('v13.6 laneListText groups by repo, then by the lead each lane names; a lea
   const two = { name: 'T1', folder: '/w/two/t', brief: '/w/two/t/B.md', repo: '/w/two', src: 'm', leadName: 'LEADA' }
   const rows = [{ sessionId: S3_SID, name: 'LEADA' }, { sessionId: CK, name: 'A1', cwd: '/w/one/a', status: 'waiting', waitingFor: 'permission prompt', statusUpdatedAt: 60_000 }]
   assert.equal(c.laneListText([a, b, old, two], rows, 7 * 60_000 + 59_000), [
-    '> **Lead LEADA** · live · one',
-    '>',
-    '> | Lane | Folder | Session | Waiting |',
-    '> |---|---|---|---|',
-    '> | A1 | a | live | 6m |',
+    '**Lead** · live',
     '',
-    '> **Lead LEADB** · not live · one',
-    '>',
-    '> | Lane | Folder | Session | Waiting |',
-    '> |---|---|---|---|',
-    '> | B1 | b | none | – |',
-    '',
-    '> **Any lead** · one',
-    '>',
-    '> | Lane | Folder | Session | Waiting |',
-    '> |---|---|---|---|',
-    '> | OLD | o | none | – |',
-    '',
-    '> **Lead LEADA** · live · two',
-    '>',
-    '> | Lane | Folder | Session | Waiting |',
-    '> |---|---|---|---|',
-    '> | T1 | t | none | – |',
+    '| Lead | Repo | Lane | Folder | Session | Waiting |',
+    '|---|---|---|---|---|---|',
+    '| LEADA | one | A1 | a | live | 6m |',
+    '| LEADB (not live) | one | B1 | b | none | – |',
+    '| Any lead | one | OLD | o | none | – |',
+    '| LEADA | two | T1 | t | none | – |',
   ].join('\n'))
   const w = (over: Record<string, unknown>) => c.laneListText([a], [{ sessionId: CK, name: 'A1', cwd: '/w/one/a', status: 'waiting', waitingFor: 'input needed', statusUpdatedAt: 0, ...over }], 120_000).split('\n')[4]
   assert.match(w({}), / 2m \|$/)
@@ -1793,72 +1778,64 @@ test('v13.6 laneListText groups by repo, then by the lead each lane names; a lea
 // v14.1 (2026-11-04): the manager's view wraps every (repo, lead) box in one box headed with its name; a lead's view is its own boxes with no Manager box.
 const boxLane = (name: string, folder: string, repo: string, leadName?: string) => ({ name, folder, brief: `${folder}/B.md`, repo, ...(leadName ? { src: 'k', leadName } : {}) })
 
-test('v14.1 laneListText: the manager view nests one box per repo and lead in a Manager box; the manager is always live; an Any lead box names only its repo', () => {
+test('laneListText: the manager view is one table under a plain Manager header line, with no quote marks; an Any lead row names only its repo', () => {
   const lanes = [boxLane('LANE-A', '/w/app-one', '/w/app-one', 'LEAD-B'), boxLane('LANE-B', '/w/app-two', '/w/app-two')]
   const rows = [{ sessionId: S3_SID, name: 'LEAD-B' }, { sessionId: CK, name: 'LANE-B', cwd: '/w/app-two', status: 'waiting', waitingFor: 'permission prompt', statusUpdatedAt: 0 }]
   const text = c.laneListText(lanes, rows, 12 * 60_000, { level: 'manager', name: 'HARBOR' })
   assert.equal(text, [
-    '> **Manager HARBOR** · live',
-    '>',
-    '> > **Lead LEAD-B** · live · app-one',
-    '> >',
-    '> > | Lane | Session | Waiting |',
-    '> > |---|---|---|',
-    '> > | LANE-A | none | – |',
-    '>',
-    '> > **Any lead** · app-two',
-    '> >',
-    '> > | Lane | Session | Waiting |',
-    '> > |---|---|---|',
-    '> > | LANE-B | live | 12m |',
+    '**Manager HARBOR** · live',
+    '',
+    '| Lead | Repo | Lane | Session | Waiting |',
+    '|---|---|---|---|---|',
+    '| LEAD-B | app-one | LANE-A | none | – |',
+    '| Any lead | app-two | LANE-B | live | 12m |',
   ].join('\n'))
   assert.equal(c.laneListText([], [], 0, { level: 'manager', name: 'HARBOR' }), 'no lanes in this repo')
 })
 
-test('v14.1 laneListText: the lead view has its own boxes at the top level, with no Manager box and one quote mark', () => {
+test('laneListText: the lead view is one table with a Lead header line, no Manager line and no quote mark', () => {
   const lanes = [boxLane('LANE-A', '/w/app-one', '/w/app-one', 'LEAD-B')]
   const text = c.laneListText(lanes, [], 0, { level: 'lead', name: 'LEAD-B' })
-  assert.equal(text, ['> **Lead LEAD-B** · not live · app-one', '>', '> | Lane | Session | Waiting |', '> |---|---|---|', '> | LANE-A | none | – |'].join('\n'))
+  assert.equal(text, ['**Lead LEAD-B** · live', '', '| Lead | Repo | Lane | Session | Waiting |', '|---|---|---|---|---|', '| LEAD-B (not live) | app-one | LANE-A | none | – |'].join('\n'))
   assert.ok(!text.includes('Manager'))
-  assert.ok(!text.includes('> >'))
-  assert.equal(c.laneListText(lanes, [], 0), text)
+  assert.ok(!text.includes('>'))
+  assert.equal(c.laneListText(lanes, [], 0).split('\n').slice(1).join('\n'), text.split('\n').slice(1).join('\n'))
 })
 
-test('v14.1 laneListText: a Folder column appears in a box only when one of its lanes is outside the repo root, relative to the repo with . for the root', () => {
+test('v14.1 laneListText: a Folder column appears in the table only when one of its lanes is outside the repo root, relative to the repo with . for the root', () => {
   const rootOnly = c.laneListText([boxLane('R1', '/w/repo', '/w/repo'), boxLane('R2', '/w/repo', '/w/repo')], [], 0)
   assert.ok(!rootOnly.includes('Folder'))
-  assert.equal(rootOnly.split('\n')[2], '> | Lane | Session | Waiting |')
+  assert.equal(rootOnly.split('\n')[2], '| Lead | Repo | Lane | Session | Waiting |')
+  assert.deepEqual(rootOnly.split('\n').slice(4), ['| Any lead | repo | R1 | none | – |', '|  |  | R2 | none | – |'])
   const mixed = c.laneListText([boxLane('R1', '/w/repo', '/w/repo'), boxLane('API', '/w/repo/api', '/w/repo'), boxLane('DEEP', '/w/repo/a/b', '/w/repo')], [], 0)
-  assert.equal(mixed, ['> **Any lead** · repo', '>', '> | Lane | Folder | Session | Waiting |', '> |---|---|---|---|', '> | R1 | . | none | – |', '> | API | api | none | – |', '> | DEEP | a/b | none | – |'].join('\n'))
-  const twoBoxes = c.laneListText([boxLane('R1', '/w/repo', '/w/repo', 'LEADA'), boxLane('API', '/w/repo/api', '/w/repo', 'LEADB')], [], 0)
-  assert.equal(twoBoxes.split('\n').filter((l) => l.includes('Folder')).length, 1)
+  assert.equal(mixed, ['**Lead** · live', '', '| Lead | Repo | Lane | Folder | Session | Waiting |', '|---|---|---|---|---|---|', '| Any lead | repo | R1 | . | none | – |', '|  |  | API | api | none | – |', '|  |  | DEEP | a/b | none | – |'].join('\n'))
+  const twoLeads = c.laneListText([boxLane('R1', '/w/repo', '/w/repo', 'LEADA'), boxLane('API', '/w/repo/api', '/w/repo', 'LEADB')], [], 0)
+  assert.equal(twoLeads.split('\n').filter((l) => l.includes('Folder')).length, 1)
 })
 
 test('v14.1 laneListText: markdown characters in a repo or folder name are escaped, so they cannot break the table or the header', () => {
   const repo = '/w/a|b*c_d`e>f'
   const text = c.laneListText([boxLane('X', `${repo}/x|y`, repo, 'LEADA')], [], 0, { level: 'manager', name: 'M|*' })
   assert.equal(text, [
-    '> **Manager M\\|\\*** · live',
-    '>',
-    '> > **Lead LEADA** · not live · a\\|b\\*c\\_d\\`e\\>f',
-    '> >',
-    '> > | Lane | Folder | Session | Waiting |',
-    '> > |---|---|---|---|',
-    '> > | X | x\\|y | none | – |',
+    '**Manager M\\|\\*** · live',
+    '',
+    '| Lead | Repo | Lane | Folder | Session | Waiting |',
+    '|---|---|---|---|---|---|',
+    '| LEADA (not live) | a\\|b\\*c\\_d\\`e\\>f | X | x\\|y | none | – |',
   ].join('\n'))
-  assert.equal(c.laneListText([boxLane('X', `${repo}/x`, repo)], [], 0).split('\n')[0], '> **Any lead** · a\\|b\\*c\\_d\\`e\\>f')
+  assert.equal(c.laneListText([boxLane('X', `${repo}/x`, repo)], [], 0).split('\n')[4], '| Any lead | a\\|b\\*c\\_d\\`e\\>f | X | x | none | – |')
 })
 
-test('v15.3 laneListText: the box header names the repo by its folder name only, in every view; control characters are dropped', () => {
+test('v15.3 laneListText: the Repo cell names the repo by its folder name only, in every view; control characters are dropped', () => {
   const at = (repo: string, level: 'lead' | 'manager' | 'conductor' = 'lead') => c.laneListText([boxLane('X', repo, repo, 'LEADA')], [], 0, { level }).split('\n')
-  assert.equal(at('/Users/x/code/app')[0], '> **Lead LEADA** · not live · app')
-  assert.equal(at('/Users/x/code/app/')[0], '> **Lead LEADA** · not live · app')
-  assert.equal(at('/Users/x/co\u0007de')[0], '> **Lead LEADA** · not live · code')
-  assert.equal(at('/w/' + 'a'.repeat(60))[0], `> **Lead LEADA** · not live · ${'a'.repeat(40)}`)
-  assert.ok(at('/Users/x/code/app', 'manager').includes('> > **Lead LEADA** · not live · app'))
+  assert.equal(at('/Users/x/code/app')[4], '| LEADA (not live) | app | X | none | – |')
+  assert.equal(at('/Users/x/code/app/')[4], '| LEADA (not live) | app | X | none | – |')
+  assert.equal(at('/Users/x/co\u0007de')[4], '| LEADA (not live) | code | X | none | – |')
+  assert.equal(at('/w/' + 'a'.repeat(60))[4], `| LEADA (not live) | ${'a'.repeat(40)} | X | none | – |`)
+  assert.ok(at('/Users/x/code/app', 'manager').includes('| LEADA (not live) | app | X | none | – |'))
   assert.ok(!c.laneListText([boxLane('X', '/Users/x/code/app', '/Users/x/code/app', 'LEADA')], [], 0, { level: 'manager', name: 'M' }).includes('/Users/x'))
-  // Two repos of one folder name read alike; the box order and the lanes tell them apart.
-  assert.equal(at('/w/a/app')[0], at('/w/b/app')[0])
+  // Two repos of one folder name read alike; the row order and the lanes tell them apart.
+  assert.equal(at('/w/a/app')[4], at('/w/b/app')[4])
 })
 
 test('v13.6 observeLane: waiting starts at the first observation and again at a status change; quiet survives a blip after 30 min of quiet, seen busy at most once; a missing or future time gives none', () => {
@@ -2179,64 +2156,65 @@ test('v15 S6b (37s): parseConductorHint takes home, 0-16 clean repos and a saved
   ]) assert.equal(c.parseConductorHint(bad, now, '/Users/t'), undefined, JSON.stringify(bad))
 })
 
-test('v15 S6c (49): the manager view nests conductor boxes, escapes their names and leaves the lane rows as they were', () => {
+test('v15 S6c (49): a live conductor adds a Conductor column to the manager table, escapes its name and leaves the lane rows as they were', () => {
   const a = { name: 'A', folder: '/w/app/a', brief: '/w/app/a/B.md', repo: '/w/app' }
   const b = { name: 'B', folder: '/x/b', brief: '/x/b/B.md', repo: '/x' }
   const flat = c.laneListText([a, b], [], 0, { level: 'manager', name: 'M' })
   const nested = c.laneListText([a, b], [], 0, { level: 'manager', name: 'M', conductors: [{ name: 'C*1', repos: ['/w/app'] }] })
-  assert.ok(nested.includes('> > **Conductor C\\*1** · live'), nested)
-  const rows = (t: string) => t.split('\n').filter((l) => /\| [AB] \|/.test(l)).map((l) => l.replace(/^[> ]+/, ''))
-  assert.deepEqual(rows(nested), rows(flat))
-  assert.ok(nested.includes('> > > | A | '), nested)
-  assert.ok(nested.includes('> > | B | '), nested)
+  assert.equal(nested, [
+    '**Manager M** · live',
+    '',
+    '| Conductor | Lead | Repo | Lane | Folder | Session | Waiting |',
+    '|---|---|---|---|---|---|---|',
+    '| C\\*1 | Any lead | app | A | a | none | – |',
+    '| – | Any lead | x | B | b | none | – |',
+  ].join('\n'))
+  assert.ok(!nested.includes('>'))
   assert.equal(c.laneListText([a, b], [], 0, { level: 'manager', name: 'M', conductors: [] }), flat)
-  assert.ok(c.laneListText([a], [], 0, { level: 'manager', name: 'M', conductors: [{ repos: ['/w/app'] }] }).includes('> > **Conductor** · live'))
-  assert.ok(c.laneListText([a], [], 0, { level: 'manager', name: 'M', conductors: 'error' }).endsWith('>\n> (conductors could not be read)'))
+  assert.ok(c.laneListText([a], [], 0, { level: 'manager', name: 'M', conductors: [{ repos: ['/w/app'] }] }).includes('| a conductor | Any lead | app | A | a |'))
+  assert.ok(c.laneListText([a], [], 0, { level: 'manager', name: 'M', conductors: 'error' }).endsWith('|\n\n(conductors could not be read)'))
+  assert.ok(!c.laneListText([a], [], 0, { level: 'manager', name: 'M', conductors: 'error' }).includes('Conductor'))
   assert.ok(!c.laneListText([a], [], 0, { level: 'lead', conductors: 'error' }).includes('conductors'))
+  // A conductor's name sits on its first row only; a conductor whose repos have no rows is one row with dashes; a repo two conductors list shows once, under the first.
+  const two = c.laneListText([a, { ...a, name: 'A2', folder: '/w/app', leadName: 'L' }], [], 0, { level: 'manager', name: 'M', conductors: [{ name: 'C1', repos: ['/w/app'] }, { name: 'C2', repos: ['/w/app', '/w/none'] }, { name: 'C3', repos: [] }] })
+  assert.deepEqual(two.split('\n').slice(4), [
+    '| C1 | Any lead | app (also C2) | A | a | none | – |',
+    '|  | L (not live) | app (also C2) | A2 | . | none | – |',
+    '| C2 | – | – | – | – | – | – |',
+    '| C3 | – | – | – | – | – | – |',
+  ])
 })
 
-test('laneListText: a live lead with no lanes gets a box with the repo folder name and "no lanes"; one a lane box already names, and a lead\'s own view, add nothing', () => {
+test('laneListText: a live lead with no lanes is one row with dashes in the lane cells; one a lane row already names, and a lead\'s own view, add nothing', () => {
   const a = { name: 'LANE-A', folder: '/w/app', brief: '/w/app/B.md', repo: '/w/app', leadName: 'LEAD-A' }
   const leads = [{ name: 'LEAD-A', repo: '/w/app' }, { name: 'LEAD-C', repo: '/w/app' }, { name: 'LEAD-B', repo: '/w/other' }, { name: 'LEAD-C', repo: '/w/app' }]
   const text = c.laneListText([a], [], 0, { level: 'manager', name: 'M', leads })
   assert.equal(text, [
-    '> **Manager M** · live',
-    '>',
-    '> > **Lead LEAD-A** · not live · app',
-    '> >',
-    '> > | Lane | Session | Waiting |',
-    '> > |---|---|---|',
-    '> > | LANE-A | none | – |',
-    '>',
-    '> > **Lead LEAD-C** · live · app',
-    '> >',
-    '> > no lanes',
-    '>',
-    '> > **Lead LEAD-B** · live · other',
-    '> >',
-    '> > no lanes',
+    '**Manager M** · live',
+    '',
+    '| Lead | Repo | Lane | Session | Waiting |',
+    '|---|---|---|---|---|',
+    '| LEAD-A (not live) | app | LANE-A | none | – |',
+    '| LEAD-C | app | – | – | – |',
+    '| LEAD-B | other | – | – | – |',
   ].join('\n'))
   assert.equal(c.laneListText([a], [], 0, { level: 'lead', name: 'LEAD-A', leads }), c.laneListText([a], [], 0, { level: 'lead', name: 'LEAD-A' }))
   assert.equal(c.laneListText([a], [], 0, { leads }), c.laneListText([a], [], 0))
   assert.equal(c.laneListText([a], [], 0, { level: 'manager', name: 'M', leads: [{ name: 'LEAD-A', repo: '/w/app' }] }), c.laneListText([a], [], 0, { level: 'manager', name: 'M' }))
 })
 
-test('laneListText: with no lanes at all, live leads are still listed; a conductor view wraps them, the manager view nests them in a conductor box', () => {
+test('laneListText: with no lanes at all, live leads are still listed; a conductor view has its own header, the manager view a Conductor column', () => {
   const leads = [{ name: 'LEAD-B', repo: '/w/two' }, { name: 'LEAD-A', repo: '/w/one' }]
   assert.equal(c.laneListText([], [], 0, { level: 'conductor', name: 'C', leads }), [
-    '> **Conductor C** · live',
-    '>',
-    '> > **Lead LEAD-B** · live · two',
-    '> >',
-    '> > no lanes',
-    '>',
-    '> > **Lead LEAD-A** · live · one',
-    '> >',
-    '> > no lanes',
+    '**Conductor C** · live',
+    '',
+    '| Lead | Repo | Lane | Session | Waiting |',
+    '|---|---|---|---|---|',
+    '| LEAD-B | two | – | – | – |',
+    '| LEAD-A | one | – | – | – |',
   ].join('\n'))
   const nested = c.laneListText([], [], 0, { level: 'manager', name: 'M', leads, conductors: [{ name: 'C', repos: ['/w/one'] }] })
-  assert.ok(nested.includes('> > **Conductor C** · live\n> >\n> > > **Lead LEAD-A** · live · one\n> > >\n> > > no lanes'), nested)
-  assert.ok(nested.includes('> > **Lead LEAD-B** · live · two'), nested)
+  assert.deepEqual(nested.split('\n').slice(4), ['| C | LEAD-A | one | – | – | – |', '| – | LEAD-B | two | – | – | – |'])
   assert.equal(c.laneListText([], [], 0, { level: 'manager', name: 'M', leads: [] }), 'no lanes in this repo')
   assert.equal(c.laneListText([], [], 0, { level: 'conductor', name: 'C' }), 'no lanes in its repos')
 })
