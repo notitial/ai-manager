@@ -745,7 +745,9 @@ test('apply: each refusal has its code', () => {
   assert.deepEqual(apply({ byOk: false }), { drop: 'by-sid' })
   assert.deepEqual(apply({ decision: baseDec({ by: { level: 'lead', sid: SID_A, name: 'A' } }) }), { drop: 'by-sid' })
   assert.deepEqual(apply({ decision: baseDec({ by: { level: 'lead', sid: 'not-a-sid', name: 'A' } }) }), { drop: 'by-sid' })
-  assert.deepEqual(apply({ decision: baseDec({ by: { level: 'manager', sid: SID_B, name: 'M' } }) }), { drop: 'by-sid' })
+  // PR 3: a conductor or the manager may decide (the caller takes the level from presence); a level that is no tier is dropped.
+  assert.deepEqual(apply({ decision: baseDec({ by: { level: 'manager', sid: SID_B, name: 'M' } }) }), { ok: true })
+  assert.deepEqual(apply({ decision: baseDec({ by: { level: 'person', sid: SID_B, name: 'M' } }) }), { drop: 'by-sid' })
   assert.deepEqual(apply({ ledger: 'unreadable' }), { drop: 'ledger-unreadable' })
   assert.deepEqual(apply({ ledger: 'missing', graceMs: p.LEDGER_GRACE_MS }), { drop: 'no-answered-row' })
 })

@@ -63,7 +63,8 @@ For letting agents answer merges and force pushes, which ai-toolkit's rules and 
 Lead, then conductor, then manager, then the person. A tier denies only when certain the request is wrong, and **its
 deny is final**: the dialog closes and the lane gets the message. If it isn't sure, it passes. A tier that knows at
 once it can't answer passes at once, and the next tier opens immediately. A missing tier is skipped. No live tier
-means the dialog stays, with no automatic deny.
+means the dialog stays, with no automatic deny. A tier's own prompt is never its to answer, and the highest live tier in
+reach, the top tier, is the one that asks the person (the relay, below).
 
 | From | Who may decide |
 |---|---|
@@ -71,18 +72,49 @@ means the dialog stays, with no automatic deny.
 | 30 s | Lead (a decision written earlier is held until then) |
 | 5 min | Conductor |
 | 10 min | Manager |
-| 20 min | Deny with a message, unless the manager has put it to the person or no tier was live |
+| 20 min | Deny with a message, unless the top tier has put it to the person or no tier was live |
 
-These count awake time. A prompt put to the person stays open with the agents for 2 hours; after that the dialog is
-the only way to answer it.
+These count awake time. A window is counted from the request and opens for each live tier in turn (30 s, 5 min,
+10 min); a tier above one that is missing takes the earlier window, and a pass-up opens the next tier at once. A prompt
+put to the person stays open with the agents for 2 hours; after that the dialog is the only way to answer it.
 
 Windows open and do not close; the first decision wins. A lead never answers its own prompt. A conductor's or
 manager's own prompt is the person's.
 
-The manager asks the person with AskUserQuestion in its own session, with fixed `Allow` and `Deny` options. The mod
-derives the decision from the answer it saw in that session, not from what the manager says, and the record keeps
-both, as the person's answer via the manager. This cannot lift the floor. A go that must be typed in the session that
-acts still has to be: the manager sends the person to the lane's panel.
+### The relay
+
+*Amended 2026-11-10 with the tiers change; this replaces the first version, in which only the manager asked the person
+with fixed `Allow` and `Deny` options.* When a prompt is passed up to the highest live tier in reach
+(a lead, a conductor or the manager), that tier has a second, smaller model summarise the call. It then asks the person
+in its own session, in plain words: what the call is trying to do, its risk, and yes or no. The question's header is
+`Relay <short>`, the request's short id, with the options `Yes` and `No`. The mod takes the decision from the person's
+`Yes` or `No` in that session, from the tool result of that question alone, never from the agent's words, and records
+it as the person's via that tier. The summary is the tier's, written in good faith; a wrong one is caught by the audit.
+Trust rises with the tier.
+
+- **Who relays.** Only the top tier: the highest live tier in reach that is not the asker, has not passed the request
+  up and is not itself asking. A tier below the top passes up (`prompt_escalate`); it never asks the person.
+- **A call the tier cannot understand** is denied, with a message that asks the lane for a cleaner one. Any tier may
+  do this; nothing is put to the person for it.
+- **The risk list may go through the relay.** The floor never reaches any tier.
+- **The relay stays with the tier that started it.** If that tier leaves (its session ends, or its question is not
+  raised within 2 minutes, or its session is shown gone twice in a row), the relay is lost and the tier that is highest
+  then may ask again. If the person dismisses the question (or answers anything but `Yes` or `No`), the wait ends and
+  the prompt stays in the lane's dialog for the person; nothing asks again. A dismissal fires no hook of its own (probed:
+  the engine tells the model only "Denied by user"), so the mod reads it at the tier's turn end: a relay question that
+  was asked and is still unanswered then is left. A dismissal is never read as a No.
+- **A prompt put to the person never auto-denies.** A relay whose question the person had on screen never ends in the
+  20-minute deny, even if it is lost later; it ends when the wait expires (2 hours with a relay; with none, 21 minutes
+  of awake time from the request, so a relay lost after that ends the wait at once) and the dialog stays the only way to answer. A relay that never reached the person (not asked) does fall
+  back to the 20-minute deny.
+- **An answer that arrives too late** (the request already ended) is not applied; the tier is told so in a fixed line.
+- **What the mod reads.** Only a main-agent `AskUserQuestion` result whose header names one open relay of that session
+  and whose question the mod saw raise its permission request with nothing beneath answering it (the `asked` mark),
+  single-choice with exactly the options `Yes` and `No`, its text unique in the call, answered exactly `Yes` or `No`.
+  Any other answer, or a dismissal, closes the relay as left; an answer to a question that was not marked asked
+  lands nothing. The question's wording is never read.
+
+A go that must be typed in the session that acts still has to be: the tier sends the person to the lane's panel.
 
 ### What the hook does
 
@@ -135,9 +167,8 @@ offered by an unrelated MCP server isn't recognised.
 
 **The risk list rests on the agents' judgment, not on the hook.** It can't be matched by a hook without the word belt
 this design removes. It binds every tier as a rule: no agent allows a risk-list prompt. A deny a tier is certain of
-stands as for any prompt, since it grants nothing; otherwise a tier passes it up, and the
-manager sends the person to the lane's panel, because a relayed click can't stand for a go typed in the session that
-acts. A tier that misjudges, or never recognises, a risk-list item is not stopped by anything mechanical. The person
+stands as for any prompt, since it grants nothing; otherwise a tier passes it up, and the top tier asks the person
+through the relay, or sends the person to the lane's panel where the go must be typed in the session that acts. A tier that misjudges, or never recognises, a risk-list item is not stopped by anything mechanical. The person
 accepted this.
 
 ### Optional floor items
@@ -198,18 +229,26 @@ Every event goes to one machine-wide local ledger with tool, a coarse pattern (a
 arguments, a tool's repository and pull request, a file's path in its repository) and hash, not input. A read-only
 audit script lists every decision and reports anomalies: above all **a decision with no log row**, a decision the hook
 refused for a wrong id, hash, nonce or author, a hook-sourced decision in a transcript that the ledger never saw, and (since
-live test A) an `answered` row whose lead's own transcript holds no `prompt_answer` call for that request.
+live test A) an `answered` row whose lead's own transcript holds no `prompt_answer` call for that request. With the
+tiers (and the relay) it also reports a person's answer whose relaying tier's transcript holds no `Relay <short>`
+question answered `Yes` or `No`, an agent's answer or a returned decision while the request was with the person (no
+`relay-lost` row before it), and a tier that answers a request after its own pass-up. It prints every relayed question as the
+tier put it, beside the request's tool and pattern, so a wrong summary can be read afterwards. The new rows (`relayed`,
+`relay-lost`, `relay-left`, `relay-late`, `expired-denied`, `deny-unclear`) are listed and counted, not anomalies.
 
 ### Limits
 
 30 notices an hour per tier, covering all open requests in one fixed turn, sent from the tier's own tick while idle, or,
-for a lead in the middle of a turn, as the same fixed text beside its next tool result (the idle turn stays the fallback, and
+for a lead, a conductor or the manager in the middle of a turn, as the same fixed text beside its next tool result (the idle turn stays the fallback, and
 resends once a request still open when that turn ends; both count against the same 30). Over the cap a notice stays owed,
 and the next tier opens by the clock. Per pull request, at most 2
 `@claude review --comments` and 1 other `@claude` comment are approved by an agent, counted from the ledger. A
 request's input copy is redacted and removed on close; each string in it is capped at 10 KB and the whole input at 32 KB, so
 an ordinary pull request body (about 8 KB) reaches the lead whole. Past a cap the input is marked truncated, and the
-rubric then lets the lead deny it but never allow it.
+rubric then lets the lead deny it but never allow it. A truncated input is never relayed either (a deny of it is
+allowed). New files per request: `<id>.relay.json` (who asked the person), `<id>.asked` (the question was seen; each question spends it),
+`<id>.left`, and per session `prompts/asking/<sid>`; a tier's pass-up is `<id>.escalate-<level>.json`. A tier's prompt
+notice reaches it when its own window opens, and a request with a relay is told to no tier.
 
 ## Consequences
 
@@ -266,12 +305,11 @@ rollout, after the two hand-added lines.
 ### Changes to earlier decisions
 
 - **ADR 0001, H1 ("Never decide an approval"):** amended when the manager tier ships, with a dated line under the hard
-  line: *"H1 holds, with one exception (ADR 0004): the manager may decide a lane's open prompt through
-  `prompt_answer`, inside the floor and the rubric. A go the person must type in the session that acts stays the
-  person's, a floor or risk-list prompt never passes through the manager, and an answer the manager relays from the
-  person is recorded as the person's via the manager, taken from the answer the mod saw."* The manager's briefing,
-  which says prompts stay the person's, changes with it. Until that ships, H1 stands unchanged and no manager answers
-  a prompt.
+  line: *"H1 and H5 hold, with one exception (ADR 0004). The manager may decide a lane's or a lead's open prompt
+  through `prompt_answer`, inside the floor and the rubric. It may also put one to the person through the relay, whose
+  answer the mod reads from the manager's session. It never allows a risk-list prompt on its own judgment, and nothing
+  else it reads becomes an action."* The manager's briefing, which says prompts stay the person's, changes with it.
+  ADR 0001 binds only the manager; for leads and conductors the same rule lives here and in their briefings.
 - **ADR 0001, H5 ("Never turn a session's report into an action outside your own state files"):** answering a lane's
   request is acting on what a lane's session wrote, so H5 gains the same exception in the same line: a decision
   through `prompt_answer`, and nothing else.
@@ -287,6 +325,12 @@ allow and deny; a wait of about 22 minutes; deny rule and hook deny never reachi
 beneath; a mod's `tool.check` piercing a deny rule; `tool.check` fields; the whole-input hash match on Bash, Write and
 MCP with nested arguments; identical calls in flight; a subagent's identity (it shares the parent's `session_id`, with
 its own `agent_id`).
+
+Probed for the relay (2.1.x, a terminal and the phone app): the PostToolUse result of `AskUserQuestion` carries the
+questions with their headers and `answers`, keyed by question text, each the chosen label (a typed answer arrives as
+its own text); the phone card does not show the header; Esc dismisses the whole card; a model does not copy a fixed text
+exactly. So the mod reads the header of the question the tier asked, and an answer of exactly `Yes` or `No`, nothing
+else.
 
 **Owed before build, needing a person's click:** the dialog staying open and a late answer closing it, CLI and VS Code
 panels, with `approver` logged; No and Yes clicks, and whether the registry row shows a Yes at once; AskUserQuestion

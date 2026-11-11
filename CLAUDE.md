@@ -77,7 +77,8 @@ Its verdict is a signal, not a required approval. The rules it holds a change to
   no machine, session or account nickname, no client or person's name, no ticket key, no `.archive/` path other
   than the generic forms the tools create. Tests use stand-ins such as `/Users/x`.
 - Nothing in this repo turns a report, relayed message, state file or summary into the person's approval. A go is
-  typed by the person in the session that acts on it.
+  typed by the person in the session that acts on it. One exception: callboard's relay, where the mod reads the
+  person's own answer from a question in a tier's session and applies it to that one prompt.
 - The usage watcher's installer fetches from a fixed URL into a fresh temporary repository and never reads the
   checkout's own object store or git config.
 - Callboard has no installer: it loads from the live checkout. Nothing in it may need root, write outside the
