@@ -5576,7 +5576,7 @@ async function promptOwnRow($: any, w: WaitCtx): Promise<any | undefined> {
 async function promptNewId($: any): Promise<string> {
   const r = await run($, [UUIDGEN])
   const id = r.stdout.trim().toLowerCase()
-  if (r.exitCode !== 0 || !pr.ID_RE.test(id)) throw new Error('uuid-failed')
+  if (r.exitCode !== 0 || !c.SID_RE.test(id)) throw new Error('uuid-failed')
   return id
 }
 
@@ -6082,7 +6082,7 @@ async function promptApply($: any, w: WaitCtx, d: pr.Decision, awake: number, gr
   // A lookup that could not be made (the registry, a presence file, ps) is no verdict on the author or the relay.
   let unsure = false
   const errsBefore = presenceErrors
-  if (pr.SID.test(d.by.sid) && d.by.sid !== w.sid) {
+  if (c.SID_RE.test(d.by.sid) && d.by.sid !== w.sid) {
     const live = await registryEntries($)
     const cv = await promptCoverage($, w.sid)
     if (live && cv) {
@@ -6275,7 +6275,7 @@ async function promptSweep($: any): Promise<void> {
       const old = typeof f.mtimeMs === 'number' && now - f.mtimeMs > pr.SWEEP_MS
       const m = /^([0-9a-f-]{36})\.request\.json$/.exec(f.name)
       if (m) {
-        if (!pr.ID_RE.test(m[1]) || busy.has(m[1])) continue
+        if (!c.SID_RE.test(m[1]) || busy.has(m[1])) continue
         if (!gone && (!old || live === undefined || (await heldByLive(f.name)))) continue
         // No row, no removal: the next sweep tries again.
         if (!(await ledgerAdd($, { kind: 'abandoned', code: gone ? 'session-gone' : 'swept', id: m[1] }))) continue
@@ -6284,7 +6284,7 @@ async function promptSweep($: any): Promise<void> {
       }
       // A file whose request is gone (a crash between the two removals, or a half-written copy), a day old: removed with no row, it names no open request.
       const o = /^([0-9a-f-]{36})\.(decision\.json|done|escalate(?:-lead|-conductor|-manager)?\.json|relay\.json|asked|left)$/.exec(f.name)
-      const orphan = (o !== null && pr.ID_RE.test(o[1]) && !requests.has(o[1]) && !busy.has(o[1])) || /^[0-9a-f-]{36}\.[A-Za-z.-]+\.\d+\.tmp$/.test(f.name)
+      const orphan = (o !== null && c.SID_RE.test(o[1]) && !requests.has(o[1]) && !busy.has(o[1])) || /^[0-9a-f-]{36}\.[A-Za-z.-]+\.\d+\.tmp$/.test(f.name)
       if (orphan && old) await rmF($, `${base}/${d.name}/${f.name}`)
     }
     // A folder of a session that has ended, with nothing left in it, goes too (rmdir refuses a folder that holds anything).
@@ -6638,7 +6638,7 @@ async function promptAnswerTool($: any, e: any, answer: boolean): Promise<{ resu
   const id = typeof e.id === 'string' ? e.id : ''
   const decision = e.decision
   const why = pr.cleanWhy(e.why)
-  if (!pr.ID_RE.test(id) || why === undefined || (answer && decision !== 'allow' && decision !== 'deny' && decision !== 'answer')) return refuse('bad-input')
+  if (!c.SID_RE.test(id) || why === undefined || (answer && decision !== 'allow' && decision !== 'deny' && decision !== 'answer')) return refuse('bad-input')
   if (!t.answering || t.off) return refuse('off')
   const found = await promptFind($, { p: t.p, live: t.live, answering: t.answering }, sid, id, !answer)
   if ('no' in found) return refuse(found.no)
@@ -6767,7 +6767,7 @@ async function promptNoticeTick($: any, sid: string, submitsAtStart: number): Pr
     const names = new Set(((await $.fs.list(`${base}/${name}`).catch(() => [])) as { name: string }[]).map((f) => f.name))
     for (const n of names) {
       const m = /^([0-9a-f-]{36})\.request\.json$/.exec(n)
-      if (!m || !pr.ID_RE.test(m[1]) || names.has(`${m[1]}.done`) || names.has(`${m[1]}.decision.json`)) continue
+      if (!m || !c.SID_RE.test(m[1]) || names.has(`${m[1]}.done`) || names.has(`${m[1]}.decision.json`)) continue
       if (names.has(`${m[1]}.relay.json`)) relayed.add(m[1])
       else open.set(m[1], { dir: `${base}/${name}`, names })
     }

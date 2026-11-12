@@ -2,8 +2,8 @@
 // The hook that uses it is in register.ts. Nothing in this file lets an agent decide anything: it recognises what no agent may answer (the floor), what an
 // agent may judge (the classifier), what a request file may hold (redaction, caps), and when a decision file is valid (the apply checks).
 
-export const SID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
-export const ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+import { SID_RE } from './core.ts'
+
 const HASH_RE = /^[0-9a-f]{64}$/
 
 // ---- numbers ----
@@ -1914,7 +1914,7 @@ export function applyCheck(a: ApplyIn): ApplyOut {
   if (d.nonce !== req.nonce) return { drop: 'nonce' }
   if (a.awakeMs >= a.expiresAt) return { drop: 'expired' }
   if (a.floor !== undefined) return { drop: 'floor' }
-  if (!a.byOk || d.by.sid === req.sid || !SID.test(d.by.sid) || !TIER_LEVELS.includes(d.by.level as TierLevel)) return { drop: 'by-sid' }
+  if (!a.byOk || d.by.sid === req.sid || !SID_RE.test(d.by.sid) || !TIER_LEVELS.includes(d.by.level as TierLevel)) return { drop: 'by-sid' }
   // A relay is in place: only the person's answer through it stands. No relay: a decision claiming to be the person's is a forgery.
   if (a.relay !== undefined ? d.via !== 'person' || d.by.sid !== a.relay.sid || a.relay.nonce !== req.nonce : d.via === 'person') return { drop: 'relay' }
   // The decision's kind must fit the request's: a question takes only `answer`, nothing else does. The answer's index must name an option of the live input, whose label (the
@@ -2150,8 +2150,8 @@ export function parseRelay(text: string): Relay | undefined {
   try {
     const o = obj(JSON.parse(text))
     const by = obj(o.by)
-    if (typeof o.id !== 'string' || !ID_RE.test(o.id) || o.short !== shortOf(o.id) || typeof o.nonce !== 'string' || o.nonce === '' || !finite(o.at)) return undefined
-    if (!TIER_LEVELS.includes(by.level as TierLevel) || typeof by.sid !== 'string' || !SID.test(by.sid) || typeof by.name !== 'string') return undefined
+    if (typeof o.id !== 'string' || !SID_RE.test(o.id) || o.short !== shortOf(o.id) || typeof o.nonce !== 'string' || o.nonce === '' || !finite(o.at)) return undefined
+    if (!TIER_LEVELS.includes(by.level as TierLevel) || typeof by.sid !== 'string' || !SID_RE.test(by.sid) || typeof by.name !== 'string') return undefined
     return { id: o.id, short: o.short, by: { level: by.level as TierLevel, sid: by.sid, name: by.name }, at: o.at, nonce: o.nonce }
   } catch {
     return undefined
@@ -2411,7 +2411,7 @@ export function parseRequest(text: string): Request | undefined {
     return undefined
   }
   const o = obj(j)
-  if (typeof o.id !== 'string' || !ID_RE.test(o.id) || typeof o.sid !== 'string' || !SID.test(o.sid) || !Number.isInteger(o.pid) || typeof o.procStart !== 'string') return undefined
+  if (typeof o.id !== 'string' || !SID_RE.test(o.id) || typeof o.sid !== 'string' || !SID_RE.test(o.sid) || !Number.isInteger(o.pid) || typeof o.procStart !== 'string') return undefined
   if (o.level !== 'lane' && o.level !== 'lead') return undefined
   if (typeof o.repo !== 'string' || typeof o.tool !== 'string' || typeof o.inputHash !== 'string' || !HASH_RE.test(o.inputHash) || typeof o.nonce !== 'string' || o.nonce === '') return undefined
   if (o.raisedBy !== 'mode' && o.raisedBy !== 'rule' && o.raisedBy !== 'guard') return undefined
@@ -2428,7 +2428,7 @@ export function parseEscalate(text: string): Escalate | undefined {
   try {
     const o = obj(JSON.parse(text))
     if (typeof o.id !== 'string' || typeof o.tier !== 'string' || typeof o.why !== 'string' || !finite(o.at)) return undefined
-    if ((o.level !== undefined && !TIER_LEVELS.includes(o.level as TierLevel)) || (o.sid !== undefined && (typeof o.sid !== 'string' || !SID.test(o.sid)))) return undefined
+    if ((o.level !== undefined && !TIER_LEVELS.includes(o.level as TierLevel)) || (o.sid !== undefined && (typeof o.sid !== 'string' || !SID_RE.test(o.sid)))) return undefined
     return { id: o.id, tier: o.tier, why: o.why, at: o.at, ...(o.level !== undefined ? { level: o.level as TierLevel } : {}), ...(o.sid !== undefined ? { sid: o.sid } : {}) }
   } catch {
     return undefined
