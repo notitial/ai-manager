@@ -5580,10 +5580,15 @@ async function promptNewId($: any): Promise<string> {
   return id
 }
 
-// The request's files, removed when it closes (the ledger row is written before this).
-async function promptCleanup($: any, dir: string | undefined, id: string | undefined, tid: string): Promise<void> {
+// A request's in-memory entries, dropped when its hook ends.
+function forgetReq(tid: string): void {
   openReqs.delete(tid)
   doneIds.delete(tid)
+}
+
+// The request's files, removed when it closes (the ledger row is written before this).
+async function promptCleanup($: any, dir: string | undefined, id: string | undefined, tid: string): Promise<void> {
+  forgetReq(tid)
   if (!dir || !id) return
   await promptRemoveFiles($, dir, id)
 }
@@ -5621,7 +5626,7 @@ async function promptDone($: any, e: any): Promise<void> {
   const o = tid === undefined ? undefined : openReqs.get(tid)
   if (!o || tid === undefined) return
   doneIds.add(tid)
-  if (o.dir && o.id) await run($, [INSTALL, '-m', '600', '/dev/null', `${o.dir}/${o.id}.done`]).catch(() => undefined)
+  if (o.dir && o.id) await promptMarkDone($, o.dir, o.id)
 }
 
 async function doneHook($: any, e: any, next: any): Promise<any> {
@@ -5863,8 +5868,7 @@ async function promptHook($: any, e: any, nextOnce: (x: any) => Promise<any>, si
     // A request that never got its `requested` row has nothing to close: its files go as before.
     if (reqDir.id && reqDir.dir && st.requested && !st.closed) {
       unclosed.set(reqDir.id, { dir: reqDir.dir, row: st.pending ?? { kind: 'abandoned', code: 'hook-failed', id: reqDir.id }, tries: 0 })
-      openReqs.delete(tid ?? '')
-      doneIds.delete(tid ?? '')
+      forgetReq(tid ?? '')
       // No hook waits for it any more: marked closed at once, so a lead cannot list or answer it while the row is owed (promptRemoveFiles takes the marker away again).
       await promptMarkDone($, reqDir.dir, reqDir.id)
     } else await promptCleanup($, reqDir.dir, reqDir.id, tid ?? '')
@@ -5916,7 +5920,7 @@ async function promptWait($: any, beneath: any, signal: AbortSignal, w: WaitCtx)
     const r = await readSmallR($, relayPath, w.p.uid, pr.DECISION_MAX)
     // A read that failed or met a swap says nothing about the file: this poll keeps the relay it had (as a decision file read that fails is skipped).
     if (r.state === 'failed' || r.state === 'changed') return relay ?? undefined
-    if (r.state !== 'ok') return r.state === 'absent' ? undefined : 'bad'
+    if (r.state !== 'ok') return 'bad'
     const x = pr.parseRelay(r.text)
     return x && x.id === w.id && x.nonce === w.nonce ? x : 'bad'
   }
@@ -6279,7 +6283,7 @@ async function promptSweep($: any): Promise<void> {
         if (!gone && (!old || live === undefined || (await heldByLive(f.name)))) continue
         // No row, no removal: the next sweep tries again.
         if (!(await ledgerAdd($, { kind: 'abandoned', code: gone ? 'session-gone' : 'swept', id: m[1] }))) continue
-        await rmF($, PROMPT_SUFFIXES.map((x) => `${base}/${d.name}/${m[1]}.${x}`))
+        await promptRemoveFiles($, `${base}/${d.name}`, m[1])
         continue
       }
       // A file whose request is gone (a crash between the two removals, or a half-written copy), a day old: removed with no row, it names no open request.
