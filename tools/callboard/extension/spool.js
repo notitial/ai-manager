@@ -24,6 +24,25 @@ const STORE_MAX_LANES = 16
 
 const clean = (p) => typeof p === 'string' && /^\/[\x21-\x7e]*$/.test(p) && !p.split('/').some((s) => s === '..' || s === '.') && p.length < 512 && !p.includes('//')
 
+// The text of a plain file of this user's, or undefined for anything else. The file is opened without following a link and checked on the open handle:
+// a plain file, owned by uid, with one link, a mode that modeBad(mode) does not reject, and at most max bytes. max + 1 bytes are read, so a file that
+// grew after the check is cut. A failed open, check or read is undefined too.
+async function readOwned(file, uid, { modeBad, max }) {
+  const fh = await fsp.open(file, nodefs.constants.O_RDONLY | nodefs.constants.O_NOFOLLOW | nodefs.constants.O_NONBLOCK).catch(() => undefined)
+  if (!fh) return undefined
+  try {
+    const st = await fh.stat()
+    if (!st.isFile() || st.uid !== uid || modeBad(st.mode) || st.nlink !== 1 || st.size > max) return undefined
+    const buf = Buffer.alloc(max + 1)
+    const { bytesRead } = await fh.read(buf, 0, buf.length, 0)
+    return buf.subarray(0, bytesRead).toString('utf8')
+  } catch {
+    return undefined
+  } finally {
+    await fh.close().catch(() => undefined)
+  }
+}
+
 // Whether a folder is a git repo root, by the mod's rule (register.ts gitRoot): `.git`, not followed if it is a link, is a folder holding a plain HEAD file,
 // or a plain file of this user's, not group or other writable, whose text starts `gitdir: ` (a worktree or submodule). An empty `.git` folder, a
 // symlinked `.git`, anything else or a failed check is not.
@@ -33,19 +52,8 @@ async function gitRoot(dir, uid) {
   if (!g) return false
   if (g.isDirectory()) return !!(await fsp.lstat(path.join(git, 'HEAD')).catch(() => undefined))?.isFile()
   if (!g.isFile()) return false
-  const fh = await fsp.open(git, nodefs.constants.O_RDONLY | nodefs.constants.O_NOFOLLOW | nodefs.constants.O_NONBLOCK).catch(() => undefined)
-  if (!fh) return false
-  try {
-    const st = await fh.stat()
-    if (!st.isFile() || st.uid !== uid || (st.mode & 0o7022) !== 0 || st.nlink !== 1 || st.size > 4096) return false
-    const buf = Buffer.alloc(4097)
-    const { bytesRead } = await fh.read(buf, 0, buf.length, 0)
-    return buf.subarray(0, bytesRead).toString('utf8').startsWith('gitdir: ')
-  } catch {
-    return false
-  } finally {
-    await fh.close().catch(() => undefined)
-  }
+  const text = await readOwned(git, uid, { modeBad: (mode) => (mode & 0o7022) !== 0, max: 4096 })
+  return text !== undefined && text.startsWith('gitdir: ')
 }
 
 // The lanes a lead made: one file per repo in the user's own callboard folder, named by the sha-256 of the repo's real path.
@@ -58,20 +66,8 @@ async function readStores(dir, { uid = process.getuid(), home = os.homedir() } =
   const names = (await fsp.readdir(dir).catch(() => [])).filter((n) => /^[0-9a-f]{64}\.json$/.test(n)).sort().slice(0, 64)
   for (const n of names) {
     const file = path.join(dir, n)
-    let text
-    const fh = await fsp.open(file, nodefs.constants.O_RDONLY | nodefs.constants.O_NOFOLLOW | nodefs.constants.O_NONBLOCK).catch(() => undefined)
-    if (!fh) continue
-    try {
-      const st = await fh.stat()
-      if (!st.isFile() || st.uid !== uid || (st.mode & 0o777) !== 0o600 || st.nlink !== 1 || st.size > STORE_MAX_BYTES) continue
-      const buf = Buffer.alloc(STORE_MAX_BYTES + 1)
-      const { bytesRead } = await fh.read(buf, 0, buf.length, 0)
-      text = buf.subarray(0, bytesRead).toString('utf8')
-    } catch {
-      continue
-    } finally {
-      await fh.close().catch(() => undefined)
-    }
+    const text = await readOwned(file, uid, { modeBad: (mode) => (mode & 0o777) !== 0o600, max: STORE_MAX_BYTES })
+    if (text === undefined) continue
     let j
     try {
       j = JSON.parse(text)
