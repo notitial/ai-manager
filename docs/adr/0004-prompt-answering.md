@@ -218,6 +218,8 @@ Merges and force pushes can be allowed per machine. Everything is off until chos
 machine until both keys below exist. **The first release ships the choice but not the server**, so neither item lifts
 on any machine until a later decision builds it.
 
+*2026-11-12: the choice is not built either. There is no `/callboard floor set` command, and the floor reads an optional-item field that nothing sets, so both stay on the floor. What the floor blocks has not changed.*
+
 Both are blocked before any PermissionRequest hook: merges by a deny rule, the guard's tool list and the server's own
 `--tools`; force pushes by ai-toolkit's git guard and destructive-command hook. A mod could lift those, and must not.
 So allowing either takes two independent keys:
