@@ -64,8 +64,10 @@ const checkinPauseRef = { plugin: 'callboard', key: 'checkinPauseUntil' } as con
 const ASK_TIMEOUT_MS = 90_000
 const HINT_DELETE_MAX = 50
 
-const run = ($: any, argv: string[], stdin?: string): Promise<R> =>
-  $.process.run(argv, { timeoutMs: 5000, ...(stdin === undefined ? {} : { stdin }) })
+const run = ($: any, argv: string[], stdin?: string, env?: Record<string, string>): Promise<R> =>
+  $.process.run(argv, { timeoutMs: 5000, ...(stdin === undefined ? {} : { stdin }), ...(env === undefined ? {} : { env }) })
+// Remove files that may not exist; a failed remove is swallowed. One path or an array of them (the mod's checks do not allow `$` beside a spread).
+const rmF = ($: any, paths: string | string[]): Promise<R | undefined> => run($, [RM, '-f', '--', ...(typeof paths === 'string' ? [paths] : paths)]).catch(() => undefined)
 
 // The stop calls (by session, verb and the lane as the lead typed it) whose process already got its signal, for the hook's .catch.
 const signalledCalls = new Map<string, { name: string; pid: number }>()
@@ -116,7 +118,7 @@ async function configDirRejected($: any) {
   const sid = await $.session.id().catch(() => '')
   if (configDirLogged || !c.SID_RE.test(sid)) return
   configDirLogged = true
-  await log($, sid, 'error', 'config-dir-rejected').catch(() => undefined)
+  await logq($, sid, 'error', 'config-dir-rejected')
 }
 
 async function facts($: any, path: string) {
@@ -154,6 +156,11 @@ async function log($: any, sid: string, event: string, reason = '') {
   await run($, [TEE, '-a', '--', file], `${line}\n`)
 }
 
+// log, with a failed write swallowed: a log line is never worth failing the step that wrote it. `log` itself still throws.
+const logq = ($: any, sid: string, event: string, reason = ''): Promise<void> => log($, sid, event, reason).catch(() => undefined)
+// The tail of a failed step, for `.catch(...)`: log the error under `reason` and swallow a failing log.
+const logFail = ($: any, sid: string, reason: string) => (): Promise<void> => logq($, sid, 'error', reason)
+
 function ensureTimer($: any) {
   if (timerOn) return
   timerOn = true
@@ -179,7 +186,7 @@ const GONE_RE = /No such file or directory|Not a directory/
 // else): a writer must not treat a failed check as a folder that is gone. The message is read, so it runs in the C locale.
 async function realR($: any, path: string): Promise<{ path: string } | 'absent' | 'error'> {
   try {
-    const r = await $.process.run([REALPATH, '--', path], { timeoutMs: 5000, env: { LC_ALL: 'C' } })
+    const r = await run($, [REALPATH, '--', path], undefined, { LC_ALL: 'C' })
     if (r.exitCode === 0) return { path: r.stdout.trim() }
     return GONE_RE.test(r.stderr) ? 'absent' : 'error'
   } catch {
@@ -190,7 +197,7 @@ async function realR($: any, path: string): Promise<{ path: string } | 'absent' 
 // lstat facts of a path, 'absent', or 'error' (any failure but "no such file" or "not a directory", or a throw).
 async function statR($: any, path: string): Promise<(c.FileFacts & { ino: number }) | 'absent' | 'error'> {
   try {
-    const r = await $.process.run([STAT, '-f', STAT_FMT, '--', path], { timeoutMs: 5000, env: { LC_ALL: 'C' } })
+    const r = await run($, [STAT, '-f', STAT_FMT, '--', path], undefined, { LC_ALL: 'C' })
     if (r.exitCode === 0) return c.parseStat(r.stdout) ?? 'error'
     return GONE_RE.test(r.stderr) ? 'absent' : 'error'
   } catch {
@@ -227,7 +234,7 @@ async function keptLanes($: any, lanes: c.Store['lanes']): Promise<c.Store['lane
     if (r === 'error') failed = true
     if (r === 'error' || (r !== 'absent' && r.path === l.folder)) kept.push(l)
   }
-  if (failed) await log($, await $.session.id().catch(() => ''), 'error', 'store-check').catch(() => undefined)
+  if (failed) await logq($, await $.session.id().catch(() => ''), 'error', 'store-check')
   return kept
 }
 
@@ -272,7 +279,7 @@ async function storePath($: any, key: string): Promise<string> {
 }
 // absent: no file. bad: something is there that the loader would not trust or could not read. ok: a plain private file of ours, read with a bound.
 async function readStoreFile($: any, path: string, uid: number): Promise<{ state: 'absent' | 'bad' | 'ok'; text: string }> {
-  const r0 = await $.process.run([STAT, '-f', STAT_FMT, '--', path], { timeoutMs: 5000, env: { LC_ALL: 'C' } })
+  const r0 = await run($, [STAT, '-f', STAT_FMT, '--', path], undefined, { LC_ALL: 'C' })
   if (r0.exitCode !== 0) return { state: /No such file or directory/.test(r0.stderr) ? 'absent' : 'bad', text: '' }
   const f = c.parseStat(r0.stdout)
   if (!f || f.kind !== 'file' || f.uid !== uid || f.mode !== 0o600 || f.nlink !== 1 || f.size > c.STORE_MAX_BYTES) return { state: 'bad', text: '' }
@@ -345,7 +352,7 @@ async function lockDir($: any, p: { uid: number; root: string }, key: string): P
   const deadline = (await $.clock.now()) + c.LOCK_WAIT_MS
   for (;;) {
     // The 'File exists' test below reads the message: it must not be translated.
-    const m = await $.process.run([MKDIR, '-m', '700', '--', lock], { timeoutMs: 5000, env: { LC_ALL: 'C' } })
+    const m = await run($, [MKDIR, '-m', '700', '--', lock], undefined, { LC_ALL: 'C' })
     if (m.exitCode === 0) {
       const file = `${lock}/owner`
       const made = await run($, [INSTALL, '-m', '600', '/dev/null', file])
@@ -367,7 +374,7 @@ async function lockDir($: any, p: { uid: number; root: string }, key: string): P
 
 // 'dead' only when ps says so (no such process, or another start time); a ps that failed any other way leaves the lock alone.
 async function ownerGone($: any, o: { pid: number; procStart: string }): Promise<boolean> {
-  const r = await $.process.run([PS, '-o', 'lstart=', '-p', String(o.pid)], { timeoutMs: 5000, env: { TZ: 'UTC', LC_ALL: 'C' } })
+  const r = await run($, [PS, '-o', 'lstart=', '-p', String(o.pid)], undefined, { TZ: 'UTC', LC_ALL: 'C' })
   return r.exitCode === 0 ? !c.sameStart(r.stdout, o.procStart) : r.exitCode === 1 && r.stdout.trim() === ''
 }
 
@@ -408,7 +415,7 @@ async function breakStale($: any, p: { uid: number; root: string }, lock: string
     return false
   } finally {
     // A gate that could not be looked at after it was made is left to its 30 s age: nothing here can remove a gate that is not ours.
-    if (!mine) await log($, await $.session.id().catch(() => ''), 'error', 'lock-gate').catch(() => undefined)
+    if (!mine) await logq($, await $.session.id().catch(() => ''), 'error', 'lock-gate')
     else if ((await facts($, gate))?.ino === mine.ino) await run($, [RMDIR, '--', gate])
   }
 }
@@ -440,7 +447,7 @@ async function unlockDir($: any, p: { uid: number; root: string }, key: string, 
     await log($, sid, 'error', st === 'lost' ? 'lock-lost' : 'lock-unconfirmed')
     if (st === 'unknown' && nonce) unlockOwed.set(`${key}:${nonce}`, { key, nonce, tries: 0 })
   } catch {
-    await log($, sid, 'error', 'unlock').catch(() => undefined)
+    await logq($, sid, 'error', 'unlock')
   }
 }
 async function unlockRetry($: any, sid: string) {
@@ -492,7 +499,7 @@ async function registryEntriesWhy($: any, dirArg?: string): Promise<{ rows: { pi
   const names = ((await $.fs.list(dir).catch(() => [])) as { name: string }[]).map((f) => f.name).filter((n) => /^[A-Za-z0-9-]{1,64}\.json$/.test(n))
   // A registry longer than the cap cannot be looked at whole, and a name could hide past the cap: no answer, not a cut one.
   if (names.length > c.REGISTRY_FILES_MAX) {
-    await log($, await $.session.id().catch(() => ''), 'error', 'registry-too-many').catch(() => undefined)
+    await logq($, await $.session.id().catch(() => ''), 'error', 'registry-too-many')
     return { rows: undefined }
   }
   for (const n of names) {
@@ -512,7 +519,7 @@ async function registryEntriesWhy($: any, dirArg?: string): Promise<{ rows: { pi
   const self = await $.session.id().catch(() => '')
   const fresh = c.freshRowsWhy(out, await psStarts($), self)
   // Every row kept: the filter is off for this read, which is the behaviour before it. Logged (once in a row) so it is seen.
-  if (fresh.why) await log($, self, 'error', `registry-${fresh.why}`).catch(() => undefined)
+  if (fresh.why) await logq($, self, 'error', `registry-${fresh.why}`)
   // A row whose pid the table lacks is dropped only once ps -p agrees it is gone: a table cut at a line boundary passes every table check. Any doubt keeps every
   // row (the behaviour before the filter): keeping a dead row makes readers refuse; dropping a live one would free its name.
   const ask = fresh.absent.filter((r) => {
@@ -524,7 +531,7 @@ async function registryEntriesWhy($: any, dirArg?: string): Promise<{ rows: { pi
     const listed = await psConfirm($, pids)
     const v = listed && c.confirmGone(ask, listed)
     if (!v || v.cut) {
-      await log($, self, 'error', v ? 'registry-ps-cut' : 'registry-ps-confirm').catch(() => undefined)
+      await logq($, self, 'error', v ? 'registry-ps-cut' : 'registry-ps-confirm')
       return { rows: out, why: 'ps-confirm' }
     }
     for (const r of v.gone) {
@@ -544,7 +551,7 @@ const goneSeen = new Set<string>()
 // The start times of the asked pids, by one ps call; undefined on any doubt (a throw, a timeout, another exit, output that does not parse).
 async function psConfirm($: any, pids: number[]): Promise<Map<number, string> | undefined> {
   try {
-    const r = await $.process.run([PS, '-o', 'pid=,lstart=', '-p', pids.join(',')], { timeoutMs: 5000, env: { TZ: 'UTC', LC_ALL: 'C' } })
+    const r = await run($, [PS, '-o', 'pid=,lstart=', '-p', pids.join(',')], undefined, { TZ: 'UTC', LC_ALL: 'C' })
     return typeof r.stdout === 'string' && r.stdout.length <= c.PS_TABLE_MAX ? c.parsePsConfirm(r.stdout, r.exitCode, pids, r.stderr) : undefined
   } catch {
     return undefined
@@ -554,7 +561,7 @@ async function psConfirm($: any, pids: number[]): Promise<Map<number, string> | 
 // Every process's start time, as the registry records it (UTC, C locale). undefined: ps failed, threw, or printed what cannot be trusted.
 async function psStarts($: any): Promise<Map<number, string> | undefined> {
   try {
-    const r = await $.process.run([PS, '-A', '-o', 'pid=,lstart='], { timeoutMs: 5000, env: { TZ: 'UTC', LC_ALL: 'C' } })
+    const r = await run($, [PS, '-A', '-o', 'pid=,lstart='], undefined, { TZ: 'UTC', LC_ALL: 'C' })
     return r.exitCode === 0 && typeof r.stdout === 'string' && r.stdout.length <= c.PS_TABLE_MAX ? c.parsePsStarts(r.stdout) : undefined
   } catch {
     return undefined
@@ -665,7 +672,7 @@ async function saveHint($: any, sid: string) {
     await $.store.set(`${c.HINT_PREFIX}${sid}`, { ...body, savedAt: now })
     lastSaved.set(sid, { sig, at: now })
   } catch {
-    await log($, sid, 'error', 'hint-save').catch(() => undefined)
+    await logq($, sid, 'error', 'hint-save')
   }
 }
 
@@ -866,7 +873,7 @@ async function nameGrant($: any, sid: string) {
     const n = (rows === 'timeout' || !rows ? undefined : c.leadNameOf(rows.map((e) => e.j), sid)) ?? ''
     if (grants.get(sid) === g) grants.set(sid, { ...g, name: n })
   } catch {
-    await log($, sid, 'error', 'grant-name').catch(() => undefined)
+    await logq($, sid, 'error', 'grant-name')
   }
 }
 const leadDeclared = new Set<string>()
@@ -1024,7 +1031,7 @@ function leadDrop($: any, sid: string): Promise<boolean> {
     .then(
       () => true,
       async () => {
-        await log($, sid, 'error', 'lead-hint-delete').catch(() => undefined)
+        await logq($, sid, 'error', 'lead-hint-delete')
         return false
       },
     )
@@ -1042,10 +1049,10 @@ async function leadSave($: any, sid: string, pin: string) {
   try {
     await $.store.set(`${c.LEAD_HINT_PREFIX}${sid}`, { pin, savedAt: now })
   } catch {
-    await log($, sid, 'lead-unsaved').catch(() => undefined)
+    await logq($, sid, 'lead-unsaved')
   }
   // A drop while the write was in flight: the key it wrote goes again.
-  if (pinOf(sid) !== pin) await Promise.resolve($.store.delete(`${c.LEAD_HINT_PREFIX}${sid}`)).catch(() => log($, sid, 'error', 'lead-hint-delete').catch(() => undefined))
+  if (pinOf(sid) !== pin) await Promise.resolve($.store.delete(`${c.LEAD_HINT_PREFIX}${sid}`)).catch(logFail($, sid, 'lead-hint-delete'))
 }
 
 // A session whose saved grant names its own folder is lead again when it starts, with no question. Started in session.start; a cwd read or a tool
@@ -1120,7 +1127,7 @@ async function leadRestore($: any, me: string, hint: c.LeadHint, tries: number) 
     again = await leadRestoreTry($, me, hint)
   } catch {
     again = undefined
-    await log($, me, 'lead-restore-rejected', 'error').catch(() => undefined)
+    await logq($, me, 'lead-restore-rejected', 'error')
   }
   if (again === undefined || epochOf(me) !== epoch) return void leadRestorePending.delete(me)
   if (tries >= LEAD_RESTORE_TRIES) {
@@ -1142,7 +1149,7 @@ async function onLeftovers($: any, sid: string) {
       await log($, sid, 'on-cleared', 'state')
     }
   } catch {
-    await log($, sid, 'error', 'on-clear').catch(() => undefined)
+    await logq($, sid, 'error', 'on-clear')
   }
   if (!c.SID_RE.test(sid)) return
   // Each store call has the engine-call limit and runs inside an async function, so one that throws at once is answered like one that rejects (as config).
@@ -1156,7 +1163,7 @@ async function onLeftovers($: any, sid: string) {
       await log($, sid, 'on-cleared', 'saved')
     }
   } catch {
-    await log($, sid, 'error', 'on-hint-delete').catch(() => undefined)
+    await logq($, sid, 'error', 'on-hint-delete')
   }
 }
 
@@ -1167,7 +1174,7 @@ const cmpCutPending = new Map<string, number>()
 const cmpClear = ($: any, sid: string) => {
   cmpMarked.delete(sid)
   // Bounded: a store that does not answer must not hold up PostCompact or the tick.
-  return withTimeout($, Promise.resolve($.store.delete(`${c.CMP_PREFIX}${sid}`)).catch(() => log($, sid, 'error', 'cmp-clear').catch(() => undefined)), c.ENGINE_CALL_TIMEOUT_MS)
+  return withTimeout($, Promise.resolve($.store.delete(`${c.CMP_PREFIX}${sid}`)).catch(logFail($, sid, 'cmp-clear')), c.ENGINE_CALL_TIMEOUT_MS)
 }
 // The note goes once, to a person's session only: a headless run under this id leaves the mark (it ages out), and after LEAD_RESTORE_TRIES ticks it is let go.
 // The mark is deleted before the append, so a slow append is never repeated; a failed append is logged and not retried.
@@ -1203,7 +1210,7 @@ async function briefLead($: any, sid: string, pin: string, manager?: string) {
     if (r?.deny !== undefined) throw new Error('refused')
   } catch {
     if (briefed.get(sid) === key) briefed.delete(sid)
-    await log($, sid, 'error', manager === undefined ? 'lead-briefing' : 'manager-briefing').catch(() => undefined)
+    await logq($, sid, 'error', manager === undefined ? 'lead-briefing' : 'manager-briefing')
   }
 }
 
@@ -1263,7 +1270,7 @@ async function presenceRead($: any, p: { uid: number; root: string }, live: RegR
 // result is a ps that failed. A ps that throws still throws, as before.
 async function psOne($: any, pid: unknown, field: 'lstart=' | 'args='): Promise<{ out: string } | 'gone' | 'error'> {
   if (!Number.isInteger(pid) || (pid as number) <= 1) return 'gone'
-  const r = await $.process.run([PS, '-o', field, '-p', String(pid)], { timeoutMs: 5000, env: field === 'lstart=' ? { TZ: 'UTC', LC_ALL: 'C' } : { LC_ALL: 'C' } })
+  const r = await run($, [PS, '-o', field, '-p', String(pid)], undefined, field === 'lstart=' ? { TZ: 'UTC', LC_ALL: 'C' } : { LC_ALL: 'C' })
   if (r.exitCode === 0) return { out: r.stdout }
   return r.exitCode === 1 && `${r.stdout ?? ''}${r.stderr ?? ''}`.trim() === '' ? 'gone' : 'error'
 }
@@ -1428,7 +1435,7 @@ async function keepLaneFacts($: any, sid: string, l: c.Lane, attached: boolean, 
     const known = lead ? c.laneLeadOf(rows, lead.sid) : undefined
     if (known && laneBrief.get(sid) === base) laneBrief.set(sid, { ...base, lead: known })
   } catch {
-    await log($, sid, 'error', 'lane-lead').catch(() => undefined)
+    await logq($, sid, 'error', 'lane-lead')
   }
 }
 
@@ -1445,7 +1452,7 @@ async function briefLane($: any, sid: string) {
     if (r?.deny !== undefined) throw new Error('refused')
   } catch {
     if (laneBriefed.get(sid) === kept.name) laneBriefed.delete(sid)
-    await log($, sid, 'error', 'lane-briefing').catch(() => undefined)
+    await logq($, sid, 'error', 'lane-briefing')
   }
 }
 
@@ -1547,7 +1554,7 @@ async function watchTick($: any, sid: string) {
   // The notice is the telling: seen moves with told, so the lane_list the lead makes in answer carries no footer for the same change.
   w.told = w.seen = w.cur
   cappedLogged.delete(sid)
-  laneNotices.set(sid, [...times.filter((t) => t <= now && now - t < c.HOUR_MS), now])
+  laneNotices.set(sid, c.pushRecent(times, now))
   // A notice that did not go out is still owed: told and seen go back (unless something moved them meanwhile).
   await submitOwn($, c.LANES_CHANGED_TEXT, false).catch(async () => {
     turnKind.delete(sid)
@@ -1581,7 +1588,7 @@ async function restCommand($: any, sid: string, code: string) {
   } catch {
     return { text: c.REST_FAILED }
   }
-  await log($, sid, 'command', `rest:${code}`).catch(() => undefined)
+  await logq($, sid, 'command', `rest:${code}`)
   return { text: c.REST_TEXT }
 }
 
@@ -1692,7 +1699,7 @@ async function managerSeenTick($: any, sid: string, stamp: { at: number; live: b
     live = rows !== undefined && (await managerTrusted($, rows, sid))
     conductors = rows === undefined ? [] : (await conductorsTrusted($, rows, sid, pinOf(sid))).map((x) => x.name ?? '')
   } catch {
-    await log($, sid, 'error', 'manager-seen').catch(() => undefined)
+    await logq($, sid, 'error', 'manager-seen')
   }
   if (managerSeen.get(sid) === stamp) managerSeen.set(sid, { at: stamp.at, live, conductors })
 }
@@ -1700,7 +1707,7 @@ async function managerSeenStep($: any, sid: string) {
   if (managerSeenBusy.has(sid)) return
   const now = await $.clock.now()
   const last = managerSeen.get(sid)
-  if (managerSeenBusy.has(sid) || (last !== undefined && now >= last.at && now - last.at < MANAGER_SEEN_EVERY_MS)) return
+  if (managerSeenBusy.has(sid) || (last !== undefined && !c.dueEvery(last.at, now, MANAGER_SEEN_EVERY_MS))) return
   // The conductors last seen stay served while the new look runs, as live does.
   const stamp = { at: now, live: last?.live ?? false, conductors: last?.conductors }
   managerSeen.set(sid, stamp)
@@ -1708,7 +1715,7 @@ async function managerSeenStep($: any, sid: string) {
   managerSeenBusy.set(sid, token)
   const failed = async (reason: string) => {
     if (managerSeen.get(sid) === stamp) managerSeen.set(sid, { at: now, live: false })
-    await log($, sid, 'error', reason).catch(() => undefined)
+    await logq($, sid, 'error', reason)
   }
   void withTimeout($, managerSeenTick($, sid, stamp), ACTION_TIMEOUT_MS)
     .then((r) => (r === 'timeout' ? failed('manager-seen-timeout') : undefined), () => failed('manager-seen'))
@@ -2090,13 +2097,13 @@ async function pruneLogs($: any, me: string) {
 // Start time of a process as `ps` prints it in UTC, the way the session registry records `procStart`.
 async function psStart($: any, pid: unknown): Promise<string | undefined> {
   if (!Number.isInteger(pid) || (pid as number) <= 1) return undefined
-  const r = await $.process.run([PS, '-o', 'lstart=', '-p', String(pid)], { timeoutMs: 5000, env: { TZ: 'UTC', LC_ALL: 'C' } })
+  const r = await run($, [PS, '-o', 'lstart=', '-p', String(pid)], undefined, { TZ: 'UTC', LC_ALL: 'C' })
   return r.exitCode === 0 ? r.stdout : undefined
 }
 
 async function psArgs($: any, pid: unknown): Promise<string | undefined> {
   if (!Number.isInteger(pid) || (pid as number) <= 1) return undefined
-  const r = await $.process.run([PS, '-o', 'args=', '-p', String(pid)], { timeoutMs: 5000, env: { LC_ALL: 'C' } })
+  const r = await run($, [PS, '-o', 'args=', '-p', String(pid)], undefined, { LC_ALL: 'C' })
   return r.exitCode === 0 ? r.stdout : undefined
 }
 
@@ -2106,7 +2113,7 @@ async function reportStat($: any, l: c.Lane): Promise<{ no: string; gone?: true 
   const path = c.reportPath(l)
   const p = await where($)
   if (!path || !p) return { no: 'report-missing' }
-  const r = await $.process.run([STAT, '-f', STAT_FMT, '--', path], { timeoutMs: 5000, env: { LC_ALL: 'C' } })
+  const r = await run($, [STAT, '-f', STAT_FMT, '--', path], undefined, { LC_ALL: 'C' })
   if (r.exitCode !== 0) return /No such file or directory/.test(r.stderr) ? { no: 'report-missing', gone: true } : { no: 'report-missing' }
   const f = c.parseStat(r.stdout)
   if (!f) return { no: 'report-missing' }
@@ -2172,7 +2179,7 @@ async function markTurn($: any, sid: string) {
     lastTurnUnknown.delete(sid)
   } catch {
     lastTurnUnknown.add(sid)
-    await log($, sid, 'error', 'last-turn').catch(() => undefined)
+    await logq($, sid, 'error', 'last-turn')
   }
 }
 
@@ -2185,7 +2192,7 @@ async function backgroundShells($: any, sid: string, reg: Reg): Promise<'backgro
   if (mine.length !== 1) return 'background-unknown'
   const me = regEntry(mine[0])
   if (!Number.isInteger(me.pid) || (me.pid as number) < 2 || c.pidRefusal(me, await psStart($, me.pid)) !== undefined) return 'background-unknown'
-  const ps = (argv: string[]) => $.process.run([PS, ...argv], { timeoutMs: 5000, env: { LC_ALL: 'C' } }).catch(() => undefined)
+  const ps = (argv: string[]) => run($, [PS, ...argv], undefined, { LC_ALL: 'C' }).catch(() => undefined)
   const pids = await ps(['-A', '-o', 'pid=,ppid=,comm='])
   if (!pids || pids.exitCode !== 0 || typeof pids.stdout !== 'string' || pids.stdout.length > c.PS_TABLE_MAX) return 'background-unknown'
   const kids = c.childPids(pids.stdout, me.pid as number)
@@ -2240,7 +2247,7 @@ let cfgReadAt: number | undefined
 const cfgInvalidLogged = new Set<string>()
 async function cfgGet($: any, sid: string, force = false): Promise<c.Config> {
   const now = await $.clock.now()
-  if (!force && cfgReadAt !== undefined && now >= cfgReadAt && now - cfgReadAt < c.CONFIG_READ_MS) return cfg
+  if (!force && !c.dueEvery(cfgReadAt, now, c.CONFIG_READ_MS)) return cfg
   cfgReadAt = now
   try {
     const raw = await withTimeout($, (async () => $.store.get(c.CONFIG_KEY))(), c.ENGINE_CALL_TIMEOUT_MS)
@@ -2250,10 +2257,10 @@ async function cfgGet($: any, sid: string, force = false): Promise<c.Config> {
     for (const f of parsed.invalid) {
       if (cfgInvalidLogged.has(f)) continue
       cfgInvalidLogged.add(f)
-      await log($, sid, 'config-invalid', f).catch(() => undefined)
+      await logq($, sid, 'config-invalid', f)
     }
   } catch {
-    await log($, sid, 'error', 'config-read').catch(() => undefined)
+    await logq($, sid, 'error', 'config-read')
   }
   return cfg
 }
@@ -2267,7 +2274,7 @@ let reservedReadAt: number | undefined
 let reservedGen = 0
 async function reservedGet($: any, sid: string, force = false): Promise<readonly string[]> {
   const now = await $.clock.now()
-  if (!force && reservedReadAt !== undefined && now >= reservedReadAt && now - reservedReadAt < c.CONFIG_READ_MS) return c.localReservedNames()
+  if (!force && !c.dueEvery(reservedReadAt, now, c.CONFIG_READ_MS)) return c.localReservedNames()
   const gen = reservedGen
   try {
     const raw = await withTimeout($, (async () => $.store.get(c.RESERVE_KEY))(), c.ENGINE_CALL_TIMEOUT_MS)
@@ -2277,7 +2284,7 @@ async function reservedGet($: any, sid: string, force = false): Promise<readonly
       reservedReadAt = now
     }
   } catch {
-    await log($, sid, 'error', 'reserve-read').catch(() => undefined)
+    await logq($, sid, 'error', 'reserve-read')
   }
   return c.localReservedNames()
 }
@@ -2354,7 +2361,7 @@ async function nudgeTick($: any, sid: string) {
   if (kind === 'lead' && (ct.lastNudgeMs ?? 0) >= due.at) return drop('nudge-limit')
   if (!c.nudgeAllowed(ct, now, kind === 'working', due.again === true || kind === 'lead')) return drop('nudge-limit')
   if ((await $.state.set(nudgeDueRef, null, { ifVersion: read.version })).isSet === false) return
-  await bump($, (ct) => ({ ...ct, lastNudgeMs: now, lastNudgeKind: kind!, nudgeTimes: [...(ct.nudgeTimes ?? []).filter((t) => t <= now && now - t < c.HOUR_MS), now] }))
+  await bump($, (ct) => ({ ...ct, lastNudgeMs: now, lastNudgeKind: kind!, nudgeTimes: c.pushRecent(ct.nudgeTimes ?? [], now) }))
   await $.state.set(nudgedAtRef, now)
   const sent = await withTimeout($, submitOwn($, c.nudgeText(kind!, await cfgGet($, sid)), false).then(() => 'ok' as const, () => 'failed' as const), ACTION_TIMEOUT_MS)
   if (sent === 'failed') await $.state.set(nudgedAtRef, null)
@@ -2402,13 +2409,13 @@ async function midTurnNudge($: any, e: any): Promise<string | undefined> {
     const text = c.nudgeText(kind, lv)
     // Cleared by version when a nudge was recorded; else the claim is the stamp below, and midTurnBusy keeps a second hook of the same batch out.
     if (due != null && (await $.state.set(nudgeDueRef, null, { ifVersion: read.version })).isSet === false) return undefined
-    await bump($, (x) => ({ ...x, lastNudgeMs: now, lastNudgeKind: kind, nudgeTimes: [...(x.nudgeTimes ?? []).filter((t) => t <= now && now - t < c.HOUR_MS), now] }))
+    await bump($, (x) => ({ ...x, lastNudgeMs: now, lastNudgeKind: kind, nudgeTimes: c.pushRecent(x.nudgeTimes ?? [], now) }))
     await $.state.set(nudgedAtRef, now)
     midDelivered.add(sid)
-    await log($, sid, 'nudged', `${kind} mid-turn`).catch(() => undefined)
+    await logq($, sid, 'nudged', `${kind} mid-turn`)
     return text
   } catch {
-    await log($, sid, 'error', 'mid-turn-nudge').catch(() => undefined)
+    await logq($, sid, 'error', 'mid-turn-nudge')
     return undefined
   } finally {
     midTurnBusy.delete(sid)
@@ -2548,7 +2555,7 @@ async function leadNudge($: any, sid: string, now: number, answer: Answer, refus
 async function orderSpend($: any, sid: string): Promise<number | null> {
   const was = (await $.state.get(orderedAtRef).catch(() => ({ value: null }))).value
   await $.state.set(orderedAtRef, null).catch(() => undefined)
-  await withTimeout($, Promise.resolve($.store.delete(`${c.ORDER_PREFIX}${sid}`)).catch(() => log($, sid, 'error', 'order-mark').catch(() => undefined)), c.ENGINE_CALL_TIMEOUT_MS)
+  await withTimeout($, Promise.resolve($.store.delete(`${c.ORDER_PREFIX}${sid}`)).catch(logFail($, sid, 'order-mark')), c.ENGINE_CALL_TIMEOUT_MS)
   return typeof was === 'number' ? was : null
 }
 
@@ -2558,7 +2565,7 @@ async function orderSpend($: any, sid: string): Promise<number | null> {
 async function orderStamp($: any, sid: string, now: number, restart = false) {
   if (!restart && c.orderFresh((await $.state.get(orderedAtRef)).value, now)) return
   await $.state.set(orderedAtRef, now)
-  await $.store.set(`${c.ORDER_PREFIX}${sid}`, { at: now }).catch(() => log($, sid, 'error', 'order-mark').catch(() => undefined))
+  await $.store.set(`${c.ORDER_PREFIX}${sid}`, { at: now }).catch(logFail($, sid, 'order-mark'))
   await log($, sid, 'ordered')
 }
 
@@ -2679,7 +2686,7 @@ async function failRequest($: any, sid: string, reason: string, notice: boolean,
   const now = await $.clock.now()
   const times = noticeTimes.get(sid) ?? []
   if (!c.noticeAllowed(times, now)) return log($, sid, 'notice-capped', reason)
-  noticeTimes.set(sid, [...times.filter((t) => t <= now && now - t < c.HOUR_MS), now])
+  noticeTimes.set(sid, c.pushRecent(times, now))
   await submitOwn($, c.noticeText(reason), false).catch(() => {
     turnKind.delete(sid)
     return log($, sid, 'notice-failed')
@@ -2721,7 +2728,7 @@ async function doCompact($: any, sid: string, req: Request, fromCue: boolean, an
   // The mark that survives a restart (c.CMP_PREFIX); set after `compacting`, so a tick in between cannot clear it as left behind.
   cmpMarked.add(sid)
   const markAt = await $.clock.now()
-  await withTimeout($, Promise.resolve($.store.set(`${c.CMP_PREFIX}${sid}`, { at: markAt })).catch(() => log($, sid, 'error', 'cmp-mark').catch(() => undefined)), c.ENGINE_CALL_TIMEOUT_MS)
+  await withTimeout($, Promise.resolve($.store.set(`${c.CMP_PREFIX}${sid}`, { at: markAt })).catch(logFail($, sid, 'cmp-mark')), c.ENGINE_CALL_TIMEOUT_MS)
   // A compaction runs far longer than the lead waits: `ok` means it began; its end is in the log (`compacted`).
   await answer('ok')
   await log($, sid, 'compacting', req.mode)
@@ -2960,7 +2967,7 @@ function undoLate($: any, sid: string, setting: Promise<any>, b: Bound) {
         await log($, sid, 'error', 'late-bind-undone')
       }
     })
-    .catch(() => log($, sid, 'error', 'late-bind').catch(() => undefined))
+    .catch(logFail($, sid, 'late-bind'))
 }
 
 // Claim <sid>.cue by renaming it to a name only this tick uses, then judge the file that was
@@ -3134,7 +3141,7 @@ function rebindUndoLate($: any, sid: string, setting: Promise<any>, b: Bound) {
         await log($, sid, 'error', 'late-rebind-undone')
       }
     })
-    .catch(() => log($, sid, 'error', 'late-rebind').catch(() => undefined))
+    .catch(logFail($, sid, 'late-rebind'))
 }
 // A try still running after the tick's time limit: the next tick does not start another beside it.
 const rebindBusy = new Set<string>()
@@ -3241,47 +3248,47 @@ async function tick($: any) {
     const lr = leadRestorePending.get(sid)
     if (lr) {
       const r = await withTimeout($, leadRestore($, sid, lr.hint, lr.tries + 1), ACTION_TIMEOUT_MS).catch(() => 'error' as const)
-      if (r === 'timeout' || r === 'error') await log($, sid, 'error', `lead-restore-${r}`).catch(() => undefined)
+      if (r === 'timeout' || r === 'error') await logq($, sid, 'error', `lead-restore-${r}`)
     }
     // A pending conductor restore, and a running conductor's reach and saved grant.
-    await conductorTick($, sid).catch(() => log($, sid, 'error', 'conductor-tick').catch(() => undefined))
+    await conductorTick($, sid).catch(logFail($, sid, 'conductor-tick'))
     // ADR 0004: close the requests of sessions that are gone, and any older than a day.
-    await promptCloseTick($).catch(() => log($, sid, 'error', 'prompt-close').catch(() => undefined))
-    await promptSweep($).catch(() => log($, sid, 'error', 'prompt-sweep').catch(() => undefined))
+    await promptCloseTick($).catch(logFail($, sid, 'prompt-close'))
+    await promptSweep($).catch(logFail($, sid, 'prompt-sweep'))
     // A pending manager restore, and a running manager's saved grant.
-    await managerTick($, sid).catch(() => log($, sid, 'error', 'manager-tick').catch(() => undefined))
+    await managerTick($, sid).catch(logFail($, sid, 'manager-tick'))
     // The cut-compaction note.
     const cut = cmpCutPending.get(sid)
-    if (cut !== undefined) await cmpCutTick($, sid, cut).catch(() => log($, sid, 'error', 'compact-cut').catch(() => undefined))
+    if (cut !== undefined) await cmpCutTick($, sid, cut).catch(logFail($, sid, 'compact-cut'))
     if (grants.has(sid)) {
       // A grant restored at start has no lane-list watch yet; and the saved grant is rewritten once a day, with no store read.
-      if (!watch.has(sid) && pinOf(sid) !== undefined) await watchInit($, sid).catch(() => log($, sid, 'error', 'lane-watch').catch(() => undefined))
+      if (!watch.has(sid) && pinOf(sid) !== undefined) await watchInit($, sid).catch(logFail($, sid, 'lane-watch'))
       const savedAt = leadSavedAt.get(sid)
       // A lead's pin only: a later non-lead grant must never save a lead hint without a pin.
       const pin = pinOf(sid)
       if (pin !== undefined && c.leadRefreshDue(savedAt, await $.clock.now())) await leadSave($, sid, pin)
-      await presenceTouch($, sid).catch(() => log($, sid, 'error', 'presence').catch(() => undefined))
-      await presencePrune($).catch(() => log($, sid, 'error', 'presence-prune').catch(() => undefined))
-      await leadRenameTick($, sid).catch(() => log($, sid, 'error', 'lead-rename').catch(() => undefined))
-      await watchTick($, sid).catch(() => log($, sid, 'error', 'lane-watch').catch(() => undefined))
+      await presenceTouch($, sid).catch(logFail($, sid, 'presence'))
+      await presencePrune($).catch(logFail($, sid, 'presence-prune'))
+      await leadRenameTick($, sid).catch(logFail($, sid, 'lead-rename'))
+      await watchTick($, sid).catch(logFail($, sid, 'lane-watch'))
       // ADR 0004: the notice of a prompt waiting, after the lanes-changed one (a tick submits at most once).
-      await promptNoticeTick($, sid, submitsAtStart).catch(() => log($, sid, 'error', 'prompt-notice').catch(() => undefined))
+      await promptNoticeTick($, sid, submitsAtStart).catch(logFail($, sid, 'prompt-notice'))
       // The lead's look for a live manager, once a minute; not awaited (as the check-in), so its reads never hold the tick.
       // A due look runs under a timeout (managerSeenStep).
       if (grants.get(sid)?.level === 'lead') void managerSeenStep($, sid as string).catch(() => undefined)
     }
-    await unlockRetry($, sid).catch(() => log($, sid, 'error', 'unlock-retry').catch(() => undefined))
-    await renameTick($, sid).catch(() => log($, sid, 'error', 'rename').catch(() => undefined))
+    await unlockRetry($, sid).catch(logFail($, sid, 'unlock-retry'))
+    await renameTick($, sid).catch(logFail($, sid, 'rename'))
     if (rebindPending.has(sid) && !rebindBusy.has(sid)) {
       rebindBusy.add(sid)
       const step = rebindTick($, sid).finally(() => rebindBusy.delete(sid))
       const r = await withTimeout($, step, ACTION_TIMEOUT_MS).catch(() => 'error' as const)
-      if (r === 'timeout' || r === 'error') await log($, sid, 'error', `rebind-${r}`).catch(() => undefined)
+      if (r === 'timeout' || r === 'error') await logq($, sid, 'error', `rebind-${r}`)
     }
     const due = await sidSyncDue($, sid).catch(() => undefined)
     if (due) {
       const synced = await withTimeout($, sidSync($, sid, due), ACTION_TIMEOUT_MS).catch(() => 'error' as const)
-      if (synced === 'timeout' || synced === 'error') await log($, sid, 'sid-heal-failed', synced).catch(() => undefined)
+      if (synced === 'timeout' || synced === 'error') await logq($, sid, 'sid-heal-failed', synced)
     }
     // The request step is guarded too: a step that throws on every tick must not keep the cue below from being claimed.
     try {
@@ -3324,7 +3331,7 @@ async function tick($: any) {
       }
       requestFails.delete(sid)
     } catch {
-      await log($, sid, 'error', 'request').catch(() => undefined)
+      await logq($, sid, 'error', 'request')
       const now = await $.clock.now()
       const f = requestFails.get(sid) ?? { n: 0, firstMs: now }
       const n = f.n + 1
@@ -3332,11 +3339,11 @@ async function tick($: any) {
       else {
         // Dropped; the count restarts whether or not the drop worked.
         requestFails.delete(sid)
-        await dropRequest($, sid, 'request-failing').catch(() => log($, sid, 'error', 'request-drop').catch(() => undefined))
+        await dropRequest($, sid, 'request-failing').catch(logFail($, sid, 'request-drop'))
       }
     }
     nudge = true
-    await sweepTaken($, sid, p).catch(() => log($, sid, 'error', 'taken-sweep').catch(() => undefined))
+    await sweepTaken($, sid, p).catch(logFail($, sid, 'taken-sweep'))
     const got = await claim($, sid, p)
     if (!got) return
     // Every exit from here on answers the lead, with the inode of the cue file it answers.
@@ -3360,7 +3367,7 @@ async function tick($: any) {
   } catch {
     if (typeof sid === 'string' && c.SID_RE.test(sid)) {
       await answer?.('refused', 'other').catch(() => undefined)
-      await log($, sid, 'error', 'tick').catch(() => undefined)
+      await logq($, sid, 'error', 'tick')
     }
   } finally {
     // Stamped before the keepalive step, so a tick's own length is not read as a sleep by the next call. A tick that itself lasted past
@@ -3371,8 +3378,8 @@ async function tick($: any) {
       lastTimerAt = end
     } catch {}
     if (nudge) {
-      await nudgeTick($, sid as string).catch(() => log($, sid as string, 'error', 'nudge').catch(() => undefined))
-      await keepaliveTick($, sid as string, submitsAtStart).catch(() => log($, sid as string, 'error', 'keepalive').catch(() => undefined))
+      await nudgeTick($, sid as string).catch(logFail($, sid as string, 'nudge'))
+      await keepaliveTick($, sid as string, submitsAtStart).catch(logFail($, sid as string, 'keepalive'))
       // The lead check-in, after the ping, so the submits guard covers both. Only once a minute, for a lead: no timer is started on the other ticks.
       // Not awaited, so a slow observation never holds the tick (and the cue it claims); its own flag keeps one step at a time.
       const s = sid as string
@@ -3501,11 +3508,11 @@ async function checkinDue($: any, sid: string): Promise<boolean> {
   if (!grants.has(sid) || grants.get(sid)?.level === 'conductor') return false
   const now = await $.clock.now()
   const last = obsAt.get(sid)
-  if (last !== undefined && now >= last && now - last < c.CHECKIN_EVERY_MS) return false
+  if (!c.dueEvery(last, now, c.CHECKIN_EVERY_MS)) return false
   obsAt.set(sid, now)
   // The last step has not settled (an engine read that hangs): no new one; logged once per stall (the log keeps one line per event and reason).
   if (checkinBusy.has(sid)) {
-    await log($, sid, 'checkin-stalled').catch(() => undefined)
+    await logq($, sid, 'checkin-stalled')
     return false
   }
   return true
@@ -3596,7 +3603,7 @@ async function orderDue($: any, sid: string): Promise<boolean> {
   if (!grants.has(sid) || !(orders.get(sid)?.size ?? 0) || orderBusy.has(sid)) return false
   const now = await $.clock.now()
   const last = orderChecked.get(sid)
-  if (last !== undefined && now >= last && now - last < c.CHECKIN_EVERY_MS) return false
+  if (!c.dueEvery(last, now, c.CHECKIN_EVERY_MS)) return false
   orderChecked.set(sid, now)
   return true
 }
@@ -3680,7 +3687,7 @@ async function attentionNotice($: any, sid: string, items: c.AttentionItem[], su
   for (const k of keys) told.add(k)
   attnCapped.delete(sid)
   cappedLogged.delete(sid)
-  laneNotices.set(sid, [...(laneNotices.get(sid) ?? []).filter((t) => t <= now && now - t < c.HOUR_MS), now])
+  laneNotices.set(sid, c.pushRecent(laneNotices.get(sid) ?? [], now))
   const sent = await withTimeout($, submitOwn($, text, false).then(() => 'ok' as const, () => 'failed' as const), ACTION_TIMEOUT_MS)
   if (sent === 'failed') {
     turnKind.delete(sid)
@@ -3696,14 +3703,14 @@ async function attentionNotice($: any, sid: string, items: c.AttentionItem[], su
 async function checkinCommand($: any, sid: string, code: c.OriginCode, op: c.CheckinOp): Promise<{ text: string }> {
   if (op === 'bad') return { text: c.CHECKIN_USAGE }
   if (!c.originIsPerson(code)) {
-    await log($, sid, 'refused', `checkin-not-person:${code}`).catch(() => undefined)
+    await logq($, sid, 'refused', `checkin-not-person:${code}`)
     return { text: c.CHECKIN_NOT_PERSON }
   }
   if (!grants.has(sid)) return { text: c.CHECKIN_NOT_LEAD }
   const now = await $.clock.now()
   const until = op === 'on' ? null : now + op.pauseMs
   if ((await $.state.set(checkinPauseRef, until))?.isSet === false) return { text: c.CHECKIN_UNSAVED }
-  await log($, sid, 'checkin-pause', `${op === 'on' ? 'on' : `${op.pauseMs / 60_000}m`}:${code}`).catch(() => undefined)
+  await logq($, sid, 'checkin-pause', `${op === 'on' ? 'on' : `${op.pauseMs / 60_000}m`}:${code}`)
   if (until !== null) return { text: c.checkinPausedText(until, now) }
   return { text: (await cfgGet($, sid)).checkin ? c.CHECKIN_ON_TEXT : c.CHECKIN_ON_BUT_OFF }
 }
@@ -3721,7 +3728,7 @@ async function leadRenameTick($: any, sid: string) {
   if (g?.level !== 'lead' || g.name === '' || g.pins.length !== 1) return
   const now = await $.clock.now()
   const last = renameChecked.get(sid)
-  if (last !== undefined && now >= last && now - last < RENAME_CHECK_MS) return
+  if (!c.dueEvery(last, now, RENAME_CHECK_MS)) return
   renameChecked.set(sid, now)
   const live = await registryEntries($)
   if (!live) return
@@ -3798,7 +3805,7 @@ async function claimPlan($: any, sid: string): Promise<{ text: string } | ClaimP
 // that name is still carried by no live session, no live session carries a lane the lead made (its stored hash would break), and the grant is the same.
 async function claimCommand($: any, sid: string, code: c.OriginCode, busy: () => Promise<{ text: string }>): Promise<{ text: string }> {
   if (!c.originIsPerson(code)) {
-    await log($, sid, 'refused', `claim-not-person:${code}`).catch(() => undefined)
+    await logq($, sid, 'refused', `claim-not-person:${code}`)
     return { text: c.CLAIM_NOT_PERSON }
   }
   const plan = await claimPlan($, sid)
@@ -4021,7 +4028,7 @@ async function detach($: any, sid: string, b: Bound): Promise<{ whole: boolean; 
   try {
     await $.store.delete(`${c.HINT_PREFIX}${sid}`)
   } catch {
-    await log($, sid, 'error', 'hint-delete').catch(() => undefined)
+    await logq($, sid, 'error', 'hint-delete')
   }
   lastSaved.delete(sid)
   const whole = !b.adopted || (await dropRecord($, b.name, b.key, b.rec, folder).catch(() => false))
@@ -4084,7 +4091,7 @@ async function laneCommand($: any, sid: string, code: c.OriginCode, arg: c.Comma
       try {
         asked = await restoreFromHint($, sid, now, () => (offSeq.get(sid) ?? 0) !== seq)
       } catch {
-        await log($, sid, 'error', 'restore').catch(() => undefined)
+        await logq($, sid, 'error', 'restore')
       } finally {
         dialogOpen.delete(sid)
       }
@@ -4185,7 +4192,7 @@ async function laneCommand($: any, sid: string, code: c.OriginCode, arg: c.Comma
     const limited = async <T,>(p: Promise<T>, what: string): Promise<T> => {
       const r = await withTimeout($, p, c.ENGINE_CALL_TIMEOUT_MS)
       if (r === 'timeout') {
-        await log($, sid, 'error', `attach-${what}-timeout`).catch(() => undefined)
+        await logq($, sid, 'error', `attach-${what}-timeout`)
         throw new Error(`${what}-timeout`)
       }
       return r
@@ -4208,7 +4215,7 @@ async function laneCommand($: any, sid: string, code: c.OriginCode, arg: c.Comma
       }
       await limited(saveHint($, sid), 'hint')
     } catch {
-      await log($, sid, 'error', 'attach-bind').catch(() => undefined)
+      await logq($, sid, 'error', 'attach-bind')
       // From the binding write on, it may be there: detach clears it, its hint and the briefing facts, and takes the record back; undo is the fallback for the record.
       // The detach has the same time limit: a timeout counts as not done, and undo takes the record back.
       if (!written || (await withTimeout($, detach($, sid, binding).then((d) => d.whole, () => false), c.ENGINE_CALL_TIMEOUT_MS)) !== true) await undo()
@@ -4266,7 +4273,7 @@ async function managerCommand($: any, sid: string, code: c.OriginCode, want: str
   // A restore: only the person's Cancel removes the saved grant; no answer (a timeout, a dismissal, an error) restores nothing and keeps it.
   if (restore && r !== 'yes') {
     if (r === 'no') {
-      await Promise.resolve($.store.delete(`${c.MANAGER_HINT_PREFIX}${sid}`)).catch(() => log($, sid, 'error', 'manager-hint-delete').catch(() => undefined))
+      await Promise.resolve($.store.delete(`${c.MANAGER_HINT_PREFIX}${sid}`)).catch(logFail($, sid, 'manager-hint-delete'))
       await log($, sid, 'manager-restore-cancelled')
     } else {
       await log($, sid, 'manager-restore-unanswered')
@@ -4302,7 +4309,7 @@ async function managerCommand($: any, sid: string, code: c.OriginCode, want: str
       set = 'error'
     }
     if (set !== undefined || (offSeq.get(sid) ?? 0) !== seq) {
-      await log($, sid, 'error', set === undefined ? 'off-meanwhile' : `manager-register-${set}`).catch(() => undefined)
+      await logq($, sid, 'error', set === undefined ? 'off-meanwhile' : `manager-register-${set}`)
       return { text: c.MANAGER_FAILED }
     }
     grants.set(sid, { level: 'manager', pins: [], name })
@@ -4350,7 +4357,7 @@ async function managerForget($: any, sid: string): Promise<boolean> {
     await $.store.delete(`${c.MANAGER_HINT_PREFIX}${sid}`)
     return true
   } catch {
-    await log($, sid, 'error', 'manager-hint-delete').catch(() => undefined)
+    await logq($, sid, 'error', 'manager-hint-delete')
     return false
   }
 }
@@ -4365,9 +4372,9 @@ async function managerSave($: any, sid: string) {
   try {
     await $.store.set(key, { name: g.name, savedAt: now })
   } catch {
-    await log($, sid, 'manager-unsaved').catch(() => undefined)
+    await logq($, sid, 'manager-unsaved')
   }
-  if (epochOf(sid) !== epoch || grants.get(sid)?.level !== 'manager') await Promise.resolve($.store.delete(key)).catch(() => log($, sid, 'error', 'manager-hint-delete').catch(() => undefined))
+  if (epochOf(sid) !== epoch || grants.get(sid)?.level !== 'manager') await Promise.resolve($.store.delete(key)).catch(logFail($, sid, 'manager-hint-delete'))
 }
 
 // A session whose saved manager grant is there when it starts is asked once whether to restore it, as the conductor's widened list is (conductorRestoreAsk): only
@@ -4421,7 +4428,7 @@ async function managerTick($: any, sid: string) {
   if (lanes.some((l) => l.sid === sid)) return void (await reject('lane-holder'))
   if ((await idleCheck($, sid)) !== undefined) return
   if (managerRestorePending.get(sid) !== pend) return
-  void managerRestoreAsk($, sid, pend).catch(() => log($, sid, 'error', 'manager-restore-ask').catch(() => undefined))
+  void managerRestoreAsk($, sid, pend).catch(logFail($, sid, 'manager-restore-ask'))
 }
 
 // ---- the conductor level ----
@@ -4447,9 +4454,9 @@ async function conductorSave($: any, sid: string) {
   try {
     await $.store.set(key, { home, repos: [...repos], savedAt: now })
   } catch {
-    await log($, sid, 'conductor-unsaved').catch(() => undefined)
+    await logq($, sid, 'conductor-unsaved')
   }
-  if (epochOf(sid) !== epoch || grants.get(sid)?.level !== 'conductor') await Promise.resolve($.store.delete(key)).catch(() => log($, sid, 'error', 'conductor-hint-delete').catch(() => undefined))
+  if (epochOf(sid) !== epoch || grants.get(sid)?.level !== 'conductor') await Promise.resolve($.store.delete(key)).catch(logFail($, sid, 'conductor-hint-delete'))
 }
 
 // The list file, read as a plain small file of the user's (group and other may read it, not write it), with one more try when a read failed or met a swap.
@@ -4668,7 +4675,7 @@ async function conductorAddPlan($: any, sid: string, arg: string, marks: boolean
 async function conductorListCommand($: any, sid: string, code: c.OriginCode, op: { add: string } | { remove: string }, busy: () => Promise<{ text: string }>): Promise<{ text: string }> {
   const verb = 'add' in op ? 'add' : 'remove'
   if (!c.originIsPerson(code)) {
-    await log($, sid, 'refused', `conductor-not-person:${code}`).catch(() => undefined)
+    await logq($, sid, 'refused', `conductor-not-person:${code}`)
     return { text: c.CONDUCTOR_NOT_PERSON }
   }
   const refuse = async (why: string, home = '') => {
@@ -4822,7 +4829,7 @@ async function briefConductor($: any, sid: string, home: string) {
     if (r?.deny !== undefined) throw new Error('refused')
   } catch {
     if (briefed.get(sid) === key) briefed.delete(sid)
-    await log($, sid, 'error', 'conductor-briefing').catch(() => undefined)
+    await logq($, sid, 'error', 'conductor-briefing')
   }
 }
 
@@ -4902,7 +4909,7 @@ async function conductorGrant($: any, sid: string, code: c.OriginCode, busy: () 
     if (again.home !== home || [...again.ok].sort().join('\n') !== [...first.ok].sort().join('\n')) return refuse('conductor-changed', home)
     const a = await conductorApply($, sid, home, first.ok, first.ok, epochOf(sid))
     if (a !== 'ok') {
-      await log($, sid, 'error', `conductor-register-${a}`).catch(() => undefined)
+      await logq($, sid, 'error', `conductor-register-${a}`)
       return { text: c.CONDUCTOR_FAILED }
     }
     grantEpoch = epochOf(sid)
@@ -4915,7 +4922,7 @@ async function conductorGrant($: any, sid: string, code: c.OriginCode, busy: () 
   await conductorSave($, sid)
   if (epochOf(sid) !== grantEpoch) return { text: 'Conductor is now off.' }
   await presenceDrop($, sid).catch(() => undefined)
-  await presenceTouch($, sid).catch(() => log($, sid, 'error', 'conductor-presence').catch(() => undefined))
+  await presenceTouch($, sid).catch(logFail($, sid, 'conductor-presence'))
   await log($, sid, 'conductor-on', code)
   await briefConductor($, sid, home)
   await nameGrant($, sid)
@@ -4990,9 +4997,9 @@ async function conductorRestoreTry($: any, me: string, box: { hint: c.ConductorH
   if (approved.length < hint.repos.length) {
     await log($, me, 'conductor-ratchet', String(hint.repos.length - approved.length))
     box.hint = { ...hint, repos: approved, savedAt: now }
-    await Promise.resolve($.store.set(key, box.hint)).catch(() => log($, me, 'conductor-unsaved').catch(() => undefined))
+    await Promise.resolve($.store.set(key, box.hint)).catch(() => logq($, me, 'conductor-unsaved'))
     // An off that landed during the write deleted the key first; delete it again, as conductorSave does.
-    if (dropped()) return void (await Promise.resolve($.store.delete(key)).catch(() => log($, me, 'error', 'conductor-hint-delete').catch(() => undefined)))
+    if (dropped()) return void (await Promise.resolve($.store.delete(key)).catch(logFail($, me, 'conductor-hint-delete')))
   }
   const added = r.ok.filter((x) => !approved.includes(x))
   if (added.length > 0) return { shown: r.ok, added }
@@ -5014,7 +5021,7 @@ async function conductorRestoreTry($: any, me: string, box: { hint: c.ConductorH
   if (dropped()) return
   // No note: the history has it from the grant.
   briefed.set(me, `conductor:${hint.home}`)
-  await presenceTouch($, me).catch(() => log($, me, 'error', 'conductor-presence').catch(() => undefined))
+  await presenceTouch($, me).catch(logFail($, me, 'conductor-presence'))
   await log($, me, 'conductor-restored')
   toast($, c.conductorRestoredToast(hint.home, r.ok.length))
   await nameGrant($, me)
@@ -5027,7 +5034,7 @@ async function conductorRestore($: any, me: string, hint: c.ConductorHint, tries
     again = await conductorRestoreTry($, me, box)
   } catch {
     again = undefined
-    await log($, me, 'conductor-restore-rejected', 'error').catch(() => undefined)
+    await logq($, me, 'conductor-restore-rejected', 'error')
   }
   if (again === undefined || epochOf(me) !== epoch) return void conductorRestorePending.delete(me)
   if (typeof again === 'object') return void conductorRestorePending.set(me, { hint: box.hint, tries, ask: again })
@@ -5061,7 +5068,7 @@ async function conductorRestoreAsk($: any, me: string, pend: CondPending) {
     if (!mine()) return void (await log($, me, 'conductor-restore-rejected', 'changed'))
     if (r === 'no') {
       end()
-      await Promise.resolve($.store.delete(key)).catch(() => log($, me, 'error', 'conductor-hint-delete').catch(() => undefined))
+      await Promise.resolve($.store.delete(key)).catch(logFail($, me, 'conductor-hint-delete'))
       return void (await log($, me, 'conductor-restore-cancelled'))
     }
     if (r !== 'yes') {
@@ -5093,7 +5100,7 @@ async function conductorRestoreAsk($: any, me: string, pend: CondPending) {
     }
     await conductorSave($, me)
     if (epochOf(me) !== epoch) return
-    await presenceTouch($, me).catch(() => log($, me, 'error', 'conductor-presence').catch(() => undefined))
+    await presenceTouch($, me).catch(logFail($, me, 'conductor-presence'))
     await log($, me, 'conductor-restored', `widened ${added.length}`)
     await briefConductor($, me, hint.home)
     toast($, c.conductorRestoredToast(hint.home, shown.length))
@@ -5111,16 +5118,16 @@ async function conductorTick($: any, sid: string) {
   if (pend && !pend.asking) {
     if (!pend.ask) {
       const r = await withTimeout($, conductorRestore($, sid, pend.hint, pend.tries + 1, pend.last), ACTION_TIMEOUT_MS).catch(() => 'error' as const)
-      if (r === 'timeout' || r === 'error') await log($, sid, 'error', `conductor-restore-${r}`).catch(() => undefined)
+      if (r === 'timeout' || r === 'error') await logq($, sid, 'error', `conductor-restore-${r}`)
     } else if ((await personRow($, sid)) && (await idleCheck($, sid)) === undefined) {
-      void conductorRestoreAsk($, sid, pend).catch(() => log($, sid, 'error', 'conductor-restore-ask').catch(() => undefined))
+      void conductorRestoreAsk($, sid, pend).catch(logFail($, sid, 'conductor-restore-ask'))
     }
   }
   if (grants.get(sid)?.level !== 'conductor') return
   const now = await $.clock.now()
   if (c.leadRefreshDue(conductorSavedAt.get(sid), now)) await conductorSave($, sid)
   const last = conductorReadAt.get(sid)
-  if (last === undefined || now < last || now - last >= CONDUCTOR_REFRESH_MS) {
+  if (c.dueEvery(last, now, CONDUCTOR_REFRESH_MS)) {
     conductorReadAt.set(sid, now)
     await conductorReach($, sid)
   }
@@ -5129,7 +5136,7 @@ async function conductorTick($: any, sid: string) {
 // /color from a mod is refused inside a hook the turn waits on and works from a timer. Best effort, while the same grant holds; logged either way.
 const COLOR_AFTER_MS = 1000
 function colorLater($: any, sid: string, epoch: number) {
-  const failed = () => log($, sid, 'error', 'manager-color').catch(() => undefined)
+  const failed = () => logq($, sid, 'error', 'manager-color')
   try {
     Promise.resolve(
       $.clock.after(COLOR_AFTER_MS, async () => {
@@ -5155,7 +5162,7 @@ async function configCommand($: any, sid: string, code: c.OriginCode, op: c.Conf
   if (op === 'show') return { text: c.configText(await cfgGet($, sid, true)) }
   if (op === 'bad') return { text: c.CONFIG_USAGE }
   if (!c.originIsPerson(code)) {
-    await log($, sid, 'refused', `config-not-person:${code}`).catch(() => undefined)
+    await logq($, sid, 'refused', `config-not-person:${code}`)
     return { text: c.CONFIG_NOT_PERSON }
   }
   // Each store call runs inside an async function, so a call that throws at once is answered like one that rejects.
@@ -5173,13 +5180,13 @@ async function configCommand($: any, sid: string, code: c.OriginCode, op: c.Conf
   const now = await $.clock.now()
   const w = await withTimeout($, (async () => $.store.set(c.CONFIG_KEY, { ...next, savedAt: now }))().then(() => 'ok' as const), c.ENGINE_CALL_TIMEOUT_MS).catch(() => 'failed' as const)
   if (w !== 'ok') {
-    await log($, sid, 'error', `config-write-${w}`).catch(() => undefined)
+    await logq($, sid, 'error', `config-write-${w}`)
     return { text: c.CONFIG_UNSAVED }
   }
   cfg = next
   cfgReadAt = now
   const field = op === 'reset' ? 'reset' : op.field
-  await log($, sid, 'config-set', `${field}:${code}`).catch(() => undefined)
+  await logq($, sid, 'config-set', `${field}:${code}`)
   return { text: op === 'reset' ? c.CONFIG_RESET_TEXT : c.configSetText(op.field, next) }
 }
 
@@ -5190,7 +5197,7 @@ async function reserveCommand($: any, sid: string, code: c.OriginCode, op: c.Res
   if (op === 'bad') return { text: c.RESERVE_USAGE }
   if (op === 'show') return { text: c.reserveShowText(await reservedGet($, sid, true)) }
   if (!c.originIsPerson(code)) {
-    await log($, sid, 'refused', `reserve-not-person:${code}`).catch(() => undefined)
+    await logq($, sid, 'refused', `reserve-not-person:${code}`)
     return { text: c.RESERVE_NOT_PERSON }
   }
   // The list as stored now: also what managerNameOf reads for the remove guard below.
@@ -5244,13 +5251,13 @@ async function reserveCommand($: any, sid: string, code: c.OriginCode, op: c.Res
   const now = await $.clock.now()
   const w = await withTimeout($, (async () => $.store.set(c.RESERVE_KEY, { names: next, savedAt: now }))().then(() => 'ok' as const), c.ENGINE_CALL_TIMEOUT_MS).catch(() => 'failed' as const)
   if (w !== 'ok') {
-    await log($, sid, 'error', `reserve-write-${w}`).catch(() => undefined)
+    await logq($, sid, 'error', `reserve-write-${w}`)
     return { text: c.RESERVE_UNSAVED }
   }
   reservedGen++
   c.setLocalReserved(next)
   reservedReadAt = now
-  await log($, sid, 'add' in op ? 'reserve-add' : 'reserve-remove', code).catch(() => undefined)
+  await logq($, sid, 'add' in op ? 'reserve-add' : 'reserve-remove', code)
   return { text: 'add' in op ? c.reserveAddedText(op.add) : c.reserveRemovedText(cur.find((x) => x.toUpperCase() === op.remove.toUpperCase())!) }
 }
 
@@ -5299,7 +5306,7 @@ async function promptPut($: any, path: string, text: string): Promise<boolean> {
   try {
     if ((await run($, [INSTALL, '-m', '600', '/dev/null', tmp])).exitCode !== 0) return false
     if ((await run($, [TEE, '--', tmp], text)).exitCode !== 0 || (await run($, [MV, '-f', tmp, path])).exitCode !== 0) {
-      await run($, [RM, '-f', '--', tmp]).catch(() => undefined)
+      await rmF($, tmp)
       return false
     }
     return true
@@ -5427,7 +5434,7 @@ async function promptObserve($: any, e: any, r: any): Promise<void> {
 
 // The current branch of a repo, by a read-only git call that reads no hook and no optional lock; undefined (detached, or any failure) leaves the floor holding.
 async function branchOf($: any, dir: string): Promise<string | undefined> {
-  const r = await $.process.run([GIT_BIN, '--no-optional-locks', '-C', dir, 'symbolic-ref', '--short', '-q', 'HEAD'], { timeoutMs: 5000, env: { LC_ALL: 'C' } }).catch(() => undefined)
+  const r = await run($, [GIT_BIN, '--no-optional-locks', '-C', dir, 'symbolic-ref', '--short', '-q', 'HEAD'], undefined, { LC_ALL: 'C' }).catch(() => undefined)
   const b = r?.exitCode === 0 ? String(r.stdout).trim() : ''
   return b === '' || /[\u0000-\u001f]/.test(b) ? undefined : b
 }
@@ -5436,7 +5443,7 @@ async function branchOf($: any, dir: string): Promise<string | undefined> {
 // a remote's push or mirror). No keys is an answer (the defaults apply); anything else that fails leaves it unresolved, and the floor holds.
 const PUSH_KEYS = '^(branch\\..*\\.(remote|pushremote|merge)|remote\\.pushdefault|remote\\..*\\.(push|pushurl|mirror)|url\\..*\\.(insteadof|pushinsteadof)|push\\.default)$'
 async function pushTargetOf($: any, dir: string, branch: string, remote?: string): Promise<NonNullable<pr.FloorOpts['pushTarget']>> {
-  const r = await $.process.run([GIT_BIN, '--no-optional-locks', '-C', dir, 'config', '--get-regexp', PUSH_KEYS], { timeoutMs: 5000, env: { LC_ALL: 'C' } }).catch(() => undefined)
+  const r = await run($, [GIT_BIN, '--no-optional-locks', '-C', dir, 'config', '--get-regexp', PUSH_KEYS], undefined, { LC_ALL: 'C' }).catch(() => undefined)
   // A config that cannot be read may rewrite the push: even a named ref is then the floor.
   if (!r) return { unresolved: true, mapped: true }
   if (r.exitCode === 1 && String(r.stdout).trim() === '') return pr.pushTargetFrom('', branch, remote)
@@ -5537,7 +5544,7 @@ async function linkedRoots($: any, home: string): Promise<string[]> {
     try {
       const names = ((await $.fs.list(`${home}/.claude/${sub}`).catch(() => [])) as { name: string }[]).map((f) => f.name).filter((n) => /^[A-Za-z0-9._-]{1,100}$/.test(n)).slice(0, 64)
       if (names.length === 0) continue
-      const r = await $.process.run([REALPATH, '--', ...names.map((n) => `${home}/.claude/${sub}/${n}`)], { timeoutMs: 5000, env: { LC_ALL: 'C' } })
+      const r = await run($, [REALPATH, '--', ...names.map((n) => `${home}/.claude/${sub}/${n}`)], undefined, { LC_ALL: 'C' })
       for (const line of String(r.stdout).split('\n')) {
         const m = /^(\/.+?)\/(?:hooks|rules)\/[^/]+$/.exec(line.trim())
         const low = m?.[1].toLowerCase()
@@ -5598,7 +5605,7 @@ async function promptCleanup($: any, dir: string | undefined, id: string | undef
 // left marks, and the closed marker.
 const PROMPT_SUFFIXES = ['request.json', 'decision.json', 'escalate.json', 'escalate-lead.json', 'escalate-conductor.json', 'escalate-manager.json', 'relay.json', 'asked', 'left', 'done']
 async function promptRemoveFiles($: any, dir: string, id: string): Promise<void> {
-  await run($, [RM, '-f', '--', ...PROMPT_SUFFIXES.map((x) => `${dir}/${id}.${x}`)]).catch(() => undefined)
+  await rmF($, PROMPT_SUFFIXES.map((x) => `${dir}/${id}.${x}`))
 }
 
 // The marker prompt_list, the lead's notice and prompt_answer read as "closed": no hook waits for this request any more.
@@ -5689,7 +5696,7 @@ async function promptRelayAsked($: any, sid: string, shorts: string[]): Promise<
 async function promptRelayAskedClear($: any, sid: string, shorts: string[]): Promise<void> {
   const p = await where($)
   if (!p) return
-  for (const r of await promptOpenRelays($, p, sid).catch(() => [])) if (shorts.includes(r.relay.short)) await run($, [RM, '-f', '--', `${r.dir}/${r.relay.id}.asked`]).catch(() => undefined)
+  for (const r of await promptOpenRelays($, p, sid).catch(() => [])) if (shorts.includes(r.relay.short)) await rmF($, `${r.dir}/${r.relay.id}.asked`)
 }
 // A tier's turn has ended with relay questions it had asked still open: each is left (`.left`, a `relay-left` row), as a dismissal is.
 async function promptRelayTurnEnd($: any, sid: string): Promise<void> {
@@ -5714,7 +5721,7 @@ async function promptAskingClear($: any, sid: string, always = false): Promise<b
   const file = `${p.root}/prompts/asking/${sid}`
   // Not marked in memory (a reload since, or never asked): one stat tells whether a file is there, so a turn of an ordinary session costs no process call.
   if (!marked && !always && (await statR($, file)) === 'absent') return false
-  await run($, [RM, '-f', '--', file]).catch(() => undefined)
+  await rmF($, file)
   return true
 }
 
@@ -5942,7 +5949,7 @@ async function promptWait($: any, beneath: any, signal: AbortSignal, w: WaitCtx)
     const r = relay
     if (askedSeen) personSaw = true
     if (!(await ledgerAdd($, { ...w.row, kind: 'relay-lost', code, ...(r ? { short: r.short, by: r.by.sid, tier: r.by.level } : {}) }))) return
-    await run($, [RM, '-f', '--', relayPath, askedPath, leftPath]).catch(() => undefined)
+    await rmF($, [relayPath, askedPath, leftPath])
     relay = undefined
     askedSeen = false
   }
@@ -5988,7 +5995,7 @@ async function promptWait($: any, beneath: any, signal: AbortSignal, w: WaitCtx)
     const df = await readSmallR($, `${w.dir}/${w.id}.decision.json`, w.p.uid, pr.DECISION_MAX)
     // A decision that is dropped (its row is written) is taken away: a file left in place would make every tier's answer and pass-up 'decided', and hide the request
     // from prompt_list and the notice, so no tier could act on it again and the wait would end in the 20-minute deny.
-    const takeAway = async () => void (await run($, [RM, '-f', '--', `${w.dir}/${w.id}.decision.json`]).catch(() => undefined))
+    const takeAway = async () => void (await rmF($, `${w.dir}/${w.id}.decision.json`))
     if (df.state === 'bad' && (await statR($, `${w.dir}/${w.id}.decision.json`)) !== 'absent') {
       if (lastDrop !== 'file') {
         lastDrop = 'file'
@@ -6216,7 +6223,7 @@ async function promptRelayPost($: any, e: any): Promise<string | undefined> {
       const old = await readSmallR($, path, p.uid, pr.DECISION_MAX)
       const od = old.state === 'ok' ? pr.parseDecision(old.text) : undefined
       if (od && od.via !== 'person') {
-        await run($, [RM, '-f', '--', path]).catch(() => undefined)
+        await rmF($, path)
         put = await promptLinkOnce($, path, body)
       }
     }
@@ -6225,13 +6232,13 @@ async function promptRelayPost($: any, e: any): Promise<string | undefined> {
       continue
     }
     if ((await statR($, `${dir}/${id}.request.json`)) === 'absent') {
-      await run($, [RM, '-f', '--', path]).catch(() => undefined)
+      await rmF($, path)
       await lateRow()
       continue
     }
     const ok = await ledgerAdd($, { id, nonce: q.nonce, lane: q.lane, repo: q.repo, tool: q.tool, pattern: pr.patternOf(q.tool, q.input, q.repo), hash: q.inputHash, tier: relay.by.level, why, kind: 'answered', code: a.outcome, by: sid, via: 'person', short: relay.short, ...(label !== undefined ? { opt: String(a.index), lh } : {}) })
     if (!ok) {
-      await run($, [RM, '-f', '--', path]).catch(() => undefined)
+      await rmF($, path)
       late = true
     } else if (label !== undefined) {
       // The pick is the lane's own label text, which the tier reads as the person's answer: say what it is, so it is not taken for an instruction.
@@ -6285,13 +6292,13 @@ async function promptSweep($: any): Promise<void> {
         if (!gone && (!old || live === undefined || (await heldByLive(f.name)))) continue
         // No row, no removal: the next sweep tries again.
         if (!(await ledgerAdd($, { kind: 'abandoned', code: gone ? 'session-gone' : 'swept', id: m[1] }))) continue
-        await run($, [RM, '-f', '--', ...PROMPT_SUFFIXES.map((x) => `${base}/${d.name}/${m[1]}.${x}`)]).catch(() => undefined)
+        await rmF($, PROMPT_SUFFIXES.map((x) => `${base}/${d.name}/${m[1]}.${x}`))
         continue
       }
       // A file whose request is gone (a crash between the two removals, or a half-written copy), a day old: removed with no row, it names no open request.
       const o = /^([0-9a-f-]{36})\.(decision\.json|done|escalate(?:-lead|-conductor|-manager)?\.json|relay\.json|asked|left)$/.exec(f.name)
       const orphan = (o !== null && pr.ID_RE.test(o[1]) && !requests.has(o[1]) && !busy.has(o[1])) || /^[0-9a-f-]{36}\.[A-Za-z.-]+\.\d+\.tmp$/.test(f.name)
-      if (orphan && old) await run($, [RM, '-f', '--', `${base}/${d.name}/${f.name}`]).catch(() => undefined)
+      if (orphan && old) await rmF($, `${base}/${d.name}/${f.name}`)
     }
     // A folder of a session that has ended, with nothing left in it, goes too (rmdir refuses a folder that holds anything).
     if (gone && files.length === 0) await run($, [RMDIR, '--', `${base}/${d.name}`]).catch(() => undefined)
@@ -6326,13 +6333,13 @@ async function questionsPrune($: any, p: { uid: number; root: string }): Promise
     for (const f of todo) {
       const path = `${base}/${f.name}`
       if (f.kind === 'remove') {
-        await run($, [RM, '-f', '--', path]).catch(() => undefined)
+        await rmF($, path)
         continue
       }
       const r = await readSmallR($, path, p.uid, QUESTIONS_FILE_MAX)
       if (r.state !== 'ok') continue
       const kept = pr.questionsRewrite(r.text, now)
-      if (kept === '') await run($, [RM, '-f', '--', path]).catch(() => undefined)
+      if (kept === '') await rmF($, path)
       else await promptPut($, path, kept)
     }
   } finally {
@@ -6346,7 +6353,7 @@ async function promptSweepAsking($: any, base: string): Promise<void> {
   if (files.length === 0) return
   const live = await registryEntries($)
   if (!live) return
-  for (const f of files) if (!live.some((r) => r.j.sessionId === f.name)) await run($, [RM, '-f', '--', `${base}/asking/${f.name}`]).catch(() => undefined)
+  for (const f of files) if (!live.some((r) => r.j.sessionId === f.name)) await rmF($, `${base}/asking/${f.name}`)
 }
 
 // /callboard escalation (the person's own command, one dialog) and /callboard escalation off (any origin, no dialog). One Allow stores scope `all` for permission prompts and questions alike;
@@ -6358,7 +6365,7 @@ async function escalationCommand($: any, sid: string, code: c.OriginCode, op: pr
     try {
       await $.store.delete(ANSWERING_KEY)
     } catch {
-      await log($, sid, 'error', 'escalation-store').catch(() => undefined)
+      await logq($, sid, 'error', 'escalation-store')
       return { text: 'Escalation could not be changed: the store did not answer. Create ~/.claude/callboard/prompts/OFF to stop it now.' }
     }
     await ledgerAdd($, { kind: 'answering-off', code: 'off' })
@@ -6366,7 +6373,7 @@ async function escalationCommand($: any, sid: string, code: c.OriginCode, op: pr
   }
   // On is the person's own command, with a dialog that names exactly what turns on.
   if (!c.originIsPerson(code)) {
-    await log($, sid, 'refused', `escalation-not-person:${code}`).catch(() => undefined)
+    await logq($, sid, 'refused', `escalation-not-person:${code}`)
     return { text: pr.ESCALATION_NOT_PERSON }
   }
   const r = await askOnce($, sid, pr.ESCALATION_QUESTION, pr.ESCALATION_YES, pr.ESCALATION_NO, pr.ESCALATION_HEADER)
@@ -6387,7 +6394,7 @@ async function escalationCommand($: any, sid: string, code: c.OriginCode, op: pr
   const hash = await sha($, pr.canonical(value)).catch(() => undefined)
   const plainRow = await ledgerAdd($, { kind: 'answering-on', hash })
   if (!plainRow || !(await ledgerAdd($, { kind: 'answering-on', code: 'asks', hash }))) {
-    await log($, sid, 'error', 'escalation-ledger').catch(() => undefined)
+    await logq($, sid, 'error', 'escalation-ledger')
     try {
       if (before === undefined || before === null) await $.store.delete(ANSWERING_KEY)
       else await $.store.set(ANSWERING_KEY, before)
@@ -6395,7 +6402,7 @@ async function escalationCommand($: any, sid: string, code: c.OriginCode, op: pr
       return { text: 'Escalation could not be turned on, and the store would not take it back: the ledger did not answer. Whether escalation is on is now unknown. Create ~/.claude/callboard/prompts/OFF to stop it now.' }
     }
     // The plain row may already be in the ledger, which would then read as a wider "on" than the value put back: it gets rows for that value (best effort, the ledger just failed once).
-    if (plainRow && !(await ledgerRestore($, before))) await log($, sid, 'error', 'escalation-ledger-restore').catch(() => undefined)
+    if (plainRow && !(await ledgerRestore($, before))) await logq($, sid, 'error', 'escalation-ledger-restore')
     return { text: 'Escalation could not be turned on: the ledger did not answer. Nothing changed.' }
   }
   return { text: `${pr.escalationState(value, await promptsOff($))} ${pr.FLOOR_LINE}` }
@@ -6586,7 +6593,7 @@ async function promptLinkOnce($: any, path: string, text: string): Promise<'ok' 
   } catch {
     return 'failed'
   } finally {
-    if (tmp !== '') await run($, [RM, '-f', '--', tmp]).catch(() => undefined)
+    if (tmp !== '') await rmF($, tmp)
   }
 }
 
@@ -6680,7 +6687,7 @@ async function promptAnswerTool($: any, e: any, answer: boolean): Promise<{ resu
   // The request closing while a file is written leaves nothing behind: the file goes, nothing is logged.
   const gone = async (path: string) => {
     if ((await statR($, `${dir}/${id}.request.json`)) !== 'absent') return false
-    await run($, [RM, '-f', '--', path]).catch(() => undefined)
+    await rmF($, path)
     return true
   }
   if (answer) {
@@ -6695,13 +6702,13 @@ async function promptAnswerTool($: any, e: any, answer: boolean): Promise<{ resu
     if (await gone(path)) return refuse('closed')
     // A tier that put the request to the person while this decision was being written wins: the decision is taken back (B1c).
     if ((await statR($, `${dir}/${id}.relay.json`)) !== 'absent') {
-      await run($, [RM, '-f', '--', path]).catch(() => undefined)
+      await rmF($, path)
       return refuse('with-person')
     }
     // The row is written only after the file is in place; the hook holds a decision it sees a moment before its row for a few seconds. A row that cannot be written
     // takes the file back, so a decision never stands without its row.
     if (!(await ledgerAdd($, { ...row, kind: 'answered', code: decision, by: sid, ...(cap ? { cap: cap.kind, target: cap.target } : {}), ...(pick ? { opt: String(pick.index), lh } : {}) }))) {
-      await run($, [RM, '-f', '--', path]).catch(() => undefined)
+      await rmF($, path)
       return refuse('write-failed')
     }
     if (decision === 'deny' && pr.isUnclear(why)) await ledgerAdd($, { ...row, kind: 'deny-unclear', code: 'deny', by: sid })
@@ -6716,7 +6723,7 @@ async function promptAnswerTool($: any, e: any, answer: boolean): Promise<{ resu
     if (put === 'failed') return refuse('write-failed')
     if (await gone(path)) return refuse('closed')
     if (!(await ledgerAdd($, { ...row, kind: 'escalated', code: self.level }))) {
-      await run($, [RM, '-f', '--', path]).catch(() => undefined)
+      await rmF($, path)
       return refuse('write-failed')
     }
     promptForget(sid, id)
@@ -6734,9 +6741,9 @@ async function promptAnswerTool($: any, e: any, answer: boolean): Promise<{ resu
   if (await gone(path)) return refuse('closed')
   // The relay wins a race with a decision (prompt_answer takes its own decision back when it finds the relay, and only that side removes anything): a decision that
   // landed while the relay was written is removed here, so it cannot outlast the relay it lost to.
-  await run($, [RM, '-f', '--', `${dir}/${id}.decision.json`]).catch(() => undefined)
+  await rmF($, `${dir}/${id}.decision.json`)
   if (!(await ledgerAdd($, { ...row, kind: 'relayed', code: self.level, short, by: sid }))) {
-    await run($, [RM, '-f', '--', path]).catch(() => undefined)
+    await rmF($, path)
     return refuse('write-failed')
   }
   promptForget(sid, id)
@@ -6834,7 +6841,7 @@ async function promptNoticeTick($: any, sid: string, submitsAtStart: number): Pr
   if (owed.length === 0) return
   for (const id of owed) told.set(id, 0)
   promptCapLogged.delete(sid)
-  promptNotices.set(sid, [...(promptNotices.get(sid) ?? times).filter((t) => t <= now && now - t < c.HOUR_MS), now])
+  promptNotices.set(sid, c.pushRecent(promptNotices.get(sid) ?? times, now))
   await submitOwn($, pr.PROMPT_NOTICE_TEXT, false).catch(async () => {
     for (const id of owed) told.set(id, -1)
     turnKind.delete(sid)
@@ -6906,11 +6913,11 @@ async function promptMidTurnNotice($: any, e: any): Promise<string | undefined> 
     for (const id of owed) sent.add(id)
     promptMidSent.set(sid, sent)
     promptCapLogged.delete(sid)
-    promptNotices.set(sid, [...(promptNotices.get(sid) ?? []).filter((t) => t <= now && now - t < c.HOUR_MS), now])
-    await log($, sid, 'notice', 'prompts mid-turn').catch(() => undefined)
+    promptNotices.set(sid, c.pushRecent(promptNotices.get(sid) ?? [], now))
+    await logq($, sid, 'notice', 'prompts mid-turn')
     return pr.PROMPT_NOTICE_TEXT
   } catch {
-    await log($, sid, 'error', 'mid-turn-prompt-notice').catch(() => undefined)
+    await logq($, sid, 'error', 'mid-turn-prompt-notice')
     return undefined
   }
 }
@@ -6921,7 +6928,7 @@ export const register: Register = (on) => {
     const now = await $.clock.now()
     if ((await $.state.get(seen)).value == null) await $.state.set(seen, now)
     // One of the two signs of a person's session for the self-threshold nudge (interactive(): this, or an own registry row). A recorded nudge is left alone (it expires on its own).
-    await $.state.set(interactiveRef, (e as { isInteractive?: unknown }).isInteractive === true).catch(async () => log($, await $.session.id(), 'error', 'interactive').catch(() => undefined))
+    await $.state.set(interactiveRef, (e as { isInteractive?: unknown }).isInteractive === true).catch(async () => logq($, await $.session.id(), 'error', 'interactive'))
     const req = (await $.state.get(request)).value as Request | null | undefined
     // A request still in $.state means the state survived (a reload, not a restart): a cut-compaction mark then gives no note.
     const stateKept = req != null
@@ -6951,14 +6958,14 @@ export const register: Register = (on) => {
       await pruneHints($, me)
       if (c.parseHint(await $.store.get(`${c.HINT_PREFIX}${me}`), now)) await log($, me, 'hint-found')
     } catch {
-      await log($, me, 'error', 'hint-scan').catch(() => undefined)
+      await logq($, me, 'error', 'hint-scan')
     }
     // The settings, read fresh at each start (cfgGet keeps the last good value when the read fails).
     await cfgGet($, me, true)
     await reservedGet($, me, true)
-    await pruneResults($).catch(() => log($, me, 'error', 'result-prune').catch(() => undefined))
-    await pruneLogs($, me).catch(() => log($, me, 'error', 'log-prune').catch(() => undefined))
-    await presenceDrop($, me).catch(() => log($, me, 'error', 'presence-drop').catch(() => undefined))
+    await pruneResults($).catch(logFail($, me, 'result-prune'))
+    await pruneLogs($, me).catch(logFail($, me, 'log-prune'))
+    await presenceDrop($, me).catch(logFail($, me, 'presence-drop'))
     // A saved lead grant for this session, then whether a store record names it, looked at from the tick.
     if (c.SID_RE.test(me)) {
       try {
@@ -6973,7 +6980,7 @@ export const register: Register = (on) => {
           } else await leadRestore($, me, h, 0)
         }
       } catch {
-        await log($, me, 'lead-restore-rejected', 'error').catch(() => undefined)
+        await logq($, me, 'lead-restore-rejected', 'error')
       }
       // A saved conductor grant for this session, restored as the lead's is (conductorRestore).
       try {
@@ -6988,7 +6995,7 @@ export const register: Register = (on) => {
           } else await conductorRestore($, me, h, 0)
         }
       } catch {
-        await log($, me, 'conductor-restore-rejected', 'error').catch(() => undefined)
+        await logq($, me, 'conductor-restore-rejected', 'error')
       }
       // A saved manager grant for this session: asked about from the tick (managerTick), not restored here. A session that still holds the grant (a
       // compaction) is not asked.
@@ -7003,7 +7010,7 @@ export const register: Register = (on) => {
           } else managerRestorePending.set(me, { hint: h, tries: 0 })
         }
       } catch {
-        await log($, me, 'manager-restore-rejected', 'error').catch(() => undefined)
+        await logq($, me, 'manager-restore-rejected', 'error')
       }
       // A compaction cut off by the restart. A stale mark, or one found while the state survived, goes with no note.
       try {
@@ -7013,7 +7020,7 @@ export const register: Register = (on) => {
           else await cmpClear($, me)
         }
       } catch {
-        await log($, me, 'error', 'cmp-read').catch(() => undefined)
+        await logq($, me, 'error', 'cmp-read')
       }
       rebindPending.set(me, 0)
       rebindName.delete(me)
@@ -7048,7 +7055,7 @@ export const register: Register = (on) => {
       return { text: 'A callboard question is already open. Answer it first.' }
     }
     // A busy request is logged once, by the busy line below (same key, so a loop is de-duplicated); the person's own commands always get their line.
-    if (verb !== 'status' && (!dialogOpen.has(sid) || c.originIsPerson(code))) await log($, sid, 'command', `${verb}:${code}`).catch(() => undefined)
+    if (verb !== 'status' && (!dialogOpen.has(sid) || c.originIsPerson(code))) await logq($, sid, 'command', `${verb}:${code}`)
     if (verb === 'lane' || verb === 'lane-off') return laneCommand($, sid, code, arg as c.CommandArg, busy)
     if (arg === 'claim') return claimCommand($, sid, code, busy)
     if (typeof arg === 'object' && 'manager' in arg) return managerCommand($, sid, code, arg.manager, busy)
@@ -7147,7 +7154,7 @@ export const register: Register = (on) => {
       try {
         cwd = await sessionRoot($)
       } catch {
-        await log($, sid, 'error', 'lead-register').catch(() => undefined)
+        await logq($, sid, 'error', 'lead-register')
         return { text: 'Lead could not be set up.' }
       }
       // A grant from a plugin, session or script keeps the folder an earlier grant pinned; only the person's own prompt or phone moves it.
@@ -7187,11 +7194,11 @@ export const register: Register = (on) => {
         try {
           set = await withTimeout($, leadToolsOnce($, sid), c.ENGINE_CALL_TIMEOUT_MS)
         } catch {
-          await log($, sid, 'error', 'lead-register').catch(() => undefined)
+          await logq($, sid, 'error', 'lead-register')
           return { text: 'Lead could not be set up.' }
         }
         if (set === 'timeout') {
-          await log($, sid, 'error', 'lead-register-timeout').catch(() => undefined)
+          await logq($, sid, 'error', 'lead-register-timeout')
           return { text: 'Lead could not be set up.' }
         }
         // A re-grant with a new folder is a new reach: work in flight for the old one (a check-in) sees the epoch move and stops.
@@ -7212,8 +7219,8 @@ export const register: Register = (on) => {
       if (epochOf(sid) !== grantEpoch) return { text: 'Lead is now off.' }
       // A new grant may pin another folder: the old file and its checks go first.
       await presenceDrop($, sid).catch(() => undefined)
-      await presenceTouch($, sid).catch(() => log($, sid, 'error', 'presence').catch(() => undefined))
-      await watchInit($, sid).catch(() => log($, sid, 'error', 'lane-watch').catch(() => undefined))
+      await presenceTouch($, sid).catch(logFail($, sid, 'presence'))
+      await watchInit($, sid).catch(logFail($, sid, 'lane-watch'))
       await log($, sid, 'lead-on')
       await briefLead($, sid, pinned)
       await nameGrant($, sid)
@@ -7800,14 +7807,14 @@ export const register: Register = (on) => {
             // A session that survives its SIGTERM keeps its record, so the lead can still stop it by name; the record stops naming the session at once, so reopening
             // that conversation by hand asks Restore again instead of making it the lane silently.
             outcome = 'alive'
-            await log($, sid, 'error', 'lane-still-running').catch(() => undefined)
+            await logq($, sid, 'error', 'lane-still-running')
             await sidClearAfterStop($, sid, prep.lane.src, prep.lane.name, victim.sessionId)
           } else {
             const gone = await removeRecord($, e, sid, prep.lane.src, prep.lane.name, { kind: 'stopped', victim: victim.sessionId })
             // A record that is gone already (another writer took it out meanwhile) is the outcome wanted.
             if ('no' in gone && gone.no !== 'unknown-lane') {
               outcome = { unremoved: gone.no }
-              await log($, sid, 'error', `lane-unremoved ${gone.no}`).catch(() => undefined)
+              await logq($, sid, 'error', `lane-unremoved ${gone.no}`)
               await sidClearAfterStop($, sid, prep.lane.src, prep.lane.name, victim.sessionId)
             } else {
               outcome = 'removed'
@@ -7820,7 +7827,7 @@ export const register: Register = (on) => {
       try {
         return await afterSignal()
       } catch {
-        await log($, sid, 'error', `after-signal-${verb}`).catch(() => undefined)
+        await logq($, sid, 'error', `after-signal-${verb}`)
         return { result: c.afterSignalFailedText(verb as 'retire' | 'park' | 'terminate', prep.lane.name, victim.pid as number) } as never
       } finally {
         signalledCalls.delete(callKey)
@@ -7832,7 +7839,7 @@ export const register: Register = (on) => {
       const kind = next?.error?.kind === 'timeout' ? 'timeout' : 'throw'
       const sid = await Promise.resolve($.session.id()).catch(() => undefined)
       const sent = typeof sid === 'string' ? signalledCalls.get(stopCallKey(sid, verb, (e as { lane?: unknown }).lane)) : undefined
-      if (typeof sid === 'string') await log($, sid, 'error', `lane_${verb}-hook-${kind}${sent ? '-after-signal' : ''}`).catch(() => undefined)
+      if (typeof sid === 'string') await logq($, sid, 'error', `lane_${verb}-hook-${kind}${sent ? '-after-signal' : ''}`)
       return sent ? ({ result: c.afterSignalFailedText(verb as 'retire' | 'park' | 'terminate', sent.name, sent.pid) } as never) : { deny: `lane_${verb} failed closed.` }
     })
   }
@@ -7880,7 +7887,7 @@ export const register: Register = (on) => {
         await $.state.set(turnEndRef, at)
         if (kind === undefined) await $.state.set(realEndRef, at)
       } catch {
-        await log($, sid, 'error', 'turn-end').catch(() => undefined)
+        await logq($, sid, 'error', 'turn-end')
       }
       const mid = midDelivered.delete(sid)
       promptMidFallback(sid)
@@ -7891,8 +7898,8 @@ export const register: Register = (on) => {
       // PermissionDenied, and the model only reads "Denied by user"). Its relay is left, so the wait ends and the dialog stays with the person.
       if (wasAsking) await promptRelayTurnEnd($, sid).catch(() => undefined)
       if (kind !== 'ping' && e.reason === 'answer') {
-        if (mid) await midTurnFallback($, sid).catch(() => log($, sid, 'error', 'nudge-fallback').catch(() => undefined))
-        else await thresholdNudge($, sid).catch(() => log($, sid, 'error', 'nudge-check').catch(() => undefined))
+        if (mid) await midTurnFallback($, sid).catch(logFail($, sid, 'nudge-fallback'))
+        else await thresholdNudge($, sid).catch(logFail($, sid, 'nudge-check'))
       }
     }
     return next(e)
