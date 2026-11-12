@@ -382,6 +382,23 @@ test('e: each request is compared with the latest answering row at its time: a l
   assert.equal(two.anomalies[0].id, uid(2))
 })
 
+test('e: an off typed between the hook\'s switch read and its requested row is not flagged when the request ends with an off row; a request raised while off still is', () => {
+  const fx = fixture()
+  const closedOff = (at) => [R('requested', at, { ...T, id: uid(1), nonce: uid(101), tier: 'lead' }), R('off', at + 5_000, { ...T, id: uid(1) })]
+  // on, off, requested, off-closing: the race. Not an anomaly.
+  ledger(fx, [ON(BASE - 60_000), R('answering-off', BASE - 2_000, { code: 'off' }), ...closedOff(BASE)])
+  assert.deepEqual(run(fx).anomalies, [])
+  // The same sequence, but the request was answered and returned: it ran while off. Flagged.
+  ledger(fx, [ON(BASE - 60_000), R('answering-off', BASE - 2_000, { code: 'off' }), ...clean()])
+  assert.deepEqual(rules(run(fx)), ['requested-while-answering-off'])
+  // Ends with off, but the off row is long before the request (not the hook's window): flagged.
+  ledger(fx, [ON(BASE - 3_600_000), R('answering-off', BASE - 600_000, { code: 'off' }), ...closedOff(BASE)])
+  assert.deepEqual(rules(run(fx)), ['requested-while-answering-off'])
+  // A request with no closing row at all: flagged.
+  ledger(fx, [ON(BASE - 60_000), R('answering-off', BASE - 2_000, { code: 'off' }), closedOff(BASE)[0]])
+  assert.deepEqual(rules(run(fx)), ['requested-while-answering-off'])
+})
+
 test('f: a request file older than 24 h in a session folder is an anomaly, by age only', () => {
   const fx = fixture()
   ledger(fx, [ON(), ...clean()])

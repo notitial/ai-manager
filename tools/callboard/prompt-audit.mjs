@@ -672,6 +672,11 @@ export function audit({ root, projects, since, now = Date.now(), projectsExplici
 
   // e. a request must be raised while answering is on: the latest answering-on or answering-off row at its time says on (not the first answering-on row ever written, which a later off outlives).
   // An answering-off with code asks only turned the questions off (an earlier mod wrote it); permission answering stayed on.
+  // The hook reads the switch once at its start and writes the requested row after slower steps, so an off typed in between reads on, off, requested, and the waiting hook then
+  // closes the request with an `off` row. That is no defect: the request was raised under on. It is not flagged when the off row is at most OFF_RACE_MS before the requested row and
+  // the request's own last row is an `off` row.
+  const OFF_RACE_MS = 120_000
+  const offRace = (g, req, off) => req.ms - off.ms <= OFF_RACE_MS && g.rows[g.rows.length - 1]?.kind === 'off'
   const permOnOff = onOff.filter((r) => !(r.kind === 'answering-off' && r.code === 'asks'))
   for (const g of groups) {
     const req = g.requested[0]
@@ -683,7 +688,7 @@ export function audit({ root, projects, since, now = Date.now(), projectsExplici
       state = r
     }
     if (!state) flag('e', 'requested-before-answering-on', `request ${g.id} was asked with no answering-on row before it`, { id: g.id, t: req.t })
-    else if (state.kind === 'answering-off') flag('e', 'requested-while-answering-off', `request ${g.id} was asked while answering was off (the latest answering row before it is an answering-off at ${state.t})`, { id: g.id, t: req.t })
+    else if (state.kind === 'answering-off' && !offRace(g, req, state)) flag('e', 'requested-while-answering-off', `request ${g.id} was asked while answering was off (the latest answering row before it is an answering-off at ${state.t})`, { id: g.id, t: req.t })
   }
 
   // f. request files older than 24 h, by age only (the live-session test is not applied here).
