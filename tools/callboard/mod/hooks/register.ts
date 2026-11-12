@@ -6331,20 +6331,24 @@ async function escalationCommand($: any, sid: string, code: c.OriginCode, op: pr
   if (r !== 'yes') return { text: r === 'timed-out' ? 'Nothing changed: the question timed out.' : 'Cancelled. Nothing changed.' }
   // `asks: false` stays in the value so that an older mod after a rollback still reads it.
   const value: pr.Answering = { scope: 'all', asks: false, asksScope: 'all', savedAt: await $.clock.now() }
+  // What was stored before (an earlier value, narrower or not) is kept to put back if the rows cannot be written.
+  let before: unknown
   try {
+    before = await $.store.get(ANSWERING_KEY)
     await $.store.set(ANSWERING_KEY, value)
   } catch {
     return { text: 'Escalation could not be turned on: the store did not answer. Nothing changed.' }
   }
   // The dialog took time: an `escalation off` typed meanwhile is overridden by this Allow, the person's own last word.
-  // Both rows must land, plain first: the audit reads a question as covered only by the asks row, and a switch with no row is an anomaly. Else it is not left on.
+  // Both rows must land, plain first: the audit reads a question as covered only by the asks row, and a switch with no row is an anomaly. Else the value before stays.
   const hash = await sha($, pr.canonical(value)).catch(() => undefined)
   if (!(await ledgerAdd($, { kind: 'answering-on', hash })) || !(await ledgerAdd($, { kind: 'answering-on', code: 'asks', hash }))) {
     await log($, sid, 'error', 'escalation-ledger').catch(() => undefined)
     try {
-      await $.store.delete(ANSWERING_KEY)
+      if (before === undefined || before === null) await $.store.delete(ANSWERING_KEY)
+      else await $.store.set(ANSWERING_KEY, before)
     } catch {
-      return { text: 'Escalation could not be turned on, and the store would not take it back: the ledger did not answer. Create ~/.claude/callboard/prompts/OFF to stop it now.' }
+      return { text: 'Escalation could not be turned on, and the store would not take it back: the ledger did not answer. Whether escalation is on is now unknown. Create ~/.claude/callboard/prompts/OFF to stop it now.' }
     }
     return { text: 'Escalation could not be turned on: the ledger did not answer. Nothing changed.' }
   }

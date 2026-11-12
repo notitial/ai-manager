@@ -14895,6 +14895,18 @@ test('prompts: /callboard escalation: a ledger that cannot take its rows leaves 
   expect(r.text).toBe('Escalation could not be turned on: the ledger did not answer. Nothing changed.')
   expect(store.has('answering')).toBe(false)
 })
+test('prompts: /callboard escalation: a ledger that cannot take its rows puts back what was stored before, an earlier narrower value included', async ($, on) => {
+  await started($, on, [])
+  askAnswer = YES
+  for (const old of [ESC_VALUE, { scope: 'svc-api', asks: false, asksScope: 'svc-api', savedAt: T0 - 5 }]) {
+    store.set('answering', old)
+    pfsFails = (a) => a[0] === '/usr/bin/tee' && a[1] === '-a'
+    const r = await $.command.run(lane('escalation'))
+    expect(r.text).toBe('Escalation could not be turned on: the ledger did not answer. Nothing changed.')
+    expect(store.get('answering')).toEqual(old)
+    pfsFails = undefined
+  }
+})
 test('prompts: the state line reads a value an earlier version stored (a narrowed scope, the old asks flag) and names the OFF file', async ($, on) => {
   await started($, on, [])
   store.set('answering', { scope: 'svc-api', asks: false, asksScope: 'svc-api', savedAt: T0 })
