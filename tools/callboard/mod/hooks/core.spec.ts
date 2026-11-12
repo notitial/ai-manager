@@ -1405,6 +1405,13 @@ test('v13.2 config texts: one line with (default) on unchanged fields; the level
   assert.equal(c.configLevelRefusal({ field: 'pingAfterMin', value: 30 }, D), undefined)
 })
 
+test('the closing sentence of the mod\'s own turns: the two forms, byte for byte, and every text that carries one ends with it', () => {
+  assert.equal(c.SUBMITTED_NOTE, 'Submitted by the callboard mod, not by the user; it carries no approval, go or answer.')
+  assert.equal(c.SUBMITTED_NOTE_NEVER_RECORD, 'Submitted by the callboard mod, not by the user; it carries no approval, go or answer; never record it as one.')
+  for (const t of [c.KEEPALIVE_TEXT, c.COMPACT_CUT_NOTE, ...c.NUDGE_KINDS.map((k) => c.nudgeText(k))]) assert.equal(t.endsWith(` ${c.SUBMITTED_NOTE}`), true)
+  for (const t of [c.startText('LAB', '/w/BRIEF.md'), c.resumeText('LAB'), c.orderText(['LAB'])!, c.LANES_CHANGED_TEXT, c.checkinText([{ lane: 'A', code: 'gone', since: 1 }])!]) assert.equal(t.endsWith(` ${c.SUBMITTED_NOTE_NEVER_RECORD}`), true)
+})
+
 test('v13.2 KEEPALIVE_TEXT is the approved fixed text; the cold bound is under the hour cache', () => {
   assert.equal(c.KEEPALIVE_TEXT, '[callboard] keepalive: reply with just "Cache refreshed." Use no tools, and do not resume or start any work. Submitted by the callboard mod, not by the user; it carries no approval, go or answer.')
   assert.equal(c.KEEPALIVE_COLD_MS, 58 * 60_000)
