@@ -148,7 +148,7 @@ async function log($: any, sid: string, event: string, reason = '') {
     await run($, [INSTALL, '-m', '600', '/dev/null', file])
     f = await facts($, file)
   }
-  if (!f || f.kind !== 'file' || f.uid !== p.uid || f.mode !== 0o600 || f.nlink !== 1) return
+  if (!f || c.cueFileOk(f, p.uid)) return
   // Past LOG_MAX_BYTES only the noisy kinds stop: every rename, stop and compaction line is still written.
   lastLogged.set(sid, key)
   if ((event === 'refused' || event === 'error' || event === 'notice-capped') && f.size > c.LOG_MAX_BYTES) return
@@ -282,7 +282,7 @@ async function readStoreFile($: any, path: string, uid: number): Promise<{ state
   const r0 = await run($, [STAT, '-f', STAT_FMT, '--', path], undefined, { LC_ALL: 'C' })
   if (r0.exitCode !== 0) return { state: /No such file or directory/.test(r0.stderr) ? 'absent' : 'bad', text: '' }
   const f = c.parseStat(r0.stdout)
-  if (!f || f.kind !== 'file' || f.uid !== uid || f.mode !== 0o600 || f.nlink !== 1 || f.size > c.STORE_MAX_BYTES) return { state: 'bad', text: '' }
+  if (!f || c.cueFileOk(f, uid) || f.size > c.STORE_MAX_BYTES) return { state: 'bad', text: '' }
   const r = await run($, [HEAD, '-c', String(c.STORE_MAX_BYTES + 1), '--', path])
   return r.exitCode === 0 ? { state: 'ok', text: r.stdout } : { state: 'bad', text: '' }
 }
@@ -1879,7 +1879,7 @@ async function writeIn($: any, folder: string, file: string, text: string): Prom
   const tmp = `${dir}/.${file}.${await $.clock.now()}.${++seq}.tmp`
   await run($, [INSTALL, '-m', '600', '/dev/null', tmp])
   const f = await facts($, tmp)
-  if (!f || f.kind !== 'file' || f.uid !== p.uid || f.mode !== 0o600 || f.nlink !== 1) {
+  if (!f || c.cueFileOk(f, p.uid)) {
     await run($, [RM, '-f', '--', tmp])
     return { err: 'tmp-unsafe' }
   }
@@ -1918,7 +1918,7 @@ async function writeBrief($: any, uid: number, brief: string, head: string, text
   const tmp = `${dir}/.BRIEF.md.${await $.clock.now()}.${++seq}.tmp`
   await run($, [INSTALL, '-m', '600', '/dev/null', tmp])
   const f = await facts($, tmp)
-  if (!f || f.kind !== 'file' || f.uid !== uid || f.mode !== 0o600 || f.nlink !== 1) {
+  if (!f || c.cueFileOk(f, uid)) {
     await run($, [RM, '-f', '--', tmp])
     return 'brief-write'
   }
@@ -1943,7 +1943,7 @@ async function writeBrief($: any, uid: number, brief: string, head: string, text
 async function readAnswer($: any, path: string, uid: number, timeoutMs = 5000): Promise<{ state: 'absent' | 'bad' } | { state: 'ok'; text: string }> {
   const f = await facts($, path)
   if (!f) return { state: 'absent' }
-  if (f.kind !== 'file' || f.uid !== uid || f.mode !== 0o600 || f.nlink !== 1 || f.size > c.RESULT_MAX) {
+  if (c.cueFileOk(f, uid) || f.size > c.RESULT_MAX) {
     await run($, [RM, '-f', '--', path])
     return { state: 'bad' }
   }
@@ -5316,7 +5316,7 @@ async function ledgerAdd($: any, row: Omit<pr.LedgerRow, 't'>): Promise<boolean>
       await run($, [INSTALL, '-m', '600', '/dev/null', file])
       f = await facts($, file)
     }
-    if (!f || f.kind !== 'file' || f.uid !== p.uid || f.mode !== 0o600 || f.nlink !== 1) return false
+    if (!f || c.cueFileOk(f, p.uid)) return false
     return (await run($, [TEE, '-a', '--', file], pr.ledgerLine({ t: new Date(now).toISOString(), ...row }))).exitCode === 0
   } catch {
     return false
@@ -5338,7 +5338,7 @@ async function questionsAdd($: any, row: Omit<pr.QuestionsRow, 't'>): Promise<bo
       await run($, [INSTALL, '-m', '600', '/dev/null', file])
       f = await facts($, file)
     }
-    if (!f || f.kind !== 'file' || f.uid !== p.uid || f.mode !== 0o600 || f.nlink !== 1) return false
+    if (!f || c.cueFileOk(f, p.uid)) return false
     return (await run($, [TEE, '-a', '--', file], pr.questionsLine({ t: new Date(now).toISOString(), ...row }))).exitCode === 0
   } catch {
     return false

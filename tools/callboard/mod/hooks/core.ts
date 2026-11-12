@@ -90,7 +90,8 @@ export function isFresh(now: number, mtimeMs: number): boolean {
   return mtimeMs <= now && now - mtimeMs <= CUE_MAX_AGE_MS
 }
 
-// A claimed cue file: regular, ours, 0600, one link.
+// A private file of ours: regular, owned by uid, 0600, one link. The test for a claimed cue file and for every file the mod trusts as its own
+// (logs, ledgers, request and answer files, store files, temp files).
 export function cueFileOk(f: FileFacts, uid: number): string | undefined {
   if (f.kind !== 'file') return 'not-regular'
   if (f.uid !== uid) return 'wrong-owner'
