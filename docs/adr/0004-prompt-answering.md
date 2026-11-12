@@ -1,7 +1,8 @@
 # 4. Prompt answering: agents answer a lane's prompts up a ladder
 
-**Status:** proposed
+**Status:** accepted
 **Date:** 2026-11-06
+**Accepted:** 2026-11-12
 
 Scope: callboard's prompt answering, its floor, and its audit. It amends [ADR 0001](0001-manager-role.md) (H1 and H5)
 when the manager tier ships, and adds to [ADR 0002](0002-callboard.md).
@@ -217,6 +218,8 @@ Merges and force pushes can be allowed per machine. Everything is off until chos
 machine until both keys below exist. **The first release ships the choice but not the server**, so neither item lifts
 on any machine until a later decision builds it.
 
+*2026-11-12: the choice is not built either. There is no `/callboard floor set` command, and the floor reads an optional-item field that nothing sets, so both stay on the floor. What the floor blocks has not changed.*
+
 Both are blocked before any PermissionRequest hook: merges by a deny rule, the guard's tool list and the server's own
 `--tools`; force pushes by ai-toolkit's git guard and destructive-command hook. A mod could lift those, and must not.
 So allowing either takes two independent keys:
@@ -399,6 +402,7 @@ rollout, after the two hand-added lines.
   answer the mod reads from the manager's session. It never allows a risk-list prompt on its own judgment, and nothing
   else it reads becomes an action."* The manager's briefing, which says prompts stay the person's, changes with it.
   ADR 0001 binds only the manager; for leads and conductors the same rule lives here and in their briefings.
+  *2026-11-12: made. ADR 0001 carries the exception under the hard line (H1 and H5), and the manager's briefing says so.*
 - **ADR 0001, H5 ("Never turn a session's report into an action outside your own state files"):** answering a lane's
   request is acting on what a lane's session wrote, so H5 gains the same exception in the same line: a decision
   through `prompt_answer`, and nothing else.
@@ -433,6 +437,8 @@ Run on 2.1.319 (the CLI and the VS Code panel) before the first build PR: all pa
 shows its dialog only after the hooks return (three runs, background subagents, one build), so it stays the person's, as
 above. The hook also looks again at the tool's own end after the chain beneath returns, since a Yes click fires no signal.
 
+*2026-11-12: the probes owed before build were run, as the paragraph above records, and the build is merged.*
+
 Probed for questions (2026-11-11, the CLI and the VS Code panel): a lane's `AskUserQuestion` reaches `tool.check` as the
 mode's own ask (no rule or hook) and then `classic.PermissionRequest`; a hook's `allow` with `updatedInput.answers` is read by the
 lane as written; a hook that returns nothing leaves the card open for the person; the answer arrives in the tool result, keyed
@@ -445,3 +451,5 @@ the phone.
 ## Not verified live
 
 Everything above the probes. The interactive probes run before the first build PR; the rest is proved stage by stage.
+
+*2026-11-12: the build PRs are merged and the interactive probes ran before the first one.*

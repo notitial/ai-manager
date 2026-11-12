@@ -148,7 +148,7 @@ async function log($: any, sid: string, event: string, reason = '') {
     await run($, [INSTALL, '-m', '600', '/dev/null', file])
     f = await facts($, file)
   }
-  if (!f || f.kind !== 'file' || f.uid !== p.uid || f.mode !== 0o600 || f.nlink !== 1) return
+  if (!f || c.cueFileOk(f, p.uid)) return
   // Past LOG_MAX_BYTES only the noisy kinds stop: every rename, stop and compaction line is still written.
   lastLogged.set(sid, key)
   if ((event === 'refused' || event === 'error' || event === 'notice-capped') && f.size > c.LOG_MAX_BYTES) return
@@ -282,7 +282,7 @@ async function readStoreFile($: any, path: string, uid: number): Promise<{ state
   const r0 = await run($, [STAT, '-f', STAT_FMT, '--', path], undefined, { LC_ALL: 'C' })
   if (r0.exitCode !== 0) return { state: /No such file or directory/.test(r0.stderr) ? 'absent' : 'bad', text: '' }
   const f = c.parseStat(r0.stdout)
-  if (!f || f.kind !== 'file' || f.uid !== uid || f.mode !== 0o600 || f.nlink !== 1 || f.size > c.STORE_MAX_BYTES) return { state: 'bad', text: '' }
+  if (!f || c.cueFileOk(f, uid) || f.size > c.STORE_MAX_BYTES) return { state: 'bad', text: '' }
   const r = await run($, [HEAD, '-c', String(c.STORE_MAX_BYTES + 1), '--', path])
   return r.exitCode === 0 ? { state: 'ok', text: r.stdout } : { state: 'bad', text: '' }
 }
@@ -1879,7 +1879,7 @@ async function writeIn($: any, folder: string, file: string, text: string): Prom
   const tmp = `${dir}/.${file}.${await $.clock.now()}.${++seq}.tmp`
   await run($, [INSTALL, '-m', '600', '/dev/null', tmp])
   const f = await facts($, tmp)
-  if (!f || f.kind !== 'file' || f.uid !== p.uid || f.mode !== 0o600 || f.nlink !== 1) {
+  if (!f || c.cueFileOk(f, p.uid)) {
     await run($, [RM, '-f', '--', tmp])
     return { err: 'tmp-unsafe' }
   }
@@ -1918,7 +1918,7 @@ async function writeBrief($: any, uid: number, brief: string, head: string, text
   const tmp = `${dir}/.BRIEF.md.${await $.clock.now()}.${++seq}.tmp`
   await run($, [INSTALL, '-m', '600', '/dev/null', tmp])
   const f = await facts($, tmp)
-  if (!f || f.kind !== 'file' || f.uid !== uid || f.mode !== 0o600 || f.nlink !== 1) {
+  if (!f || c.cueFileOk(f, uid)) {
     await run($, [RM, '-f', '--', tmp])
     return 'brief-write'
   }
@@ -1943,7 +1943,7 @@ async function writeBrief($: any, uid: number, brief: string, head: string, text
 async function readAnswer($: any, path: string, uid: number, timeoutMs = 5000): Promise<{ state: 'absent' | 'bad' } | { state: 'ok'; text: string }> {
   const f = await facts($, path)
   if (!f) return { state: 'absent' }
-  if (f.kind !== 'file' || f.uid !== uid || f.mode !== 0o600 || f.nlink !== 1 || f.size > c.RESULT_MAX) {
+  if (c.cueFileOk(f, uid) || f.size > c.RESULT_MAX) {
     await run($, [RM, '-f', '--', path])
     return { state: 'bad' }
   }
@@ -5302,48 +5302,34 @@ async function promptPut($: any, path: string, text: string): Promise<boolean> {
   }
 }
 
-// One ledger row, appended whole (one tee call, under pr.LEDGER_ROW_MAX bytes). false: the row could not be written.
-async function ledgerAdd($: any, row: Omit<pr.LedgerRow, 't'>): Promise<boolean> {
+// One row appended whole (one tee call) to this month's file in the prompts folder, created 0600 and used only if it is a private file of ours.
+// fileOf names the month's file from the clock; lineOf builds the line from the time. false: the row could not be written.
+async function appendMonthly($: any, fileOf: (now: number) => string, lineOf: (t: string) => string): Promise<boolean> {
   try {
     const p = await where($)
     if (!p) return false
     const dir = await promptDir($, p)
     if (!dir) return false
     const now = await $.clock.now()
-    const file = `${dir}/${pr.ledgerFile(now)}`
+    const file = `${dir}/${fileOf(now)}`
     let f = await facts($, file)
     if (!f) {
       await run($, [INSTALL, '-m', '600', '/dev/null', file])
       f = await facts($, file)
     }
-    if (!f || f.kind !== 'file' || f.uid !== p.uid || f.mode !== 0o600 || f.nlink !== 1) return false
-    return (await run($, [TEE, '-a', '--', file], pr.ledgerLine({ t: new Date(now).toISOString(), ...row }))).exitCode === 0
+    if (!f || c.cueFileOk(f, p.uid)) return false
+    return (await run($, [TEE, '-a', '--', file], lineOf(new Date(now).toISOString()))).exitCode === 0
   } catch {
     return false
   }
 }
 
+// One ledger row, appended whole (under pr.LEDGER_ROW_MAX bytes). false: the row could not be written.
+const ledgerAdd = ($: any, row: Omit<pr.LedgerRow, 't'>): Promise<boolean> => appendMonthly($, pr.ledgerFile, (t) => pr.ledgerLine({ t, ...row }))
+
 // The questions file: one redacted row per answered question, appended to this month's file as the ledger is. A failed write never stops the answer: the
 // `returned` row is the record, and the audit notes the gap.
-async function questionsAdd($: any, row: Omit<pr.QuestionsRow, 't'>): Promise<boolean> {
-  try {
-    const p = await where($)
-    if (!p) return false
-    const dir = await promptDir($, p)
-    if (!dir) return false
-    const now = await $.clock.now()
-    const file = `${dir}/${pr.questionsFile(now)}`
-    let f = await facts($, file)
-    if (!f) {
-      await run($, [INSTALL, '-m', '600', '/dev/null', file])
-      f = await facts($, file)
-    }
-    if (!f || f.kind !== 'file' || f.uid !== p.uid || f.mode !== 0o600 || f.nlink !== 1) return false
-    return (await run($, [TEE, '-a', '--', file], pr.questionsLine({ t: new Date(now).toISOString(), ...row }))).exitCode === 0
-  } catch {
-    return false
-  }
-}
+const questionsAdd = ($: any, row: Omit<pr.QuestionsRow, 't'>): Promise<boolean> => appendMonthly($, pr.questionsFile, (t) => pr.questionsLine({ t, ...row }))
 // The salted hash of a chosen label, as the ledger holds it: no text, and a dictionary of short labels is of no use without the request id.
 async function labelHash($: any, id: string, label: string): Promise<string> {
   return (await sha($, `${id}\n${label}`)).slice(0, 16)
@@ -5576,14 +5562,19 @@ async function promptOwnRow($: any, w: WaitCtx): Promise<any | undefined> {
 async function promptNewId($: any): Promise<string> {
   const r = await run($, [UUIDGEN])
   const id = r.stdout.trim().toLowerCase()
-  if (r.exitCode !== 0 || !pr.ID_RE.test(id)) throw new Error('uuid-failed')
+  if (r.exitCode !== 0 || !c.SID_RE.test(id)) throw new Error('uuid-failed')
   return id
+}
+
+// A request's in-memory entries, dropped when its hook ends.
+function forgetReq(tid: string): void {
+  openReqs.delete(tid)
+  doneIds.delete(tid)
 }
 
 // The request's files, removed when it closes (the ledger row is written before this).
 async function promptCleanup($: any, dir: string | undefined, id: string | undefined, tid: string): Promise<void> {
-  openReqs.delete(tid)
-  doneIds.delete(tid)
+  forgetReq(tid)
   if (!dir || !id) return
   await promptRemoveFiles($, dir, id)
 }
@@ -5621,7 +5612,7 @@ async function promptDone($: any, e: any): Promise<void> {
   const o = tid === undefined ? undefined : openReqs.get(tid)
   if (!o || tid === undefined) return
   doneIds.add(tid)
-  if (o.dir && o.id) await run($, [INSTALL, '-m', '600', '/dev/null', `${o.dir}/${o.id}.done`]).catch(() => undefined)
+  if (o.dir && o.id) await promptMarkDone($, o.dir, o.id)
 }
 
 async function doneHook($: any, e: any, next: any): Promise<any> {
@@ -5863,8 +5854,7 @@ async function promptHook($: any, e: any, nextOnce: (x: any) => Promise<any>, si
     // A request that never got its `requested` row has nothing to close: its files go as before.
     if (reqDir.id && reqDir.dir && st.requested && !st.closed) {
       unclosed.set(reqDir.id, { dir: reqDir.dir, row: st.pending ?? { kind: 'abandoned', code: 'hook-failed', id: reqDir.id }, tries: 0 })
-      openReqs.delete(tid ?? '')
-      doneIds.delete(tid ?? '')
+      forgetReq(tid ?? '')
       // No hook waits for it any more: marked closed at once, so a lead cannot list or answer it while the row is owed (promptRemoveFiles takes the marker away again).
       await promptMarkDone($, reqDir.dir, reqDir.id)
     } else await promptCleanup($, reqDir.dir, reqDir.id, tid ?? '')
@@ -5916,7 +5906,7 @@ async function promptWait($: any, beneath: any, signal: AbortSignal, w: WaitCtx)
     const r = await readSmallR($, relayPath, w.p.uid, pr.DECISION_MAX)
     // A read that failed or met a swap says nothing about the file: this poll keeps the relay it had (as a decision file read that fails is skipped).
     if (r.state === 'failed' || r.state === 'changed') return relay ?? undefined
-    if (r.state !== 'ok') return r.state === 'absent' ? undefined : 'bad'
+    if (r.state !== 'ok') return 'bad'
     const x = pr.parseRelay(r.text)
     return x && x.id === w.id && x.nonce === w.nonce ? x : 'bad'
   }
@@ -6082,7 +6072,7 @@ async function promptApply($: any, w: WaitCtx, d: pr.Decision, awake: number, gr
   // A lookup that could not be made (the registry, a presence file, ps) is no verdict on the author or the relay.
   let unsure = false
   const errsBefore = presenceErrors
-  if (pr.SID.test(d.by.sid) && d.by.sid !== w.sid) {
+  if (c.SID_RE.test(d.by.sid) && d.by.sid !== w.sid) {
     const live = await registryEntries($)
     const cv = await promptCoverage($, w.sid)
     if (live && cv) {
@@ -6275,16 +6265,16 @@ async function promptSweep($: any): Promise<void> {
       const old = typeof f.mtimeMs === 'number' && now - f.mtimeMs > pr.SWEEP_MS
       const m = /^([0-9a-f-]{36})\.request\.json$/.exec(f.name)
       if (m) {
-        if (!pr.ID_RE.test(m[1]) || busy.has(m[1])) continue
+        if (!c.SID_RE.test(m[1]) || busy.has(m[1])) continue
         if (!gone && (!old || live === undefined || (await heldByLive(f.name)))) continue
         // No row, no removal: the next sweep tries again.
         if (!(await ledgerAdd($, { kind: 'abandoned', code: gone ? 'session-gone' : 'swept', id: m[1] }))) continue
-        await rmF($, PROMPT_SUFFIXES.map((x) => `${base}/${d.name}/${m[1]}.${x}`))
+        await promptRemoveFiles($, `${base}/${d.name}`, m[1])
         continue
       }
       // A file whose request is gone (a crash between the two removals, or a half-written copy), a day old: removed with no row, it names no open request.
       const o = /^([0-9a-f-]{36})\.(decision\.json|done|escalate(?:-lead|-conductor|-manager)?\.json|relay\.json|asked|left)$/.exec(f.name)
-      const orphan = (o !== null && pr.ID_RE.test(o[1]) && !requests.has(o[1]) && !busy.has(o[1])) || /^[0-9a-f-]{36}\.[A-Za-z.-]+\.\d+\.tmp$/.test(f.name)
+      const orphan = (o !== null && c.SID_RE.test(o[1]) && !requests.has(o[1]) && !busy.has(o[1])) || /^[0-9a-f-]{36}\.[A-Za-z.-]+\.\d+\.tmp$/.test(f.name)
       if (orphan && old) await rmF($, `${base}/${d.name}/${f.name}`)
     }
     // A folder of a session that has ended, with nothing left in it, goes too (rmdir refuses a folder that holds anything).
@@ -6638,7 +6628,7 @@ async function promptAnswerTool($: any, e: any, answer: boolean): Promise<{ resu
   const id = typeof e.id === 'string' ? e.id : ''
   const decision = e.decision
   const why = pr.cleanWhy(e.why)
-  if (!pr.ID_RE.test(id) || why === undefined || (answer && decision !== 'allow' && decision !== 'deny' && decision !== 'answer')) return refuse('bad-input')
+  if (!c.SID_RE.test(id) || why === undefined || (answer && decision !== 'allow' && decision !== 'deny' && decision !== 'answer')) return refuse('bad-input')
   if (!t.answering || t.off) return refuse('off')
   const found = await promptFind($, { p: t.p, live: t.live, answering: t.answering }, sid, id, !answer)
   if ('no' in found) return refuse(found.no)
@@ -6767,7 +6757,7 @@ async function promptNoticeTick($: any, sid: string, submitsAtStart: number): Pr
     const names = new Set(((await $.fs.list(`${base}/${name}`).catch(() => [])) as { name: string }[]).map((f) => f.name))
     for (const n of names) {
       const m = /^([0-9a-f-]{36})\.request\.json$/.exec(n)
-      if (!m || !pr.ID_RE.test(m[1]) || names.has(`${m[1]}.done`) || names.has(`${m[1]}.decision.json`)) continue
+      if (!m || !c.SID_RE.test(m[1]) || names.has(`${m[1]}.done`) || names.has(`${m[1]}.decision.json`)) continue
       if (names.has(`${m[1]}.relay.json`)) relayed.add(m[1])
       else open.set(m[1], { dir: `${base}/${name}`, names })
     }

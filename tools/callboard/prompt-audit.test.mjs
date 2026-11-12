@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { audit, render, eachLine, floorShape, percentile, LEDGER_MAX_BYTES } from './prompt-audit.mjs'
+import { audit, render, eachLine, floorShape, labelFromText, percentile, LEDGER_MAX_BYTES } from './prompt-audit.mjs'
 
 const SCRIPT = new URL('./prompt-audit.mjs', import.meta.url).pathname
 const H = (c) => c.repeat(64)
@@ -1224,4 +1224,13 @@ test('the audit reads exactly the row kinds the mod writes', () => {
   assert.ok(written && read, 'both lists were found')
   assert.ok(quoted(written[1]).length > 10)
   assert.deepEqual(quoted(read[1]).sort(), quoted(written[1]).sort())
+})
+
+test('labelFromText: the label of the quoted pair, undefined when the pair is absent, null when a quote inside the label cuts it short, at most 256 characters', () => {
+  assert.equal(labelFromText('User has answered: "Allow x?"="Yes".', 'Allow x?'), 'Yes')
+  assert.equal(labelFromText('"Allow x?"="No", "other"="a"', 'Allow x?'), 'No')
+  assert.equal(labelFromText('"Allow x?"="Yes"', 'Allow x?'), 'Yes')
+  assert.equal(labelFromText('"Other?"="Yes"', 'Allow x?'), undefined)
+  assert.equal(labelFromText('"Allow x?"="Say "hi" now"', 'Allow x?'), null)
+  assert.equal(labelFromText(`"Allow x?"="${'a'.repeat(300)}"`, 'Allow x?'), 'a'.repeat(256))
 })

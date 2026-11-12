@@ -24,6 +24,25 @@ const STORE_MAX_LANES = 16
 
 const clean = (p) => typeof p === 'string' && /^\/[\x21-\x7e]*$/.test(p) && !p.split('/').some((s) => s === '..' || s === '.') && p.length < 512 && !p.includes('//')
 
+// The text of a plain file of this user's, or undefined for anything else. The file is opened without following a link and checked on the open handle:
+// a plain file, owned by uid, with one link, a mode that modeBad(mode) does not reject, and at most max bytes. max + 1 bytes are read, so a file that
+// grew after the check is cut. A failed open, check or read is undefined too.
+async function readOwned(file, uid, { modeBad, max }) {
+  const fh = await fsp.open(file, nodefs.constants.O_RDONLY | nodefs.constants.O_NOFOLLOW | nodefs.constants.O_NONBLOCK).catch(() => undefined)
+  if (!fh) return undefined
+  try {
+    const st = await fh.stat()
+    if (!st.isFile() || st.uid !== uid || modeBad(st.mode) || st.nlink !== 1 || st.size > max) return undefined
+    const buf = Buffer.alloc(max + 1)
+    const { bytesRead } = await fh.read(buf, 0, buf.length, 0)
+    return buf.subarray(0, bytesRead).toString('utf8')
+  } catch {
+    return undefined
+  } finally {
+    await fh.close().catch(() => undefined)
+  }
+}
+
 // Whether a folder is a git repo root, by the mod's rule (register.ts gitRoot): `.git`, not followed if it is a link, is a folder holding a plain HEAD file,
 // or a plain file of this user's, not group or other writable, whose text starts `gitdir: ` (a worktree or submodule). An empty `.git` folder, a
 // symlinked `.git`, anything else or a failed check is not.
@@ -33,19 +52,8 @@ async function gitRoot(dir, uid) {
   if (!g) return false
   if (g.isDirectory()) return !!(await fsp.lstat(path.join(git, 'HEAD')).catch(() => undefined))?.isFile()
   if (!g.isFile()) return false
-  const fh = await fsp.open(git, nodefs.constants.O_RDONLY | nodefs.constants.O_NOFOLLOW | nodefs.constants.O_NONBLOCK).catch(() => undefined)
-  if (!fh) return false
-  try {
-    const st = await fh.stat()
-    if (!st.isFile() || st.uid !== uid || (st.mode & 0o7022) !== 0 || st.nlink !== 1 || st.size > 4096) return false
-    const buf = Buffer.alloc(4097)
-    const { bytesRead } = await fh.read(buf, 0, buf.length, 0)
-    return buf.subarray(0, bytesRead).toString('utf8').startsWith('gitdir: ')
-  } catch {
-    return false
-  } finally {
-    await fh.close().catch(() => undefined)
-  }
+  const text = await readOwned(git, uid, { modeBad: (mode) => (mode & 0o7022) !== 0, max: 4096 })
+  return text !== undefined && text.startsWith('gitdir: ')
 }
 
 // The lanes a lead made: one file per repo in the user's own callboard folder, named by the sha-256 of the repo's real path.
@@ -58,20 +66,8 @@ async function readStores(dir, { uid = process.getuid(), home = os.homedir() } =
   const names = (await fsp.readdir(dir).catch(() => [])).filter((n) => /^[0-9a-f]{64}\.json$/.test(n)).sort().slice(0, 64)
   for (const n of names) {
     const file = path.join(dir, n)
-    let text
-    const fh = await fsp.open(file, nodefs.constants.O_RDONLY | nodefs.constants.O_NOFOLLOW | nodefs.constants.O_NONBLOCK).catch(() => undefined)
-    if (!fh) continue
-    try {
-      const st = await fh.stat()
-      if (!st.isFile() || st.uid !== uid || (st.mode & 0o777) !== 0o600 || st.nlink !== 1 || st.size > STORE_MAX_BYTES) continue
-      const buf = Buffer.alloc(STORE_MAX_BYTES + 1)
-      const { bytesRead } = await fh.read(buf, 0, buf.length, 0)
-      text = buf.subarray(0, bytesRead).toString('utf8')
-    } catch {
-      continue
-    } finally {
-      await fh.close().catch(() => undefined)
-    }
+    const text = await readOwned(file, uid, { modeBad: (mode) => (mode & 0o777) !== 0o600, max: STORE_MAX_BYTES })
+    if (text === undefined) continue
     let j
     try {
       j = JSON.parse(text)
@@ -154,65 +150,85 @@ function createSpool({ dir, uid = process.getuid(), loadLanes, openLane, closeLa
 
   const drop = (file) => fsp.unlink(file).catch(() => undefined)
 
-  // Handles one request file. Returns what happened, for the tests; nothing is thrown for a bad request.
-  async function handle(name) {
-    const file = path.join(dir, `${name}.open`)
+  // The front half the three request kinds share, in this order: look at the file, the file test (plain, ours, 0600, one link, at most maxBytes), the age test,
+  // the lane list, the lane, the window's folder, the claim by rename, the inode check, the bounded read, and the claimed file dropped. It returns { code } for
+  // the refusal to give back, or { lane, body, t } (body is undefined when the claimed file was not the one first looked at). answers: a refusal for the lane
+  // list or an unknown lane is also answered on <LANE>.result; a close request answers nothing.
+  async function claim(name, ext, maxBytes, answers) {
+    const file = path.join(dir, `${name}.${ext}`)
     const st = await fsp.lstat(file).catch(() => undefined)
-    if (!st) return 'gone'
-    if (!st.isFile() || st.uid !== uid || (st.mode & 0o777) !== 0o600 || st.nlink !== 1 || st.size > 16) {
+    if (!st) return { code: 'gone' }
+    if (!st.isFile() || st.uid !== uid || (st.mode & 0o777) !== 0o600 || st.nlink !== 1 || st.size > maxBytes) {
       await drop(file)
-      return 'bad-file'
+      return { code: 'bad-file' }
     }
     const t = now()
     if (st.mtimeMs - t > MAX_SKEW_MS || t - st.mtimeMs > MAX_AGE_MS) {
       await drop(file)
-      return 'stale'
+      return { code: 'stale' }
     }
     let lanes
     try {
       lanes = await loadLanes()
     } catch {
       await drop(file)
-      await writeResult(name, 'error lanes-file\n')
-      return 'lanes-file'
+      if (answers) await writeResult(name, 'error lanes-file\n')
+      return { code: 'lanes-file' }
     }
     const lane = lanes.find((l) => l.name === name)
     if (!lane) {
       await drop(file)
-      await writeResult(name, 'error unknown-lane\n')
-      return 'unknown-lane'
+      if (answers) await writeResult(name, 'error unknown-lane\n')
+      return { code: 'unknown-lane' }
     }
     // Another window may hold the folder: leave the file for it, and answer nothing.
-    if (!(workspaceFolders() || []).includes(lane.folder)) return 'not-mine'
+    if (!(workspaceFolders() || []).includes(lane.folder)) return { code: 'not-mine' }
     const taken = path.join(dir, `.${name}.${process.pid}.${++seq}.taken`)
     try {
       await fsp.rename(file, taken)
     } catch {
-      return 'claim-lost'
+      return { code: 'claim-lost' }
     }
     const moved = await fsp.lstat(taken).catch(() => undefined)
-    const body = moved && moved.isFile() && moved.ino === st.ino && moved.size <= 16 ? await fsp.readFile(taken, 'utf8').catch(() => undefined) : undefined
+    const body = moved && moved.isFile() && moved.ino === st.ino && moved.size <= maxBytes ? await fsp.readFile(taken, 'utf8').catch(() => undefined) : undefined
     await drop(taken)
-    if (body !== REQUEST_TEXT) {
-      await writeResult(name, 'error bad-request\n')
-      return 'bad-request'
-    }
+    return { lane, body, t }
+  }
+
+  // The half an open and a reopen share once the request is read: the gap since this lane's last open, the live sessions in its repo, the budget of opens a
+  // minute. It answers a refusal on <LANE>.result and returns { code }; otherwise it records the open and returns { prev }, the lane's earlier open time for giveBack.
+  async function admit(name, lane, t) {
     if (t - (lastOpen.get(name) ?? -Infinity) < MIN_GAP_MS) {
       await writeResult(name, 'error too-soon\n')
-      return 'too-soon'
+      return { code: 'too-soon' }
     }
     if (lane.repo && liveInRepo && (await liveInRepo(lane.repo).catch(() => Infinity)) >= LIVE_PER_REPO) {
       await writeResult(name, 'error too-many\n')
-      return 'too-many'
+      return { code: 'too-many' }
     }
     while (opens.length && t - opens[0] > OPEN_BUDGET_MS) opens.shift()
     if (opens.length >= OPEN_BUDGET) {
       await writeResult(name, 'error too-soon\n')
-      return 'too-soon'
+      return { code: 'too-soon' }
     }
-    const prevOpen = lastOpen.get(name)
+    const prev = lastOpen.get(name)
     opens.push(t)
     lastOpen.set(name, t)
+    return { prev }
+  }
+
+  // Handles one request file. Returns what happened, for the tests; nothing is thrown for a bad request.
+  async function handle(name) {
+    const got = await claim(name, 'open', 16, true)
+    if (got.code) return got.code
+    const { lane, body, t } = got
+    if (body !== REQUEST_TEXT) {
+      await writeResult(name, 'error bad-request\n')
+      return 'bad-request'
+    }
+    const adm = await admit(name, lane, t)
+    if (adm.code) return adm.code
+    const prevOpen = adm.prev
     try {
       const sid = await openLane(lane.folder)
       if (!SID_RE.test(String(sid))) throw new Error('no sid')
@@ -231,40 +247,9 @@ function createSpool({ dir, uid = process.getuid(), loadLanes, openLane, closeLa
   // its folder the first workspace folder of this window; nothing is answered. The panel then goes to the extension's sweep, which closes the tab only once
   // that pid is dead and no live session carries the name.
   async function handleClose(name) {
-    const file = path.join(dir, `${name}.close`)
-    const st = await fsp.lstat(file).catch(() => undefined)
-    if (!st) return 'gone'
-    if (!st.isFile() || st.uid !== uid || (st.mode & 0o777) !== 0o600 || st.nlink !== 1 || st.size > 128) {
-      await drop(file)
-      return 'bad-file'
-    }
-    const t = now()
-    if (st.mtimeMs - t > MAX_SKEW_MS || t - st.mtimeMs > MAX_AGE_MS) {
-      await drop(file)
-      return 'stale'
-    }
-    let lanes
-    try {
-      lanes = await loadLanes()
-    } catch {
-      await drop(file)
-      return 'lanes-file'
-    }
-    const lane = lanes.find((l) => l.name === name)
-    if (!lane) {
-      await drop(file)
-      return 'unknown-lane'
-    }
-    if (!(workspaceFolders() || []).includes(lane.folder)) return 'not-mine'
-    const taken = path.join(dir, `.${name}.${process.pid}.${++seq}.taken`)
-    try {
-      await fsp.rename(file, taken)
-    } catch {
-      return 'claim-lost'
-    }
-    const moved = await fsp.lstat(taken).catch(() => undefined)
-    const body = moved && moved.isFile() && moved.ino === st.ino && moved.size <= 128 ? await fsp.readFile(taken, 'utf8').catch(() => undefined) : undefined
-    await drop(taken)
+    const got = await claim(name, 'close', 128, false)
+    if (got.code) return got.code
+    const { body } = got
     const m = typeof body === 'string' ? /^([0-9a-f-]{36})\n([0-9]{1,10})\n([A-Za-z0-9_-]{1,40})\n$/.exec(body) : null
     if (!m || !SID_RE.test(m[1]) || m[3] !== name || reservedHit(name) || !closeLane) return 'bad-request'
     const pid = Number(m[2])
@@ -276,42 +261,9 @@ function createSpool({ dir, uid = process.getuid(), loadLanes, openLane, closeLa
   // that very id, and the window must hold the lane folder as its first folder. The same rate limits as an open; answered on
   // <LANE>.result with `ok <sid>` or `error <code>`.
   async function handleReopen(name) {
-    const file = path.join(dir, `${name}.reopen`)
-    const st = await fsp.lstat(file).catch(() => undefined)
-    if (!st) return 'gone'
-    if (!st.isFile() || st.uid !== uid || (st.mode & 0o777) !== 0o600 || st.nlink !== 1 || st.size > 64) {
-      await drop(file)
-      return 'bad-file'
-    }
-    const t = now()
-    if (st.mtimeMs - t > MAX_SKEW_MS || t - st.mtimeMs > MAX_AGE_MS) {
-      await drop(file)
-      return 'stale'
-    }
-    let lanes
-    try {
-      lanes = await loadLanes()
-    } catch {
-      await drop(file)
-      await writeResult(name, 'error lanes-file\n')
-      return 'lanes-file'
-    }
-    const lane = lanes.find((l) => l.name === name)
-    if (!lane) {
-      await drop(file)
-      await writeResult(name, 'error unknown-lane\n')
-      return 'unknown-lane'
-    }
-    if (!(workspaceFolders() || []).includes(lane.folder)) return 'not-mine'
-    const taken = path.join(dir, `.${name}.${process.pid}.${++seq}.taken`)
-    try {
-      await fsp.rename(file, taken)
-    } catch {
-      return 'claim-lost'
-    }
-    const moved = await fsp.lstat(taken).catch(() => undefined)
-    const body = moved && moved.isFile() && moved.ino === st.ino && moved.size <= 64 ? await fsp.readFile(taken, 'utf8').catch(() => undefined) : undefined
-    await drop(taken)
+    const got = await claim(name, 'reopen', 64, true)
+    if (got.code) return got.code
+    const { lane, body, t } = got
     const m = typeof body === 'string' ? /^([0-9a-f-]{36})\n$/.exec(body) : null
     if (!m || !SID_RE.test(m[1])) {
       await writeResult(name, 'error bad-request\n')
@@ -321,22 +273,9 @@ function createSpool({ dir, uid = process.getuid(), loadLanes, openLane, closeLa
       await writeResult(name, 'error sid-mismatch\n')
       return 'sid-mismatch'
     }
-    if (t - (lastOpen.get(name) ?? -Infinity) < MIN_GAP_MS) {
-      await writeResult(name, 'error too-soon\n')
-      return 'too-soon'
-    }
-    if (lane.repo && liveInRepo && (await liveInRepo(lane.repo).catch(() => Infinity)) >= LIVE_PER_REPO) {
-      await writeResult(name, 'error too-many\n')
-      return 'too-many'
-    }
-    while (opens.length && t - opens[0] > OPEN_BUDGET_MS) opens.shift()
-    if (opens.length >= OPEN_BUDGET) {
-      await writeResult(name, 'error too-soon\n')
-      return 'too-soon'
-    }
-    const prevOpen = lastOpen.get(name)
-    opens.push(t)
-    lastOpen.set(name, t)
+    const adm = await admit(name, lane, t)
+    if (adm.code) return adm.code
+    const prevOpen = adm.prev
     try {
       if (!reopenLane) throw new Error('no reopen')
       const got = await reopenLane(m[1])
