@@ -28,7 +28,7 @@ import { LOG_KEEP_MS, LOG_PRUNE_MAX, LOG_MAX_BYTES, folderName, briefingFolder, 
 
 // A test that simulates an hour or more of the mod's 2 s timer runs thousands of ticks, and each one costs the kit host round trips: half a millisecond to
 // two on a fast machine, by how much the mod does in a tick (280 simulated minutes: 8,400 ticks, 3.5 s; an hour of a lead's ticks: 1,800, 2 to 3.5 s). The kit's 5 s wall-time limit then measures the runner's speed, not whether the test hangs, and a runner
-// 1.5 to 2 times slower, or a busy one, fails a different one of them each run. A test that takes a second or more on a fast machine (about 900 ticks, 30
+// 1.5 to 2 times slower, or a busy one, fails a different one of them each run. A test that takes a second or more on a fast machine (about 600 ticks, 20
 // simulated minutes or more, or a long wait stepped through many short timers) is declared with longTest: the same test and assertions, with this limit. A test that
 // hangs still fails, one minute later. A new test that simulates that much time takes longTest too.
 const LONG_TEST_MS = 60_000
@@ -570,6 +570,8 @@ function engine(on0: any, argvSeen: string[][], stdins: string[] = [], clk = fal
   resultIno = 88
   resultSwap = undefined
   nowMs = T0
+  // A test that asks for no clock gets none; the previous test's clock is not left behind for it to advance.
+  clock = undefined
   callerCwd = '/data/x/work/lab'
   callerRoot = undefined
   ownEntryAuto = true
@@ -1209,7 +1211,7 @@ test('a live checkout on another branch warns once with a toast and a log line, 
   expect(warns(stdins)).toEqual(['live-checkout-not-main'])
   expect(allEvents(stdins).find((e) => e.event === 'warn')).toEqual({ t: '2023-11-14T22:13:20.000Z', event: 'warn', reason: 'live-checkout-not-main' })
   expect(stdins.filter((x) => x.includes('live-checkout')).join('')).not.toContain(checkout)
-  expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Lead: OFF.')
+  expect((await $.command.run(lane('status'))).text).toBe(STATUS_NONE)
   await $.tool.call(GOOD as any)
   await $.prompt.submit({ text: 'hello' } as any)
   expect(liveHeadReads).toBe(1)
@@ -1266,6 +1268,38 @@ const PERSON = { kind: 'composer' } as const
 // v13.6: the usage line, which /callboard on now gets too.
 const USAGE = 'Use /callboard help, lanes, status, lead, lane [NAME], escalation [off], prompts, manager or off. Run /callboard help for the full list.'
 const lane = (args: string, origin: unknown = PERSON) => ({ command: 'callboard', args, origin }) as any
+const statusText = async ($: any) => (await $.command.run(lane('status'))).text as string
+
+// Helpers the tests share, declared before their first use.
+// The status of a session with no lane and no lead. The text is built inline in register.ts, so it cannot be imported: this is the typed copy the tests check against.
+const STATUS_NONE = 'Lane: NONE. Lead: OFF.'
+const newTrace = (): Trace => ({ log: [], failCounters: false })
+const putStore = (lanes: unknown[], creates: number[] = []) => storeFiles.set(STOREFILE, JSON.stringify({ repo: PIN, lanes, creates }))
+const OWN_ROW = (over: Record<string, unknown> = {}): Record<string, string> => ({ '4999.json': JSON.stringify({ ...JSON.parse(AUTO_OWN), kind: 'interactive', ...over }) })
+const logged = (stdins: string[]) => allEvents(stdins).map((e) => `${e.event}:${e.reason}`)
+const MIN = 60_000
+const PARK_API = (extra: Record<string, unknown> = {}) => ({ name: 'API', folder: `${PIN}/api`, brief: `${PIN}/api/BRIEF.md`, createdAt: 1, ...extra })
+const RESULT = `${ROOT}/result/${SID}.result`
+const tickTwice = async () => {
+  await clock!.advance(2000)
+  await clock!.advance(2000)
+}
+// Steps the mock clock n timer periods (2 s each).
+const ticks = async (n: number) => {
+  for (let i = 0; i < n; i++) await clock!.advance(2000)
+}
+// Writes the cue file as a lead's send would, runs two ticks, and returns what the mod answered on the result file. The inode is part of the answer, so each call types it.
+const cue = async (ino: number, text: string, opts: { mode?: string; mtimeSec?: number } = {}) => {
+  cueFile = { ino, text, present: true, ...opts }
+  await tickTwice()
+  return resultFiles.get(RESULT)
+}
+const sleepMs = (ms: number) => new Promise((r) => setTimeout(r, ms))
+// Waits up to 2 s of real time for cond; fails the test when it never holds (a wait that times out silently once let a mutant pass).
+const waitFor = async (cond: () => boolean) => {
+  for (let i = 0; i < 400 && !cond(); i++) await sleepMs(5)
+  expect(cond()).toBe(true)
+}
 
 // The mocked engine answers each dialog with `askAnswer` (`restoreAnswer` for the Restore question). v13.5: /callboard on is retired, so a session starts
 // as a plain one; `bound` makes it lane LABLANE the way the person does it: a lane hint (merged into one the seed wrote), Restore at /callboard lane.
@@ -1417,7 +1451,7 @@ test('a session that is not bound cannot use request_compact on-cue', async ($, 
 
 test('v13.6: /callboard on from any origin gets the usage line: no dialog, no state, no store write, no log line', async ($, on) => {
   const stdins: string[] = []
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await started($, on, stdins, { trace })
   const writes = trace.log.length
   const keys = [...store.keys()].sort()
@@ -1428,7 +1462,7 @@ test('v13.6: /callboard on from any origin gets the usage line: no dialog, no st
   expect([...store.keys()].sort()).toEqual(keys)
   expect(allEvents(stdins)).toEqual([])
   expect(JSON.stringify(await $.tool.call(GOOD as any))).toContain('not enabled')
-  expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Lead: OFF.')
+  expect((await $.command.run(lane('status'))).text).toBe(STATUS_NONE)
 })
 
 test('each dialog offers its own exact button pair', async ($, on) => {
@@ -1454,9 +1488,9 @@ test('each dialog offers its own exact button pair', async ($, on) => {
 test('v13.5: status shows the lane and the lead only; off of a plain session says there was nothing to turn off', async ($, on) => {
   const stdins: string[] = []
   await started($, on, stdins)
-  expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Lead: OFF.')
+  expect((await $.command.run(lane('status'))).text).toBe(STATUS_NONE)
   expect((await $.command.run(lane('on'))).text).toBe(USAGE)
-  expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Lead: OFF.')
+  expect((await $.command.run(lane('status'))).text).toBe(STATUS_NONE)
   expect(JSON.stringify(await $.tool.call(GOOD as any))).toContain('not enabled')
   expect((await $.command.run(lane('off'))).text).toBe(OFF_NOTHING)
   expect((await $.command.run(lane('maybe'))).text).toBe(USAGE)
@@ -1483,11 +1517,11 @@ test('a forged hint cannot bind on its own, and with no lane in a store nothing 
   const forged = { lane: { name: 'EVIL', at: 1, turns: 0 }, counters: { startDone: false }, savedAt: 1_700_000_000_000 }
   await started($, on, stdins, { seed: () => store.set(`sess:${SID}`, forged) })
   expect(allEvents(stdins).map((e) => e.event)).toContain('hint-found')
-  expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Lead: OFF.')
+  expect((await $.command.run(lane('status'))).text).toBe(STATUS_NONE)
   expect(JSON.stringify(await $.tool.call(GOOD as any))).toContain('not enabled')
   await $.command.run(lane('lane'))
   expect(askCount).toBe(0)
-  expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Lead: OFF.')
+  expect((await $.command.run(lane('status'))).text).toBe(STATUS_NONE)
   expect(allEvents(stdins).map((e) => `${e.event}:${e.reason}`)).toContain('hint-rejected:unknown-lane')
 })
 
@@ -1520,7 +1554,7 @@ test('a restored binding can never start: turns -1, startDone, its own named que
   expect(saved.counters.startDone).toBe(true)
   expect((await $.command.run(lane('off'))).text).toBe(`This session is no longer lane LABLANE.${STOPPABLE_BY_NAME('LABLANE')}`)
   expect(store.has(`sess:${SID}`)).toBe(false)
-  expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Lead: OFF.')
+  expect((await $.command.run(lane('status'))).text).toBe(STATUS_NONE)
   laneSeed.text = undefined
 })
 
@@ -1534,7 +1568,7 @@ test('declining the restore question binds no lane and goes on to the Join path'
     expect(r.text).not.toBe(reboundToast('LABLANE'))
     expect(logged(stdins)).toContain('refused:restore-not-confirmed')
     expect(logged(stdins).filter((x) => x.startsWith('refused:') && x !== 'refused:restore-not-confirmed').length).toBe(1)
-    expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Lead: OFF.')
+    expect((await $.command.run(lane('status'))).text).toBe(STATUS_NONE)
   } finally {
     laneSeed.text = undefined
   }
@@ -1563,7 +1597,7 @@ test('an off that arrives while the restore dialog is open wins: /callboard lane
     release(YES)
     expect((await first).text).toContain('turned off meanwhile')
     expect(askCount).toBe(asked)
-    expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Lead: OFF.')
+    expect((await $.command.run(lane('status'))).text).toBe(STATUS_NONE)
   } finally {
     laneSeed.text = undefined
   }
@@ -1587,12 +1621,12 @@ test('a restore dialog that is dismissed is not a decision: the next /callboard 
     await started($, on, [], { seed: () => { laneSeed.text = LANES; store.set(`sess:${SID}`, hint) } })
     restoreAnswer = 'Something else'
     await $.command.run(lane('lane'))
-    expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Lead: OFF.')
+    expect((await $.command.run(lane('status'))).text).toBe(STATUS_NONE)
     restoreAnswer = YES
     expect((await $.command.run(lane('lane'))).text).toBe(reboundToast('LABLANE'))
     expect((await $.command.run(lane('status'))).text).toContain('Lane: LABLANE. Lead: OFF.')
     await $.command.run(lane('off'))
-    expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Lead: OFF.')
+    expect((await $.command.run(lane('status'))).text).toBe(STATUS_NONE)
   } finally {
     laneSeed.text = undefined
   }
@@ -1608,7 +1642,7 @@ test('a declined restore is not asked again in the same session', async ($, on) 
     askedOptions = []
     await $.command.run(lane('lane'))
     expect(askedOptions.some((o) => o[0] === RESTORE_YES)).toBe(false)
-    expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Lead: OFF.')
+    expect((await $.command.run(lane('status'))).text).toBe(STATUS_NONE)
   } finally {
     laneSeed.text = undefined
   }
@@ -1759,13 +1793,13 @@ test('off from the prompt or phone needs no dialog; off from anything else asks 
   askAnswer = YES
   expect((await $.command.run(lane('off', { kind: 'peer' }))).text).toBe('Lead is now off.')
   expect(lastQuestion).toBe('Asked from another session. Turn lead and lane off for this session?')
-  expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Lead: OFF.')
+  expect((await $.command.run(lane('status'))).text).toBe(STATUS_NONE)
   askAnswer = YES
   await $.command.run(lane('lead'))
   const asksBefore = askCount
   expect((await $.command.run(lane('off', { kind: 'bridge' }))).text).toBe('Lead is now off.')
   expect(askCount).toBe(asksBefore)
-  expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Lead: OFF.')
+  expect((await $.command.run(lane('status'))).text).toBe(STATUS_NONE)
 })
 
 test('a lead request from a non-person origin that times out or is dismissed keeps the grant; an explicit Deny clears it', async ($, on) => {
@@ -1945,9 +1979,7 @@ async function renameThroughTick($: any, on: any, stdins: string[], added: numbe
   await $.session.start({ cwd: '/data/x/work/lab', surface: 'vscode', isInteractive: true })
   await $.command.run(lane('status'))
   await before?.()
-  cueFile = { ino: 42, text: 'rename LABLANE\n', present: true }
-  await clock!.advance(2000)
-  await clock!.advance(2000)
+  await cue(42, 'rename LABLANE\n')
 }
 
 for (const [added, surface, expectOk] of [[1, 'a panel', true], [0, 'the terminal', true], [2, 'a rename that ran extra turns', false]] as const) {
@@ -2538,11 +2570,7 @@ async function retireTarget($: any, on: any, stdins: string[] = [], trace?: Trac
   reportFile = { text: `# r\nstatus: done ${SID}\n`, mtimeSec: nowMs / 1000 }
   await clock!.advance(1000)
 }
-const retireCue = async (ino: number) => {
-  cueFile = { ino, text: 'retire\n', present: true }
-  await tickTwice()
-  return resultFiles.get(RESULT)
-}
+const retireCue = (ino: number) => cue(ino, 'retire\n')
 
 test('a retire cue is confirmed by the target when it is idle, has no draft, no background agents and a report newer than its last prompt', async ($, on) => {
   const stdins: string[] = []
@@ -2559,7 +2587,7 @@ const armNow = (trace: Trace) => trace.st!.set('request', { value: { phase: 'arm
 test('a retire cue is claimed on a tick whose request step threw, and a retire that cannot list agents is refused other, never ok', async ($, on) => {
   const stdins: string[] = []
   const argv: string[][] = []
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await retireTarget($, on, stdins, trace, argv)
   armNow(trace)
   agentListThrows = true
@@ -2571,7 +2599,7 @@ test('a retire cue is claimed on a tick whose request step threw, and a retire t
 
 test('an unconfirmed compaction whose request changed meanwhile is left alone: no clear, no notice', async ($, on) => {
   const stdins: string[] = []
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await retireTarget($, on, stdins, trace)
   const old = nowMs - ON_CUE_TTL_MS - 60_000
   trace.st!.set('request', { value: { phase: 'compacting', mode: 'now', requestedMs: old, compactingMs: old, id: 'r1', focus: 'f', continuation: 'c' }, version: 9 })
@@ -2585,7 +2613,7 @@ test('an unconfirmed compaction whose request changed meanwhile is left alone: n
 
 test('a request step that throws for 60 s is dropped; a few throwing ticks are not; the cue is answered on every tick; a clean tick resets the count', async ($, on) => {
   const stdins: string[] = []
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await retireTarget($, on, stdins, trace)
   agentListThrows = true
   armNow(trace)
@@ -2717,8 +2745,7 @@ test('a retire cue is refused report-stale once the session took another prompt 
 
 test('a prompt the mod submitted itself (the hook sees it as its own) also makes the report stale', async ($, on) => {
   await retireTarget($, on)
-  cueFile = { ino: 100, text: 'resume\n', present: true }
-  await tickTwice()
+  await cue(100, 'resume\n')
   expect(submitted.length).toBe(2)
   await clock!.advance(1000)
   await $.prompt.submit({ text: submitted[1] } as any)
@@ -2790,7 +2817,7 @@ test('a report stat that fails for any reason but a missing file records the siz
 })
 
 test('a turn mark that could not be written fails closed: report-unknown until a later write succeeds', async ($, on) => {
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   const stdins: string[] = []
   await retireTarget($, on, stdins, trace)
   expect(await retireCue(119)).toBe('retire ok - 119\n')
@@ -3180,7 +3207,7 @@ test('a store file that is not named by the hash of its repo, or is not private,
   sessions = cueSession(OTHER, 'API', `${PIN}/api`)
   expect(JSON.stringify(await $.tool.call(leadCall('start', { lane: 'API' })))).toContain('unknown-lane')
   storeFiles.clear()
-  storeFiles.set(STOREFILE, JSON.stringify({ repo: PIN, lanes: [{ name: 'MANAGER', folder: PIN, brief: `${PIN}/B.md`, createdAt: 1 }], creates: [] }))
+  putStore([{ name: 'MANAGER', folder: PIN, brief: `${PIN}/B.md`, createdAt: 1 }])
   expect(JSON.stringify(await $.tool.call(leadCall('start', { lane: 'MANAGER' })))).toContain('unknown-lane')
   storeFiles.set(STOREFILE, good.replace(PIN, '/Users/x/code/../app'))
   expect(JSON.stringify(await $.tool.call(leadCall('start', { lane: 'API' })))).toContain('unknown-lane')
@@ -3197,15 +3224,11 @@ test('a session renamed under one lane record refuses start and resume when the 
   await renameThroughTick($, on, stdins, 1)
   expect(allEvents(stdins).map((e) => e.event)).toContain('renamed')
   laneSeed.text = JSON.stringify({ lanes: [{ name: 'LABLANE', folder: '/data/x/work/lab', brief: '/data/x/work/lab/OTHER.md', repo: '/data/x/work' }] })
-  cueFile = { ino: 43, text: 'start\n', present: true }
-  await clock!.advance(2000)
-  await clock!.advance(2000)
+  await cue(43, 'start\n')
   expect(allEvents(stdins).map((e) => `${e.event}:${e.reason}`)).toContain('refused:record-changed')
   laneSeed.text = LEAD_LANES('/data/x/work')
   callerCwd = '/data/x/work/elsewhere'
-  cueFile = { ino: 44, text: 'resume\n', present: true }
-  await clock!.advance(2000)
-  await clock!.advance(2000)
+  await cue(44, 'resume\n')
   expect(allEvents(stdins).map((e) => `${e.event}:${e.reason}`)).toContain('refused:wrong-folder')
 })
 
@@ -3305,9 +3328,7 @@ test('start refuses a brief that is bigger than 64 KB', async ($, on) => {
   const stdins: string[] = []
   await renameThroughTick($, on, stdins, 1)
   extraStat.set('/data/x/work/lab/BRIEF.md', '501 644 1 Regular File 7 70000 1700000000\n')
-  cueFile = { ino: 50, text: 'start\n', present: true }
-  await clock!.advance(2000)
-  await clock!.advance(2000)
+  await cue(50, 'start\n')
   expect(allEvents(stdins).map((e) => `${e.event}:${e.reason}`)).toContain('refused:brief-file')
   expect(allEvents(stdins).map((e) => e.event)).not.toContain('started')
 })
@@ -3326,25 +3347,16 @@ test('creating a lane under a name that sits hidden in two stores does not write
 
 
 // ---- v11: the target answers every cue, the lead reads the answer to its own cue ----
-const RESULT = `${ROOT}/result/${SID}.result`
-const tickTwice = async () => {
-  await clock!.advance(2000)
-  await clock!.advance(2000)
-}
 
 test('the target answers a cue with its outcome and the inode of the cue file it claimed', async ($, on) => {
   const stdins: string[] = []
   await renameThroughTick($, on, stdins, 1)
   expect(resultFiles.get(RESULT)).toBe('rename ok - 42\n')
   laneSeed.text = JSON.stringify({ lanes: [{ name: 'LABLANE', folder: '/data/x/work/lab', brief: '/data/x/work/lab/OTHER.md', repo: '/data/x/work' }] })
-  cueFile = { ino: 43, text: 'start\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('start refused record-changed 43\n')
+  expect(await cue(43, 'start\n')).toBe('start refused record-changed 43\n')
   laneSeed.text = LEAD_LANES('/data/x/work')
   sessions = { [REGFILE]: REG({ status: 'busy' }) }
-  cueFile = { ino: 44, text: 'resume\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('resume held not-idle 44\n')
+  expect(await cue(44, 'resume\n')).toBe('resume held not-idle 44\n')
 })
 
 test('a rename that ran extra turns is answered refused, not ok', async ($, on) => {
@@ -3353,20 +3365,18 @@ test('a rename that ran extra turns is answered refused, not ok', async ($, on) 
 })
 
 test('a birth rename hashes the lane record first: a failed hash renames nothing and binds nothing', async ($, on) => {
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await renameThroughTick($, on, [], 1, trace, async () => { recShaFails = true })
   expect(resultFiles.get(RESULT)).toBe('rename refused sha-failed 42\n')
   expect(renames).toEqual([])
   expect(trace.log).not.toContain('lane')
   recShaFails = false
-  cueFile = { ino: 43, text: 'rename LABLANE\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('rename ok - 43\n')
+  expect(await cue(43, 'rename LABLANE\n')).toBe('rename ok - 43\n')
   expect(renames).toEqual(['LABLANE'])
 })
 
 test('a birth rename that throws is answered rename-failed and binds nothing', async ($, on) => {
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await renameThroughTick($, on, [], 1, trace, async () => { renameMode = 'throw' })
   expect(resultFiles.get(RESULT)).toBe('rename refused rename-failed 42\n')
   expect(renames).toEqual(['LABLANE'])
@@ -3399,12 +3409,8 @@ test('the reader takes a cue up to 96 bytes and parses it; 97 bytes is refused b
 test('a cue refused before it is read is answered with verb - and its inode, once per cue file', async ($, on) => {
   const stdins: string[] = []
   await renameThroughTick($, on, stdins, 1)
-  cueFile = { ino: 45, text: 'bogus\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('- refused grammar 45\n')
-  cueFile = { ino: 46, text: 'start\n', present: true, mode: '644' }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('- refused other 46\n')
+  expect(await cue(45, 'bogus\n')).toBe('- refused grammar 45\n')
+  expect(await cue(46, 'start\n', { mode: '644' })).toBe('- refused other 46\n')
   resultFiles.delete(RESULT)
   await tickTwice()
   expect(cueFile.present).toBe(true)
@@ -3452,9 +3458,7 @@ test('a file already at the claim name is never taken for the cue: refused (othe
 test('the start brief check is answered too', async ($, on) => {
   await renameThroughTick($, on, [], 1)
   extraStat.set('/data/x/work/lab/BRIEF.md', '501 644 1 Regular File 7 70000 1700000000\n')
-  cueFile = { ino: 50, text: 'start\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('start refused brief-file 50\n')
+  expect(await cue(50, 'start\n')).toBe('start refused brief-file 50\n')
 })
 
 test('the lead reads the answer to its own cue: ok, a refusal with its fixed text, held with when to retry', async ($, on) => {
@@ -3596,7 +3600,7 @@ test('a request that expires before it was armed is still dropped with no notice
 // Waits (real time) until the question is up, then lets the 90 s pass on the mock clock.
 const unanswered = async (p: Promise<any>) => {
   const n = askCount
-  for (let i = 0; i < 400 && askCount === n; i++) await new Promise((r) => setTimeout(r, 5))
+  await waitFor(() => askCount !== n)
   await new Promise((r) => setTimeout(r, 10))
   await clock!.advance(90_000)
   return p
@@ -3611,7 +3615,7 @@ longTest('a question nobody answers in 90 seconds is not a decision: it says so,
   const plugin = { kind: 'plugin', name: 'x' }
   askHang = new Promise<string>(() => undefined)
   expect((await unanswered($.command.run(lane('lead', plugin)))).text).toBe('Lead stays off. The question timed out.')
-  expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Lead: OFF.')
+  expect((await $.command.run(lane('status'))).text).toBe(STATUS_NONE)
   askHang = undefined
   await grantAt($, '/data/x/work/lab')
   askHang = new Promise<string>(() => undefined)
@@ -3738,9 +3742,7 @@ test('a compact cue is answered ok when the compaction begins, before it has run
   await renameThroughTick($, on, [], 1)
   await $.tool.call(GOOD as any)
   await $.turn.complete(TURN as any)
-  cueFile = { ino: 60, text: 'compact\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('compact ok - 60\n')
+  expect(await cue(60, 'compact\n')).toBe('compact ok - 60\n')
   expect(compactedAtAnswer).toBe(false)
   expect(seen.compacted).toBe(true)
   await tickTwice()
@@ -3759,11 +3761,9 @@ test('a compact cue with no request nudges an idle lane: held nudged, and the ti
   expect(nudges()).toEqual([nudgeText('lead')])
   expect(logged(stdins)).toContain('nudge-due:lead')
   expect(logged(stdins)).toContain('nudged:lead')
-  for (let i = 0; i < 5; i++) await clock!.advance(2000)
+  await ticks(5)
   expect(nudges().length).toBe(1)
-  cueFile = { ino: 62, text: 'compact\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('compact refused nudge-limit 62\n')
+  expect(await cue(62, 'compact\n')).toBe('compact refused nudge-limit 62\n')
   await tickTwice()
   expect(nudges().length).toBe(1)
 })
@@ -3814,14 +3814,10 @@ test('compact cue refusals from the target: background work is refused, a busy s
   await $.tool.call(GOOD as any)
   await $.turn.complete(TURN as any)
   sessions = { [REGFILE]: REG({ status: 'busy' }) }
-  cueFile = { ino: 62, text: 'compact\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('compact held not-idle 62\n')
+  expect(await cue(62, 'compact\n')).toBe('compact held not-idle 62\n')
   sessions = { [REGFILE]: REG() }
   agentsNow = [{ status: 'running' }]
-  cueFile = { ino: 63, text: 'compact\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('compact refused background-work 63\n')
+  expect(await cue(63, 'compact\n')).toBe('compact refused background-work 63\n')
 })
 
 test('two lead calls to one session take turns; one left with too little time does not send its cue', async ($, on) => {
@@ -3867,7 +3863,7 @@ test('a cue left in place whose answer cannot be written logs a bounded number o
   const before = allEvents(stdins).length
   extraStat.set(`${ROOT}/result`, '501 755 2 Directory 11 64 1700000000\n')
   cueFile = { ino: 70, text: 'start\n', present: true, mode: '644' }
-  for (let i = 0; i < 10; i++) await clock!.advance(2000)
+  await ticks(10)
   const added = allEvents(stdins).slice(before).map((e) => `${e.event}:${e.reason}`)
   expect(added.filter((x) => x === 'error:result-write').length).toBe(1)
   expect(added.length).toBeLessThanOrEqual(3)
@@ -3877,9 +3873,7 @@ test('a compact cue that comes while the request is still in its turn is refused
   const stdins: string[] = []
   await renameThroughTick($, on, stdins, 1)
   await $.tool.call(GOOD as any)
-  cueFile = { ino: 64, text: 'compact\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('compact refused no-request 64\n')
+  expect(await cue(64, 'compact\n')).toBe('compact refused no-request 64\n')
   await $.turn.complete(TURN as any)
   expect(events(stdins).map((e) => `${e.event}:${e.reason}`)).toContain('armed:on-cue')
 })
@@ -3895,7 +3889,6 @@ const leadReg = (over: Record<string, unknown> = {}) => ({ '4242.json': JSON.str
 const ownReg = (over: Record<string, unknown> = {}) => ({ '4300.json': JSON.stringify({ sessionId: SID, name: 'svc-api', nameSource: 'user', cwd: SVC, status: 'idle', pid: 4300, procStart: LEADPS, startedAt: T0 - 3_600_000, statusUpdatedAt: T0 - 60_000, kind: 'interactive', ...over }) })
 const doLane = ($: any, args = 'lane', origin: unknown = PERSON) => $.command.run(lane(args, origin))
 const storeJson = () => JSON.parse(storeFiles.get(STOREFILE)!)
-const logged = (stdins: string[]) => allEvents(stdins).map((e) => `${e.event}:${e.reason}`)
 
 // A session in SVC with a user-given name by default, a live lead for PIN with a fresh presence file, no lanes.
 async function attacher($: any, on: any, stdins: string[] = [], opts: { clock?: boolean; own?: Record<string, unknown>; lead?: boolean; argv?: string[][]; trace?: Trace } = {}) {
@@ -4052,7 +4045,7 @@ test('lane may keep the name this very session already carries, and refuses the 
   await attacher($, on, [], { own: { name: 'LABLANE' } })
   expect((await doLane($, 'lane')).text).toBe(ATTACHED('LABLANE'))
   await doLane($, 'lane off')
-  storeFiles.set(STOREFILE, JSON.stringify({ repo: PIN, lanes: [{ name: 'LABLANE', folder: `${PIN}/api`, brief: `${PIN}/api/B.md`, createdAt: 1 }], creates: [] }))
+  putStore([{ name: 'LABLANE', folder: `${PIN}/api`, brief: `${PIN}/api/B.md`, createdAt: 1 }])
   extraStat.set(`${PIN}/api`, dirStat)
   expect((await doLane($, 'lane')).text).toBe(refusalText('name-taken'))
 })
@@ -4129,6 +4122,20 @@ test('a conductor or manager presence file is not a lead: attach finds no lead w
   sessions = { ...leadReg(), ...ownReg(), '4243.json': leadReg({ sessionId: OTHERLEAD, pid: 4243 })['4242.json'] }
   leadFiles.set(LEADPATH, { text: leadFileText({ level: 'lead', name: 'LEAD' }) })
   expect((await doLane($, 'lane svc-api')).text).toBe(ATTACHED())
+})
+
+test('the level filter of a presence check runs before any process is asked: a file of another level or another repo costs no ps call, a lead file does', async ($, on) => {
+  const argv: string[][] = []
+  await attacher($, on, [], { argv, lead: false })
+  const psCalls = () => argv.filter((a) => a[0] === '/bin/ps' && a.includes('-p') && a.includes('4242')).length
+  for (const over of [{ level: 'manager', repo: undefined }, { level: 'conductor', repo: undefined, repos: [PIN], home: '/Users/x/code/cond' }, { level: 'lead', repo: '/Users/x/code/elsewhere' }]) {
+    leadFiles.set(LEADPATH, { text: leadFileText(over) })
+    expect((await doLane($, 'lane svc-api')).text).toBe(refusalText('no-lead'))
+    expect(psCalls()).toBe(0)
+  }
+  leadFiles.set(LEADPATH, { text: leadFileText() })
+  expect((await doLane($, 'lane svc-api')).text).toBe(ATTACHED())
+  expect(psCalls()).toBeGreaterThan(0)
 })
 
 test('a presence file that is not a plain 0600 file of the user, one link, at most 4096 bytes, named by its own sid, is not a lead', async ($, on) => {
@@ -4318,7 +4325,7 @@ test('attaching does not count as a create, counts against the 16 lanes, and kee
   const plain = { name: 'API', folder: `${PIN}/api`, brief: `${PIN}/api/BRIEF.md`, createdAt: 5 }
   const other = { name: 'OLD', folder: `${PIN}/old`, brief: `${PIN}/old/.callboard-attached`, createdAt: 6, adopted: true, lead: OTHER }
   for (const f of ['api', 'old']) extraStat.set(`${PIN}/${f}`, dirStat)
-  storeFiles.set(STOREFILE, JSON.stringify({ repo: PIN, lanes: [plain, other], creates: [T0 - 1000, T0 - 2000] }))
+  putStore([plain, other], [T0 - 1000, T0 - 2000])
   expect((await doLane($, 'lane svc-api')).text).toBe(ATTACHED())
   expect(storeJson()).toEqual({ repo: PIN, lanes: [plain, other, { name: 'svc-api', folder: SVC, brief: `${SVC}/.callboard-attached`, createdAt: T0, adopted: true, lead: LEADSID, sid: SID, leadName: 'LEAD' }], creates: [T0 - 1000, T0 - 2000] })
 })
@@ -4327,11 +4334,6 @@ test('an attached lane is a lane: resume and compact work with no re-arm, start 
   const stdins: string[] = []
   await attacher($, on, stdins, { clock: true })
   await doLane($, 'lane svc-api')
-  const cue = async (ino: number, text: string) => {
-    cueFile = { ino, text, present: true }
-    await tickTwice()
-    return resultFiles.get(RESULT)
-  }
   expect(await cue(81, 'start\n')).toBe('start refused adopted-record 81\n')
   expect(await cue(82, 'rename OTHERNAME\n')).toBe('rename refused already-bound 82\n')
   expect(await cue(83, 'resume\n')).toBe('resume ok - 83\n')
@@ -4346,11 +4348,6 @@ test('an attached lane is a lane: resume and compact work with no re-arm, start 
 test('an attached lane follows the lead: it answers whichever lead holds a valid presence file for its repo, and refuses no-lead while none does', async ($, on) => {
   await attacher($, on, [], { clock: true })
   await doLane($, 'lane svc-api')
-  const cue = async (ino: number, text: string) => {
-    cueFile = { ino, text, present: true }
-    await tickTwice()
-    return resultFiles.get(RESULT)
-  }
   const OTHERLEAD = '6a1b2c3d-0000-4000-8000-123456789abc'
   const swap = (path: string, file: Record<string, unknown>, reg: Record<string, string> = leadReg()) => {
     leadFiles.clear()
@@ -4384,13 +4381,9 @@ test('an attached lane whose record is changed after the join refuses record-cha
   await doLane($, 'lane svc-api')
   const rec = storeJson()
   storeFiles.set(STOREFILE, JSON.stringify({ ...rec, lanes: [{ ...rec.lanes[0], lead: OTHER }] }))
-  cueFile = { ino: 71, text: 'resume\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('resume refused record-changed 71\n')
+  expect(await cue(71, 'resume\n')).toBe('resume refused record-changed 71\n')
   storeFiles.set(STOREFILE, JSON.stringify({ ...rec, lanes: [{ name: 'svc-api', folder: SVC, brief: `${SVC}/.callboard-attached`, createdAt: T0 }] }))
-  cueFile = { ino: 72, text: 'resume\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('resume refused record-changed 72\n')
+  expect(await cue(72, 'resume\n')).toBe('resume refused record-changed 72\n')
 })
 
 test('lane off detaches: the record is removed under the lock, the binding and the hint go, and no lead tool or cue reaches the session by name', async ($, on) => {
@@ -4404,9 +4397,7 @@ test('lane off detaches: the record is removed under the lock, the binding and t
   expect((await $.command.run(lane('status'))).text).toContain('Lane: NONE')
   expect(store.has(`sess:${SID}`)).toBe(false)
   expect(lockState.held).toBe(false)
-  cueFile = { ino: 61, text: 'resume\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('resume refused not-eligible 61\n')
+  expect(await cue(61, 'resume\n')).toBe('resume refused not-eligible 61\n')
   expect((await doLane($, 'lane off')).text).toBe(`This session is not a lane. ${NO_LANE_RECORD}`)
   expect(logged(stdins)).not.toContain('detach-incomplete:')
 })
@@ -4438,7 +4429,7 @@ test('off from the prompt on an attached lane removes the record, drops the bind
   expect(r.text).toBe('This session is no longer lane svc-api.')
   expect(storeJson().lanes).toEqual([])
   expect(store.has(`sess:${SID}`)).toBe(false)
-  expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Lead: OFF.')
+  expect((await $.command.run(lane('status'))).text).toBe(STATUS_NONE)
 })
 
 test('detach only removes the record that is attached and carries the binding name; a lead-made record stays', async ($, on) => {
@@ -4457,13 +4448,10 @@ test('a session bound by a birth rename is unbound by off too, and its record st
   await renameThroughTick($, on, stdins, 1)
   expect((await $.command.run(lane('status'))).text).toContain('Lane: LABLANE')
   expect((await $.command.run(lane('off'))).text).toBe(`This session is no longer lane LABLANE.${STOPPABLE_BY_NAME('LABLANE')}`)
-  expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Lead: OFF.')
+  expect((await $.command.run(lane('status'))).text).toBe(STATUS_NONE)
   expect(store.has(`sess:${SID}`)).toBe(false)
   expect(laneSeed.text).toBe(LEAD_LANES('/data/x/work'))
-  cueFile = { ino: 43, text: 'resume\n', present: true }
-  await clock!.advance(2000)
-  await clock!.advance(2000)
-  expect(resultFiles.get(RESULT)).toBe('resume refused not-eligible 43\n')
+  expect(await cue(43, 'resume\n')).toBe('resume refused not-eligible 43\n')
 })
 
 test('detach that cannot remove the record says so, logs detach-incomplete, and still clears the binding', async ($, on) => {
@@ -4513,16 +4501,14 @@ test('a restored attached lane works like any lane: the store record is the auth
   const att = { name: 'svc-api', folder: SVC, brief: `${SVC}/.callboard-attached`, createdAt: 1, adopted: true, lead: LEADSID }
   const hint = { lane: { name: 'svc-api', at: 1, turns: -1, adopted: true, lead: LEADSID }, counters: { startDone: true }, savedAt: T0 }
   await attacher($, on, stdins, { clock: true })
-  storeFiles.set(STOREFILE, JSON.stringify({ repo: PIN, lanes: [att], creates: [] }))
+  putStore([att])
   store.set(`sess:${SID}`, hint)
   restoreAnswer = YES
   askAnswer = YES
   await $.command.run(lane('lane'))
   expect((await $.command.run(lane('status'))).text).toContain('Lane: svc-api')
   expect((store.get(`sess:${SID}`) as any).lane).toMatchObject({ name: 'svc-api', turns: -1, adopted: true, lead: LEADSID })
-  cueFile = { ino: 55, text: 'resume\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('resume ok - 55\n')
+  expect(await cue(55, 'resume\n')).toBe('resume ok - 55\n')
   await $.command.run(lane('off'))
   expect(storeJson().lanes).toEqual([])
 })
@@ -4531,7 +4517,7 @@ const restoreRefused = (rec: Record<string, unknown>) => async ($: any, on: any)
   const hint = { lane: { name: 'svc-api', at: 1, turns: -1, adopted: true, lead: LEADSID }, counters: { startDone: true }, savedAt: T0 }
   const stdins: string[] = []
   await attacher($, on, stdins)
-  storeFiles.set(STOREFILE, JSON.stringify({ repo: PIN, lanes: [rec], creates: [] }))
+  putStore([rec])
   store.set(`sess:${SID}`, hint)
   askAnswer = NO
   await $.command.run(lane('lane'))
@@ -4556,7 +4542,6 @@ async function leadAt($: any, on: any, stdins: string[] = [], opts: { clock?: bo
   await grantAt($, PIN)
 }
 const attRec = (lead: string, name = 'ATT', extra: Record<string, unknown> = {}) => ({ name, folder: SVC, brief: `${SVC}/.callboard-attached`, createdAt: 9, adopted: true, lead, ...extra })
-const putStore = (lanes: unknown[], creates: number[] = []) => storeFiles.set(STOREFILE, JSON.stringify({ repo: PIN, lanes, creates }))
 // The store without the lane of that name (a test that needs a lane gone, whatever way a lane can go).
 const dropRec = (name: string) => putStore((storeJson().lanes as { name: string }[]).filter((l) => l.name !== name), storeJson().creates)
 const listCall = () => ({ tool: 'mcp__callboard__lane_list' }) as any
@@ -4588,8 +4573,7 @@ for (const [why, pin, setup] of noPresence) {
     extraStat.set(`${pin}/.git`, dirStat)
     setup()
     await grantAt($, pin)
-    await clock!.advance(2000)
-    await clock!.advance(2000)
+    await tickTwice()
     expect(leadFiles.size).toBe(0)
     expect((await $.command.run(lane('status'))).text).toContain('Lead: ON')
   })
@@ -4695,8 +4679,7 @@ test('/callboard lanes is read-only: it writes no store, sends no notice and lea
   expect(out).toContain('ATT')
   expect(writes()).toBe(before)
   draftNow = ''
-  await clock!.advance(2000)
-  await clock!.advance(2000)
+  await tickTwice()
   expect(notices()).toBe(1)
   putStore([attRec(SID), attRec(SID, 'ATT2')])
   draftNow = 'half a sentence'
@@ -4891,8 +4874,7 @@ longTest('at most 12 notices an hour: a capped change stays owed and goes out on
   }
   expect(notices()).toBe(12)
   expect(logged(stdins).filter((e) => e === 'notice-capped:lanes-changed').length).toBe(1)
-  await clock!.advance(2000)
-  await clock!.advance(2000)
+  await tickTwice()
   expect(notices()).toBe(12)
   nowMs += 3_700_000
   await clock!.advance(3_700_000)
@@ -4910,7 +4892,7 @@ longTest('a capped change is logged once even when another line is logged in the
   }
   expect(notices()).toBe(12)
   extraStat.set(`${ROOT}/leads`, '501 755 2 Directory 11 64 1700000000\n')
-  for (let i = 0; i < 5; i++) await clock!.advance(2000)
+  await ticks(5)
   extraStat.delete(`${ROOT}/leads`)
   const capped = () => logged(stdins).filter((e) => e === 'notice-capped:lanes-changed').length
   expect(logged(stdins)).toContain('error:presence')
@@ -5320,10 +5302,8 @@ test('a join whose startDone cannot be set binds nothing, and the record it wrot
 
 test('a birth rename into an attached record is refused adopted-record, whoever sends it', async ($, on) => {
   await attacher($, on, [], { clock: true, own: { nameSource: 'auto', name: 'quiet-fox' } })
-  storeFiles.set(STOREFILE, JSON.stringify({ repo: PIN, lanes: [{ name: 'ATT', folder: SVC, brief: `${SVC}/.callboard-attached`, createdAt: 1, adopted: true, lead: LEADSID }], creates: [] }))
-  cueFile = { ino: 33, text: 'rename ATT\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('rename refused adopted-record 33\n')
+  putStore([{ name: 'ATT', folder: SVC, brief: `${SVC}/.callboard-attached`, createdAt: 1, adopted: true, lead: LEADSID }])
+  expect(await cue(33, 'rename ATT\n')).toBe('rename refused adopted-record 33\n')
   expect(renames).toEqual([])
   expect((await $.command.run(lane('status'))).text).toContain('Lane: NONE')
 })
@@ -5351,7 +5331,7 @@ test('detach removes only a record that is attached; a plain record of the same 
   await attacher($, on)
   await doLane($, 'lane svc-api')
   const plain = { name: 'svc-api', folder: SVC, brief: `${SVC}/B.md`, createdAt: 3 }
-  storeFiles.set(STOREFILE, JSON.stringify({ repo: PIN, lanes: [plain], creates: [] }))
+  putStore([plain])
   await doLane($, 'lane off')
   expect(storeJson().lanes).toEqual([plain])
 })
@@ -5360,7 +5340,7 @@ test('a restored lane the lead made keeps its record when the session is turned 
   const made = { name: 'svc-api', folder: SVC, brief: `${SVC}/B.md`, createdAt: 3 }
   await attacher($, on)
   extraStat.set(`${SVC}/B.md`, fileStat)
-  storeFiles.set(STOREFILE, JSON.stringify({ repo: PIN, lanes: [made], creates: [] }))
+  putStore([made])
   store.set(`sess:${SID}`, { lane: { name: 'svc-api', at: 1, turns: -1 }, counters: { startDone: true }, savedAt: T0 })
   restoreAnswer = YES
   askAnswer = YES
@@ -5375,7 +5355,7 @@ test('a restored lane the lead made keeps its record when the session is turned 
 test('the 16-lane cap is judged again inside the lock, on the store as it is then', async ($, on) => {
   await attacher($, on)
   const lanes = (n: number) => Array.from({ length: n }, (_, i) => ({ name: `L${i}`, folder: PIN, brief: `${PIN}/B${i}.md`, createdAt: 1 }))
-  storeFiles.set(STOREFILE, JSON.stringify({ repo: PIN, lanes: lanes(15), creates: [] }))
+  putStore(lanes(15))
   const full = JSON.stringify({ repo: PIN, lanes: lanes(16), creates: [] })
   storeReads.push(full, full)
   expect((await doLane($, 'lane svc-api')).text).toBe(refusalText('lane-cap'))
@@ -5408,7 +5388,7 @@ longTest('a pending rename that did not get a tick within 60 seconds expires wit
   expect((await doLane($, 'lane API')).text).toBe(`${ATTACHED('API')}${RENAMING}`)
   cueFile = { ino: 5, text: 'resume\n', present: true }
   submitHangs = true
-  for (let i = 0; i < 70; i++) await clock!.advance(2000)
+  await ticks(70)
   expect(renames).toEqual([])
   expect(toasts).toContain('Rename failed. Run /rename API.')
   expect(logged(stdins)).toContain('rename-failed:expired')
@@ -5422,7 +5402,7 @@ test('off with a record that cannot be removed still unbinds, and says so', asyn
   const r = await $.command.run(lane('off'))
   // The record stays and the write that would clear its session id fails as well: the restart sentence follows.
   expect(r.text).toBe(`This session is no longer lane svc-api. ${DETACH_INCOMPLETE}${SID_KEPT('svc-api')}`)
-  expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Lead: OFF.')
+  expect((await $.command.run(lane('status'))).text).toBe(STATUS_NONE)
   expect(logged(stdins)).toContain('detach-incomplete:')
 })
 
@@ -5469,7 +5449,7 @@ test('a lead whose lane list has not changed does not read its store again', asy
   putStore([attRec(SID)])
   await clock!.advance(2000)
   argv.length = 0
-  for (let i = 0; i < 4; i++) await clock!.advance(2000)
+  await ticks(4)
   expect(argv.filter((a) => a[0] === '/usr/bin/head' && a[a.length - 1] === STOREFILE).length).toBe(0)
 })
 
@@ -5483,11 +5463,10 @@ test('after off the lead tools refuse and carry no news of the lane list', async
 })
 
 // ---- PR two, fix round 1 ----
-const sleepMs = (ms: number) => new Promise((r) => setTimeout(r, ms))
 const ATTLANE = (over: Record<string, unknown> = {}) => attRec(LEADSID, 'svc-api', over)
 
 test('off and lane off clear the binding and the hint first, then remove the record', async ($, on) => {
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await attacher($, on, [], { trace })
   await doLane($, 'lane svc-api')
   let atWrite: { unbound: boolean; hint: boolean } | undefined
@@ -5578,7 +5557,7 @@ test('an off that lands between the store write of a Join and the binding wins: 
   expect((await p).text).toBe('Nothing changed: callboard was turned off meanwhile.')
   expect(storeJson().lanes).toEqual([])
   expect(store.has(`sess:${SID}`)).toBe(false)
-  expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Lead: OFF.')
+  expect((await $.command.run(lane('status'))).text).toBe(STATUS_NONE)
   expect(logged(stdins)).toContain('refused:off-meanwhile')
   expect(logged(stdins)).not.toContain('attached:svc-api')
 })
@@ -5602,14 +5581,10 @@ test('an attached lane follows a new lead: the lead it joined is gone, another o
   leadFiles.clear()
   leadFiles.set(`${ROOT}/leads/${OTHERLEAD}.json`, { text: leadFileText({ sid: OTHERLEAD, pid: 4243 }) })
   sessions = { '4243.json': leadReg({ sessionId: OTHERLEAD, pid: 4243 })['4242.json'], ...ownReg() }
-  cueFile = { ino: 81, text: 'resume\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('resume ok - 81\n')
+  expect(await cue(81, 'resume\n')).toBe('resume ok - 81\n')
   expect(storeJson().lanes[0].lead).toBe(LEADSID)
   leadFiles.clear()
-  cueFile = { ino: 82, text: 'resume\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('resume refused no-lead 82\n')
+  expect(await cue(82, 'resume\n')).toBe('resume refused no-lead 82\n')
 })
 
 test('the presence reader looks at fresh files first: a live lead sorted after more than 64 stale files is still found', async ($, on) => {
@@ -5678,7 +5653,7 @@ test('the pending rename is not run when another live session now carries the na
 })
 
 test('no lane notice goes out while a compaction of the lead waits for its resume text, and the resume goes first', async ($, on) => {
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await leadAt($, on, [], { clock: true, trace })
   // v13.5: a lead is not a lane, so its own request is a self one (viaNudge).
   trace.st!.set('request', { value: { id: '1', mode: 'now', focus: 'f', continuation: 'next', sha256: 'a'.repeat(64), requestedMs: nowMs, phase: 'compacted', compactedMs: nowMs, viaNudge: true }, version: 1 })
@@ -5724,8 +5699,7 @@ test('a lane tool call that carries the news also settles the notice: nothing is
   expect(notices()).toBe(0)
   expect(JSON.stringify(await $.tool.call(listCall()))).toContain(LANES_CHANGED_NOTE)
   draftNow = ''
-  await clock!.advance(2000)
-  await clock!.advance(2000)
+  await tickTwice()
   expect(notices()).toBe(0)
 })
 
@@ -5734,8 +5708,7 @@ test('a tick that runs between the lead own store write and the end of its tool 
   storeAfterMs = 120
   const p = callCreate($)
   await sleepMs(40)
-  await clock!.advance(2000)
-  await clock!.advance(2000)
+  await tickTwice()
   expect(JSON.stringify(await p)).toContain('lane API created')
   await clock!.advance(2000)
   expect(notices()).toBe(0)
@@ -5767,9 +5740,7 @@ test('an attached lane answers when two leads hold the repo: any valid presence 
   await doLane($, 'lane svc-api')
   leadFiles.set(`${ROOT}/leads/${OTHERLEAD}.json`, { text: leadFileText({ sid: OTHERLEAD, pid: 4243 }) })
   sessions = { ...leadReg(), '4243.json': leadReg({ sessionId: OTHERLEAD, pid: 4243 })['4242.json'], ...ownReg() }
-  cueFile = { ino: 83, text: 'resume\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('resume ok - 83\n')
+  expect(await cue(83, 'resume\n')).toBe('resume ok - 83\n')
 })
 
 test('a lead presence file is accepted when its start time and the registry differ only in the blanks ps pads a one-digit day with', async ($, on) => {
@@ -5778,9 +5749,7 @@ test('a lead presence file is accepted when its start time and the registry diff
   leadFiles.set(`${ROOT}/leads/${LEADSID}.json`, { text: leadFileText({ procStart: 'Sun Nov  1 00:48:56 2026' }) })
   sessions = { ...leadReg({ procStart: 'Sun Nov 1 00:48:56 2026' }), ...ownReg() }
   psOut = 'Sun Nov  1 00:48:56 2026\n'
-  cueFile = { ino: 84, text: 'resume\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('resume ok - 84\n')
+  expect(await cue(84, 'resume\n')).toBe('resume ok - 84\n')
 })
 
 test('a registry of more than 512 files is refused, not cut: a name could hide past the cap; 512 are read', async ($, on) => {
@@ -5878,12 +5847,11 @@ test('a release that finds another holder is dropped and removes nothing', async
   await callCreate($)
   const theirs = ownerText(4242, 'their-nonce-0003')
   lockState = { held: true, owner: theirs, mtimeSec: Math.floor(nowMs / 1000), ino: 14 }
-  await clock!.advance(2000)
-  await clock!.advance(2000)
+  await tickTwice()
   expect(lockState).toMatchObject({ held: true, owner: theirs })
   expect(lockLog).not.toContain('rm-owner')
   expect(lockLog.filter((e) => e === 'rmdir').length).toBe(0)
-  for (let i = 0; i < 32; i++) await clock!.advance(2000)
+  await ticks(32)
   expect(logged(stdins)).not.toContain('error:unlock-gave-up')
 })
 
@@ -5893,7 +5861,7 @@ test('a release that stays unconfirmed is given up after 30 tries', async ($, on
   for (let i = 0; i < 40; i++) lockOwnerReads.push(undefined)
   await callCreate($)
   expect(lockState.held).toBe(true)
-  for (let i = 0; i < 31; i++) await clock!.advance(2000)
+  await ticks(31)
   expect(logged(stdins)).toContain('error:unlock-gave-up')
   expect(lockState.held).toBe(true)
 })
@@ -5944,9 +5912,7 @@ test('one cue reads each registry file once, however many steps ask for it', asy
   await attacher($, on, [], { clock: true, argv })
   await doLane($, 'lane svc-api')
   argv.length = 0
-  cueFile = { ino: 84, text: 'resume\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('resume ok - 84\n')
+  expect(await cue(84, 'resume\n')).toBe('resume ok - 84\n')
   expect(argv.filter((a) => a[0] === '/usr/bin/head' && a[a.length - 1] === `${SESSIONS}/4300.json`).length).toBe(1)
 })
 
@@ -5970,7 +5936,7 @@ test('a change that lands while a lead tool runs is not swallowed: the lead is t
 
 test('an off that lands while the binding is being set unbinds it again, takes the record back and says so', async ($, on) => {
   const stdins: string[] = []
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await attacher($, on, stdins, { trace })
   let entered = false
   trace.setHook = async (key) => {
@@ -5986,7 +5952,7 @@ test('an off that lands while the binding is being set unbinds it again, takes t
   trace.setHook = undefined
   expect(storeJson().lanes).toEqual([])
   expect(store.has(`sess:${SID}`)).toBe(false)
-  expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Lead: OFF.')
+  expect((await $.command.run(lane('status'))).text).toBe(STATUS_NONE)
   expect(logged(stdins)).toContain('refused:off-meanwhile')
   expect(appendRows.length).toBe(0)
   expect(laneSections(await $.prompt.compose(LANE_COMPOSE)).length).toBe(0)
@@ -6001,14 +5967,10 @@ test('a lead pinned at a parent repo does not answer for a lane of a nested repo
   leadFiles.clear()
   leadFiles.set(`${ROOT}/leads/${OTHERLEAD}.json`, { text: leadFileText({ sid: OTHERLEAD, pid: 4243, repo: PARENT }) })
   sessions = { '4243.json': leadReg({ sessionId: OTHERLEAD, pid: 4243 })['4242.json'], ...ownReg() }
-  cueFile = { ino: 85, text: 'resume\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('resume refused no-lead 85\n')
+  expect(await cue(85, 'resume\n')).toBe('resume refused no-lead 85\n')
   leadFiles.set(LEADPATH, { text: leadFileText() })
   sessions = { ...leadReg(), '4243.json': leadReg({ sessionId: OTHERLEAD, pid: 4243 })['4242.json'], ...ownReg() }
-  cueFile = { ino: 86, text: 'resume\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('resume ok - 86\n')
+  expect(await cue(86, 'resume\n')).toBe('resume ok - 86\n')
 })
 
 test('a moved lock folder is not put back over a lock that was made again meanwhile: it stays aside and is logged', async ($, on) => {
@@ -6243,9 +6205,7 @@ test('an attached lane does not take a presence file whose pid is not a claude p
   }
   resetGit()
   resultFiles.delete(RESULT)
-  cueFile = { ino: 93, text: 'resume\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('resume ok - 93\n')
+  expect(await cue(93, 'resume\n')).toBe('resume ok - 93\n')
 })
 
 test('a presence check that failed is tried again at the next touch, at most five times, then the pin is cached as no and logged', async ($, on) => {
@@ -6260,7 +6220,7 @@ test('a presence check that failed is tried again at the next touch, at most fiv
 test('five failed presence checks in a row cache the pin as no: no presence file even once the check works', async ($, on) => {
   const stdins: string[] = []
   await leadAt($, on, stdins, { clock: true, seed: () => realFails.set(PIN, { n: 5, err: 'realpath: Operation timed out' }) })
-  for (let i = 0; i < 6; i++) await clock!.advance(2000)
+  await ticks(6)
   expect(leadFiles.has(SELFPATH)).toBe(false)
   expect(logged(stdins)).toContain('error:presence-git-error')
   expect(realFails.get(PIN)!.n).toBe(0)
@@ -6312,11 +6272,7 @@ const laneTarget = async ($: any, on: any, stdins: string[], trace?: Trace) => {
   turnsAddedByRename = 1
   await started($, on, stdins, { clock: true, trace })
 }
-const renameCue = async (ino: number) => {
-  cueFile = { ino, text: 'rename LABLANE\n', present: true }
-  await clock!.advance(2000)
-  await clock!.advance(2000)
-}
+const renameCue = (ino: number) => cue(ino, 'rename LABLANE\n')
 
 test('a binding that lands while the lead question is open refuses the lead after the yes', async ($, on) => {
   const stdins: string[] = []
@@ -6436,7 +6392,7 @@ test('a burst of lead tool calls against a failing presence check counts once: t
   await leadAt($, on, stdins, { clock: true, seed: () => realFails.set(PIN, { n: 99, err: 'realpath: Operation timed out' }) })
   for (let i = 0; i < 8; i++) await $.tool.call(leadCall('list', {}))
   expect(logged(stdins)).not.toContain('error:presence-git-error')
-  for (let i = 0; i < 5; i++) await clock!.advance(2000)
+  await ticks(5)
   expect(logged(stdins)).toContain('error:presence-git-error')
 })
 
@@ -6487,9 +6443,7 @@ test('a born lane gets exactly one lane section with its name, session, folder a
   expect(sectionIds(r)).toEqual(['intro', 'memory', 'callboard:lane'])
   expect(laneSections(await $.prompt.compose(LANE_COMPOSE)).length).toBe(1)
   extraStat.set('/data/x/work/lab/BRIEF.md', fileStat)
-  cueFile = { ino: 43, text: 'start\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('start ok - 43\n')
+  expect(await cue(43, 'start\n')).toBe('start ok - 43\n')
   expect(logged(stdins)).not.toContain('refused:not-empty')
 })
 
@@ -6505,10 +6459,7 @@ test('a born lane names a lead the person named, found at bind time', async ($, 
   extraStat.set(`${PIN}/.git`, dirStat)
   leadFiles.set(LEADPATH, { text: leadFileText() })
   await $.command.run(lane('status'))
-  cueFile = { ino: 42, text: 'rename LABLANE\n', present: true }
-  await clock!.advance(2000)
-  await clock!.advance(2000)
-  expect(resultFiles.get(RESULT)).toBe('rename ok - 42\n')
+  expect(await cue(42, 'rename LABLANE\n')).toBe('rename ok - 42\n')
   const s = laneSections(await $.prompt.compose(LANE_COMPOSE))
   expect(s.length).toBe(1)
   expect(s[0].text.split('\n')[0]).toBe(`**Callboard lane.** You are lane \`LABLANE\`, session \`${SID}\`, working in \`${FOLDER}\`. Your lead is \`LEAD\` (session \`${LEADSID}\`), the session that coordinates the lanes of this repo.`)
@@ -6533,10 +6484,7 @@ async function bornWithTwoLeads($: any, on: any, cueText: string, storeLane?: Re
   leadFiles.set(LEADPATH, { text: leadFileText() })
   leadFiles.set(`${ROOT}/leads/${OTHERLEAD}.json`, { text: leadFileText({ sid: OTHERLEAD, pid: 4243 }) })
   await $.command.run(lane('status'))
-  cueFile = { ino: 42, text: cueText, present: true }
-  await clock!.advance(2000)
-  await clock!.advance(2000)
-  expect(resultFiles.get(RESULT)).toBe('rename ok - 42\n')
+  expect(await cue(42, cueText)).toBe('rename ok - 42\n')
   return { first: laneSections(await $.prompt.compose(LANE_COMPOSE))[0].text.split('\n')[0], status: (await $.command.run(lane('status'))).text }
 }
 
@@ -6661,7 +6609,7 @@ test('a refused note append is logged as lane-briefing and the attach still succ
 })
 
 test('after a reload (no facts in module memory) a binding in the session state still gets the section, with the generic wording', async ($, on) => {
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await started($, on, [], { trace })
   expect(laneSections(await $.prompt.compose(LANE_COMPOSE)).length).toBe(0)
   trace.st!.set('lane', { value: { name: 'LABLANE', at: 1, turns: -1 }, version: 1 })
@@ -6680,10 +6628,6 @@ test('after a reload (no facts in module memory) a binding in the session state 
 
 
 // ---- the lane briefing: lead and lifecycle hardening ----
-const waitFor = async (cond: () => boolean) => {
-  for (let i = 0; i < 400 && !cond(); i++) await sleepMs(5)
-  expect(cond()).toBe(true)
-}
 
 test('a born lane does not name a lead pinned at a parent repo: the lead must hold a presence file for the lane repo', async ($, on) => {
   const PARENT = '/Users/x/code'
@@ -6699,10 +6643,7 @@ test('a born lane does not name a lead pinned at a parent repo: the lead must ho
   extraStat.set(`${PARENT}/.git`, dirStat)
   leadFiles.set(`${ROOT}/leads/${OTHERLEAD}.json`, { text: leadFileText({ sid: OTHERLEAD, pid: 4243, repo: PARENT }) })
   await $.command.run(lane('status'))
-  cueFile = { ino: 42, text: 'rename LABLANE\n', present: true }
-  await clock!.advance(2000)
-  await clock!.advance(2000)
-  expect(resultFiles.get(RESULT)).toBe('rename ok - 42\n')
+  expect(await cue(42, 'rename LABLANE\n')).toBe('rename ok - 42\n')
   const s = laneSections(await $.prompt.compose(LANE_COMPOSE))
   expect(s.length).toBe(1)
   expect(s[0].text.split('\n')[0]).toBe(`**Callboard lane.** You are lane \`LABLANE\`, session \`${SID}\`, working in \`${FOLDER}\`. Your lead is the lead session of this repo.`)
@@ -6713,7 +6654,7 @@ test('an attached record whose lead holds no presence file for the lane repo nam
   await attacher($, on, [], { clock: true })
   sessions = { ...leadReg({ nameSource: 'user' }), ...ownReg() }
   leadFiles.clear()
-  storeFiles.set(STOREFILE, JSON.stringify({ repo: PIN, lanes: [ATT_REC], creates: [] }))
+  putStore([ATT_REC])
   store.set(`sess:${SID}`, { lane: { name: 'svc-api', at: 1, turns: -1, adopted: true, lead: LEADSID }, counters: { startDone: true }, savedAt: T0 })
   restoreAnswer = YES
   askAnswer = YES
@@ -6737,10 +6678,10 @@ test('a lead lookup that throws keeps the base facts and logs lane-lead', async 
 })
 
 test('a detach during the lead lookup leaves no facts and no note behind', async ($, on) => {
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await attacher($, on, [], { trace })
   sessions = { ...leadReg({ nameSource: 'user' }), ...ownReg() }
-  storeFiles.set(STOREFILE, JSON.stringify({ repo: PIN, lanes: [ATT_REC], creates: [] }))
+  putStore([ATT_REC])
   store.set(`sess:${SID}`, { lane: { name: 'svc-api', at: 1, turns: -1, adopted: true, lead: LEADSID }, counters: { startDone: true }, savedAt: T0 })
   let entered = false
   let release: () => void = () => undefined
@@ -6763,7 +6704,7 @@ test('a detach during the lead lookup leaves no facts and no note behind', async
 
 test('an off that lands while a restore writes the binding unbinds it again and leaves no note', async ($, on) => {
   const stdins: string[] = []
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   const hint = { lane: { name: 'LABLANE', at: 1, turns: 0 }, counters: {}, savedAt: T0 }
   await started($, on, stdins, { trace, seed: () => { laneSeed.text = LANES; store.set(`sess:${SID}`, hint) } })
   let entered = false
@@ -6779,7 +6720,7 @@ test('an off that lands while a restore writes the binding unbinds it again and 
   expect((await p).text).toBe('Nothing changed: callboard was turned off meanwhile.')
   trace.setHook = undefined
   expect(trace.st!.get('lane')?.value).toBe(null)
-  expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Lead: OFF.')
+  expect((await $.command.run(lane('status'))).text).toBe(STATUS_NONE)
   expect(appendRows.length).toBe(0)
   expect(laneSections(await $.prompt.compose(LANE_COMPOSE)).length).toBe(0)
   expect(logged(stdins)).toContain('refused:off-meanwhile')
@@ -6797,7 +6738,7 @@ test('a session end drops the kept facts', async ($, on) => {
 
 test('a restore reads the registry again after its dialog: a lead renamed meanwhile is named', async ($, on) => {
   await attacher($, on, [], { clock: true })
-  storeFiles.set(STOREFILE, JSON.stringify({ repo: PIN, lanes: [ATT_REC], creates: [] }))
+  putStore([ATT_REC])
   store.set(`sess:${SID}`, { lane: { name: 'svc-api', at: 1, turns: -1, adopted: true, lead: LEADSID }, counters: { startDone: true }, savedAt: T0 })
   let release: (a: string) => void = () => undefined
   restoreHang = new Promise<string>((r) => (release = r))
@@ -6964,7 +6905,7 @@ test('a lead grant whose tool registration never returns gives up after the limi
 })
 
 const restoreDuring = async ($: any, change: () => void | Promise<void>) => {
-  storeFiles.set(STOREFILE, JSON.stringify({ repo: PIN, lanes: [ATT_REC], creates: [] }))
+  putStore([ATT_REC])
   store.set(`sess:${SID}`, { lane: { name: 'svc-api', at: 1, turns: -1, adopted: true, lead: LEADSID }, counters: { startDone: true }, savedAt: T0 })
   let release: (a: string) => void = () => undefined
   restoreHang = new Promise<string>((r) => (release = r))
@@ -6981,7 +6922,7 @@ const NOT_RESTORED = 'Lane svc-api not restored: things changed while the questi
 test('a restore whose lane is removed while its question is open binds nothing and says so', async ($, on) => {
   const stdins: string[] = []
   await attacher($, on, stdins, { clock: true })
-  await restoreDuring($, () => { storeFiles.set(STOREFILE, JSON.stringify({ repo: PIN, lanes: [], creates: [] })) })
+  await restoreDuring($, () => { putStore([]) })
   expect((await $.command.run(lane('status'))).text).toContain('Lane: NONE')
   expect(toasts).toContain(NOT_RESTORED)
   expect(logged(stdins)).toContain('hint-rejected:unknown-lane')
@@ -6999,7 +6940,7 @@ test('a restore whose name another session takes while its question is open stay
 
 test('a restore finds a binding written while its question was open: refused restore-already-bound, no second write', async ($, on) => {
   const stdins: string[] = []
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await attacher($, on, stdins, { clock: true, trace })
   await restoreDuring($, () => { trace.st!.set('lane', { value: { name: 'OTHER', at: 5, turns: 0 }, version: 1 }) })
   expect(logged(stdins)).toContain('refused:restore-already-bound')
@@ -7095,11 +7036,9 @@ test('a ps -p refused for a pid it cannot take keeps every row; a file name that
 
 test('a restore binds the record as it is after its question: a record rewritten meanwhile is not refused record-changed later', async ($, on) => {
   await attacher($, on, [], { clock: true })
-  await restoreDuring($, () => { storeFiles.set(STOREFILE, JSON.stringify({ repo: PIN, lanes: [{ ...ATT_REC, brief: `${SVC}/NEW-BRIEF.md` }], creates: [] })) })
+  await restoreDuring($, () => { putStore([{ ...ATT_REC, brief: `${SVC}/NEW-BRIEF.md` }]) })
   expect((await $.command.run(lane('status'))).text).toContain('Lane: svc-api')
-  cueFile = { ino: 56, text: 'resume\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('resume ok - 56\n')
+  expect(await cue(56, 'resume\n')).toBe('resume ok - 56\n')
 })
 
 test('an attach whose binding write never returns gives up after the limit, unbinds, and frees the mark', async ($, on) => {
@@ -7177,7 +7116,7 @@ test('a restore binding write that times out binds nothing, is not left pending,
   const stdins: string[] = []
   const late = lateLane()
   await attacher($, on, stdins, { clock: true, trace: late.trace })
-  storeFiles.set(STOREFILE, JSON.stringify({ repo: PIN, lanes: [ATT_REC], creates: [] }))
+  putStore([ATT_REC])
   store.set(`sess:${SID}`, { lane: { name: 'svc-api', at: 1, turns: -1, adopted: true, lead: LEADSID }, counters: { startDone: true }, savedAt: T0 })
   askAnswer = NO
   restoreAnswer = YES
@@ -7203,9 +7142,6 @@ async function person($: any, on: any, stdins: string[] = [], trace?: Trace, bou
   await started($, on, stdins, { clock: true, trace, bound })
   psTable = SELF_PS
 }
-const ticks = async (n: number) => {
-  for (let i = 0; i < n; i++) await clock!.advance(2000)
-}
 
 test('the lead reads a nudge as held, with its fixed text', async ($, on) => {
   await lead($, on, [])
@@ -7221,9 +7157,7 @@ test('the lead reads a nudge as held, with its fixed text', async ($, on) => {
 test('a lead nudge to a busy lane is recorded and goes out once the lane is idle', async ($, on) => {
   await renameThroughTick($, on, [], 1)
   sessions = { [REGFILE]: REG({ status: 'busy' }) }
-  cueFile = { ino: 63, text: 'compact\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('compact held nudged 63\n')
+  expect(await cue(63, 'compact\n')).toBe('compact held nudged 63\n')
   await ticks(5)
   expect(nudges()).toEqual([])
   // A turn that ends past the level meanwhile does not replace the lead's nudge.
@@ -7236,12 +7170,10 @@ test('a lead nudge to a busy lane is recorded and goes out once the lane is idle
 
 test('a lead nudge recorded while a mid-turn nudge was being claimed is dropped at idle: nudge-limit, not a second nudge inside the gap (review, 2026-11-08)', async ($, on) => {
   const stdins: string[] = []
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await renameThroughTick($, on, stdins, 1, trace)
   sessions = { [REGFILE]: REG({ status: 'busy' }) }
-  cueFile = { ino: 63, text: 'compact\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('compact held nudged 63\n')
+  expect(await cue(63, 'compact\n')).toBe('compact held nudged 63\n')
   // The mid-turn hook's claim lands after the lead's check read the old counters.
   trace.st!.set('counters', { value: { lastNudgeMs: nowMs - 1000, nudgeTimes: [nowMs - 1000], lastNudgeKind: 'idle' }, version: 91 })
   tokensNow = 350_000
@@ -7252,15 +7184,14 @@ test('a lead nudge recorded while a mid-turn nudge was being claimed is dropped 
 })
 
 test('no lead nudge while the lane has a request in any phase: the answer stays no-request', async ($, on) => {
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await renameThroughTick($, on, [], 1, trace)
   // Request writes are refused, so the tick leaves each phase as it is set here.
   trace.failKeys = new Set(['request'])
   let ino = 70
   for (const p of [{ phase: 'called', mode: 'on-cue' }, { phase: 'armed', mode: 'now' }, { phase: 'compacting', mode: 'now', compactingMs: nowMs }, { phase: 'compacted', mode: 'now', compactedMs: nowMs }]) {
     trace.st!.set('request', { value: { id: 'r1', focus: 'f', continuation: 'c', sha256: 'a'.repeat(64), requestedMs: nowMs, ...p }, version: 20 })
-    cueFile = { ino, text: 'compact\n', present: true }
-    await tickTwice()
+    await cue(ino, 'compact\n')
     expect(resultFiles.get(RESULT), p.phase).toBe(`compact refused no-request ${ino}\n`)
     ino++
   }
@@ -7269,19 +7200,14 @@ test('no lead nudge while the lane has a request in any phase: the answer stays 
 })
 
 test('a lead order is refused inside the compaction gap, and background-work with a background agent; none is recorded (the context floor no longer applies to an order)', async ($, on) => {
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await renameThroughTick($, on, [], 1, trace)
-  const cue = async (ino: number) => {
-    cueFile = { ino, text: 'compact\n', present: true }
-    await tickTwice()
-    return resultFiles.get(RESULT)
-  }
   tokensNow = 150_000
   trace.st!.set('counters', { value: { lastCompactMs: nowMs - 60_000 }, version: 30 })
-  expect(await cue(81)).toBe('compact refused rate-limit 81\n')
+  expect(await cue(81, 'compact\n')).toBe('compact refused rate-limit 81\n')
   trace.st!.set('counters', { value: {}, version: 31 })
   agentsNow = [{ status: 'running' }]
-  expect(await cue(82)).toBe('compact refused background-work 82\n')
+  expect(await cue(82, 'compact\n')).toBe('compact refused background-work 82\n')
   expect(trace.st!.get('nudgeDue')?.value ?? null).toBe(null)
   agentsNow = []
   await ticks(3)
@@ -7293,9 +7219,7 @@ test('an order (lane_compact, no request) lifts the floor for one on-cue request
   await renameThroughTick($, on, stdins, 1)
   tokensNow = 50_000
   expect(JSON.stringify(await $.tool.call(GOOD as any))).toContain('Compaction not allowed: context-floor')
-  cueFile = { ino: 96, text: 'compact\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('compact held nudged 96\n')
+  expect(await cue(96, 'compact\n')).toBe('compact held nudged 96\n')
   expect(nudges()).toEqual([nudgeText('lead')])
   expect(store.get(`ord:${SID}`)).toEqual({ at: expect.any(Number) })
   expect(JSON.stringify(await $.tool.call(GOOD as any))).toContain('queued')
@@ -7312,26 +7236,20 @@ test('an order (lane_compact, no request) lifts the floor for one on-cue request
 test('an order is not a standing lift: a request made after the 15 minutes meets the floor again, and a request in mode now never gets the lift', async ($, on) => {
   await renameThroughTick($, on, [], 1)
   tokensNow = 50_000
-  cueFile = { ino: 97, text: 'compact\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('compact held nudged 97\n')
+  expect(await cue(97, 'compact\n')).toBe('compact held nudged 97\n')
   expect(JSON.stringify(await $.tool.call({ ...GOOD, mode: 'now' } as any))).toContain('Compaction not allowed: context-floor')
   await clock!.advance(16 * 60_000)
   expect(JSON.stringify(await $.tool.call(GOOD as any))).toContain('Compaction not allowed: context-floor')
 })
 
 test('an order past the 30-minute gap of an earlier nudge is sent; a repeat of the same order is refused nudge-limit', async ($, on) => {
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await renameThroughTick($, on, [], 1, trace)
   tokensNow = 50_000
   trace.st!.set('counters', { value: { lastNudgeMs: nowMs - 60_000, nudgeTimes: [nowMs - 60_000], lastNudgeKind: 'idle' }, version: 40 })
-  cueFile = { ino: 98, text: 'compact\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('compact held nudged 98\n')
+  expect(await cue(98, 'compact\n')).toBe('compact held nudged 98\n')
   expect(nudges()).toEqual([nudgeText('lead')])
-  cueFile = { ino: 99, text: 'compact\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('compact refused nudge-limit 99\n')
+  expect(await cue(99, 'compact\n')).toBe('compact refused nudge-limit 99\n')
   expect(nudges().length).toBe(1)
 })
 
@@ -7339,8 +7257,7 @@ test('an order stands when the engine refuses the compact command: the stamp is 
   const stdins: string[] = []
   await renameThroughTick($, on, stdins, 1)
   tokensNow = 50_000
-  cueFile = { ino: 120, text: 'compact\n', present: true }
-  await tickTwice()
+  await cue(120, 'compact\n')
   expect(JSON.stringify(await $.tool.call(GOOD as any))).toContain('queued')
   const at = (store.get(`ord:${SID}`) as { at: number }).at
   compactThrows = true
@@ -7354,8 +7271,7 @@ test('a compaction the mod did not start (PostCompact with no request) spends th
   on('classic.PostCompact', () => ({}))
   await renameThroughTick($, on, [], 1)
   tokensNow = 50_000
-  cueFile = { ino: 121, text: 'compact\n', present: true }
-  await tickTwice()
+  await cue(121, 'compact\n')
   expect(store.has(`ord:${SID}`)).toBe(true)
   await ($ as any).classic.PostCompact({ hook_event_name: 'PostCompact', trigger: 'auto', compact_summary: 's' })
   expect(store.has(`ord:${SID}`)).toBe(false)
@@ -7365,26 +7281,20 @@ test('a compaction the mod did not start (PostCompact with no request) spends th
 test('an order sent again after its first nudge expired unsent restarts the 15 minutes, for the lane and the orderer (review)', async ($, on) => {
   await renameThroughTick($, on, [], 1)
   sessions = { [REGFILE]: REG({ status: 'busy' }) }
-  cueFile = { ino: 122, text: 'compact\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('compact held nudged 122\n')
+  expect(await cue(122, 'compact\n')).toBe('compact held nudged 122\n')
   const first = (store.get(`ord:${SID}`) as { at: number }).at
   await clock!.advance(11 * MIN)
-  cueFile = { ino: 123, text: 'compact\n', present: true, mtimeSec: nowMs / 1000 }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('compact held nudged 123\n')
+  expect(await cue(123, 'compact\n', { mtimeSec: nowMs / 1000 })).toBe('compact held nudged 123\n')
   expect((store.get(`ord:${SID}`) as { at: number }).at).toBeGreaterThan(first)
 })
 
 test('a pending nudge of any kind becomes the order and is stamped (review)', async ($, on) => {
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await renameThroughTick($, on, [], 1, trace)
   tokensNow = 50_000
   sessions = { [REGFILE]: REG({ status: 'busy' }) }
   trace.st!.set('nudgeDue', { value: { kind: 'cache', at: nowMs }, version: 50 })
-  cueFile = { ino: 124, text: 'compact\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('compact held nudged 124\n')
+  expect(await cue(124, 'compact\n')).toBe('compact held nudged 124\n')
   expect(trace.st!.get('nudgeDue')?.value).toEqual({ kind: 'lead', at: expect.any(Number) })
   expect(store.get(`ord:${SID}`)).toEqual({ at: expect.any(Number) })
 })
@@ -7530,9 +7440,7 @@ test('a lane signed done is not nudged by its own level, at any size; its lead c
   await ticks(2)
   expect(nudges()).toEqual([])
   expect(logged(stdins)).toContain('nudge-dropped:lane-done')
-  cueFile = { ino: 66, text: 'compact\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('compact held nudged 66\n')
+  expect(await cue(66, 'compact\n')).toBe('compact held nudged 66\n')
   expect(nudges()).toEqual([nudgeText('lead')])
 })
 
@@ -7605,7 +7513,7 @@ test('a lane signed done gets no nudge in the middle of a turn, at any size', as
 
 test('no nudge in the middle of a turn for a subagent call or a session with a request of its own', async ($, on) => {
   postBeneath(on)
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await person($, on, [], trace, true)
   tokensNow = 400_000
   expect(await midCtx($, 'PostToolUse', { agent_id: 'sub1' })).toEqual([])
@@ -7615,7 +7523,7 @@ test('no nudge in the middle of a turn for a subagent call or a session with a r
 
 test('no nudge in the middle of a turn inside the 30-minute compaction gap', async ($, on) => {
   postBeneath(on)
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await person($, on, [], trace)
   tokensNow = 400_000
   trace.st!.set('counters', { value: { lastCompactMs: nowMs - 60_000 }, version: 50 })
@@ -7639,9 +7547,7 @@ test('a lead nudge recorded for the tick is left to the tick', async ($, on) => 
   postBeneath(on)
   await renameThroughTick($, on, [], 1)
   sessions = { [REGFILE]: REG({ status: 'busy' }) }
-  cueFile = { ino: 63, text: 'compact\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('compact held nudged 63\n')
+  expect(await cue(63, 'compact\n')).toBe('compact held nudged 63\n')
   tokensNow = 400_000
   expect(await midCtx($)).toEqual([])
   sessions = { [REGFILE]: REG() }
@@ -7765,7 +7671,7 @@ test('a session.start that says not interactive still counts as a person session
 
 test('no self nudge while the session has a request of its own, or inside the 30-minute compaction gap', async ($, on) => {
   const stdins: string[] = []
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await person($, on, stdins, trace, true)
   tokensNow = 310_000
   expect((await $.tool.call(GOOD as any)).result).toBe('queued')
@@ -7780,7 +7686,7 @@ test('no self nudge while the session has a request of its own, or inside the 30
 })
 
 test('off drops a recorded nudge and the grant; a later turn past the level is nudged again (off does not opt out)', async ($, on) => {
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await person($, on, [], trace)
   tokensNow = 310_000
   draftNow = 'typing'
@@ -7941,7 +7847,7 @@ test('the grant is spent on use: the request says viaNudge, nudgedAt is cleared,
 })
 
 test('a bound session never gets viaNudge, and its own request clears nudgedAt too', async ($, on) => {
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   const stdins: string[] = []
   await person($, on, stdins, trace, true)
   // A lane that has not signed done is working: its level is the working one.
@@ -7957,11 +7863,9 @@ test('a bound session never gets viaNudge, and its own request clears nudgedAt t
 })
 
 test('a bound lane nudged by its lead never gets viaNudge', async ($, on) => {
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await renameThroughTick($, on, [], 1, trace)
-  cueFile = { ino: 64, text: 'compact\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('compact held nudged 64\n')
+  expect(await cue(64, 'compact\n')).toBe('compact held nudged 64\n')
   await ticks(1)
   expect(nudges()).toEqual([nudgeText('lead')])
   expect((await $.tool.call(NOW as any)).result).toBe('queued')
@@ -7971,7 +7875,7 @@ test('a bound lane nudged by its lead never gets viaNudge', async ($, on) => {
 
 longTest('a nudge submit that threw takes the grant back; one that outlasts the timeout keeps it', async ($, on) => {
   const stdins: string[] = []
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await person($, on, stdins, trace)
   await $.command.run(lane('off'))
   tokensNow = 310_000
@@ -8027,7 +7931,7 @@ test('v13.5: off in a session that is neither a lane nor a lead leaves its grant
 
 test('v13.5: off in a session that is neither a lane nor a lead leaves a pending request of its own as it is', async ($, on) => {
   const stdins: string[] = []
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await person($, on, stdins, trace)
   trace.st!.set('request', { value: { id: 'r1', phase: 'called', mode: 'now', focus: 'f', continuation: 'c', sha256: 'a'.repeat(64), requestedMs: nowMs, viaNudge: true }, version: 5 })
   expect((await $.command.run(lane('off'))).text).toBe(OFF_NOTHING)
@@ -8038,21 +7942,20 @@ test('v13.5: off in a session that is neither a lane nor a lead leaves a pending
 test('off during a lead\'s own compaction lets it finish but sends no resume: the request loses the grant, and off says so', async ($, on) => {
   const stdins: string[] = []
   on('classic.PostCompact', () => ({}))
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await leadAt($, on, stdins, { clock: true, trace })
   trace.st!.set('request', { value: { id: 'r1', phase: 'compacting', mode: 'now', focus: 'f', continuation: 'next', sha256: 'a'.repeat(64), requestedMs: nowMs, compactingMs: nowMs, viaNudge: true }, version: 5 })
   expect((await $.command.run(lane('off'))).text).toBe('Lead is now off. The compaction under way will not resume the work.')
   expect((trace.st!.get('request')?.value as any).phase).toBe('compacting')
   expect((trace.st!.get('request')?.value as any).viaNudge).toBeUndefined()
   await ($ as any).classic.PostCompact({ hook_event_name: 'PostCompact', trigger: 'manual', compact_summary: 's' })
-  await clock!.advance(2000)
-  await clock!.advance(2000)
+  await tickTwice()
   expect(submitted.filter((t) => t.startsWith('[compact-cue] This conversation was compacted'))).toEqual([])
   expect(logged(stdins)).toContain('dropped:not-eligible')
 })
 
 test('a turn-end level check never replaces a lead nudge recorded while it ran', async ($, on) => {
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   const stdins: string[] = []
   await person($, on, stdins, trace)
   tokensNow = 310_000
@@ -8071,22 +7974,17 @@ test('a granted session that is not a lane refuses every cue: rename by the birt
   laneSeed.text = JSON.stringify({ lanes: [{ name: 'LABLANE', folder: '/data/x/work/lab', brief: '/data/x/work/lab/BRIEF.md', repo: '/data/x/work' }] })
   sessions = { [REGFILE]: REG() }
   turnsNow = 5
-  cueFile = { ino: 120, text: 'rename LABLANE\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('rename refused not-empty 120\n')
+  expect(await cue(120, 'rename LABLANE\n')).toBe('rename refused not-empty 120\n')
   expect(trace.st!.get('lane')?.value ?? null).toBe(null)
   let ino = 121
   for (const verb of ['start', 'resume', 'retire', 'compact']) {
-    cueFile = { ino, text: `${verb}\n`, present: true }
-    await tickTwice()
+    await cue(ino, `${verb}\n`)
     expect(resultFiles.get(RESULT), verb).toBe(`${verb} refused not-eligible ${ino}\n`)
     ino++
   }
   expect(JSON.stringify(await $.tool.call(GOOD as any))).toContain(NOT_ENABLED)
   expect((await $.tool.call(NOW as any)).result).toBe('queued')
-  cueFile = { ino, text: 'compact\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe(`compact refused not-eligible ${ino}\n`)
+  expect(await cue(ino, 'compact\n')).toBe(`compact refused not-eligible ${ino}\n`)
 })
 
 test('a prompt of the person ends the grant; the nudge, a prompt of the mod\'s own, does not', async ($, on) => {
@@ -8104,17 +8002,13 @@ test('a prompt of the person ends the grant; the nudge, a prompt of the mod\'s o
 
 test('a lead nudge while one is pending is answered nudged without moving its time', async ($, on) => {
   const stdins: string[] = []
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await renameThroughTick($, on, stdins, 1, trace)
   sessions = { [REGFILE]: REG({ status: 'busy' }) }
-  cueFile = { ino: 67, text: 'compact\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('compact held nudged 67\n')
+  expect(await cue(67, 'compact\n')).toBe('compact held nudged 67\n')
   const first = (trace.st!.get('nudgeDue')?.value as any).at
   await clock!.advance(60_000)
-  cueFile = { ino: 68, text: 'compact\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('compact held nudged 68\n')
+  expect(await cue(68, 'compact\n')).toBe('compact held nudged 68\n')
   expect(trace.st!.get('nudgeDue')?.value).toEqual({ kind: 'lead', at: first })
   expect(logged(stdins)).toContain('nudge-pending:lead')
   // Still the first time: it expires 10 minutes after the first cue, not the second.
@@ -8124,14 +8018,12 @@ test('a lead nudge while one is pending is answered nudged without moving its ti
 })
 
 test('a lead nudge while a threshold nudge is pending turns it into the lead\'s, with its own time, so it goes out below the working level', async ($, on) => {
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await renameThroughTick($, on, [], 1, trace)
   sessions = { [REGFILE]: REG({ status: 'busy' }) }
   const at = nowMs
   trace.st!.set('nudgeDue', { value: { kind: 'threshold', at }, version: 70 })
-  cueFile = { ino: 69, text: 'compact\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('compact held nudged 69\n')
+  expect(await cue(69, 'compact\n')).toBe('compact held nudged 69\n')
   expect(trace.st!.get('nudgeDue')?.value).toEqual({ kind: 'lead', at })
   tokensNow = 300_000
   sessions = { [REGFILE]: REG() }
@@ -8140,14 +8032,12 @@ test('a lead nudge while a threshold nudge is pending turns it into the lead\'s,
 })
 
 test('a lead nudge to a lane session that is not interactive is refused not-interactive, and none is recorded', async ($, on) => {
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await renameThroughTick($, on, [], 1, trace)
   trace.st!.set('interactive', { value: false, version: 80 })
   sessions = {}
   ownEntryAuto = false
-  cueFile = { ino: 71, text: 'compact\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('compact refused not-interactive 71\n')
+  expect(await cue(71, 'compact\n')).toBe('compact refused not-interactive 71\n')
   expect(trace.st!.get('nudgeDue')?.value ?? null).toBe(null)
 })
 
@@ -8159,20 +8049,17 @@ async function modelLane($: any, on: any, stdins: string[], model: string | unde
   turnsAddedByRename = 1
   engine(on, [], stdins, true, opts.trace)
   on('tool.call', () => ({ result: {} }))
-  storeFiles.set(STOREFILE, JSON.stringify({ repo: PIN, lanes: [{ name: 'LABLANE', folder: MFOLDER, brief: `${MFOLDER}/BRIEF.md`, createdAt: 1, ...(model ? { model } : {}) }], creates: [] }))
+  putStore([{ name: 'LABLANE', folder: MFOLDER, brief: `${MFOLDER}/BRIEF.md`, createdAt: 1, ...(model ? { model } : {}) }])
   extraStat.set(`${PIN}/.git`, dirStat)
   extraStat.set(MFOLDER, dirStat)
   await $.session.start({ cwd: MFOLDER, surface: 'vscode', isInteractive: true })
   callerCwd = MFOLDER
   await $.command.run(lane('status'))
-  cueFile = { ino: 42, text: 'rename LABLANE\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('rename ok - 42\n')
+  expect(await cue(42, 'rename LABLANE\n')).toBe('rename ok - 42\n')
   if (opts.brief !== false) extraStat.set(`${MFOLDER}/BRIEF.md`, fileStat)
   modelMode = opts.mode ?? 'ok'
   if (opts.now) modelNow = opts.now
-  cueFile = { ino: 43, text: 'start\n', present: true }
-  await tickTwice()
+  await cue(43, 'start\n')
 }
 
 test('start runs /model for a record with a model, after the brief checks and before the start text', async ($, on) => {
@@ -8203,7 +8090,7 @@ test('start runs no /model for a lead-made record without a model', async ($, on
 for (const [why, mode] of [['the session reports another model', 'stay'], ['/model throws', 'throw']] as const) {
   test(`start refuses model-failed when ${why}: no start text, startDone not set`, async ($, on) => {
     const stdins: string[] = []
-    const trace: Trace = { log: [], failCounters: false }
+    const trace = newTrace()
     await modelLane($, on, stdins, 'opus', { trace, mode })
     expect(modelRuns).toEqual(['opus@0'])
     expect(resultFiles.get(RESULT)).toBe('start refused model-failed 43\n')
@@ -8242,14 +8129,13 @@ async function bornStore($: any, on: any, stdins: string[], opts: { trace?: Trac
   turnsAddedByRename = opts.added ?? 1
   engine(on, opts.argv ?? [], stdins, true, opts.trace)
   on('tool.call', () => ({ result: {} }))
-  storeFiles.set(STOREFILE, JSON.stringify({ repo: PIN, lanes: [STORE_LANE(opts.rec)], creates: [] }))
+  putStore([STORE_LANE(opts.rec)])
   extraStat.set(`${PIN}/.git`, dirStat)
   extraStat.set(MFOLDER, dirStat)
   await $.session.start({ cwd: MFOLDER, surface: 'vscode', isInteractive: true })
   callerCwd = MFOLDER
   await $.command.run(lane('status'))
-  cueFile = { ino: 42, text: 'rename LABLANE\n', present: true }
-  await tickTwice()
+  await cue(42, 'rename LABLANE\n')
 }
 // A binding the test writes itself (another time), as a new binding of the same session.
 const rebindAt = (trace: Trace, value: unknown) => trace.st!.set('lane', { value, version: (trace.st!.get('lane')?.version ?? 0) + 1 })
@@ -8273,7 +8159,7 @@ test('a restore through the dialog writes the id; a record that names another si
   const stdins: string[] = []
   // A trace state: the tick then reads the binding the command wrote.
   await attacher($, on, stdins, { clock: true, trace: { log: [], failCounters: false } })
-  storeFiles.set(STOREFILE, JSON.stringify({ repo: PIN, lanes: [{ ...ATT_REC, sid: OTHER, parked: T0 - 5 }], creates: [] }))
+  putStore([{ ...ATT_REC, sid: OTHER, parked: T0 - 5 }])
   store.set(`sess:${SID}`, { lane: { name: 'svc-api', at: 1, turns: -1, adopted: true, lead: LEADSID }, counters: { startDone: true }, savedAt: T0 })
   askAnswer = YES
   await $.command.run(lane('lane'))
@@ -8285,11 +8171,11 @@ test('a restore through the dialog writes the id; a record that names another si
 
 test('the sync runs once per binding: one store write over several ticks; a new binding of the same session runs it again', async ($, on) => {
   const argv: string[][] = []
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await bornStore($, on, [], { trace, argv })
   expect(storeMvs(argv)).toBe(1)
   await tickTwice()
-  storeFiles.set(STOREFILE, JSON.stringify({ repo: PIN, lanes: [STORE_LANE()], creates: [] }))
+  putStore([STORE_LANE()])
   await tickTwice()
   expect(storeMvs(argv)).toBe(1)
   const b = trace.st!.get('lane')!.value as any
@@ -8301,9 +8187,9 @@ test('the sync runs once per binding: one store write over several ticks; a new 
 
 test('a sync whose binding was cleared before its store write writes nothing', async ($, on) => {
   const stdins: string[] = []
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await bornStore($, on, stdins, { trace })
-  storeFiles.set(STOREFILE, JSON.stringify({ repo: PIN, lanes: [STORE_LANE()], creates: [] }))
+  putStore([STORE_LANE()])
   const b = trace.st!.get('lane')!.value as any
   rebindAt(trace, { ...b, at: b.at + 1 })
   // The binding goes (as a /callboard off clears it) while the sync looks up the record.
@@ -8315,9 +8201,9 @@ test('a sync whose binding was cleared before its store write writes nothing', a
 
 test('a sync whose store write hangs times out, and the cue on the same tick is still claimed', async ($, on) => {
   const stdins: string[] = []
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await bornStore($, on, stdins, { trace })
-  storeFiles.set(STOREFILE, JSON.stringify({ repo: PIN, lanes: [STORE_LANE()], creates: [] }))
+  putStore([STORE_LANE()])
   const b = trace.st!.get('lane')!.value as any
   rebindAt(trace, { ...b, at: b.at + 1 })
   storeHang = new Promise(() => undefined)
@@ -8334,9 +8220,7 @@ test('a sync whose store write hangs times out, and the cue on the same tick is 
 test('after the sync wrote the session id, a resume cue still acts: sid is not part of the record hash', async ($, on) => {
   await bornStore($, on, [])
   expect(recOf().sid).toBe(SID)
-  cueFile = { ino: 50, text: 'resume\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('resume ok - 50\n')
+  expect(await cue(50, 'resume\n')).toBe('resume ok - 50\n')
 })
 
 test('a sid-only or parked-only change of the store raises no lanes-changed turn in an idle lead; an added record still does', async ($, on) => {
@@ -8603,7 +8487,6 @@ test('v15.3 no lane_remove is declared for a lead or the manager', async ($, on)
 })
 
 // ---- v13: lane_park ----
-const PARK_API = (extra: Record<string, unknown> = {}) => ({ name: 'API', folder: `${PIN}/api`, brief: `${PIN}/api/BRIEF.md`, createdAt: 1, ...extra })
 const parkSess = (extra: Record<string, unknown> = {}) => ({ ...leadSelfReg(), ...cueSession(OTHER, 'API', `${PIN}/api`, { pid: 4500, ...extra }) })
 async function parker($: any, on: any, stdins: string[] = [], argv: string[][] = [], rec: Record<string, unknown> = { sid: OTHER }) {
   await leadAt($, on, stdins, { sess: parkSess(), argv })
@@ -8703,11 +8586,7 @@ async function parkTarget($: any, on: any, stdins: string[] = []) {
   await renameThroughTick($, on, stdins, 1)
   sessions = SELFREG()
 }
-const parkCue = async (ino: number) => {
-  cueFile = { ino, text: 'park\n', present: true }
-  await tickTwice()
-  return resultFiles.get(RESULT)
-}
+const parkCue = (ino: number) => cue(ino, 'park\n')
 
 test('a park cue is confirmed when idle with no draft, agents or shells, with no report at all', async ($, on) => {
   const stdins: string[] = []
@@ -8911,22 +8790,21 @@ async function rebinder($: any, on: any, stdins: string[], opts: { rec?: Record<
     const labels = q.options.map((o: any) => (typeof o === 'string' ? o : o.label))
     return { result: { questions: e.questions, answers: { [q.question]: answer === YES ? labels[0] : answer === NO ? labels[1] : answer } } }
   })
-  storeFiles.set(STOREFILE, JSON.stringify({ repo: PIN, lanes: [STORE_LANE({ sid: SID, ...opts.rec })], creates: [] }))
+  putStore([STORE_LANE({ sid: SID, ...opts.rec })])
   extraStat.set(`${PIN}/.git`, dirStat)
   extraStat.set(MFOLDER, dirStat)
   if (opts.hint !== undefined) store.set(`sess:${SID}`, opts.hint)
   callerCwd = opts.cwd ?? MFOLDER
   await $.session.start({ cwd: MFOLDER, surface: 'vscode', isInteractive: opts.interactive ?? true })
 }
-const laneNow = async ($: any) => (await $.command.run(lane('status'))).text as string
 const rebinds = (stdins: string[]) => logged(stdins).filter((x) => x.startsWith('rebound:') || x.startsWith('rebind-rejected:'))
 const LANE_HINT = (lane: Record<string, unknown> = {}, counters: Record<string, unknown> = {}) => ({ lane: { name: 'LABLANE', at: 1, turns: -1, ...lane }, counters, savedAt: T0 })
 
 test('a session whose store record names its id rebinds from the tick as a restore binds: one note, a toast, and no Restore question later', async ($, on) => {
   const stdins: string[] = []
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await rebinder($, on, stdins, { trace, hint: LANE_HINT() })
-  expect(await laneNow($)).toContain('Lane: NONE')
+  expect(await statusText($)).toContain('Lane: NONE')
   await tickTwice()
   const b = trace.st!.get('lane')!.value as any
   expect(b).toMatchObject({ name: 'LABLANE', turns: -1, restored: true })
@@ -8941,7 +8819,7 @@ test('a session whose store record names its id rebinds from the tick as a resto
   expect((store.get(`sess:${SID}`) as any).lane).toMatchObject({ name: 'LABLANE', turns: -1, restored: true })
   await $.command.run(lane('lane'))
   expect(rebindAsks.some((q) => q.startsWith('Restore'))).toBe(false)
-  expect(await laneNow($)).toContain('Lane: LABLANE')
+  expect(await statusText($)).toContain('Lane: LABLANE')
   expect(recOf()).toEqual(STORE_LANE({ sid: SID }))
 })
 
@@ -8949,7 +8827,7 @@ test('a rebind merges the counters of its hint: a compaction 5 minutes before th
   const stdins: string[] = []
   await rebinder($, on, stdins, { hint: LANE_HINT({}, { lastCompactMs: T0 - 5 * 60_000, resumeTimes: [T0 - 60_000] }) })
   await tickTwice()
-  expect(await laneNow($)).toContain('Lane: LABLANE')
+  expect(await statusText($)).toContain('Lane: LABLANE')
   expect((store.get(`sess:${SID}`) as any).counters).toMatchObject({ lastCompactMs: T0 - 5 * 60_000, startDone: true, resumeTimes: [T0 - 60_000] })
   expect(JSON.stringify(await $.tool.call(GOOD as any))).toContain('Compaction not allowed: rate-limit')
 })
@@ -8964,7 +8842,7 @@ for (const [what, opts, code] of NOT_REBOUND) {
     const stdins: string[] = []
     await rebinder($, on, stdins, opts)
     await ticks(4)
-    expect(await laneNow($)).toContain('Lane: NONE')
+    expect(await statusText($)).toContain('Lane: NONE')
     expect(rebinds(stdins)).toEqual([code])
     expect(toasts).not.toContain(reboundToast('LABLANE'))
     expect(toasts.filter((t) => t === 'Lane LABLANE did not rebind automatically. Run /callboard lane to restore it.')).toEqual(['Lane LABLANE did not rebind automatically. Run /callboard lane to restore it.'])
@@ -8979,7 +8857,7 @@ test('a lead is never rebound into a lane: refused lead-holder, and the lead sta
   callerCwd = MFOLDER
   await ticks(3)
   expect(rebinds(stdins)).toEqual(['rebind-rejected:lead-holder'])
-  expect(await laneNow($)).toContain('Lane: NONE. Lead: ON.')
+  expect(await statusText($)).toContain('Lane: NONE. Lead: ON.')
   expect(toasts.some((t) => t.includes('did not rebind'))).toBe(false)
 })
 
@@ -8994,7 +8872,7 @@ test('a parked record still rebinds, and the sync then drops the mark', async ($
 
 test('an attached record rebinds with the attached facts in the binding, and its record still goes at lane off', async ($, on) => {
   const stdins: string[] = []
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await rebinder($, on, stdins, { trace, rec: { adopted: true, lead: LEADSID } })
   await tickTwice()
   expect(trace.st!.get('lane')!.value).toMatchObject({ name: 'LABLANE', turns: -1, restored: true, adopted: true, lead: LEADSID, key: KEY })
@@ -9015,7 +8893,7 @@ test('another live session carrying the name holds the rebind back; once it is g
   const busy = { [REGFILE]: REG({ cwd: MFOLDER }), ...cueSession(OTHER, 'LABLANE', MFOLDER, { pid: 4500 }) }
   await rebinder($, on, stdins, { sess: busy })
   await ticks(3)
-  expect(await laneNow($)).toContain('Lane: NONE')
+  expect(await statusText($)).toContain('Lane: NONE')
   expect(rebinds(stdins)).toEqual([])
   sessions = { [REGFILE]: REG({ cwd: MFOLDER }) }
   await ticks(2)
@@ -9027,7 +8905,7 @@ test('a name in use for all 15 tries is logged once as rebind-rejected name-in-u
   await rebinder($, on, stdins, { sess: { [REGFILE]: REG({ cwd: MFOLDER }), ...cueSession(OTHER, 'LABLANE', MFOLDER, { pid: 4500 }) } })
   await ticks(20)
   expect(rebinds(stdins)).toEqual(['rebind-rejected:name-in-use'])
-  expect(await laneNow($)).toContain('Lane: NONE')
+  expect(await statusText($)).toContain('Lane: NONE')
 })
 
 test('a registry read whose ps -p confirmation failed is not trusted: no rebind on it, and after 15 tries rebind-rejected registry-ps-confirm', async ($, on) => {
@@ -9036,7 +8914,7 @@ test('a registry read whose ps -p confirmation failed is not trusted: no rebind 
   psStartsGone.add('4500')
   psConfirmFails = 'throw'
   await ticks(16)
-  expect(await laneNow($)).toContain('Lane: NONE')
+  expect(await statusText($)).toContain('Lane: NONE')
   expect(rebinds(stdins)).toEqual(['rebind-rejected:registry-ps-confirm'])
 })
 
@@ -9075,15 +8953,13 @@ test('no trusted own row by try 15: rebind-rejected registry-no-own-row, and no 
   sessions = { [REGFILE]: REG({ cwd: MFOLDER }) }
   await ticks(2)
   expect(rebinds(stdins)).toEqual(['rebind-rejected:registry-no-own-row'])
-  expect(await laneNow($)).toContain('Lane: NONE')
+  expect(await statusText($)).toContain('Lane: NONE')
 })
 
 test('a rebound lane answers a resume cue', async ($, on) => {
   await rebinder($, on, [])
   await tickTwice()
-  cueFile = { ino: 61, text: 'resume\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('resume ok - 61\n')
+  expect(await cue(61, 'resume\n')).toBe('resume ok - 61\n')
 })
 
 test('a Restore question answered yes after the rebind landed shows no "things changed" toast', async ($, on) => {
@@ -9098,7 +8974,7 @@ test('a Restore question answered yes after the rebind landed shows no "things c
   expect(rebinds(stdins)).toEqual(['rebound:LABLANE'])
   answer(YES)
   await p
-  expect(await laneNow($)).toContain('Lane: LABLANE')
+  expect(await statusText($)).toContain('Lane: LABLANE')
   expect(logged(stdins)).toContain('refused:restore-already-bound')
   expect(toasts).toContain(reboundToast('LABLANE'))
   expect(toasts).not.toContain(restoreChangedToast('LABLANE'))
@@ -9111,7 +8987,7 @@ test('/callboard off in a born lane, then the session starts again: no rebind', 
   await $.command.run(lane('off'))
   await $.session.start({ cwd: MFOLDER, surface: 'vscode', isInteractive: true })
   await ticks(3)
-  expect(await laneNow($)).toContain('Lane: NONE')
+  expect(await statusText($)).toContain('Lane: NONE')
   expect(rebinds(stdins)).toEqual([])
 })
 
@@ -9137,7 +9013,6 @@ async function leadRestarter($: any, on: any, stdins: string[], opts: { pin?: st
   if (!opts.noStart) await start
   return { start }
 }
-const leadNow = async ($: any) => (await $.command.run(lane('status'))).text as string
 const leadLogs = (stdins: string[]) => logged(stdins).filter((x) => x.startsWith('lead-restore') || x === 'lead-unsaved:')
 
 test('the lead grant is saved in the store at the grant, and removed by off and by Cancel', async ($, on) => {
@@ -9149,14 +9024,14 @@ test('the lead grant is saved in the store at the grant, and removed by off and 
   expect(store.has(LEADKEY)).toBe(true)
   askAnswer = NO
   await $.command.run(lane('lead'))
-  expect(await leadNow($)).toContain('Lead: OFF')
+  expect(await statusText($)).toContain('Lead: OFF')
   expect(store.has(LEADKEY)).toBe(false)
 })
 
 test('a session whose saved grant names its own folder is lead again at start: no question, no second note, tools serve, presence on the first tick', async ($, on) => {
   const stdins: string[] = []
   await leadRestarter($, on, stdins)
-  expect(await leadNow($)).toContain('Lead: ON')
+  expect(await statusText($)).toContain('Lead: ON')
   expect(askCount).toBe(0)
   expect(appendRows.length).toBe(0)
   expect(logged(stdins)).toContain('lead-restored:')
@@ -9182,7 +9057,7 @@ test('a restored lead watches the lane list from its first tick: a record added 
 test('a saved grant for another folder: no lead, and the key is deleted', async ($, on) => {
   const stdins: string[] = []
   await leadRestarter($, on, stdins, { cwd: `${PIN}/svc` })
-  expect(await leadNow($)).toContain('Lead: OFF')
+  expect(await statusText($)).toContain('Lead: OFF')
   expect(store.has(LEADKEY)).toBe(false)
   expect(leadLogs(stdins)).toEqual(['lead-restore-rejected:wrong-folder'])
 })
@@ -9190,7 +9065,7 @@ test('a saved grant for another folder: no lead, and the key is deleted', async 
 test('a saved grant that does not parse is deleted at start', async ($, on) => {
   const stdins: string[] = []
   await leadRestarter($, on, stdins, { raw: { pin: '/', savedAt: T0 } })
-  expect(await leadNow($)).toContain('Lead: OFF')
+  expect(await statusText($)).toContain('Lead: OFF')
   expect(store.has(LEADKEY)).toBe(false)
   expect(leadLogs(stdins)).toEqual(['lead-restore-rejected:invalid'])
 })
@@ -9198,9 +9073,9 @@ test('a saved grant that does not parse is deleted at start', async ($, on) => {
 test('a cwd read that throws in session.start: the tick finishes the restore once cwd answers', async ($, on) => {
   const stdins: string[] = []
   await leadRestarter($, on, stdins, { seed: () => (cwdThrows = 1) })
-  expect(await leadNow($)).toContain('Lead: OFF')
+  expect(await statusText($)).toContain('Lead: OFF')
   await clock!.advance(2000)
-  expect(await leadNow($)).toContain('Lead: ON')
+  expect(await statusText($)).toContain('Lead: ON')
   expect(logged(stdins)).toContain('lead-restored:')
 })
 
@@ -9212,7 +9087,7 @@ test('a cwd that never answers in 15 ticks: no lead, the key kept, logged once',
   await ticks(3)
   expect(leadLogs(stdins)).toEqual(['lead-restore-rejected:cwd-unreadable'])
   cwdThrows = 0
-  expect(await leadNow($)).toContain('Lead: OFF')
+  expect(await statusText($)).toContain('Lead: OFF')
   expect(store.has(LEADKEY)).toBe(true)
 })
 
@@ -9224,7 +9099,7 @@ test('S2b: a saved grant beside another live lead with no usable name is not res
       leadFiles.set(`${ROOT}/leads/${OTHERLEAD}.json`, { text: leadFileText({ sid: OTHERLEAD, pid: 4243 }) })
     },
   })
-  expect(await leadNow($)).toContain('Lead: OFF')
+  expect(await statusText($)).toContain('Lead: OFF')
   expect(leadLogs(stdins)).toEqual(['lead-restore-rejected:other-lead-unnamed'])
   expect(toasts).toContain('Lead not restored: another lead in this repo has no usable name; it must /rename first, or be turned off. Run /callboard lead.')
   expect(store.has(LEADKEY)).toBe(true)
@@ -9236,10 +9111,10 @@ test('S2b: a lead restore whose session list cannot be read yet is tried again f
   await ticks(3)
   expect(leadLogs(stdins)).toEqual([])
   expect(toasts.some((t: string) => t.startsWith('Lead not restored'))).toBe(false)
-  expect(await leadNow($)).toContain('Lead: OFF')
+  expect(await statusText($)).toContain('Lead: OFF')
   sessionsUnsafe = false
   await ticks(2)
-  expect(await leadNow($)).toContain('Lead: ON')
+  expect(await statusText($)).toContain('Lead: ON')
   expect(logged(stdins)).toContain('lead-restored:')
 })
 
@@ -9263,7 +9138,7 @@ longTest('S2b: a lead restore whose check for other leads never answers is refus
   expect(toasts).toContain('Lead not restored: the check for other leads took too long. Try again. Run /callboard lead.')
   expect(store.has(LEADKEY)).toBe(true)
   leadsListHook = undefined
-  expect(await leadNow($)).toContain('Lead: OFF')
+  expect(await statusText($)).toContain('Lead: OFF')
 })
 
 test('a store record naming the session while the lead restore is pending: the rebind waits, then refuses lead-holder', async ($, on) => {
@@ -9272,14 +9147,14 @@ test('a store record naming the session while the lead restore is pending: the r
     pin: MFOLDER,
     seed: () => {
       sessions = { [REGFILE]: REG({ cwd: MFOLDER }) }
-      storeFiles.set(STOREFILE, JSON.stringify({ repo: PIN, lanes: [STORE_LANE({ sid: SID })], creates: [] }))
+      putStore([STORE_LANE({ sid: SID })])
       extraStat.set(MFOLDER, dirStat)
       cwdThrows = 2
     },
   })
   await ticks(3)
   expect(rebinds(stdins)).toEqual(['rebind-rejected:lead-holder'])
-  expect(await leadNow($)).toContain('Lane: NONE. Lead: ON.')
+  expect(await statusText($)).toContain('Lane: NONE. Lead: ON.')
 })
 
 longTest('a lane tool registration that never answers: no lead, the key kept', async ($, on) => {
@@ -9289,18 +9164,18 @@ longTest('a lane tool registration that never answers: no lead, the key kept', a
   void start.then(() => (started = true))
   for (let i = 0; i < 30 && !started; i++) await clock!.advance(2000)
   expect(started).toBe(true)
-  expect(await leadNow($)).toContain('Lead: OFF')
+  expect(await statusText($)).toContain('Lead: OFF')
   for (let i = 0; i < 300 && leadLogs(stdins).length === 0; i++) await clock!.advance(2000)
   expect(leadLogs(stdins)).toEqual(['lead-restore-rejected:tools-timeout'])
-  expect(await leadNow($)).toContain('Lead: OFF')
+  expect(await statusText($)).toContain('Lead: OFF')
   expect(store.has(LEADKEY)).toBe(true)
 })
 
 test('a bound session is not made lead, and its key is kept', async ($, on) => {
   const stdins: string[] = []
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await leadRestarter($, on, stdins, { trace, seed: () => trace.st!.set('lane', { value: { name: 'LABLANE', at: 1, turns: -1 }, version: 1 }) })
-  expect(await leadNow($)).toContain('Lead: OFF')
+  expect(await statusText($)).toContain('Lead: OFF')
   expect(leadLogs(stdins)).toEqual(['lead-restore-rejected:lane-holder'])
   expect(store.has(LEADKEY)).toBe(true)
 })
@@ -9343,7 +9218,7 @@ test('a lead tick reads no store key for the saved grant and does not rewrite it
 test('an interactive session that is not a lane and not on may compact itself now with no nudge, and the compaction runs to the end, resume included', async ($, on) => {
   const stdins: string[] = []
   on('classic.PostCompact', () => ({}))
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await person($, on, stdins, trace)
   await $.command.run(lane('off'))
   expect((await $.tool.call(NOW as any)).result).toBe('queued')
@@ -9364,12 +9239,8 @@ test('a self session still refuses on-cue and every lead cue; a session that is 
   await $.command.run(lane('off'))
   expect(JSON.stringify(await $.tool.call(GOOD as any))).toContain(NOT_ENABLED)
   expect((await $.tool.call(NOW as any)).result).toBe('queued')
-  cueFile = { ino: 140, text: 'compact\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('compact refused not-eligible 140\n')
-  cueFile = { ino: 141, text: 'resume\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('resume refused not-eligible 141\n')
+  expect(await cue(140, 'compact\n')).toBe('compact refused not-eligible 140\n')
+  expect(await cue(141, 'resume\n')).toBe('resume refused not-eligible 141\n')
   // Not interactive: session.start says no, and the session has no registry row of its own (a -p run).
   await $.session.start({ cwd: '/', surface: null, isInteractive: false })
   ownEntryAuto = false
@@ -9391,16 +9262,14 @@ test('a store lane whose shell moved into a subfolder still answers resume', asy
   await bornStore($, on, [])
   callerRoot = MFOLDER
   callerCwd = `${MFOLDER}/deep/dir`
-  cueFile = { ino: 71, text: 'resume\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('resume ok - 71\n')
+  expect(await cue(71, 'resume\n')).toBe('resume ok - 71\n')
 })
 
 test('the sid sync reads the start folder: a shell moved into a subfolder still writes the id', async ($, on) => {
   const stdins: string[] = []
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await bornStore($, on, stdins, { trace })
-  storeFiles.set(STOREFILE, JSON.stringify({ repo: PIN, lanes: [STORE_LANE()], creates: [] }))
+  putStore([STORE_LANE()])
   const b = trace.st!.get('lane')!.value as any
   rebindAt(trace, { ...b, at: b.at + 1 })
   callerRoot = MFOLDER
@@ -9425,9 +9294,7 @@ test('attach records the start folder, and the attached lane still answers a cue
   expect((storeJson().lanes as any[])[0].folder).toBe(SVC)
   // The shell may even leave the repo: the lead check reads the start folder too.
   callerCwd = '/tmp/elsewhere'
-  cueFile = { ino: 72, text: 'resume\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('resume ok - 72\n')
+  expect(await cue(72, 'resume\n')).toBe('resume ok - 72\n')
 })
 
 test('the rebind reads the start folder', async ($, on) => {
@@ -9442,7 +9309,7 @@ test('the rebind reads the start folder', async ($, on) => {
 test('the lead restore reads the start folder', async ($, on) => {
   const stdins: string[] = []
   await leadRestarter($, on, stdins, { seed: () => ((callerRoot = PIN), (callerCwd = `${PIN}/api`)) })
-  expect(await leadNow($)).toContain('Lead: ON')
+  expect(await statusText($)).toContain('Lead: ON')
 })
 
 
@@ -9458,7 +9325,7 @@ test('/callboard off while a lead restore waits on its tool registration: no lea
   void start.then(() => (done = true))
   for (let i = 0; i < 40 && !done; i++) await clock!.advance(1000)
   await ticks(3)
-  expect(await leadNow($)).toContain('Lead: OFF')
+  expect(await statusText($)).toContain('Lead: OFF')
   expect(store.has(LEADKEY)).toBe(false)
   expect(logged(stdins)).not.toContain('lead-restored:')
 })
@@ -9472,7 +9339,7 @@ longTest('/callboard off while a lead restore times out on its tool registration
   void start.then(() => (done = true))
   for (let i = 0; i < 40 && !done; i++) await clock!.advance(1000)
   for (let i = 0; i < 20; i++) await clock!.advance(30_000)
-  expect(await leadNow($)).toContain('Lead: OFF')
+  expect(await statusText($)).toContain('Lead: OFF')
   expect(store.has(LEADKEY)).toBe(false)
   expect(leadLogs(stdins)).toEqual([])
 })
@@ -9498,7 +9365,7 @@ test('/callboard off before a pending rebind lands cancels it and clears the rec
   expect((await $.command.run(lane('off'))).text).toBe('Lane LABLANE will not rebind automatically. Lane LABLANE no longer names this session.')
   expect(recOf()).toEqual(STORE_LANE())
   await ticks(3)
-  expect(await laneNow($)).toContain('Lane: NONE')
+  expect(await statusText($)).toContain('Lane: NONE')
   expect(rebinds(stdins)).toEqual([])
   expect(logged(stdins)).toContain('sid-cleared:')
 })
@@ -9520,7 +9387,7 @@ test('a lead restore in a run with no person keeps the key and is not made lead;
   ownEntryAuto = false
   sessions = {}
   await ticks(16)
-  expect(await leadNow($)).toContain('Lead: OFF')
+  expect(await statusText($)).toContain('Lead: OFF')
   expect(leadLogs(stdins)).toEqual(['lead-restore-rejected:not-interactive'])
   expect(store.has(LEADKEY)).toBe(true)
 })
@@ -9528,7 +9395,7 @@ test('a lead restore in a run with no person keeps the key and is not made lead;
 test('a VS Code panel that is not interactive at start but has its own registry row is made lead again', async ($, on) => {
   const stdins: string[] = []
   await leadRestarter($, on, stdins, { interactive: false })
-  expect(await leadNow($)).toContain('Lead: ON')
+  expect(await statusText($)).toContain('Lead: ON')
 })
 
 test('a rebind write that lands late is taken back without a detach: the record keeps its session id and the hint stays', async ($, on) => {
@@ -9537,7 +9404,7 @@ test('a rebind write that lands late is taken back without a detach: the record 
   const gate = new Promise<void>((r) => (open = r))
   const trace: Trace = { log: [], failCounters: false, setHook: (key) => (key === 'lane' ? gate : undefined) }
   await rebinder($, on, stdins, { trace, hint: LANE_HINT() })
-  for (let i = 0; i < 20; i++) await clock!.advance(2000)
+  await ticks(20)
   expect(logged(stdins)).toContain('error:rebind-bind-timeout')
   open()
   await ticks(2)
@@ -9571,7 +9438,7 @@ test('/callboard off while a restored grant is being saved: the key the save wro
   void start.then(() => (done = true))
   for (let i = 0; i < 40 && !done; i++) await clock!.advance(1000)
   await ticks(3)
-  expect(await leadNow($)).toContain('Lead: OFF')
+  expect(await statusText($)).toContain('Lead: OFF')
   expect(store.has(LEADKEY)).toBe(false)
 })
 
@@ -9598,7 +9465,7 @@ test('/callboard off whose session id clear fails still cancels a pending rebind
   expect(r.text).toBe(`Lane LABLANE will not rebind automatically.${SID_KEPT('LABLANE')}`)
   storeWrites = 'ok'
   await ticks(3)
-  expect(await laneNow($)).toContain('Lane: NONE')
+  expect(await statusText($)).toContain('Lane: NONE')
   expect(rebinds(stdins)).toEqual([])
   expect(logged(stdins)).toContain('sid-uncleared:')
 })
@@ -9613,7 +9480,7 @@ test('/callboard off while a rebind is past its lanes read: no binding is writte
   for (let i = 0; i < 20 && !offDone; i++) await clock!.advance(1000)
   expect(offDone).toBe(true)
   await ticks(3)
-  expect(await laneNow($)).toContain('Lane: NONE')
+  expect(await statusText($)).toContain('Lane: NONE')
   expect(recOf()).toEqual(STORE_LANE())
   expect(logged(stdins).filter((x) => x.startsWith('rebound:'))).toEqual([])
 })
@@ -9647,7 +9514,7 @@ test('/callboard off that has read no binding yet: a rebind tick while off is st
   for (let i = 0; i < 20 && !offDone; i++) await clock!.advance(1000)
   await off
   await ticks(3)
-  expect(await laneNow($)).toContain('Lane: NONE')
+  expect(await statusText($)).toContain('Lane: NONE')
   expect(logged(stdins).filter((x) => x.startsWith('rebound:'))).toEqual([])
 })
 
@@ -9660,7 +9527,7 @@ test('an engine without session.root() reads the live folder instead: the lane r
   } finally {
     rootMissing = false
   }
-  expect(await laneNow($)).toContain('Lane: LABLANE')
+  expect(await statusText($)).toContain('Lane: LABLANE')
   expect(rebinds(stdins)[0]).toStartWith('rebound:')
 })
 
@@ -9669,7 +9536,7 @@ const ONKEY = `on:${SID}`
 
 test('v13.5: an enabled state and a saved on left from before are cleared at start with no toast; the session is not eligible, so a compact cue refuses', async ($, on) => {
   const stdins: string[] = []
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   sessions = {}
   laneSeed.text = undefined
   await started($, on, stdins, {
@@ -9686,11 +9553,9 @@ test('v13.5: an enabled state and a saved on left from before are cleared at sta
   expect(toasts).toEqual([])
   expect(logged(stdins)).toContain('on-cleared:state')
   expect(logged(stdins)).toContain('on-cleared:saved')
-  expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Lead: OFF.')
+  expect((await $.command.run(lane('status'))).text).toBe(STATUS_NONE)
   expect(JSON.stringify(await $.tool.call(GOOD as any))).toContain(NOT_ENABLED)
-  cueFile = { ino: 150, text: 'compact\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('compact refused not-eligible 150\n')
+  expect(await cue(150, 'compact\n')).toBe('compact refused not-eligible 150\n')
   // The cue's handling saves a hint only for a lane: none for this session.
   expect(store.has(`sess:${SID}`)).toBe(false)
   // A reload keeps the state: a start clears it again.
@@ -9702,7 +9567,7 @@ test('v13.5: an enabled state and a saved on left from before are cleared at sta
 
 test('v13.5: a start with nothing left writes nothing and logs no clear; a saved on whose delete fails is logged, with no toast', async ($, on) => {
   const stdins: string[] = []
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await started($, on, stdins, { trace })
   expect(trace.log.filter((k) => k.startsWith('enabled'))).toEqual([])
   expect(logged(stdins).some((x) => x.startsWith('on-cleared'))).toBe(false)
@@ -9762,7 +9627,7 @@ test('v13.1: a stale cut mark is deleted with no note', async ($, on) => {
 })
 
 test('v13.1: a cut mark found while the state survived (a request still in it) is deleted with no note', async ($, on) => {
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await started($, on, [], {
     clock: true,
     trace,
@@ -9798,14 +9663,12 @@ test('v13.1: the cut mark is written when the compaction starts and cleared at P
 
 
 // ---- v13.2: the keepalive ping (K1) and /callboard config (K2) ----
-const MIN = 60_000
 const pings = () => submitted.filter((t) => t === KEEPALIVE_TEXT)
 // A person's own registry row as the engine writes it for a panel or a terminal (kind interactive), as the auto row now is.
-const KA_ROW = (over: Record<string, unknown> = {}) => ({ '4999.json': JSON.stringify({ ...JSON.parse(AUTO_OWN), kind: 'interactive', ...over }) })
 // A person's session (v13.5: a plain one, no lane, no lead), whose real turn has just ended (at T0).
 async function warm($: any, on: any, stdins: string[] = [], trace?: Trace) {
   await person($, on, stdins, trace)
-  sessions = KA_ROW()
+  sessions = OWN_ROW()
   await realTurn($, 'work')
 }
 // A person's turn as the engine runs it: the prompt, its turn's start and end.
@@ -9905,7 +9768,7 @@ longTest('/callboard rest: no ping and no cache nudge in this gap, logged once; 
 
 longTest('v13.2 keepalive: after a restart (the session state is gone) nothing is pinged until a turn has been seen to end', async ($, on) => {
   const stdins: string[] = []
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await warm($, on, stdins, trace)
   for (const k of ['turnEndAt', 'realEndAt', 'pingAt']) trace.st!.delete(k)
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
@@ -9929,11 +9792,11 @@ longTest('v13.2 keepalive: a reload of the mod keeps the gap (the state survives
 
 for (const [what, setup] of [
   ['the session has no registry row (a headless run)', async () => { sessions = {}; ownEntryAuto = false }],
-  ['its row is a claude --bg background worker', async () => { sessions = KA_ROW({ kind: 'background' }) }],
-  ['its row carries no kind', async () => { sessions = KA_ROW({ kind: undefined }) }],
+  ['its row is a claude --bg background worker', async () => { sessions = OWN_ROW({ kind: 'background' }) }],
+  ['its row carries no kind', async () => { sessions = OWN_ROW({ kind: undefined }) }],
   ['a draft sits in the box', async () => { draftNow = 'typing' }],
-  ['it is busy', async () => { sessions = KA_ROW({ status: 'busy' }) }],
-  ['it waits for a permission', async () => { sessions = KA_ROW({ waitingFor: 'permission' }) }],
+  ['it is busy', async () => { sessions = OWN_ROW({ status: 'busy' }) }],
+  ['it waits for a permission', async () => { sessions = OWN_ROW({ waitingFor: 'permission' }) }],
   ['keepalive is off', async ($: any) => { expect((await $.command.run(lane('config keepalive off'))).text).toBe(configSetText('keepalive', { ...CONFIG_DEFAULTS, keepalive: false })) }],
 ] as const) {
   longTest(`v13.2 keepalive: no ping when ${what}`, async ($, on) => {
@@ -9953,7 +9816,7 @@ longTest('v13.2 keepalive: no ping while a callboard dialog is open', async ($, 
   askHang = new Promise<string>(() => undefined)
   const n = askCount
   const p = $.command.run(lane('lead', { kind: 'plugin' }))
-  for (let i = 0; i < 400 && askCount === n; i++) await new Promise((r) => setTimeout(r, 5))
+  await waitFor(() => askCount !== n)
   await clock!.advance(60_000)
   expect(pings()).toEqual([])
   expect(kaLog(stdins)).toEqual([])
@@ -9964,7 +9827,7 @@ longTest('v13.2 keepalive: no ping while a callboard dialog is open', async ($, 
 
 longTest('v13.2 keepalive: no ping while the session has a request of its own', async ($, on) => {
   await person($, on, [], undefined, true)
-  sessions = KA_ROW()
+  sessions = OWN_ROW()
   expect((await $.tool.call(GOOD as any)).result).toBe('queued')
   await $.turn.complete(TURN as any)
   await clock!.advance(52 * MIN)
@@ -9972,7 +9835,7 @@ longTest('v13.2 keepalive: no ping while the session has a request of its own', 
 })
 
 longTest('v13.2 keepalive: no ping while a nudge is recorded', async ($, on) => {
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await warm($, on, [], trace)
   await clock!.advance(45 * MIN)
   // The recorded nudge cannot be cleared, so nudgeTick never sends it and it stays recorded through the ping time.
@@ -9986,7 +9849,7 @@ longTest('v13.2 keepalive: no ping while a nudge is recorded', async ($, on) => 
 longTest('v13.5 keepalive: a plain interactive session that never ran a callboard command is pinged, and /callboard off does not stop it', async ($, on) => {
   const stdins: string[] = []
   await warm($, on, stdins)
-  expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Lead: OFF.')
+  expect((await $.command.run(lane('status'))).text).toBe(STATUS_NONE)
   await clock!.advance(50 * MIN)
   expect(pings()).toEqual([KEEPALIVE_TEXT])
   await clock!.advance(2000)
@@ -10005,7 +9868,7 @@ longTest('v13.2 keepalive: a lead is pinged (D4)', async ($, on) => {
   laneSeed.text = LEAD_LANES('/data/x/work')
   await $.command.run(lane('lead'))
   expect((await $.command.run(lane('status'))).text).toContain('Lane: NONE. Lead: ON.')
-  sessions = KA_ROW()
+  sessions = OWN_ROW()
   await $.turn.complete(TURN as any)
   await clock!.advance(50 * MIN)
   expect(pings()).toEqual([KEEPALIVE_TEXT])
@@ -10027,7 +9890,7 @@ for (const [what, set, line] of [
 
 longTest('v13.2 keepalive: a ping turn moves neither the turn mark nor the stop clock and records no nudge; a lane that signed done stays retire-able (F1)', async ($, on) => {
   const stdins: string[] = []
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await renameThroughTick($, on, stdins, 1, trace)
   sessions = SELFREG({ kind: 'interactive' })
   await realTurn($, 'work on it')
@@ -10045,9 +9908,7 @@ longTest('v13.2 keepalive: a ping turn moves neither the turn mark nor the stop 
   expect(stv(trace, 'realEndAt')).toBe(realEnd)
   expect(stv(trace, 'turnEndAt')).toBe(nowMs)
   expect(logged(stdins).some((x) => x.startsWith('nudge-due'))).toBe(false)
-  cueFile = { ino: 140, text: 'retire\n', present: true, mtimeSec: nowMs / 1000 }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('retire ok - 140\n')
+  expect(await cue(140, 'retire\n', { mtimeSec: nowMs / 1000 })).toBe('retire ok - 140\n')
 })
 
 for (const [what, make] of [
@@ -10065,7 +9926,7 @@ for (const [what, make] of [
   }],
 ] as const) {
   longTest(`v13.2 keepalive: ${what} turn is not real work: it moves the gap but not the stop clock (A)`, async ($, on) => {
-    const trace: Trace = { log: [], failCounters: false }
+    const trace = newTrace()
     await warm($, on, [], trace)
     await clock!.advance(10 * MIN)
     const text = await make($, trace)
@@ -10079,7 +9940,7 @@ for (const [what, make] of [
 }
 
 test('v13.2 keepalive: the lanes-changed turn is not real work either (A)', async ($, on) => {
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await leadAt($, on, [], { clock: true, trace })
   await $.turn.complete(TURN as any)
   const realEnd = stv(trace, 'realEndAt')
@@ -10097,9 +9958,7 @@ longTest('v13.2 keepalive: a lane a lead started (its start text is real work) a
   const stdins: string[] = []
   await renameThroughTick($, on, stdins, 1)
   extraStat.set('/data/x/work/lab/BRIEF.md', fileStat)
-  cueFile = { ino: 43, text: 'start\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('start ok - 43\n')
+  expect(await cue(43, 'start\n')).toBe('start ok - 43\n')
   sessions = { [REGFILE]: REG({ kind: 'interactive' }) }
   await ownTurn($, submitted[0])
   await clock!.advance(50 * MIN)
@@ -10108,7 +9967,7 @@ longTest('v13.2 keepalive: a lane a lead started (its start text is real work) a
 
 longTest('v13.2 keepalive: pings stop 3 hours after the last real turn, logged once; a real turn starts them again', async ($, on) => {
   const stdins: string[] = []
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await warm($, on, stdins, trace)
   const realEnd = stv(trace, 'realEndAt')
   // v13.4: below the cache nudge's level, so the third slot is a ping too.
@@ -10138,7 +9997,7 @@ for (const [what, arrange] of [
   ['a compaction resume', (trace: Trace) => trace.st!.set('request', { value: { id: 'r2', phase: 'compacted', mode: 'now', focus: 'f', continuation: 'next', sha256: 'a'.repeat(64), requestedMs: nowMs, compactingMs: nowMs, compactedMs: nowMs, viaNudge: true }, version: 90 })],
 ] as const) {
   longTest(`v13.2 keepalive: ${what} due in the same tick as a ping goes out alone: one submit per tick (F2a)`, async ($, on) => {
-    const trace: Trace = { log: [], failCounters: false }
+    const trace = newTrace()
     await warm($, on, [], trace)
     await clock!.advance(50 * MIN - 2000)
     const before = submitted.length
@@ -10178,7 +10037,7 @@ for (const [what, arrange] of [
 ] as const) {
   longTest(`v13.2 keepalive: ${what}: the plain ping (D2)`, async ($, on) => {
     const stdins: string[] = []
-    const trace: Trace = { log: [], failCounters: false }
+    const trace = newTrace()
     await warm($, on, stdins, trace)
     await clock!.advance(49 * MIN)
     arrange(trace)
@@ -10407,7 +10266,7 @@ for (const [what, tokens] of [['the ping', 150_000], ['the nudge in its place', 
 
 longTest('v13.2 review c1: a ping whose submit fails after its prompt hook ran leaves no ping mark: the next turn moves the turn mark', async ($, on) => {
   const stdins: string[] = []
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await warm($, on, stdins, trace)
   await clock!.advance(50 * MIN - 2000)
   submitFails = true
@@ -10436,38 +10295,34 @@ test('v13.2 review c1: a store call that throws is answered: not read, or not sa
 test('v13.2 security c1: a claude --bg worker (its own row is kind background) gets no threshold nudge', async ($, on) => {
   const stdins: string[] = []
   await person($, on, stdins)
-  sessions = KA_ROW({ kind: 'background' })
+  sessions = OWN_ROW({ kind: 'background' })
   tokensNow = 310_000 // v14: under the working level, so the soft text
   await $.turn.complete(TURN as any)
   await ticks(3)
   expect(logged(stdins).some((x) => x.startsWith('nudge-due'))).toBe(false)
   expect(nudges()).toEqual([])
   // The same session with a person's row is nudged.
-  sessions = KA_ROW()
+  sessions = OWN_ROW()
   await $.turn.complete(TURN as any)
   await ticks(1)
   expect(nudges()).toEqual([nudgeText('idle')])
 })
 
 test('v13.2 security c1: a lane_compact nudge to a lane whose own row is kind background is refused not-interactive', async ($, on) => {
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await renameThroughTick($, on, [], 1, trace)
   sessions = { [REGFILE]: REG({ kind: 'background' }) }
-  cueFile = { ino: 150, text: 'compact\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('compact refused not-interactive 150\n')
+  expect(await cue(150, 'compact\n')).toBe('compact refused not-interactive 150\n')
   expect(trace.st!.get('nudgeDue')?.value ?? null).toBe(null)
   sessions = { [REGFILE]: REG() }
-  cueFile = { ino: 151, text: 'compact\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('compact held nudged 151\n')
+  expect(await cue(151, 'compact\n')).toBe('compact held nudged 151\n')
 })
 
 
 // ---- v13.2 review c2 ----
 longTest('v13.2 review c2: a ping whose submit hangs past the timeout after its prompt hook ran keeps its mark: its turn is still a ping turn', async ($, on) => {
   const stdins: string[] = []
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await warm($, on, stdins, trace)
   const realEnd = stv(trace, 'realEndAt')
   await clock!.advance(50 * MIN - 2000)
@@ -10507,7 +10362,7 @@ longTest('v13.2 review c2: a prompt the person sends while the ping step reads (
 
 // ---- v13.4: keepalive fixes (2026-11-03): own submits the mod's prompt hook never sees, no ping while the Mac sleeps, the cache nudge ----
 test('v13.4 keepalive: a person\'s turn and a wake turn (no own text) restart the stop clock', async ($, on) => {
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await warm($, on, [], trace)
   const first = stv(trace, 'realEndAt')
   await clock!.advance(MIN)
@@ -10531,7 +10386,7 @@ for (const [what, turnId, personFirst] of [
   ['typed mid-turn (turnId set), the ping\'s turn first', 'earlier', false],
 ] as const) {
   longTest(`v13.4 keepalive: a person's prompt ${what}: the person's turn is real, the ping's turn a ping`, async ($, on) => {
-    const trace: Trace = { log: [], failCounters: false }
+    const trace = newTrace()
     await warm($, on, [], trace)
     await clock!.advance(50 * MIN)
     expect(pings()).toEqual([KEEPALIVE_TEXT])
@@ -10563,7 +10418,7 @@ for (const [what, turnId, personFirst] of [
 
 longTest('v13.4 keepalive: a ping that timed out and never ran leaves no wrong tag: the next person turn and the compaction resume turn are real', async ($, on) => {
   const stdins: string[] = []
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   on('classic.PostCompact', () => ({}))
   await warm($, on, stdins, trace)
   submitHangs = true
@@ -10590,7 +10445,7 @@ longTest('v13.4 keepalive: a ping that timed out and never ran leaves no wrong t
 })
 
 longTest('v13.4 keepalive: an own real submit (the compaction resume) starts a real turn, not one tagged by a ping out at the same time', async ($, on) => {
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   on('classic.PostCompact', () => ({}))
   await warm($, on, [], trace)
   expect((await $.tool.call(NOW as any)).result).toBe('queued')
@@ -10612,7 +10467,7 @@ longTest('v13.4 keepalive: an own real submit (the compaction resume) starts a r
 })
 
 longTest('v13.4 keepalive: a turn that carries the ping text unframed (an engine that stops framing) is still the ping\'s', async ($, on) => {
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await warm($, on, [], trace)
   const realEnd = stv(trace, 'realEndAt')
   await clock!.advance(50 * MIN)
@@ -10626,7 +10481,7 @@ longTest('v13.4 keepalive: a turn that carries the ping text unframed (an engine
 })
 
 longTest('v13.4 keepalive: a person\'s prompt that only contains the ping text is real, and leaves the ping\'s count to the ping\'s turn', async ($, on) => {
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await warm($, on, [], trace)
   await clock!.advance(50 * MIN)
   expect(pings()).toEqual([KEEPALIVE_TEXT])
@@ -10643,7 +10498,7 @@ longTest('v13.4 keepalive: a person\'s prompt that only contains the ping text i
 
 longTest('v13.4 keepalive: an engine that does show the mod its own ping (the old hook dispatch) counts it once: the ping turn stays a ping, a second turn with its text is real', async ($, on) => {
   const stdins: string[] = []
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await warm($, on, stdins, trace)
   const realEnd = stv(trace, 'realEndAt')
   await clock!.advance(50 * MIN)
@@ -10789,21 +10644,16 @@ test('S2: an attached record carries the lead name and its briefing names that l
   expect((await doLane($, 'lane svc-api')).text).toBe(ATTACHED())
   expect(storeJson().lanes).toEqual([{ name: 'svc-api', folder: SVC, brief: `${SVC}/.callboard-attached`, createdAt: T0, adopted: true, lead: LEADSID, sid: SID, leadName: 'LEADA' }])
   expect(appendRows[0].content[0].text).toContain(`Your lead is \`LEADA\` (session \`${LEADSID}\`)`)
-  const cue = async (ino: number) => {
-    cueFile = { ino, text: 'resume\n', present: true }
-    await tickTwice()
-    return resultFiles.get(RESULT)
-  }
-  expect(await cue(91)).toBe('resume ok - 91\n')
+  expect(await cue(91, 'resume\n')).toBe('resume ok - 91\n')
   leadFiles.clear()
   leadFiles.set(`${ROOT}/leads/${OTHERLEAD}.json`, { text: leadFileText({ sid: OTHERLEAD, pid: 4243 }) })
   sessions = { ...regAs(OTHERLEAD, 4243, 'LEADB'), ...ownReg() }
-  expect(await cue(92)).toBe('resume refused no-lead 92\n')
+  expect(await cue(92, 'resume\n')).toBe('resume refused no-lead 92\n')
   leadFiles.set(LEADPATH, { text: leadFileText() })
   sessions = { ...sessions, ...regAs(LEADSID, 4242, 'LEADA') }
-  expect(await cue(93)).toBe('resume ok - 93\n')
+  expect(await cue(93, 'resume\n')).toBe('resume ok - 93\n')
   sessions = { ...sessions, ...regAs(LEADSID, 4242, 'LEADC') }
-  expect(await cue(94)).toBe('resume refused no-lead 94\n')
+  expect(await cue(94, 'resume\n')).toBe('resume refused no-lead 94\n')
   await doLane($, 'lane off')
   expect(storeJson().lanes).toEqual([])
 })
@@ -10816,9 +10666,7 @@ test('S2: a legacy attached record (lead session id only) answers any lead of it
   leadFiles.clear()
   leadFiles.set(`${ROOT}/leads/${OTHERLEAD}.json`, { text: leadFileText({ sid: OTHERLEAD, pid: 4243 }) })
   sessions = { ...regAs(OTHERLEAD, 4243, 'LEADB'), ...ownReg() }
-  cueFile = { ino: 95, text: 'resume\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('resume ok - 95\n')
+  expect(await cue(95, 'resume\n')).toBe('resume ok - 95\n')
   await doLane($, 'lane off')
   expect(storeJson().lanes).toEqual([])
 })
@@ -11023,7 +10871,7 @@ test('S2b: an in-mark check for other leads that does not answer in time is refu
     return YES
   }
   const p = $.command.run(lane('lead'))
-  for (let i = 0; i < 400 && !hung; i++) await new Promise((r) => setTimeout(r, 5))
+  await waitFor(() => hung)
   expect(hung).toBe(true)
   await clock!.advance(30_000)
   expect((await p).text).toBe(leadStaysOff('lead-check-slow'))
@@ -11098,7 +10946,7 @@ test('S2b: a dismissed, failed or timed-out lead picker changes nothing; a secon
   askScript = () => new Promise<string>(() => undefined)
   const n = askCount
   const p = doLane($, 'lane svc-api')
-  for (let i = 0; i < 400 && askCount === n; i++) await new Promise((r) => setTimeout(r, 5))
+  await waitFor(() => askCount !== n)
   expect((await doLane($, 'lane svc-api')).text).toBe('A callboard question is already open. Answer it first.')
   await clock!.advance(90_000)
   expect((await p).text).toBe('Nothing changed: the question timed out.')
@@ -11165,7 +11013,7 @@ for (const [when, gone] of [['picker', LEAD_PICK_QUESTION], ['Join question', 'M
 
 test('S2b, v13.5: /callboard status in a lane names the lane and its lead; /callboard on there changes nothing (v13.6: the usage line); lane off makes it NONE', async ($, on) => {
   await attacher($, on, [], { clock: true })
-  expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Lead: OFF.')
+  expect((await $.command.run(lane('status'))).text).toBe(STATUS_NONE)
   expect((await doLane($, 'lane svc-api')).text).toBe(ATTACHED())
   expect((await $.command.run(lane('status'))).text).toBe("Lane: svc-api. Lead: OFF. This lane's lead: LEAD.")
   const asks = askCount
@@ -11173,7 +11021,7 @@ test('S2b, v13.5: /callboard status in a lane names the lane and its lead; /call
   expect(askCount).toBe(asks)
   expect((await $.command.run(lane('status'))).text).toBe("Lane: svc-api. Lead: OFF. This lane's lead: LEAD.")
   expect((await doLane($, 'lane off')).text).toBe('This session is no longer lane svc-api.')
-  expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Lead: OFF.')
+  expect((await $.command.run(lane('status'))).text).toBe(STATUS_NONE)
 })
 
 test('v13.5: /callboard lane from anything but the person restores nothing and asks nothing; a forged hint binds nothing without the person\'s Restore', async ($, on) => {
@@ -11183,11 +11031,11 @@ test('v13.5: /callboard lane from anything but the person restores nothing and a
     await started($, on, stdins, { seed: () => { laneSeed.text = LANES; store.set(`sess:${SID}`, hint) } })
     for (const origin of [{ kind: 'plugin', name: 'x' }, { kind: 'peer' }, null]) expect((await $.command.run(lane('lane', origin))).text).toBe(refusalText('lane-origin'))
     expect(askCount).toBe(0)
-    expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Lead: OFF.')
+    expect((await $.command.run(lane('status'))).text).toBe(STATUS_NONE)
     restoreAnswer = 'Something else'
     await $.command.run(lane('lane'))
     expect(askedOptions[0]).toEqual([RESTORE_YES, RESTORE_NO])
-    expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Lead: OFF.')
+    expect((await $.command.run(lane('status'))).text).toBe(STATUS_NONE)
     expect(logged(stdins)).not.toContain('restored:')
   } finally {
     laneSeed.text = undefined
@@ -11223,7 +11071,6 @@ test('v13.5: /callboard lane with a hint whose Restore is declined goes on to th
 
 // ---- v13.3: the own-row lookups follow CLAUDE_CONFIG_DIR ----
 // The person's own row, as the engine writes it (kind interactive); in the config-root registry or the default one, by what a test assigns it to.
-const OWN_ROW = (over: Record<string, unknown> = {}): Record<string, string> => ({ '4999.json': JSON.stringify({ ...JSON.parse(AUTO_OWN), kind: 'interactive', ...over }) })
 // A person's session that runs under CLAUDE_CONFIG_DIR=env (unset: undefined), its own row in the config-root registry (rows), none in the default one.
 async function configRoot($: any, on: any, stdins: string[], env: string | undefined, rows: Record<string, string>, argv: string[][] = [], opts: { bound?: boolean; interactive?: boolean; before?: () => void } = {}) {
   sessions = {}
@@ -11407,8 +11254,7 @@ for (const [what, env, inDefault] of [
       ownSessions = { [REGFILE]: REG() }
     }
     await $.session.start({ cwd: '/data/x/work/lab', surface: 'vscode', isInteractive: true })
-    cueFile = { ino: 42, text: 'rename LABLANE\n', present: true }
-    await tickTwice()
+    await cue(42, 'rename LABLANE\n')
     if (inDefault) expect(resultFiles.get(RESULT)).toBe('rename ok - 42\n')
     else {
       expect(resultFiles.get(RESULT)).toBe('rename refused registry-unreadable 42\n')
@@ -11465,15 +11311,11 @@ for (const [what, plain, own, expected] of [
     on('tool.call', () => ({ result: {} }))
     envVars.CLAUDE_CONFIG_DIR = CONFIG_ROOT
     await $.session.start({ cwd: '/data/x/work/lab', surface: 'vscode', isInteractive: true })
-    cueFile = { ino: 42, text: 'rename LABLANE\n', present: true }
-    await tickTwice()
-    expect(resultFiles.get(RESULT)).toBe('rename ok - 42\n')
+    expect(await cue(42, 'rename LABLANE\n')).toBe('rename ok - 42\n')
     sessions = { [REGFILE]: REG({ kind: plain }) }
     ownSessions = { [REGFILE]: REG({ kind: own }) }
     ownEntryAuto = false
-    cueFile = { ino: 150, text: 'compact\n', present: true }
-    await tickTwice()
-    expect(resultFiles.get(RESULT)).toBe(expected)
+    expect(await cue(150, 'compact\n')).toBe(expected)
   })
 }
 
@@ -11656,7 +11498,7 @@ test('v13.6 check-in: a subagent\'s or a refused lane_resume leaves what the lea
 })
 
 test('v13.6 /callboard checkin outside a lead is refused and stores nothing (review c1, S5)', async ($, on) => {
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await started($, on, [], { trace })
   const writes = trace.log.length
   for (const a of ['checkin pause 1h', 'checkin on']) expect((await $.command.run(lane(a))).text).toBe('Check-ins are for a lead or manager, and this session is neither. Nothing changed.')
@@ -11675,7 +11517,7 @@ test('v13.6 check-in: a slow observation never holds the tick: a cue is claimed 
   }
   await clock!.advance(2000)
   cueFile = { ino: 77, text: 'resume\n', present: true, mtimeSec: Math.floor(nowMs / 1000) }
-  for (let i = 0; i < 4; i++) await clock!.advance(2000)
+  await ticks(4)
   expect(resultFiles.get(RESULT)).toBe('resume refused not-eligible 77\n')
   release()
 })
@@ -11716,7 +11558,7 @@ test('v13.6 check-in: /callboard off ends the check-in memory: after lead again,
 test('v13.6 check-in: a plain session and a bound lane never get one', async ($, on) => {
   const stdins: string[] = []
   await started($, on, stdins, { clock: true, bound: true, seed: () => putStore([ckLane()]) })
-  sessions = { ...KA_ROW(), ...ckRow() }
+  sessions = { ...OWN_ROW(), ...ckRow() }
   await $.turn.complete(TURN as any)
   await idleFor(40 * MIN)
   await $.command.run(lane('lane off'))
@@ -11870,11 +11712,11 @@ test('v14 manager: Cancel, a dialog that times out, and a dialog already open gr
   let release: (a: string) => void = () => undefined
   askHang = new Promise<string>((r) => (release = r))
   const open = $.command.run(lane('manager'))
-  for (let i = 0; i < 400 && lastQuestion === `Asked from another plugin. ${MANAGER_QUESTION}`; i++) await new Promise((r) => setTimeout(r, 5))
+  await waitFor(() => lastQuestion !== `Asked from another plugin. ${MANAGER_QUESTION}`)
   expect((await $.command.run(lane('manager'))).text).toBe('A callboard question is already open. Answer it first.')
   release(NO)
   expect((await open).text).toBe('Manager stays off.')
-  expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Lead: OFF.')
+  expect((await $.command.run(lane('status'))).text).toBe(STATUS_NONE)
   expect(leadFiles.has(SELFPATH)).toBe(false)
 })
 
@@ -11886,7 +11728,7 @@ test('v14 manager: /callboard off drops the grant and the presence file; status 
   expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Manager: ON. Check-ins: ON.')
   expect((await $.command.run(lane('off'))).text).toBe('Manager is now off.')
   expect(leadFiles.has(SELFPATH)).toBe(false)
-  expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Lead: OFF.')
+  expect((await $.command.run(lane('status'))).text).toBe(STATUS_NONE)
   expect(JSON.stringify(await $.tool.call(listCall()))).toContain('lane_list refused: the lead tools are off')
 })
 
@@ -11899,7 +11741,7 @@ test('v14 manager: refused before the dialog in a lead, and in a session that wa
   expect((await $.command.run(lane('manager'))).text).toBe(managerRefusalText('manager-after-lead'))
   expect(askCount).toBe(asked)
   expect(logged(stdins)).toEqual(expect.arrayContaining(['refused:lead-holder', 'refused:manager-after-lead']))
-  expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Lead: OFF.')
+  expect((await $.command.run(lane('status'))).text).toBe(STATUS_NONE)
 })
 
 test('v14 manager: refused in a bound lane, with no dialog', async ($, on) => {
@@ -11928,7 +11770,7 @@ test('v14 manager: refused while another live session holds a manager file, what
   }
   expect((await $.command.run(lane('manager'))).text).toBe(managerRefusalText('manager-exists'))
   expect(leadFiles.has(SELFPATH)).toBe(false)
-  expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Lead: OFF.')
+  expect((await $.command.run(lane('status'))).text).toBe(STATUS_NONE)
 })
 
 test('v14 manager tools: lane_list and lane_resume reach lanes in every repo; every other lane tool is refused manager-tool', async ($, on) => {
@@ -11957,7 +11799,7 @@ test('v14 manager lane_terminate: the dialog names the repo; a second stop while
   askHang = new Promise<string>((r) => (release = r))
   const n = askCount
   const first = $.tool.call(mgrCall('terminate', 'LABLANE'))
-  for (let i = 0; i < 400 && askCount === n; i++) await new Promise((r) => setTimeout(r, 5))
+  await waitFor(() => askCount !== n)
   expect(lastQuestion).toBe(terminateQuestion('LABLANE', OTHER, 4600, '/data/x/work', true))
   expect(lastQuestion).toContain("Force stop lane LABLANE's session in work (")
   expect(lastQuestion).toContain(" It ends at once, even mid-task. The lane's record is then removed.")
@@ -12222,11 +12064,6 @@ test('v14 S7: a lead with no manager grant cannot compact another lead by name',
 test('v14 S7: a lead takes a compact cue only while a live manager with a reserved name runs, only for its own on-cue request; any other verb is refused', async ($, on) => {
   const stdins: string[] = []
   await leadAt($, on, stdins, { clock: true, sess: { ...leadSelfReg(), ...mgrRow() }, seed: () => mgrFile() })
-  const cue = async (ino: number, text: string) => {
-    cueFile = { ino, text, present: true }
-    await tickTwice()
-    return resultFiles.get(RESULT)
-  }
   expect(await cue(90, 'compact\n')).toBe('compact refused no-request 90\n')
   expect(nudges()).toEqual([])
   expect((await $.tool.call(GOOD as any)).result).toBe('queued')
@@ -12249,17 +12086,13 @@ test('v14 S7: a lead takes a compact cue only while a live manager with a reserv
 })
 
 test('v14 S7: an armed on-cue request the lead did not make through request_compact is not acted on; a plain session still cannot ask on-cue', async ($, on) => {
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await leadAt($, on, [], { clock: true, sess: { ...leadSelfReg(), ...mgrRow() }, seed: () => mgrFile(), trace })
   trace.st!.set('request', { value: { phase: 'armed', mode: 'on-cue', requestedMs: nowMs, id: 'r1', focus: 'f', continuation: 'c' }, version: 9 })
-  cueFile = { ino: 98, text: 'compact\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('compact refused no-request 98\n')
+  expect(await cue(98, 'compact\n')).toBe('compact refused no-request 98\n')
   // A lead's request in mode now is never the manager's to act on, whatever it carries.
   trace.st!.set('request', { value: { phase: 'armed', mode: 'now', requestedMs: nowMs, id: 'r2', focus: 'f', continuation: 'c', viaLead: true }, version: 10 })
-  cueFile = { ino: 99, text: 'compact\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('compact refused no-request 99\n')
+  expect(await cue(99, 'compact\n')).toBe('compact refused no-request 99\n')
   expect(seen.compacted).toBe(false)
   await $.command.run(lane('off'))
   expect(JSON.stringify(await $.tool.call(GOOD as any))).toContain('request_compact is not enabled for this session')
@@ -12346,11 +12179,6 @@ longTest('v14 nudge: a hard nudge is not followed by a soft one inside the gap; 
 test('v14 review c1 (W1): an attached lane whose lead is gone takes the manager\'s resume while a trusted manager is live; start, and every cue with no such manager, stay refused no-lead', async ($, on) => {
   await attacher($, on, [], { clock: true })
   await doLane($, 'lane svc-api')
-  const cue = async (ino: number, text: string) => {
-    cueFile = { ino, text, present: true }
-    await tickTwice()
-    return resultFiles.get(RESULT)
-  }
   leadFiles.clear()
   expect(await cue(71, 'resume\n')).toBe('resume refused no-lead 71\n')
   mgrFile()
@@ -12390,7 +12218,7 @@ test('v14 review c1 (W3): a session that was the manager is refused /callboard l
   expect((await $.command.run(lane('lead'))).text).toBe(`Lead stays off: ${REASON_TEXT['lead-after-manager']}`)
   expect(askCount).toBe(asked)
   expect(logged(stdins)).toContain('refused:lead-after-manager')
-  expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Lead: OFF.')
+  expect((await $.command.run(lane('status'))).text).toBe(STATUS_NONE)
 })
 
 test('v14 review c1 (S8): a grant dropped during the last process check before the signal sends nothing (grant-changed)', async ($, on) => {
@@ -12408,7 +12236,7 @@ test('v14 review c1 (S8): a grant dropped during the last process check before t
   const lines = logged(stdins)
   expect(lines.indexOf('terminating:LABLANE')).toBeGreaterThan(-1)
   expect(lines.indexOf('refused:lead-grant-changed')).toBeGreaterThan(lines.indexOf('terminating:LABLANE'))
-  expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Lead: OFF.')
+  expect((await $.command.run(lane('status'))).text).toBe(STATUS_NONE)
 })
 
 test('v14 review c1 (M2): a manager\'s stop refuses, before any dialog, a target that holds a live presence file (target-is-lead) or that the lane record does not name (sid-mismatch)', async ($, on) => {
@@ -12587,7 +12415,7 @@ test('v14 review c2 (CR3): the manager keeps a repo\'s lead verdict for the next
   // reused at the next evaluation (60-62 s apart) and read again at the one after, so six evaluations read the lead's file three times (60 s: six; 130 s: two).
   const reads = () => argv.filter((a) => a[0] === '/usr/bin/head' && a[a.length - 1] === LEADPATH).length
   const before = reads()
-  for (let i = 0; i < 180; i++) await clock!.advance(2000)
+  await ticks(180)
   expect(reads() - before).toBe(3)
   // The lead's check cannot be made (its ps fails): not clearly gone, so API is still not told.
   psFail.add('4242')
@@ -12609,7 +12437,7 @@ test('v14 review c2: a session that was the manager is refused /callboard lane b
   expect((await $.command.run(lane('lane'))).text).toBe(`Lane not changed: ${REASON_TEXT['lane-after-manager']}`)
   expect(askCount).toBe(asked)
   expect(logged(stdins)).toContain('refused:lane-after-manager')
-  expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Lead: OFF.')
+  expect((await $.command.run(lane('status'))).text).toBe(STATUS_NONE)
 })
 
 
@@ -12798,7 +12626,7 @@ test('v15 S6a (12, 16d): remove asks nothing, drops the entry (a deleted repo to
 })
 
 test('v15 S6a (13): add in a lane, a lead or the manager, or in a session that was a lead or the manager, is refused before the dialog and again after a yes', async ($, on) => {
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   await condAt($, on, [], { trace })
   trace.st!.set('lane', { value: { name: 'X', at: 1 }, version: 1 })
   expect((await condRun($, 'add app')).text).toBe(condNo('lane-holder'))
@@ -12845,7 +12673,7 @@ test('v15 S6a (15): add in a session that is not a conductor writes the file and
   await condAt($, on)
   const defs0 = toolDefs.length
   expect((await condRun($, 'add app')).text).toBe(conductorAddedText(COND, PIN, CHOME, false))
-  expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Lead: OFF.')
+  expect((await $.command.run(lane('status'))).text).toBe(STATUS_NONE)
   expect(toolDefs.slice(defs0).some((d) => JSON.parse(d).name.startsWith('lane_'))).toBe(false)
   expect([...store.keys()].some((k) => k.startsWith('conductor:'))).toBe(false)
   expect(leadFiles.size).toBe(0)
@@ -12884,12 +12712,6 @@ test('v15 S6a: a bad list file, a bad conductor folder and an unknown form get t
 
 // ---- v15 S6b: the conductor grant, its restore, its tools ----
 const CONDKEY = `conductor:${SID}`
-// Waits up to 2 s of real time for f; fails the test when it never holds (a wait that times out silently once let a mutant pass).
-const until = async (f: () => boolean) => {
-  for (let i = 0; i < 400 && !f(); i++) await new Promise((r) => setTimeout(r, 5))
-  if (!f()) throw new Error('until: the condition never held')
-}
-const condStatus = async ($: any) => (await $.command.run(lane('status'))).text as string
 const condSections = (r: any) => (r.sections as { id: string; text: string }[]).filter((x) => x.id === 'callboard:conductor')
 // The conductor (SID in COND) with lane API in PIN's store (session APISID) and LABLANE of /data/x/work (session OTHER), granted over ../app and ../app2.
 const CSESS = (over: Record<string, unknown> = {}) => ({ ...condSelf(over), ...cueSession(APISID, 'API', `${PIN}/api`, { pid: 4500 }), ...cueSession(OTHER, 'LABLANE', '/data/x/work/lab', { pid: 4600 }) })
@@ -12951,7 +12773,7 @@ test('v15 S6b (17): /callboard conductor asks once with every repo and the resta
   expect(store.get(CONDKEY)).toEqual({ home: COND, repos: [PIN, APP2, FAR], savedAt: T0 })
   expect(noteRows().length).toBe(1)
   expect(noteRows()[0].text).toBe(conductorBriefingNote('', COND, [PIN, APP2, FAR]))
-  expect(await condStatus($)).toBe('Lane: NONE. Conductor: ON (3 repos).')
+  expect(await statusText($)).toBe('Lane: NONE. Conductor: ON (3 repos).')
   expect(logged(stdins)).toContain('conductor-on:prompt')
   // Again with nothing new: no dialog, the reach.
   expect((await condRun($, '')).text).toBe('Conductor is on for ../app, ../app2, ~/data/x/work/elsewhere/far-repo (not next to cond). Out of reach: ../gone (not found).')
@@ -12980,7 +12802,7 @@ test('v15 S6b (18): starting a session in the conductor repo, with a list file a
   await condAt($, on, stdins, { clock: true })
   putCond(['../app'])
   await clock!.advance(4000)
-  expect(await condStatus($)).toBe('Lane: NONE. Lead: OFF.')
+  expect(await statusText($)).toBe(STATUS_NONE)
   expect(condLogs(stdins)).toEqual([])
   expect(leadFiles.size).toBe(0)
 })
@@ -12988,7 +12810,7 @@ test('v15 S6b (18): starting a session in the conductor repo, with a list file a
 test('v15 S6b (19): a saved grant is restored with no question in a person\'s session; a --bg worker (row kind background) is not and keeps the key; a missing row is retried', async ($, on) => {
   const stdins: string[] = []
   await condRestarter($, on, stdins)
-  expect(await condStatus($)).toBe('Lane: NONE. Conductor: ON (2 repos).')
+  expect(await statusText($)).toBe('Lane: NONE. Conductor: ON (2 repos).')
   expect(askCount).toBe(0)
   expect(appendRows.length).toBe(0)
   expect(condLogs(stdins)).toContain('conductor-restored:')
@@ -13000,34 +12822,34 @@ test('v15 S6b (19): a --bg worker resumed under the id (row kind background) is 
   const stdins: string[] = []
   await condRestarter($, on, stdins, { sess: condSelf({ kind: 'background' }) })
   await clock!.advance(4000)
-  expect(await condStatus($)).toBe('Lane: NONE. Lead: OFF.')
+  expect(await statusText($)).toBe(STATUS_NONE)
   expect(condLogs(stdins)).toContain('conductor-restore-rejected:not-person')
   expect(store.has(CONDKEY)).toBe(true)
 })
 test('v15 S6b (19, 21d): a person\'s row that arrives late is retried, and the restore lands although a rebind was pending (no lane record)', async ($, on) => {
   const stdins: string[] = []
   await condRestarter($, on, stdins, { seed: () => ((sessions = {}), (ownEntryAuto = false)) })
-  expect(await condStatus($)).toBe('Lane: NONE. Lead: OFF.')
+  expect(await statusText($)).toBe(STATUS_NONE)
   sessions = condSelf()
   for (let i = 0; i < 3 && !condLogs(stdins).includes('conductor-restored:'); i++) await clock!.advance(2000)
   expect(condLogs(stdins)).toContain('conductor-restored:')
   expect(condLogs(stdins).some((x) => x.startsWith('conductor-restore-rejected'))).toBe(false)
-  expect(await condStatus($)).toBe('Lane: NONE. Conductor: ON (2 repos).')
+  expect(await statusText($)).toBe('Lane: NONE. Conductor: ON (2 repos).')
 })
 
 test('v15 S6b (20): a restore whose file names a repo outside the approved list asks first, naming every repo and the new one; Conductor restores with all of them and saves them', async ($, on) => {
   const stdins: string[] = []
   await condRestarter($, on, stdins, { repos: [PIN], file: ['../app', '../app2'] })
-  expect(await condStatus($)).toBe('Lane: NONE. Lead: OFF.')
+  expect(await statusText($)).toBe(STATUS_NONE)
   expect(JSON.stringify(await $.tool.call(listCall()))).toContain('lead tools are off')
   expect(askCount).toBe(0)
   await clock!.advance(2000)
-  await until(() => condLogs(stdins).includes('conductor-restored:widened 1'))
+  await waitFor(() => condLogs(stdins).includes('conductor-restored:widened 1'))
   expect(lastQuestion).toBe(conductorRestoreQuestion(COND, [PIN, APP2], [APP2], CHOME))
   // v15 security review (F2): the new repos first, a fixed closing sentence.
   expect(lastQuestion).toBe("cond's conductor list changed since you approved it. New: ../app2. Restore this session as a conductor for these repos? ../app, ../app2. Cancel removes the saved conductor grant.")
   expect(lastHeader).toBe('Conductor')
-  expect(await condStatus($)).toBe('Lane: NONE. Conductor: ON (2 repos).')
+  expect(await statusText($)).toBe('Lane: NONE. Conductor: ON (2 repos).')
   expect(store.get(CONDKEY)).toMatchObject({ home: COND, repos: [PIN, APP2] })
   expect(noteRows().length).toBe(1)
   expect(askCount).toBe(1)
@@ -13038,9 +12860,9 @@ test('v15 S6b (20a): Cancel on the restore dialog deletes the saved grant and le
   await condRestarter($, on, stdins, { repos: [PIN], file: ['../app', '../app2'], seed: () => (askAnswer = NO) })
   askAnswer = NO
   await clock!.advance(2000)
-  await until(() => condLogs(stdins).includes('conductor-restore-cancelled:'))
+  await waitFor(() => condLogs(stdins).includes('conductor-restore-cancelled:'))
   expect(store.has(CONDKEY)).toBe(false)
-  expect(await condStatus($)).toBe('Lane: NONE. Lead: OFF.')
+  expect(await statusText($)).toBe(STATUS_NONE)
 })
 test('v15 PR review (#284): a grant made while a restore question waits ends that restore; a later Cancel cannot delete the new saved grant', async ($, on) => {
   const stdins: string[] = []
@@ -13049,11 +12871,11 @@ test('v15 PR review (#284): a grant made while a restore question waits ends tha
   expect((await condRun($, '')).text).toContain(CONDUCTOR_ON_TEXT)
   const asked = askCount
   askAnswer = NO
-  for (let i = 0; i < 5; i++) await clock!.advance(2000)
+  await ticks(5)
   expect(askCount).toBe(asked)
   expect(condLogs(stdins).some((x) => x.startsWith('conductor-restore-cancelled'))).toBe(false)
   expect(store.get(CONDKEY)).toMatchObject({ home: COND, repos: [PIN, APP2] })
-  expect(await condStatus($)).toBe('Lane: NONE. Conductor: ON (2 repos).')
+  expect(await statusText($)).toBe('Lane: NONE. Conductor: ON (2 repos).')
 })
 
 test('v15 S6b (20a, 20g): a restore dialog nobody answers restores nothing and keeps the key; its 90 s use up no retry ticks', async ($, on) => {
@@ -13061,12 +12883,12 @@ test('v15 S6b (20a, 20g): a restore dialog nobody answers restores nothing and k
   await condRestarter($, on, stdins, { repos: [PIN], file: ['../app', '../app2'] })
   askHang = new Promise<string>(() => undefined)
   await clock!.advance(2000)
-  await until(() => askCount === 1)
-  for (let i = 0; i < 50; i++) await clock!.advance(2000)
-  await until(() => condLogs(stdins).includes('conductor-restore-unanswered:'))
+  await waitFor(() => askCount === 1)
+  await ticks(50)
+  await waitFor(() => condLogs(stdins).includes('conductor-restore-unanswered:'))
   expect(toasts).toContain(conductorUnansweredToast(COND))
   expect(store.has(CONDKEY)).toBe(true)
-  expect(await condStatus($)).toBe('Lane: NONE. Lead: OFF.')
+  expect(await statusText($)).toBe(STATUS_NONE)
   expect(askCount).toBe(1)
   expect(condLogs(stdins).some((x) => x.startsWith('conductor-restore-rejected'))).toBe(false)
 })
@@ -13074,7 +12896,7 @@ test('v15 S6b (20a, 20g): a restore dialog nobody answers restores nothing and k
 test('v15 S6b (20b): a restore where the file dropped a repo restores without it and asks nothing; with no approved repo left nothing is restored and the key is kept', async ($, on) => {
   const stdins: string[] = []
   await condRestarter($, on, stdins, { repos: [PIN, APP2], file: ['../app'] })
-  expect(await condStatus($)).toBe('Lane: NONE. Conductor: ON (1 repo).')
+  expect(await statusText($)).toBe('Lane: NONE. Conductor: ON (1 repo).')
   expect(askCount).toBe(0)
   expect(store.get(CONDKEY)).toMatchObject({ repos: [PIN] })
   expect(condLogs(stdins)).toContain('conductor-ratchet:1')
@@ -13082,7 +12904,7 @@ test('v15 S6b (20b): a restore where the file dropped a repo restores without it
 test('v15 S6b (20b): a restore whose list file holds none of the approved repos restores nothing and keeps the key', async ($, on) => {
   const stdins: string[] = []
   await condRestarter($, on, stdins, { repos: [PIN], file: [] })
-  expect(await condStatus($)).toBe('Lane: NONE. Lead: OFF.')
+  expect(await statusText($)).toBe(STATUS_NONE)
   expect(condLogs(stdins)).toContain('conductor-restore-rejected:no-repos')
   expect(toasts).toContain(conductorNoReposToast(COND))
   expect(store.has(CONDKEY)).toBe(true)
@@ -13094,7 +12916,7 @@ test('v15 S6b (20c): in a running conductor an entry written into the file by ha
   await condOn($, on, stdins, { repos: ['../app'] })
   putCond(['../app', '../app2'])
   await $.tool.call(listCall())
-  expect(await condStatus($)).toBe('Lane: NONE. Conductor: ON (1 repo).')
+  expect(await statusText($)).toBe('Lane: NONE. Conductor: ON (1 repo).')
   // Another origin never widens: no dialog, the reach and what is out.
   expect((await condRun($, '', { kind: 'plugin', name: 'x' })).text).toBe('Conductor is on for ../app. Out of reach: ../app2 (not approved in this session).')
   expect(askCount).toBe(1)
@@ -13103,7 +12925,7 @@ test('v15 S6b (20c): in a running conductor an entry written into the file by ha
   // v15 security review (F2): the repo not yet approved is named first.
   expect(lastQuestion).toBe(conductorQuestion(COND, [PIN, APP2], CHOME, [APP2]))
   expect(lastQuestion.startsWith('New since you approved: ../app2. Make this session a conductor')).toBe(true)
-  expect(await condStatus($)).toBe('Lane: NONE. Conductor: ON (2 repos).')
+  expect(await statusText($)).toBe('Lane: NONE. Conductor: ON (2 repos).')
   expect(store.get(CONDKEY)).toMatchObject({ repos: [PIN, APP2] })
 })
 
@@ -13111,14 +12933,14 @@ test('v15 S6b (20d): a restore whose list file does not parse or is a link resto
   const stdins: string[] = []
   await condRestarter($, on, stdins, { seed: () => condFiles.set(CONDFILE, '{bad') })
   expect(condLogs(stdins)).toContain('conductor-restore-retry:file-bad')
-  expect(await condStatus($)).toBe('Lane: NONE. Lead: OFF.')
+  expect(await statusText($)).toBe(STATUS_NONE)
   condFiles.set(CONDFILE, conductorFileText(['../app']))
   condStat.set(CONDFILE, '501 644 1 Symbolic Link 19 20 1700000000\n')
-  for (let i = 0; i < 16; i++) await clock!.advance(2000)
+  await ticks(16)
   expect(condLogs(stdins)).toContain('conductor-restore-rejected:file-bad')
   expect(toasts).toContain(conductorFileBadToast(COND))
   expect(store.has(CONDKEY)).toBe(true)
-  expect(await condStatus($)).toBe('Lane: NONE. Lead: OFF.')
+  expect(await statusText($)).toBe(STATUS_NONE)
 })
 
 test('v15 S6b (20e, 20g): /callboard off while the restore dialog is open, then Conductor clicked: nothing is granted, the saved grant is gone; a lead asked meanwhile is busy', async ($, on) => {
@@ -13127,13 +12949,13 @@ test('v15 S6b (20e, 20g): /callboard off while the restore dialog is open, then 
   let release: (a: string) => void = () => undefined
   askHang = new Promise<string>((r) => (release = r))
   await clock!.advance(2000)
-  await until(() => askCount === 1)
+  await waitFor(() => askCount === 1)
   expect((await $.command.run(lane('lead'))).text).toBe('A callboard question is already open. Answer it first.')
   expect((await $.command.run(lane('off'))).text).toBe('Conductor is now off.')
   release(YES)
-  await until(() => condLogs(stdins).includes('conductor-restore-rejected:changed'))
+  await waitFor(() => condLogs(stdins).includes('conductor-restore-rejected:changed'))
   await clock!.advance(2000)
-  expect(await condStatus($)).toBe('Lane: NONE. Lead: OFF.')
+  expect(await statusText($)).toBe(STATUS_NONE)
   expect(store.has(CONDKEY)).toBe(false)
   expect(condLogs(stdins)).not.toContain('conductor-restored:widened 1')
 })
@@ -13143,10 +12965,10 @@ test('v15 S6b (20e): /callboard off while the restore dialog is open, then Cance
   let release: (a: string) => void = () => undefined
   askHang = new Promise<string>((r) => (release = r))
   await clock!.advance(2000)
-  await until(() => askCount === 1)
+  await waitFor(() => askCount === 1)
   expect((await $.command.run(lane('off'))).text).toBe('Conductor is now off.')
   release(NO)
-  await until(() => condLogs(stdins).includes('conductor-restore-rejected:changed'))
+  await waitFor(() => condLogs(stdins).includes('conductor-restore-rejected:changed'))
   expect(condLogs(stdins)).toContain('conductor-restore-rejected:changed')
   expect(condLogs(stdins)).not.toContain('conductor-restore-cancelled:')
 })
@@ -13159,7 +12981,7 @@ test('v15 S6b (20f): the file widened again while the grant dialog is open: Cond
     return YES
   }
   expect((await condRun($, '')).text).toBe(conductorRefusalText('conductor-changed', COND, 'Conductor stays off'))
-  expect(await condStatus($)).toBe('Lane: NONE. Lead: OFF.')
+  expect(await statusText($)).toBe(STATUS_NONE)
   expect(store.has(CONDKEY)).toBe(false)
 })
 test('v15 S6b (20f): the file widened again while the restore dialog is open: Conductor restores nothing (changed) and keeps the key', async ($, on) => {
@@ -13170,8 +12992,8 @@ test('v15 S6b (20f): the file widened again while the restore dialog is open: Co
     return YES
   }
   await clock!.advance(2000)
-  await until(() => condLogs(stdins).includes('conductor-restore-rejected:changed'))
-  expect(await condStatus($)).toBe('Lane: NONE. Lead: OFF.')
+  await waitFor(() => condLogs(stdins).includes('conductor-restore-rejected:changed'))
+  expect(await statusText($)).toBe(STATUS_NONE)
   expect(store.has(CONDKEY)).toBe(true)
 })
 
@@ -13186,13 +13008,13 @@ test('v15 S6b (21, 21b): a lane on its way back (a restore hint) is not restored
   await condRestarter($, on, stdins, { seed: () => store.set(`sess:${SID}`, LANE_HINT()) })
   expect(condLogs(stdins)).toContain('conductor-restore-rejected:lane-holder')
   expect(store.has(CONDKEY)).toBe(true)
-  expect(await condStatus($)).toBe('Lane: NONE. Lead: OFF.')
+  expect(await statusText($)).toBe(STATUS_NONE)
 })
 test('v15 S6b (21): a lead restore at start stands; the conductor restore ends lead-holder and keeps the key', async ($, on) => {
   const stdins: string[] = []
   await condRestarter($, on, stdins, { seed: () => store.set(LEADKEY, { pin: COND, savedAt: T0 - 60_000 }) })
   expect(condLogs(stdins)).toContain('conductor-restore-rejected:lead-holder')
-  expect(await condStatus($)).toContain('Lead: ON')
+  expect(await statusText($)).toContain('Lead: ON')
   expect(store.has(CONDKEY)).toBe(true)
 })
 test('v15 S6b (21b): a lane restarted in the conductor repo (a store record naming the session) is not restored as a conductor, and its rebind still runs', async ($, on) => {
@@ -13201,7 +13023,7 @@ test('v15 S6b (21b): a lane restarted in the conductor repo (a store record nami
   expect(condLogs(stdins)).toContain('conductor-restore-rejected:lane-holder')
   for (let i = 0; i < 3 && !toasts.includes(reboundToast('CL')); i++) await clock!.advance(2000)
   expect(toasts).toContain(reboundToast('CL'))
-  expect(await condStatus($)).toContain('Lane: CL.')
+  expect(await statusText($)).toContain('Lane: CL.')
 })
 
 test('v15 S6b (21c): /callboard off while the restore retries: no grant lands and the key is gone; /callboard lead (yes) while it retries: the lead stands', async ($, on) => {
@@ -13210,8 +13032,8 @@ test('v15 S6b (21c): /callboard off while the restore retries: no grant lands an
   expect((await $.command.run(lane('off'))).text).toBe('Conductor is now off.')
   expect(store.has(CONDKEY)).toBe(false)
   sessions = condSelf()
-  for (let i = 0; i < 4; i++) await clock!.advance(2000)
-  expect(await condStatus($)).toBe('Lane: NONE. Lead: OFF.')
+  await ticks(4)
+  expect(await statusText($)).toBe(STATUS_NONE)
 })
 test('v15 S6b (21c): /callboard lead while a conductor restore retries: the lead grant stands and the restore ends', async ($, on) => {
   const stdins: string[] = []
@@ -13219,8 +13041,8 @@ test('v15 S6b (21c): /callboard lead while a conductor restore retries: the lead
   sessions = condSelf()
   ownEntryAuto = true
   await grantAt($, COND)
-  for (let i = 0; i < 3; i++) await clock!.advance(2000)
-  expect(await condStatus($)).toContain('Lead: ON')
+  await ticks(3)
+  expect(await statusText($)).toContain('Lead: ON')
   expect(condLogs(stdins)).toContain('conductor-restore-rejected:lead-holder')
 })
 test('v15 S6b (21c): /callboard off while a conductor restore waits on its tool registration: no conductor, and no saved grant', async ($, on) => {
@@ -13233,8 +13055,8 @@ test('v15 S6b (21c): /callboard off while a conductor restore waits on its tool 
   let done = false
   void start.then(() => (done = true))
   for (let i = 0; i < 40 && !done; i++) await clock!.advance(1000)
-  for (let i = 0; i < 3; i++) await clock!.advance(2000)
-  expect(await condStatus($)).toBe('Lane: NONE. Lead: OFF.')
+  await ticks(3)
+  expect(await statusText($)).toBe(STATUS_NONE)
   expect(store.has(CONDKEY)).toBe(false)
   expect(condLogs(stdins)).not.toContain('conductor-restored:')
 })
@@ -13249,7 +13071,7 @@ test('v15 S6b (22): a listed repo that is no longer a git root is left out at th
 test('v15 S6b (22): a restore leaves out a repo that is no longer a git root', async ($, on) => {
   const stdins: string[] = []
   await condRestarter($, on, stdins, { seed: () => extraStat.delete(`${APP2}/.git`) })
-  expect(await condStatus($)).toBe('Lane: NONE. Conductor: ON (1 repo).')
+  expect(await statusText($)).toBe('Lane: NONE. Conductor: ON (1 repo).')
   expect(store.get(CONDKEY)).toMatchObject({ repos: [PIN] })
 })
 
@@ -13272,7 +13094,7 @@ test('v15 S6b (16e): the restore dialog shows a long absolute entry whole', asyn
   await condRestarter($, on, stdins, { repos: [PIN], file: ['../app', far], seed: () => extraStat.set(`${far}/.git`, dirStat) })
   askAnswer = NO
   await clock!.advance(2000)
-  await until(() => askCount === 1)
+  await waitFor(() => askCount === 1)
   expect(lastQuestion).toContain(`New: ~${far.slice(CHOME.length)} (not next to cond).`)
 })
 
@@ -13294,7 +13116,7 @@ test('v15 S6b (27, 27c): a remove elsewhere narrows the next lane_list at once; 
   expect(store.get(CONDKEY)).toMatchObject({ repos: [APP2] })
   putCond(['../app', '../app2'])
   expect((await $.tool.call(listCall())).result).toBe('no lanes in its repos')
-  expect(await condStatus($)).toBe('Lane: NONE. Conductor: ON (1 repo).')
+  expect(await statusText($)).toBe('Lane: NONE. Conductor: ON (1 repo).')
   expect(store.get(CONDKEY)).toMatchObject({ repos: [APP2] })
   expect(condLogs(stdins)).toContain('conductor-ratchet:1')
 })
@@ -13303,7 +13125,7 @@ test('v15 S6b (27b): after the last remove a live conductor\'s presence file is 
   await condOn($, on, [], { clock: true })
   expect(leadFiles.has(SELFPATH)).toBe(true)
   putCond([])
-  for (let i = 0; i < 6; i++) await clock!.advance(2000)
+  await ticks(6)
   expect(leadFiles.has(SELFPATH)).toBe(false)
   expect(JSON.stringify(await $.tool.call(listCall()))).toContain(`lane_list refused: ${REASON_TEXT['conductor-list']}`)
 })
@@ -13315,7 +13137,7 @@ test('v15 S6b (28, 28b): the conductor\'s lane_terminate names the repo, refuses
   askHang = new Promise<string>((r) => (release = r))
   const n = askCount
   const first = $.tool.call(mgrCall('terminate', 'API'))
-  await until(() => askCount > n)
+  await waitFor(() => askCount > n)
   expect(lastQuestion).toBe(terminateQuestion('API', APISID, 4500, PIN, true))
   expect(JSON.stringify(await $.tool.call(mgrCall('terminate', 'API')))).toContain('lane_terminate refused: busy')
   release(YES)
@@ -13443,7 +13265,7 @@ test('v15 S6b (34): /callboard off deletes the saved grant; Cancel from the pers
   askAnswer = NO
   expect((await condRun($, '')).text).toBe('Conductor is now off.')
   expect(store.has(CONDKEY)).toBe(false)
-  expect(await condStatus($)).toBe('Lane: NONE. Lead: OFF.')
+  expect(await statusText($)).toBe(STATUS_NONE)
 })
 test('v15 S6b (34): the next start after off is not a conductor', async ($, on) => {
   const stdins: string[] = []
@@ -13456,7 +13278,7 @@ test('v15 S6b (34b): the off question asked from another origin in a conductor s
   askAnswer = NO
   await $.command.run(lane('off', { kind: 'plugin', name: 'x' }))
   expect(lastQuestion).toBe(`Asked from another plugin. ${CONDUCTOR_OFF_QUESTION}`)
-  expect(await condStatus($)).toBe('Lane: NONE. Conductor: ON (2 repos).')
+  expect(await statusText($)).toBe('Lane: NONE. Conductor: ON (2 repos).')
 })
 
 // ---- v15 S6c: the Conductor box in the manager's list ----
@@ -13589,11 +13411,6 @@ const trustSeed = (over: Record<string, unknown> = {}) => () => {
 const CTSESS = () => ({ ...leadSelfReg(), ...regAs(OTHERLEAD, 4243, 'CONDX') })
 async function condLead($: any, on: any, stdins: string[] = [], trace?: Trace) {
   await leadAt($, on, stdins, { clock: true, sess: CTSESS(), seed: trustSeed(), trace })
-  const cue = async (ino: number, text: string) => {
-    cueFile = { ino, text, present: true }
-    await tickTwice()
-    return resultFiles.get(RESULT)
-  }
   const arm = async () => {
     expect((await $.tool.call(GOOD as any)).result).toBe('queued')
     await $.turn.complete(TURN as any)
@@ -13645,11 +13462,6 @@ test('v15 S7 (40b): refused when the presence file\'s home is not a git root', a
 test('v15 S7 (42): an adopted lane with no live lead refuses a conductor\'s cue (no-lead) and still takes the manager\'s', async ($, on) => {
   await attacher($, on, [], { clock: true })
   await doLane($, 'lane svc-api')
-  const cue = async (ino: number, text: string) => {
-    cueFile = { ino, text, present: true }
-    await tickTwice()
-    return resultFiles.get(RESULT)
-  }
   leadFiles.clear()
   trustSeed()()
   sessions = { ...ownReg(), ...regAs(OTHERLEAD, 4243, 'CONDX') }
@@ -13722,7 +13534,7 @@ test('v15 review c1 (W1): an off while the restore saves its narrowed list leave
   await clock!.advance(2000)
   expect(condLogs(stdins)).toContain('conductor-ratchet:1')
   expect(store.has(CONDKEY)).toBe(false)
-  expect(await condStatus($)).toBe('Lane: NONE. Lead: OFF.')
+  expect(await statusText($)).toBe(STATUS_NONE)
 })
 const APP3 = '/Users/x/code/app3'
 test('v15 review c1 (W2): an add click that lands while a tool call reads the list is kept, not ratcheted away by that read', async ($, on) => {
@@ -13740,21 +13552,21 @@ test('v15 review c1 (W2): an add click that lands while a tool call reads the li
     return new Promise<void>((r) => (release = r))
   }
   const listing = $.tool.call(listCall())
-  await until(() => paused)
+  await waitFor(() => paused)
   expect((await condRun($, 'add app3')).text).toContain('../app3')
   release()
   await listing
   expect(condLogs(stdins).filter((x) => x.startsWith('conductor-ratchet'))).toEqual([])
   // The stale read served its own call from the file it read; the next read reaches the added repo.
   await $.tool.call(listCall())
-  expect(await condStatus($)).toContain(conductorStatus(3))
+  expect(await statusText($)).toContain(conductorStatus(3))
   expect((store.get(CONDKEY) as { repos: string[] }).repos).toContain(APP3)
 })
 test('v15 review c1 (W3): a hand-written list naming one repo twice (../app and its path) reaches it once; the presence file and the saved grant stay valid', async ($, on) => {
   await condAt($, on)
   putCond(['../app', PIN])
   expect((await condRun($, '')).text).toBe(CONDUCTOR_ON_TEXT)
-  expect(await condStatus($)).toContain(conductorStatus(1))
+  expect(await statusText($)).toContain(conductorStatus(1))
   expect((store.get(CONDKEY) as { repos: string[] }).repos).toEqual([PIN])
   expect(JSON.parse(leadFiles.get(SELFPATH)!.text).repos).toEqual([PIN])
 })
@@ -13766,7 +13578,7 @@ test('v15 review c1 (S1): the same repos in another order after the grant dialog
     return YES
   }
   expect((await condRun($, '')).text).toBe(CONDUCTOR_ON_TEXT)
-  expect(await condStatus($)).toContain(conductorStatus(2))
+  expect(await statusText($)).toContain(conductorStatus(2))
 })
 test('v15 review c1 (S1): the same repos in another order after the restore dialog are no change', async ($, on) => {
   const stdins: string[] = []
@@ -13776,8 +13588,8 @@ test('v15 review c1 (S1): the same repos in another order after the restore dial
     return YES
   }
   await clock!.advance(2000)
-  await until(() => condLogs(stdins).includes('conductor-restored:widened 1'))
-  expect(await condStatus($)).toContain(conductorStatus(2))
+  await waitFor(() => condLogs(stdins).includes('conductor-restored:widened 1'))
+  expect(await statusText($)).toContain(conductorStatus(2))
 })
 
 // ---- v15 security review (2026-11-05): the security auditor's fixes ----
@@ -13788,7 +13600,7 @@ test('v15 security review (F1): a .claude folder group or other may write is uns
   expect((await condRun($, 'add app2')).text).toBe(condNo('conductor-file-unsafe'))
   expect(condEntries()).toEqual(['../app'])
   expect((await condRun($, '')).text).not.toBe(CONDUCTOR_ON_TEXT)
-  expect(await condStatus($)).toBe('Lane: NONE. Lead: OFF.')
+  expect(await statusText($)).toBe(STATUS_NONE)
 })
 test('v15 security review (F1): a temp file swapped for a link after it was written is not renamed into place', async ($, on) => {
   const stdins: string[] = []
@@ -13805,7 +13617,7 @@ test('v15 security review (F3): an add asked outside a conductor does not approv
   // No own registry row at start: the restore waits and retries on the tick.
   await condRestarter($, on, stdins, { seed: () => ((sessions = {}), (ownEntryAuto = false)) })
   extraStat.set(`${APP4}/.git`, dirStat)
-  expect(await condStatus($)).toBe('Lane: NONE. Lead: OFF.')
+  expect(await statusText($)).toBe(STATUS_NONE)
   askScript = async () => {
     sessions = condSelf()
     for (let i = 0; i < 3 && !condLogs(stdins).includes('conductor-restored:'); i++) await clock!.advance(2000)
@@ -13815,7 +13627,7 @@ test('v15 security review (F3): an add asked outside a conductor does not approv
   const r = (await condRun($, 'add app4')).text
   expect(r).toContain('../app4')
   expect(condEntries()).toContain('../app4')
-  expect(await condStatus($)).toContain(conductorStatus(2))
+  expect(await statusText($)).toContain(conductorStatus(2))
   expect((store.get(CONDKEY) as { repos: string[] }).repos).not.toContain(APP4)
 })
 test('v15 security review (F4): a list file that becomes unreadable empties the reach: the presence file goes and status says 0 repos', async ($, on) => {
@@ -13824,8 +13636,8 @@ test('v15 security review (F4): a list file that becomes unreadable empties the 
   condFiles.set(CONDFILE, '{bad')
   expect(JSON.stringify(await $.tool.call(listCall()))).toContain('refused')
   await clock!.advance(2000)
-  await until(() => !leadFiles.has(SELFPATH))
-  expect(await condStatus($)).toContain(conductorStatus(0))
+  await waitFor(() => !leadFiles.has(SELFPATH))
+  expect(await statusText($)).toContain(conductorStatus(0))
 })
 
 
@@ -13846,28 +13658,27 @@ async function mgrRestarter($: any, on: any, stdins: string[], opts: { raw?: unk
     },
   })
 }
-const mgrStatus = async ($: any) => (await $.command.run(lane('status'))).text as string
 
 test('v15.3 manager restore: the same conversation asks once when it starts, with the Manager dialog; Manager makes it the manager again, and saves the grant afresh', async ($, on) => {
   const stdins: string[] = []
   await mgrRestarter($, on, stdins)
   expect(askCount).toBe(0)
-  expect(await mgrStatus($)).toBe('Lane: NONE. Lead: OFF.')
-  for (let i = 0; i < 3; i++) await clock!.advance(2000)
-  await until(() => mgrLogs(stdins).includes('manager-restored:'))
+  expect(await statusText($)).toBe(STATUS_NONE)
+  await ticks(3)
+  await waitFor(() => mgrLogs(stdins).includes('manager-restored:'))
   expect(lastQuestion).toBe(MANAGER_RESTORE_QUESTION)
   expect(lastQuestion).toBe('Restore this session as the manager of every lane on this machine? You made it the manager here earlier and callboard saved that; click Cancel if you did not. It can resume, compact, stop, retire and remove lanes in any repo. Every stop and remove asks you. Cancel removes the saved manager grant.')
   expect(lastHeader).toBe('Manager')
   expect(askedOptions).toEqual([['Manager', 'Cancel']])
   expect(askCount).toBe(1)
-  expect(await mgrStatus($)).toBe('Lane: NONE. Manager: ON. Check-ins: ON.')
+  expect(await statusText($)).toBe('Lane: NONE. Manager: ON. Check-ins: ON.')
   expect(JSON.parse(leadFiles.get(SELFPATH)!.text)).toEqual({ sid: SID, pid: 4400, procStart: LEADPS, level: 'manager', name: 'MANAGER' })
   expect(store.get(MGRKEY)).toEqual({ name: 'MANAGER', savedAt: expect.any(Number) })
   expect((store.get(MGRKEY) as any).savedAt).toBeGreaterThan(T0)
   expect(toasts).toContain(MANAGER_RESTORED_TOAST)
   expect(mgrLogs(stdins).some((x) => x.startsWith('manager-restore-rejected') || x.startsWith('manager-on'))).toBe(false)
   // Once: no further question on later ticks.
-  for (let i = 0; i < 5; i++) await clock!.advance(2000)
+  await ticks(5)
   expect(askCount).toBe(1)
 })
 
@@ -13875,12 +13686,12 @@ test('v15.3 manager restore: Cancel deletes the saved grant, leaves the session 
   const stdins: string[] = []
   await mgrRestarter($, on, stdins, { seed: () => (askAnswer = NO) })
   askAnswer = NO
-  for (let i = 0; i < 3; i++) await clock!.advance(2000)
-  await until(() => mgrLogs(stdins).includes('manager-restore-cancelled:'))
+  await ticks(3)
+  await waitFor(() => mgrLogs(stdins).includes('manager-restore-cancelled:'))
   expect(store.has(MGRKEY)).toBe(false)
-  expect(await mgrStatus($)).toBe('Lane: NONE. Lead: OFF.')
+  expect(await statusText($)).toBe(STATUS_NONE)
   expect(leadFiles.has(SELFPATH)).toBe(false)
-  for (let i = 0; i < 5; i++) await clock!.advance(2000)
+  await ticks(5)
   expect(askCount).toBe(1)
 })
 
@@ -13888,13 +13699,13 @@ test('v15.3 manager restore: a dialog nobody answers restores nothing and keeps 
   const stdins: string[] = []
   await mgrRestarter($, on, stdins)
   askHang = new Promise<string>(() => undefined)
-  for (let i = 0; i < 3; i++) await clock!.advance(2000)
-  await until(() => askCount === 1)
-  for (let i = 0; i < 50; i++) await clock!.advance(2000)
-  await until(() => mgrLogs(stdins).includes('manager-restore-unanswered:'))
+  await ticks(3)
+  await waitFor(() => askCount === 1)
+  await ticks(50)
+  await waitFor(() => mgrLogs(stdins).includes('manager-restore-unanswered:'))
   expect(toasts).toContain(MANAGER_UNANSWERED_TOAST)
   expect(store.get(MGRKEY)).toEqual({ name: 'MANAGER', savedAt: T0 - 60_000 })
-  expect(await mgrStatus($)).toBe('Lane: NONE. Lead: OFF.')
+  expect(await statusText($)).toBe(STATUS_NONE)
   expect(leadFiles.has(SELFPATH)).toBe(false)
   expect(askCount).toBe(1)
   expect(mgrLogs(stdins).some((x) => x.startsWith('manager-restore-rejected') || x === 'manager-restore-cancelled:')).toBe(false)
@@ -13904,61 +13715,61 @@ test('v15.3 manager restore: no question while the prompt box has a draft or the
   const stdins: string[] = []
   await mgrRestarter($, on, stdins, { sess: MSELF({ status: 'busy' }) })
   draftNow = 'half a sentence'
-  for (let i = 0; i < 4; i++) await clock!.advance(2000)
+  await ticks(4)
   expect(askCount).toBe(0)
   sessions = MSELF()
-  for (let i = 0; i < 4; i++) await clock!.advance(2000)
+  await ticks(4)
   expect(askCount).toBe(0)
   draftNow = ''
   await clock!.advance(2000)
-  await until(() => mgrLogs(stdins).includes('manager-restored:'))
+  await waitFor(() => mgrLogs(stdins).includes('manager-restored:'))
   expect(askCount).toBe(1)
 })
 
 test('v15.3 manager restore: a --bg worker (row kind background) is never asked and keeps the saved grant; a missing row is retried', async ($, on) => {
   const stdins: string[] = []
   await mgrRestarter($, on, stdins, { sess: MSELF({ kind: 'background' }) })
-  for (let i = 0; i < 4; i++) await clock!.advance(2000)
+  await ticks(4)
   expect(askCount).toBe(0)
   expect(mgrLogs(stdins)).toContain('manager-restore-rejected:not-person')
   expect(store.has(MGRKEY)).toBe(true)
-  expect(await mgrStatus($)).toBe('Lane: NONE. Lead: OFF.')
+  expect(await statusText($)).toBe(STATUS_NONE)
 })
 test('v15.3 manager restore: a person\'s row that arrives late is retried and then asked', async ($, on) => {
   const stdins: string[] = []
   await mgrRestarter($, on, stdins, { seed: () => ((sessions = {}), (ownEntryAuto = false)) })
-  for (let i = 0; i < 3; i++) await clock!.advance(2000)
+  await ticks(3)
   expect(askCount).toBe(0)
   expect(mgrLogs(stdins).some((x) => x.startsWith('manager-restore-rejected'))).toBe(false)
   sessions = MSELF()
   await clock!.advance(2000)
-  await until(() => mgrLogs(stdins).includes('manager-restored:'))
+  await waitFor(() => mgrLogs(stdins).includes('manager-restored:'))
 })
 
 test('v15.3 manager restore: another live manager on the Mac, a lead, a lane and a name no longer reserved each restore nothing, ask nothing and keep the saved grant', async ($, on) => {
   // Another live session holds a manager file.
   let stdins: string[] = []
   await mgrRestarter($, on, stdins, { sess: { ...MSELF(), ...mgrRow() }, seed: () => mgrFile() })
-  for (let i = 0; i < 3; i++) await clock!.advance(2000)
+  await ticks(3)
   expect(askCount).toBe(0)
   expect(mgrLogs(stdins)).toContain('manager-restore-rejected:manager-exists')
   expect(store.has(MGRKEY)).toBe(true)
-  expect(await mgrStatus($)).toBe('Lane: NONE. Lead: OFF.')
+  expect(await statusText($)).toBe(STATUS_NONE)
 })
 test('v15.3 manager restore: a name that is no longer reserved on this machine restores nothing', async ($, on) => {
   const stdins: string[] = []
   await mgrRestarter($, on, stdins, { raw: { name: 'HARBOR', savedAt: T0 - 60_000 } })
-  for (let i = 0; i < 3; i++) await clock!.advance(2000)
+  await ticks(3)
   expect(askCount).toBe(0)
   expect(mgrLogs(stdins)).toContain('manager-restore-rejected:manager-name')
   expect(store.has(MGRKEY)).toBe(true)
-  expect(await mgrStatus($)).toBe('Lane: NONE. Lead: OFF.')
+  expect(await statusText($)).toBe(STATUS_NONE)
 })
 test('v15.3 manager restore: a reserved name other than MANAGER restores under that name', async ($, on) => {
   const stdins: string[] = []
   await mgrRestarter($, on, stdins, { raw: { name: 'HARBOR', savedAt: T0 - 60_000 }, sess: MSELF({ name: 'HARBOR' }), seed: () => store.set('reserved', { names: ['HARBOR'] }) })
-  for (let i = 0; i < 3; i++) await clock!.advance(2000)
-  await until(() => mgrLogs(stdins).includes('manager-restored:'))
+  await ticks(3)
+  await waitFor(() => mgrLogs(stdins).includes('manager-restored:'))
   expect(JSON.parse(leadFiles.get(SELFPATH)!.text).name).toBe('HARBOR')
   expect(store.get(MGRKEY)).toEqual({ name: 'HARBOR', savedAt: expect.any(Number) })
   expect((store.get(MGRKEY) as any).savedAt).toBeGreaterThan(T0)
@@ -13967,7 +13778,7 @@ test('v15.3 manager restore: a session that is a lane is not asked (lane-holder)
   const stdins: string[] = []
   await mgrRestarter($, on, stdins, { bound: true })
   const asked = askCount
-  for (let i = 0; i < 3; i++) await clock!.advance(2000)
+  await ticks(3)
   expect(askCount).toBe(asked)
   expect(mgrLogs(stdins)).toContain('manager-restore-rejected:lane-holder')
   expect(store.has(MGRKEY)).toBe(true)
@@ -13977,11 +13788,11 @@ test('v15.3 manager restore: a session that is a lead is not asked (lead-holder)
   const stdins: string[] = []
   await mgrRestarter($, on, stdins, { sess: MSELF({ name: 'LEAD', cwd: PIN }), seed: () => { extraStat.set(`${PIN}/.git`, dirStat); callerCwd = PIN; store.set(`lead:${SID}`, { pin: PIN, savedAt: T0 - 60_000 }) } })
   const asked = askCount
-  for (let i = 0; i < 3; i++) await clock!.advance(2000)
+  await ticks(3)
   expect(askCount).toBe(asked)
   expect(mgrLogs(stdins)).toContain('manager-restore-rejected:lead-holder')
   expect(store.has(MGRKEY)).toBe(true)
-  expect(JSON.stringify(await mgrStatus($))).toContain('Lead: ON')
+  expect(JSON.stringify(await statusText($))).toContain('Lead: ON')
 })
 
 test('v15.3 manager restore: every check runs again after the yes: a manager that came up while the question was open means nothing is restored', async ($, on) => {
@@ -13991,9 +13802,9 @@ test('v15.3 manager restore: every check runs again after the yes: a manager tha
     mgrFile()
     return YES
   }
-  for (let i = 0; i < 3; i++) await clock!.advance(2000)
-  await until(() => mgrLogs(stdins).includes('manager-restore-rejected:manager-exists'))
-  expect(await mgrStatus($)).toBe('Lane: NONE. Lead: OFF.')
+  await ticks(3)
+  await waitFor(() => mgrLogs(stdins).includes('manager-restore-rejected:manager-exists'))
+  expect(await statusText($)).toBe(STATUS_NONE)
   expect(leadFiles.has(SELFPATH)).toBe(false)
   expect(store.has(MGRKEY)).toBe(true)
 })
@@ -14002,12 +13813,12 @@ test('v15.3 manager restore: /callboard off while the question is open grants no
   await mgrRestarter($, on, stdins)
   let release: (a: string) => void = () => undefined
   askHang = new Promise<string>((r) => (release = r))
-  for (let i = 0; i < 3; i++) await clock!.advance(2000)
-  await until(() => askCount === 1)
+  await ticks(3)
+  await waitFor(() => askCount === 1)
   expect((await $.command.run(lane('off'))).text).toContain('Its saved manager grant was removed.')
   release(YES)
-  for (let i = 0; i < 4; i++) await clock!.advance(2000)
-  expect(await mgrStatus($)).toBe('Lane: NONE. Lead: OFF.')
+  await ticks(4)
+  expect(await statusText($)).toBe(STATUS_NONE)
   expect(leadFiles.has(SELFPATH)).toBe(false)
   expect(store.has(MGRKEY)).toBe(false)
 })
@@ -14019,11 +13830,11 @@ test('v15.3 manager restore: the person\'s own /callboard manager while a restor
   const asked = askCount
   sessions = MSELF()
   askAnswer = NO
-  for (let i = 0; i < 5; i++) await clock!.advance(2000)
+  await ticks(5)
   expect(askCount).toBe(asked)
   expect(mgrLogs(stdins).some((x) => x.startsWith('manager-restore'))).toBe(false)
   expect(store.get(MGRKEY)).toEqual({ name: 'MANAGER', savedAt: T0 })
-  expect(await mgrStatus($)).toBe('Lane: NONE. Manager: ON. Check-ins: ON.')
+  expect(await statusText($)).toBe('Lane: NONE. Manager: ON. Check-ins: ON.')
 })
 
 test('v15.3 manager restore: a manager that still holds the grant in memory (a compaction) is not asked again', async ($, on) => {
@@ -14032,9 +13843,9 @@ test('v15.3 manager restore: a manager that still holds the grant in memory (a c
   expect(askCount).toBe(1)
   expect(store.get(MGRKEY)).toEqual({ name: 'MANAGER', savedAt: nowMs })
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
-  for (let i = 0; i < 5; i++) await clock!.advance(2000)
+  await ticks(5)
   expect(askCount).toBe(1)
-  expect(await mgrStatus($)).toBe('Lane: NONE. Manager: ON. Check-ins: ON.')
+  expect(await statusText($)).toBe('Lane: NONE. Manager: ON. Check-ins: ON.')
   expect(mgrLogs(stdins).some((x) => x.startsWith('manager-restore'))).toBe(false)
 })
 
@@ -14042,12 +13853,12 @@ test('v15.3 manager restore: an unanswered question is not asked again by a seco
   const stdins: string[] = []
   await mgrRestarter($, on, stdins)
   askHang = new Promise<string>(() => undefined)
-  for (let i = 0; i < 3; i++) await clock!.advance(2000)
-  await until(() => askCount === 1)
-  for (let i = 0; i < 50; i++) await clock!.advance(2000)
-  await until(() => mgrLogs(stdins).includes('manager-restore-unanswered:'))
+  await ticks(3)
+  await waitFor(() => askCount === 1)
+  await ticks(50)
+  await waitFor(() => mgrLogs(stdins).includes('manager-restore-unanswered:'))
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
-  for (let i = 0; i < 5; i++) await clock!.advance(2000)
+  await ticks(5)
   expect(askCount).toBe(1)
   expect(store.has(MGRKEY)).toBe(true)
 })
@@ -14077,10 +13888,10 @@ test('v15.3 manager restore: /callboard off in a session whose saved grant is no
   const stdins: string[] = []
   await mgrRestarter($, on, stdins)
   askHang = new Promise<string>(() => undefined)
-  for (let i = 0; i < 3; i++) await clock!.advance(2000)
-  await until(() => askCount === 1)
-  for (let i = 0; i < 50; i++) await clock!.advance(2000)
-  await until(() => mgrLogs(stdins).includes('manager-restore-unanswered:'))
+  await ticks(3)
+  await waitFor(() => askCount === 1)
+  await ticks(50)
+  await waitFor(() => mgrLogs(stdins).includes('manager-restore-unanswered:'))
   expect(store.has(MGRKEY)).toBe(true)
   expect((await $.command.run(lane('off'))).text).toContain('Its saved manager grant was removed.')
   expect(store.has(MGRKEY)).toBe(false)
@@ -14089,7 +13900,7 @@ test('v15.3 manager restore: /callboard off in a session whose saved grant is no
 test('v15.3 manager restore: a saved grant that fails the parse is deleted with no question; another session\'s bad one is pruned at start', async ($, on) => {
   const stdins: string[] = []
   await mgrRestarter($, on, stdins, { raw: { name: 'bad name', savedAt: T0 }, seed: () => store.set('manager:11111111-0000-4000-8000-123456789abc', 'junk') })
-  for (let i = 0; i < 3; i++) await clock!.advance(2000)
+  await ticks(3)
   expect(askCount).toBe(0)
   expect(store.has(MGRKEY)).toBe(false)
   expect(store.has('manager:11111111-0000-4000-8000-123456789abc')).toBe(false)
@@ -14219,7 +14030,7 @@ let prBeneath: (($: any) => any) | undefined
 let prBeneathCalls = 0
 // While a test sets up its lane (dialogs ask through the same checks), the hook beneath asks for nothing.
 let prSetup = false
-type Ans = { switchOn?: boolean; verdict?: any; beneath?: ($: any) => any; argv?: string[][]; clock?: boolean; asLead?: boolean; scope?: string; asksScope?: string; asksOld?: boolean; trace?: Trace }
+type Ans = { switchOn?: boolean; verdict?: any; beneath?: ($: any) => any; argv?: string[][]; clock?: boolean; asLead?: boolean; scope?: string; asksScope?: string; asksOld?: boolean }
 async function answerer($: any, on: any, stdins: string[], opts: Ans = {}) {
   extraRows = {}
   prVerdict = opts.verdict ?? { decision: 'ask', rule: 'Bash(ssh:*)' }
@@ -14227,21 +14038,20 @@ async function answerer($: any, on: any, stdins: string[], opts: Ans = {}) {
   prBeneathCalls = 0
   prSetup = true
   for (const ev of ['classic.PostToolUse', 'classic.PostToolUseFailure', 'classic.PermissionDenied'] as const) on(ev, () => ({}))
-  on('tool.check', (_: any, e: any) => (prSetup || e.tool === 'AskUserQuestion' && !prAskQ ? { decision: 'allow' } : prVerdict))
+  on('tool.check', (_: any, e: any) => (prSetup ? { decision: 'allow' } : prVerdict))
   on('classic.PermissionRequest', ($2: any) => {
     prBeneathCalls++
     return prBeneath ? prBeneath($2) : {}
   })
   if (opts.asLead) await lead($, on, stdins, { argv: opts.argv, clock: opts.clock })
   else {
-    await attacher($, on, stdins, { clock: opts.clock, argv: opts.argv, trace: opts.trace })
+    await attacher($, on, stdins, { clock: opts.clock, argv: opts.argv })
     await doLane($, 'lane svc-api')
   }
   prSetup = false
   if (opts.switchOn !== false) store.set('answering', { scope: opts.scope ?? 'all', asks: opts.asksOld === true, ...(opts.asksScope !== undefined ? { asksScope: opts.asksScope } : {}), savedAt: T0 })
 }
 // A question's own ask is judged like any other once the lane is set up; the setup dialogs above must still pass.
-let prAskQ = true
 const askCheck = ($: any, over: Record<string, unknown> = {}) => $.tool.check({ tool: 'Bash', input: PRQ, tool_use_id: 'tu1', approver: 'person', ...over } as any)
 const startReq = ($: any, over: Record<string, unknown> = {}) => $.classic.PermissionRequest({ tool_name: 'Bash', tool_input: PRQ, ...over } as any)
 // A decision made by hand, the only kind PR 1 has: its answered row (appended to the ledger) and its file.
@@ -14730,7 +14540,7 @@ test('prompts: after its own answer the hook\'s next done event is the tool\'s o
 })
 
 // ---- timing: the awake clock, expiry, a missing tier ----
-test('prompts: a request nobody answers is denied after 20 minutes of awake time: expired-denied, the lane told why', async ($, on) => {
+longTest('prompts: a request nobody answers is denied after 20 minutes of awake time: expired-denied, the lane told why', async ($, on) => {
   await answerer($, on, [])
   const r = await runRequest($, [])
   expect(r).toEqual({ decision: { behavior: 'deny', message: prm.DENY_TIMEOUT_MESSAGE } })
@@ -15760,14 +15570,14 @@ const hookKinds = () => hookRows().map((r) => `${r.kind}${r.code ? ` ${r.code}` 
 const RELAYBODY = (req: any, over: Record<string, unknown> = {}) => JSON.stringify({ id: req.id, short: req.id.slice(0, 8), by: { level: 'lead', sid: LEADSID, name: 'LEAD' }, at: nowMs, nonce: req.nonce, ...over })
 const putRelay = (req: any, over: Record<string, unknown> = {}) => pfs.set(`${PDIR}/${req.id}.relay.json`, { text: RELAYBODY(req, over), mtimeSec: nowMs / 1000 })
 
-test('prompts PR3 hook: a pass-up file does not end the wait; the lead\'s later decision is dropped, the wait goes on to the 20-minute deny', async ($, on) => {
+longTest('prompts PR3 hook: a pass-up file does not end the wait; the lead\'s later decision is dropped, the wait goes on to the 20-minute deny', async ($, on) => {
   await answerer($, on, [])
   const r = await runRequest($, [at(4000, () => { handDecision(readReq()); pfs.set(`${PDIR}/${readReq().id}.escalate-lead.json`, { text: prm.escalateText({ id: readReq().id, tier: 'up', why: 'x', at: nowMs, level: 'lead', sid: LEADSID }), mtimeSec: nowMs / 1000 }) })])
   expect(r).toEqual({ decision: { behavior: 'deny', message: prm.DENY_TIMEOUT_MESSAGE } })
   expect(rowKinds()).toEqual(['requested', 'answered allow', 'dropped by-sid', 'expired-denied timeout'])
 })
 
-test('prompts PR3 hook: a relay file makes the wait withPerson: no deny at 20 minutes, and the person\'s dismissal (the left mark) ends it: abandoned relay-left, the dialog stays', async ($, on) => {
+longTest('prompts PR3 hook: a relay file makes the wait withPerson: no deny at 20 minutes, and the person\'s dismissal (the left mark) ends it: abandoned relay-left, the dialog stays', async ($, on) => {
   await answerer($, on, [])
   const r = await runRequest($, [at(4000, () => putRelay(readReq())), at(4000, () => pfs.set(`${PDIR}/${readReq().id}.asked`, { text: '{}', mtimeSec: nowMs / 1000 })), at(25 * 60_000, () => pfs.set(`${PDIR}/${readReq().id}.left`, { text: '{}', mtimeSec: nowMs / 1000 }))])
   expect(r).toEqual({})
@@ -15958,9 +15768,9 @@ test('prompts PR2: a request that was not the lead\'s when first looked at is lo
   expect(promptNotices()).toBe(0)
   store.set('answering', { scope: 'all', asks: false, savedAt: T0 })
   // In steps of one tick: a long advance runs ahead of the engine's own clock and the lead's presence file reads as from the future.
-  for (let i = 0; i < 29; i++) await clock!.advance(2000)
+  await ticks(29)
   expect(promptNotices()).toBe(0)
-  for (let i = 0; i < 4; i++) await clock!.advance(2000)
+  await ticks(4)
   expect(promptNotices()).toBe(1)
 })
 
@@ -16271,7 +16081,7 @@ test('stuck lanes: claim in a session that holds no lead grant, a conductor or t
 })
 
 test('stuck lanes: an attached lane bound before this change (its hash includes the lead name) still takes resume and detaches whole', async ($, on) => {
-  const trace: Trace = { log: [], failCounters: false }
+  const trace = newTrace()
   const stdins: string[] = []
   await attacher($, on, stdins, { clock: true, trace })
   await doLane($, 'lane svc-api')
@@ -16281,9 +16091,7 @@ test('stuck lanes: an attached lane bound before this change (its hash includes 
   const old = fakeSha(recordTextLegacy({ name: rec.name, folder: rec.folder, brief: rec.brief, repo: PIN, adopted: true, lead: rec.lead, leadName: rec.leadName }))
   expect(old).not.toBe((b.value as { rec: string }).rec)
   trace.st!.set('lane', { value: { ...(b.value as object), rec: old }, version: b.version + 1 })
-  cueFile = { ino: 91, text: 'resume\n', present: true }
-  await tickTwice()
-  expect(resultFiles.get(RESULT)).toBe('resume ok - 91\n')
+  expect(await cue(91, 'resume\n')).toBe('resume ok - 91\n')
   // The first read of the record upgraded the binding to the current hash, so a later change of the lead name (a rename carry, a claim) keeps it matching.
   expect(logged(stdins)).toContain('hash-upgraded:')
   expect((trace.st!.get('lane')!.value as { rec: string }).rec).toBe(fakeSha(recordText({ name: rec.name, folder: rec.folder, brief: rec.brief, repo: PIN, adopted: true, lead: rec.lead, leadName: rec.leadName })))
@@ -16498,7 +16306,7 @@ test('prompts PR3 hook: a person\'s relay decision is held while the relaying ti
   expect(rowKinds().some((k) => k.startsWith('dropped'))).toBe(false)
 })
 
-test('prompts PR3 hook: a relay that is never asked is lost after 2 minutes (relay-lost not-asked, the relay file gone); the wait goes on and ends at the 20-minute deny', async ($, on) => {
+longTest('prompts PR3 hook: a relay that is never asked is lost after 2 minutes (relay-lost not-asked, the relay file gone); the wait goes on and ends at the 20-minute deny', async ($, on) => {
   await answerer($, on, [])
   addCondT()
   const r = await runRequest($, [at(4000, () => putFileAt(`${readReq().id}.relay.json`, JSON.stringify({ id: readReq().id, short: readReq().id.slice(0, 8), by: byCond, at: nowMs, nonce: readReq().nonce })))])
@@ -16507,7 +16315,7 @@ test('prompts PR3 hook: a relay that is never asked is lost after 2 minutes (rel
   expect(ledgerRows()[1]).toEqual(expect.objectContaining({ tier: 'conductor', by: CNDT, short: expect.stringMatching(/^[0-9a-f]{8}$/) }))
 })
 
-test('prompts PR3 hook: a relaying tier that is not live for two minute-checks in a row loses the relay (relay-lost tier-gone); its question was on screen, so the 20-minute deny does not fire: the wait expires and the dialog stays', async ($, on) => {
+longTest('prompts PR3 hook: a relaying tier that is not live for two minute-checks in a row loses the relay (relay-lost tier-gone); its question was on screen, so the 20-minute deny does not fire: the wait expires and the dialog stays', async ($, on) => {
   await answerer($, on, [])
   addCondT()
   const r = await runRequest($, [

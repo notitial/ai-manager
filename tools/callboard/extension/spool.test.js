@@ -8,8 +8,10 @@ const { createSpool } = require('./spool.js')
 
 const SID = '1a1b2c3d-0000-4000-8000-123456789abc'
 const FOLDER = '/work/repo/lab'
+const PARKED = [{ name: 'LAB', folder: FOLDER, repo: '/work/repo', sid: SID }]
 
-function world({ lanes = [{ name: 'LAB', folder: FOLDER }], ws = [FOLDER], openLane, reopenLane, now, closeFails, uid } = {}) {
+// `onLoad` runs while the lane list is read: after the request file was looked at and before it is claimed, the window a competing window or a swap can use.
+function world({ lanes = [{ name: 'LAB', folder: FOLDER }], ws = [FOLDER], openLane, reopenLane, now, closeFails, uid, onLoad } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cb-spool-'))
   fs.chmodSync(dir, 0o700)
   const opened = []
@@ -20,6 +22,7 @@ function world({ lanes = [{ name: 'LAB', folder: FOLDER }], ws = [FOLDER], openL
     dir,
     ...(uid === undefined ? {} : { uid }),
     loadLanes: async () => {
+      if (onLoad) await onLoad()
       if (lanes instanceof Error) throw lanes
       return lanes
     },
@@ -179,16 +182,16 @@ test('a non-session answer from the open call is refused', async () => {
 })
 
 test('an unsafe spool folder (a symlink) is skipped', async () => {
-  const w = world()
   const real = fs.mkdtempSync(path.join(os.tmpdir(), 'cb-real-'))
   const link = path.join(os.tmpdir(), `cb-link-${process.pid}-${Date.now()}`)
   fs.symlinkSync(real, link)
-  const s = createSpool({ dir: link, loadLanes: async () => [{ name: 'LAB', folder: FOLDER }], openLane: async () => SID, workspaceFolders: () => [FOLDER] })
+  const opened = []
+  const s = createSpool({ dir: link, loadLanes: async () => [{ name: 'LAB', folder: FOLDER }], openLane: async (f) => { opened.push(f); return SID }, workspaceFolders: () => [FOLDER] })
   fs.writeFileSync(path.join(real, 'LAB.open'), 'open\n', { mode: 0o600 })
   assert.deepEqual(await s.scan(), [])
   assert.equal(fs.existsSync(path.join(real, 'LAB.result')), false)
   fs.unlinkSync(link)
-  assert.equal(w.opened.length, 0)
+  assert.deepEqual(opened, [], 'the spool under test opened nothing')
 })
 
 const crypto = require('node:crypto')
@@ -522,8 +525,6 @@ test('a close request with a pid above 2^22 is refused and a pid at the limit is
 })
 
 // ---- <LANE>.reopen (lane_unpark) ----
-const PARKED = [{ name: 'LAB', folder: FOLDER, repo: '/work/repo', sid: SID }]
-
 test('a reopen request for a listed lane whose record names that sid reopens it and answers ok <sid>', async () => {
   const w = world({ lanes: PARKED })
   const f = w.putReopen('LAB')
@@ -643,5 +644,40 @@ test('readStores carries sid and refuses a store with a bad sid or parked withou
   ]) {
     w.put({ ...w.good, lanes: [{ ...w.good.lanes[0], ...patch }] })
     assert.deepEqual(await readStores(w.dir), [], why)
+  }
+})
+
+// The claim: the request file is moved to a private name before it is read. A competing window may take it first, and a file swapped in after the first look has another inode.
+const KINDS = [
+  { ext: 'open', handle: 'handle', body: 'open\n', put: (w) => w.put('LAB'), lanes: undefined, answers: true },
+  { ext: 'close', handle: 'handleClose', body: `${SID}\n4242\nLAB\n`, put: (w) => w.putClose('LAB'), lanes: undefined, answers: false },
+  { ext: 'reopen', handle: 'handleReopen', body: `${SID}\n`, put: (w) => w.putReopen('LAB'), lanes: PARKED, answers: true },
+]
+
+test('a request file that another window claims between the first look and the move is claim-lost: nothing is opened, closed or answered', async () => {
+  for (const k of KINDS) {
+    let file
+    const w = world({ ...(k.lanes ? { lanes: k.lanes } : {}), onLoad: () => fs.unlinkSync(file) })
+    file = k.put(w)
+    assert.equal(await w.spool[k.handle]('LAB'), 'claim-lost', k.ext)
+    assert.deepEqual([w.opened, w.closed, w.reopened], [[], [], []], k.ext)
+    assert.equal(w.result('LAB'), undefined, `${k.ext}: no answer`)
+  }
+})
+
+test('a request file swapped for another between the first look and the move is not read, though its body is valid: bad-request, and only open and reopen answer', async () => {
+  for (const k of KINDS) {
+    let file
+    const w = world({ ...(k.lanes ? { lanes: k.lanes } : {}), onLoad: () => {
+      const swap = `${file}.swap`
+      fs.writeFileSync(swap, k.body, { mode: 0o600 })
+      fs.chmodSync(swap, 0o600)
+      fs.renameSync(swap, file)
+    } })
+    file = k.put(w)
+    assert.equal(await w.spool[k.handle]('LAB'), 'bad-request', k.ext)
+    assert.deepEqual([w.opened, w.closed, w.reopened], [[], [], []], k.ext)
+    assert.equal(w.result('LAB'), k.answers ? 'error bad-request\n' : undefined, k.ext)
+    assert.deepEqual(fs.readdirSync(w.dir), [...(k.answers ? ['LAB.result'] : [])], `${k.ext}: the claimed file is dropped`)
   }
 })

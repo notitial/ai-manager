@@ -1212,3 +1212,16 @@ test('questions: a relayed question is listed with the lane\'s own question, fou
   assert.equal(rep.notAnomalies.relayedQuestions[0].laneQuestion.question, 'Which color should the page use?')
   assert.match(render(rep), /the lane asked: \[Color\] Which color should the page use\? \(options: Red \| Green\)/)
 })
+
+// The audit keeps its own copy of the row kinds the mod writes (it is a stand-alone script and must not import the mod). A kind added to the mod and not here would make the
+// audit drop those rows as not valid, so the two lists are compared as they are written in the sources.
+test('the audit reads exactly the row kinds the mod writes', () => {
+  const quoted = (text) => (text.match(/'([^']+)'/g) ?? []).map((q) => q.slice(1, -1))
+  const mod = readFileSync(new URL('./mod/hooks/prompts.ts', import.meta.url), 'utf8')
+  const mine = readFileSync(new URL('./prompt-audit.mjs', import.meta.url), 'utf8')
+  const written = /export type RowKind = ([^\n]+)/.exec(mod)
+  const read = /const KINDS = new Set\(\[([^\]]+)\]\)/.exec(mine)
+  assert.ok(written && read, 'both lists were found')
+  assert.ok(quoted(written[1]).length > 10)
+  assert.deepEqual(quoted(read[1]).sort(), quoted(written[1]).sort())
+})
