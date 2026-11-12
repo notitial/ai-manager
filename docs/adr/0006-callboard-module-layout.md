@@ -75,5 +75,7 @@ validator's lists (hooks, calls, env and state reads and writes) are equal befor
   repeated per file. A new `$.state` key means declaring it in each file that reads or writes it.
 - Import cycles between engine files exist (lanes, grants, compaction and tick call each other). They are safe because
   of rule 3; a constant computed at load from another engine file's value would not be.
+- The module state is now exported from `mem.ts`, so any module that can resolve its path can reach it. Only the engine
+  files import it; no other code in the mod does.
 - `core.ts` and `prompts.ts` are unchanged. Splitting them, and sharing helpers across the grant levels, are separate
   decisions.
