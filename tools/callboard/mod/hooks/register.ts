@@ -2738,6 +2738,79 @@ async function doCompact($: any, sid: string, req: Request, fromCue: boolean, an
   }
 }
 
+// A cue `rename <name>` from a session that is no lane yet: the session is renamed to the record's name and bound to it, with every check before the rename.
+async function birthRename(
+  $: any,
+  sid: string,
+  cue: c.Cue,
+  x: { bound: unknown; now: number; first: number; reg: Reg; lanesOnce: () => Promise<c.Lane[] | string>; refuse: (reason: string) => Promise<void>; hold: (reason: string) => Promise<void>; answer: Answer },
+) {
+  const { bound, now, first, reg, lanesOnce, refuse, hold, answer } = x
+  if (bound) return refuse('already-bound')
+  // A lead is never renamed into a lane: the two grants would hold one session.
+  if (leadBusy(sid)) return refuse('lead-holder')
+  if (laneBinding.has(sid)) return refuse('already-bound')
+  // A record name that is reserved on this machine (one written in the moment of a reserve) is never
+  // taken by a rename.
+  if (c.reservedHit(cue.name!)) return refuse('name-reserved')
+  laneBinding.add(sid)
+  try {
+    // The engine calls held inside the mark have a time limit: one that never returns would hold the mark, and refuse every lead grant and bind, until a reload.
+    // A session read that does not answer fails its check (no folder, no turn count, not idle).
+    const bounded = async <T,>(p: Promise<T>): Promise<T | undefined> => {
+      const r = await withTimeout($, p, c.ENGINE_CALL_TIMEOUT_MS)
+      return r === 'timeout' ? undefined : r
+    }
+    const lanes = await lanesOnce()
+    if (typeof lanes === 'string') return refuse(lanes)
+    const me = await registryOf($, sid, reg)
+    const no = c.birthRenameOk(
+      lanes,
+      cue.name!,
+      { cwd: (await bounded(sessionRoot($))) ?? '', turns: (await bounded($.session.turns())) ?? NaN, nameSource: me?.nameSource, firstSeenMs: first, liveNames: await liveNames($, reg) },
+      now,
+    )
+    if (no) return refuse(no)
+    const blocked = await withTimeout($, idleCheck($, sid, reg), c.ENGINE_CALL_TIMEOUT_MS)
+    if (blocked === 'timeout') return hold('not-idle')
+    if (blocked) return hold(blocked)
+    // Everything that can fail without a trace runs before the rename: a session renamed but left unbound is refused by every later rename and attach.
+    const rec = await sha($, c.recordText(lanes.find((x) => x.name === cue.name)!)).catch(() => undefined)
+    if (!rec) return refuse('sha-failed')
+    const t0 = await bounded($.session.turns())
+    if (t0 === undefined) return hold('not-idle')
+    let renamed: unknown
+    try {
+      renamed = await withTimeout($, $.command.run({ command: 'rename', args: cue.name! }), c.ENGINE_CALL_TIMEOUT_MS)
+    } catch {
+      return refuse('rename-failed')
+    }
+    if (renamed === 'timeout') {
+      await log($, sid, 'error', 'rename-timeout')
+      return refuse('rename-failed')
+    }
+    // A failed read counts as other turns: the binding stores -1, and lane_start is refused.
+    const t1r = await withTimeout($, $.session.turns().catch(() => NaN), c.ENGINE_CALL_TIMEOUT_MS)
+    const t1 = t1r === 'timeout' ? NaN : t1r
+    const stored = c.bindTurns(t0, t1)
+    const b: Bound = { name: cue.name!, at: now, turns: stored ?? -1, rec }
+    const setting = $.state.set(lane, b)
+    const w = await withTimeout($, setting, c.ENGINE_CALL_TIMEOUT_MS).catch(() => undefined)
+    if (w === 'timeout') {
+      undoLate($, sid, setting, b)
+      await log($, sid, 'error', 'bind-timeout')
+    }
+    if (!w || w === 'timeout' || w.isSet === false) return refuse('bind-failed')
+    const leadLookup = keepLaneFacts($, sid, lanes.find((x) => x.name === cue.name)!, false, cue.lead, reg)
+    if (stored === undefined) await refuse('bind-turns-mismatch')
+    else await answer('ok')
+    await withTimeout($, leadLookup, c.ENGINE_CALL_TIMEOUT_MS)
+    return log($, sid, 'renamed')
+  } finally {
+    laneBinding.delete(sid)
+  }
+}
+
 async function handle($: any, sid: string, cue: c.Cue, answer: Answer) {
   // The answer goes first: the lead is waiting on it, and the log line costs several process runs.
   const refuse = async (reason: string) => {
@@ -2755,71 +2828,15 @@ async function handle($: any, sid: string, cue: c.Cue, answer: Answer) {
   const reg = regOnce($)
   let lanesP: Promise<c.Lane[] | string> | undefined
   const lanesOnce = () => (lanesP ??= loadLanes($))
-  if (cue.verb === 'rename') {
-    if (bound) return refuse('already-bound')
-    // A lead is never renamed into a lane: the two grants would hold one session.
-    if (leadBusy(sid)) return refuse('lead-holder')
-    if (laneBinding.has(sid)) return refuse('already-bound')
-    // A record name that is reserved on this machine (one written in the moment of a reserve) is never
-    // taken by a rename.
-    if (c.reservedHit(cue.name!)) return refuse('name-reserved')
-    laneBinding.add(sid)
-    try {
-      // The engine calls held inside the mark have a time limit: one that never returns would hold the mark, and refuse every lead grant and bind, until a reload.
-      // A session read that does not answer fails its check (no folder, no turn count, not idle).
-      const bounded = async <T,>(p: Promise<T>): Promise<T | undefined> => {
-        const r = await withTimeout($, p, c.ENGINE_CALL_TIMEOUT_MS)
-        return r === 'timeout' ? undefined : r
-      }
-      const lanes = await lanesOnce()
-      if (typeof lanes === 'string') return refuse(lanes)
-      const me = await registryOf($, sid, reg)
-      const no = c.birthRenameOk(
-        lanes,
-        cue.name!,
-        { cwd: (await bounded(sessionRoot($))) ?? '', turns: (await bounded($.session.turns())) ?? NaN, nameSource: me?.nameSource, firstSeenMs: first, liveNames: await liveNames($, reg) },
-        now,
-      )
-      if (no) return refuse(no)
-      const blocked = await withTimeout($, idleCheck($, sid, reg), c.ENGINE_CALL_TIMEOUT_MS)
-      if (blocked === 'timeout') return hold('not-idle')
-      if (blocked) return hold(blocked)
-      // Everything that can fail without a trace runs before the rename: a session renamed but left unbound is refused by every later rename and attach.
-      const rec = await sha($, c.recordText(lanes.find((x) => x.name === cue.name)!)).catch(() => undefined)
-      if (!rec) return refuse('sha-failed')
-      const t0 = await bounded($.session.turns())
-      if (t0 === undefined) return hold('not-idle')
-      let renamed: unknown
-      try {
-        renamed = await withTimeout($, $.command.run({ command: 'rename', args: cue.name! }), c.ENGINE_CALL_TIMEOUT_MS)
-      } catch {
-        return refuse('rename-failed')
-      }
-      if (renamed === 'timeout') {
-        await log($, sid, 'error', 'rename-timeout')
-        return refuse('rename-failed')
-      }
-      // A failed read counts as other turns: the binding stores -1, and lane_start is refused.
-      const t1r = await withTimeout($, $.session.turns().catch(() => NaN), c.ENGINE_CALL_TIMEOUT_MS)
-      const t1 = t1r === 'timeout' ? NaN : t1r
-      const stored = c.bindTurns(t0, t1)
-      const b: Bound = { name: cue.name!, at: now, turns: stored ?? -1, rec }
-      const setting = $.state.set(lane, b)
-      const w = await withTimeout($, setting, c.ENGINE_CALL_TIMEOUT_MS).catch(() => undefined)
-      if (w === 'timeout') {
-        undoLate($, sid, setting, b)
-        await log($, sid, 'error', 'bind-timeout')
-      }
-      if (!w || w === 'timeout' || w.isSet === false) return refuse('bind-failed')
-      const leadLookup = keepLaneFacts($, sid, lanes.find((x) => x.name === cue.name)!, false, cue.lead, reg)
-      if (stored === undefined) await refuse('bind-turns-mismatch')
-      else await answer('ok')
-      await withTimeout($, leadLookup, c.ENGINE_CALL_TIMEOUT_MS)
-      return log($, sid, 'renamed')
-    } finally {
-      laneBinding.delete(sid)
+  // An on-cue request of the session's own, past its time or compacted now.
+  const compactOwn = async (req: Request) => {
+    if (!c.onCueValid(req.requestedMs, now)) {
+      await answer('refused', 'no-request')
+      return dropRequest($, sid, 'expired')
     }
+    return doCompact($, sid, req, true, answer)
   }
+  if (cue.verb === 'rename') return birthRename($, sid, cue, { bound, now, first, reg, lanesOnce, refuse, hold, answer })
   if (bound?.adopted) {
     const all = await lanesOnce()
     if (typeof all === 'string') return refuse(all)
@@ -2844,11 +2861,7 @@ async function handle($: any, sid: string, cue: c.Cue, answer: Answer) {
     if (!(await managerTrusted($, live, sid)) && (await conductorsTrusted($, live, sid, pinOf(sid))).length === 0) return refuse('not-eligible')
     const req = (await $.state.get(request)).value as Request | null | undefined
     if (!req || req.viaLead !== true || req.mode !== 'on-cue' || req.phase !== 'armed') return refuse('no-request')
-    if (!c.onCueValid(req.requestedMs, now)) {
-      await answer('refused', 'no-request')
-      return dropRequest($, sid, 'expired')
-    }
-    return doCompact($, sid, req, true, answer)
+    return compactOwn(req)
   }
   if (!(await isEligible($))) return refuse('not-eligible')
   if (cue.verb === 'compact') {
@@ -2856,11 +2869,7 @@ async function handle($: any, sid: string, cue: c.Cue, answer: Answer) {
     // With no request of its own the session is nudged to make one; any other phase (called, armed now, compacting, compacted) is no-request, as before.
     if (!req) return leadNudge($, sid, now, answer, refuse)
     if (req.mode !== 'on-cue' || req.phase !== 'armed') return refuse('no-request')
-    if (!c.onCueValid(req.requestedMs, now)) {
-      await answer('refused', 'no-request')
-      return dropRequest($, sid, 'expired')
-    }
-    return doCompact($, sid, req, true, answer)
+    return compactOwn(req)
   }
   if (!bound) return refuse('not-bound')
   const lanes = await lanesOnce()
@@ -3213,6 +3222,74 @@ function bgStep($: any, sid: string, busy: Set<string>, label: string, work: () 
     .catch(() => undefined)
 }
 
+// A step of the tick under the action timeout. A timeout or a throw is logged as `event` with the reason `reason(outcome)` (outcome: 'timeout' or 'error'); a failing log is swallowed.
+async function timedStep($: any, sid: string, work: Promise<unknown>, event: string, reason: (outcome: 'timeout' | 'error') => string) {
+  const r = await withTimeout($, work, ACTION_TIMEOUT_MS).catch(() => 'error' as const)
+  if (r === 'timeout' || r === 'error') await logq($, sid, event, reason(r))
+}
+
+// The request step of the tick: what a request needs next (clear, drop, resume, compact now). It is guarded: a step that throws on every tick must not keep the
+// cue from being claimed, so a throw is logged and counted, and a request that keeps failing is dropped.
+async function requestStep($: any, sid: string) {
+  try {
+    const read = await $.state.get(request)
+    const req = read.value as Request | null | undefined
+    if (cmpMarked.has(sid) && req?.phase !== 'compacting') await cmpClear($, sid)
+    if (req && c.requestExpired(req, await $.clock.now())) {
+      // A compaction that returned without PostCompact is never confirmed: say so, instead of dropping it silently.
+      // Cleared only if it is still the request read here: a PostCompact that landed meanwhile keeps its resume.
+      if (req.phase === 'compacting') {
+        const told = await withTimeout($, failRequest($, sid, 'compact-unconfirmed', true, read.version), ACTION_TIMEOUT_MS)
+        if (told === 'timeout') await log($, sid, 'error', 'tick-timeout')
+      } else await dropRequest($, sid, 'expired')
+    } else if (req && req.phase === 'compacted') {
+      // The engine refuses a submit from inside PostCompact (it would wait on the turn the hook holds), so the resume goes out from here.
+      // It expires from the compaction time, not the request time, and the request is cleared before the submit so it can go out at most once.
+      if ((await $.clock.now()) - (req.compactedMs ?? req.requestedMs) > RESUME_TTL_MS) await dropRequest($, sid, 'resume-expired')
+      else if ((await sha($, req.continuation)) !== req.sha256) await dropRequest($, sid, 'hash-mismatch')
+      else {
+        const cur = await $.state.get(request)
+        const live = cur.value as Request | null | undefined
+        if (!live || live.phase !== 'compacted' || live.id !== req.id) await log($, sid, 'dropped', 'cancelled-before-resume')
+        else if ((await $.prompt.read()).text !== '') await dropRequest($, sid, 'draft-in-box')
+        else if (!(await requestOk($, sid, live))) await dropRequest($, sid, 'not-eligible')
+        else if ((await $.state.set(request, null, { ifVersion: cur.version })).isSet === false) await log($, sid, 'dropped', 'cancelled-before-resume')
+        else {
+          const sent = await withTimeout($, submitOwn($, c.compactResumeText(req.continuation)).then(() => 'ok' as const, () => 'failed' as const), ACTION_TIMEOUT_MS)
+          if (sent === 'ok') await log($, sid, 'resumed', 'compact')
+          else await log($, sid, 'resume-failed', sent === 'timeout' ? 'unconfirmed' : 'compact')
+        }
+      }
+    }
+    if (req && req.phase === 'armed' && (req.mode === 'now' || req.ordered === true)) {
+      // A request made under the nudge grant keeps its way through every later step (it is the session's own, and only the mod's nudge granted it).
+      if (!(req.viaNudge === true || (await isEligible($)))) await dropRequest($, sid, 'not-eligible')
+      else {
+        const done = await withTimeout($, doCompact($, sid, req, false), ACTION_TIMEOUT_MS)
+        if (done === 'timeout') await log($, sid, 'error', 'tick-timeout')
+      }
+    }
+    requestFails.delete(sid)
+  } catch {
+    await logq($, sid, 'error', 'request')
+    const now = await $.clock.now()
+    const f = requestFails.get(sid) ?? { n: 0, firstMs: now }
+    const n = f.n + 1
+    if (n < REQUEST_FAILS_MAX || now - f.firstMs < REQUEST_FAIL_SPAN_MS) requestFails.set(sid, { n, firstMs: f.firstMs })
+    else {
+      // Dropped; the count restarts whether or not the drop worked.
+      requestFails.delete(sid)
+      await dropRequest($, sid, 'request-failing').catch(logFail($, sid, 'request-drop'))
+    }
+  }
+}
+
+// A refused cue: the answer to the lead goes first (it is waiting on it), then the log line.
+async function answerLog($: any, sid: string, answer: Answer, reason: string) {
+  await answer('refused', reason)
+  return await log($, sid, 'refused', reason)
+}
+
 async function tick($: any) {
   let startedAt: number | undefined
   try {
@@ -3237,10 +3314,7 @@ async function tick($: any) {
     void reservedGet($, sid).catch(() => undefined)
     // None of these may stop the cue path below: each logs its own failure.
     const lr = leadRestorePending.get(sid)
-    if (lr) {
-      const r = await withTimeout($, leadRestore($, sid, lr.hint, lr.tries + 1), ACTION_TIMEOUT_MS).catch(() => 'error' as const)
-      if (r === 'timeout' || r === 'error') await logq($, sid, 'error', `lead-restore-${r}`)
-    }
+    if (lr) await timedStep($, sid, leadRestore($, sid, lr.hint, lr.tries + 1), 'error', (r) => `lead-restore-${r}`)
     // A pending conductor restore, and a running conductor's reach and saved grant.
     await conductorTick($, sid).catch(logFail($, sid, 'conductor-tick'))
     // ADR 0004: close the requests of sessions that are gone, and any older than a day.
@@ -3272,67 +3346,11 @@ async function tick($: any) {
     await renameTick($, sid).catch(logFail($, sid, 'rename'))
     if (rebindPending.has(sid) && !rebindBusy.has(sid)) {
       rebindBusy.add(sid)
-      const step = rebindTick($, sid).finally(() => rebindBusy.delete(sid))
-      const r = await withTimeout($, step, ACTION_TIMEOUT_MS).catch(() => 'error' as const)
-      if (r === 'timeout' || r === 'error') await logq($, sid, 'error', `rebind-${r}`)
+      await timedStep($, sid, rebindTick($, sid).finally(() => rebindBusy.delete(sid)), 'error', (r) => `rebind-${r}`)
     }
     const due = await sidSyncDue($, sid).catch(() => undefined)
-    if (due) {
-      const synced = await withTimeout($, sidSync($, sid, due), ACTION_TIMEOUT_MS).catch(() => 'error' as const)
-      if (synced === 'timeout' || synced === 'error') await logq($, sid, 'sid-heal-failed', synced)
-    }
-    // The request step is guarded too: a step that throws on every tick must not keep the cue below from being claimed.
-    try {
-      const read = await $.state.get(request)
-      const req = read.value as Request | null | undefined
-      if (cmpMarked.has(sid) && req?.phase !== 'compacting') await cmpClear($, sid)
-      if (req && c.requestExpired(req, await $.clock.now())) {
-        // A compaction that returned without PostCompact is never confirmed: say so, instead of dropping it silently.
-        // Cleared only if it is still the request read here: a PostCompact that landed meanwhile keeps its resume.
-        if (req.phase === 'compacting') {
-          const told = await withTimeout($, failRequest($, sid, 'compact-unconfirmed', true, read.version), ACTION_TIMEOUT_MS)
-          if (told === 'timeout') await log($, sid, 'error', 'tick-timeout')
-        } else await dropRequest($, sid, 'expired')
-      } else if (req && req.phase === 'compacted') {
-        // The engine refuses a submit from inside PostCompact (it would wait on the turn the hook holds), so the resume goes out from here.
-        // It expires from the compaction time, not the request time, and the request is cleared before the submit so it can go out at most once.
-        if ((await $.clock.now()) - (req.compactedMs ?? req.requestedMs) > RESUME_TTL_MS) await dropRequest($, sid, 'resume-expired')
-        else if ((await sha($, req.continuation)) !== req.sha256) await dropRequest($, sid, 'hash-mismatch')
-        else {
-          const cur = await $.state.get(request)
-          const live = cur.value as Request | null | undefined
-          if (!live || live.phase !== 'compacted' || live.id !== req.id) await log($, sid, 'dropped', 'cancelled-before-resume')
-          else if ((await $.prompt.read()).text !== '') await dropRequest($, sid, 'draft-in-box')
-          else if (!(await requestOk($, sid, live))) await dropRequest($, sid, 'not-eligible')
-          else if ((await $.state.set(request, null, { ifVersion: cur.version })).isSet === false) await log($, sid, 'dropped', 'cancelled-before-resume')
-          else {
-            const sent = await withTimeout($, submitOwn($, c.compactResumeText(req.continuation)).then(() => 'ok' as const, () => 'failed' as const), ACTION_TIMEOUT_MS)
-            if (sent === 'ok') await log($, sid, 'resumed', 'compact')
-            else await log($, sid, 'resume-failed', sent === 'timeout' ? 'unconfirmed' : 'compact')
-          }
-        }
-      }
-      if (req && req.phase === 'armed' && (req.mode === 'now' || req.ordered === true)) {
-        // A request made under the nudge grant keeps its way through every later step (it is the session's own, and only the mod's nudge granted it).
-        if (!(req.viaNudge === true || (await isEligible($)))) await dropRequest($, sid, 'not-eligible')
-        else {
-        const done = await withTimeout($, doCompact($, sid, req, false), ACTION_TIMEOUT_MS)
-        if (done === 'timeout') await log($, sid, 'error', 'tick-timeout')
-        }
-      }
-      requestFails.delete(sid)
-    } catch {
-      await logq($, sid, 'error', 'request')
-      const now = await $.clock.now()
-      const f = requestFails.get(sid) ?? { n: 0, firstMs: now }
-      const n = f.n + 1
-      if (n < REQUEST_FAILS_MAX || now - f.firstMs < REQUEST_FAIL_SPAN_MS) requestFails.set(sid, { n, firstMs: f.firstMs })
-      else {
-        // Dropped; the count restarts whether or not the drop worked.
-        requestFails.delete(sid)
-        await dropRequest($, sid, 'request-failing').catch(logFail($, sid, 'request-drop'))
-      }
-    }
+    if (due) await timedStep($, sid, sidSync($, sid, due), 'sid-heal-failed', (r) => r)
+    await requestStep($, sid)
     nudge = true
     await sweepTaken($, sid, p).catch(logFail($, sid, 'taken-sweep'))
     const got = await claim($, sid, p)
@@ -3340,14 +3358,8 @@ async function tick($: any) {
     // Every exit from here on answers the lead, with the inode of the cue file it answers.
     const parsed = 'bad' in got ? undefined : c.parseCue(got.text)
     answer = answerer($, sid, parsed?.ok ? parsed.cue.verb : '-', got.ino)
-    if ('bad' in got) {
-      await answer('refused', got.bad)
-      return await log($, sid, 'refused', got.bad)
-    }
-    if (!parsed!.ok) {
-      await answer('refused', parsed!.reason)
-      return await log($, sid, 'refused', parsed!.reason)
-    }
+    if ('bad' in got) return await answerLog($, sid, answer, got.bad)
+    if (!parsed!.ok) return await answerLog($, sid, answer, parsed!.reason)
     const done = await withTimeout($, handle($, sid, parsed!.cue, answer).finally(() => saveHint($, sid)), ACTION_TIMEOUT_MS)
     if (done === 'timeout') {
       await answer('held', 'timeout')
