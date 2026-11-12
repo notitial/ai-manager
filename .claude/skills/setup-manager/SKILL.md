@@ -1,6 +1,6 @@
 ---
 name: setup-manager
-description: "Walk the person through docs/setup.md on this Mac: prerequisites, callboard from the live checkout (extension link and default load), the deny lines, the two prompt answering lines (a deny and an ask rule, needed before `/callboard answering on`), the usage watcher (once the repo is public), the old-watcher cut-over, the callboard rule link, the manager's reserved name, and a final status table. Runs only read-only checks and dry runs; every --apply, sudo, settings edit, link and launchctl bootout is shown as an exact command for the person to run. Use on '/setup-manager'."
+description: "Walk the person through docs/setup.md on this Mac: prerequisites, callboard from the live checkout (extension link and default load), the deny lines, the two prompt answering lines (a deny and an ask rule, needed before `/callboard escalation`), the usage watcher (once the repo is public), the old-watcher cut-over, the callboard rule link, the manager's reserved name, and a final status table. Runs only read-only checks and dry runs; every --apply, sudo, settings edit, link and launchctl bootout is shown as an exact command for the person to run. Use on '/setup-manager'."
 disable-model-invocation: true
 ---
 
@@ -79,13 +79,13 @@ first; it is the source for every step here, and wins where the two differ.
    `jq -e --arg r '<line>' '(.permissions.deny // []) | index($r) != null' ~/.claude/settings.json`. For any `false`,
    show the person the missing lines to add to `permissions.deny` by hand. If they run a conductor repo, give them
    `chmod go-w <conductor repo>/.claude`.
-   - Prompt answering lines: the two lines in docs/setup.md (Before prompt answering: two lines (by hand)). Run
+   - Prompt answering lines: the two lines in docs/setup.md (Before escalation: two lines (by hand)). Run
      `jq -e --arg r 'Edit(~/.claude/callboard/**)' '(.permissions.deny // []) | index($r) != null' ~/.claude/settings.json`
      and
      `jq -e --arg r 'Bash(*.claude/callboard*)' '(.permissions.ask // []) | index($r) != null' ~/.claude/settings.json`.
      Note the arrays: the first line is a deny rule, the second an ask rule. For any `false`, show the person the
      missing line and the array to add it to (`permissions.deny` or `permissions.ask`), by hand. Say that both are
-     required before any `/callboard answering on`, which only the person types.
+     required before any `/callboard escalation`, which only the person types.
 6. **Old watcher.** First ask whether the repo is public; if unsure, run the dry run
    `bash tools/usage-watcher/install.sh --ref <commit>`: a fetch failure means it is not public yet. Not public: skip
    steps 6 to 8 (an old job stays until the new one can replace it), and say the manager will report

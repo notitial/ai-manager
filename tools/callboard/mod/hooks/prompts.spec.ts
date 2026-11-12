@@ -811,16 +811,12 @@ test('answering: off by default, scope and asks parsed, a look-alike covers noth
   assert.equal(p.covers({ scope: 'all', asks: false, savedAt: 1 }, {}), true)
   assert.equal(p.covers({ scope: 'lane1', asks: false, savedAt: 1 }, { lane: 'LANE1' }), false)
 })
-test('answering args: show, off, off asks, on SCOPE, asks SCOPE, anything else bad', () => {
-  assert.equal(p.parseAnsweringArgs(undefined), 'show')
-  assert.equal(p.parseAnsweringArgs(' '), 'show')
-  assert.equal(p.parseAnsweringArgs('off'), 'off')
-  assert.equal(p.parseAnsweringArgs('off asks'), 'off-asks')
-  assert.deepEqual(p.parseAnsweringArgs('on all'), { on: 'all' })
-  assert.deepEqual(p.parseAnsweringArgs('asks LANE-1'), { asks: 'LANE-1' })
-  assert.deepEqual(p.parseAnsweringArgs('asks all'), { asks: 'all' })
-  // The old `on X asks` form sets nothing now: it is the usage line.
-  for (const bad of ['on', 'on a b', 'on x asks', 'on LANE-1 asks', 'on x asks y', 'on bad/name', 'asks', 'asks a b', 'asks bad/name', 'enable', 'off all', 'on a\nb']) assert.equal(p.parseAnsweringArgs(bad), 'bad', bad)
+test('escalation args: none is on, off is off, anything else is bad', () => {
+  assert.equal(p.parseEscalationArgs(undefined), 'on')
+  assert.equal(p.parseEscalationArgs(' '), 'on')
+  assert.equal(p.parseEscalationArgs('off'), 'off')
+  // The old `answering` forms are gone: each one is the usage line now.
+  for (const bad of ['on', 'on all', 'on svc-api', 'asks all', 'asks LANE-1', 'off asks', 'off all', 'enable', 'all', 'on a\nb']) assert.equal(p.parseEscalationArgs(bad), 'bad', bad)
 })
 
 test('cycle 2 H1: a mutating git server call with no absolute path is the floor, after the more specific categories; a read is not', () => {

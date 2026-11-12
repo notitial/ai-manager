@@ -889,7 +889,7 @@ test('tiers: the relayed questions are listed with the request\'s tool and patte
 // ---- questions (PR 4) ----
 const lhOf = (id, label) => createHash('sha256').update(`${id}\n${label}`).digest('hex').slice(0, 16)
 const QT = { lane: 'api', repo: '/Users/x/api', tool: 'AskUserQuestion', pattern: 'AskUserQuestion', hash: H('q') }
-// The `answering-on` row of `/callboard answering asks <scope>`; it comes after the plain ON() row so that it is the one in force.
+// The second `answering-on` row of `/callboard escalation` (code asks); it comes after the plain ON() row so that it is the one in force.
 const ASKS = (at = BASE - 50_000) => R('answering-on', at, { code: 'asks', hash: H('8') })
 // A tier's answer to a question: requested, answered, returned (code answer, with opt and the salted label hash).
 function qClean({ id = uid(1), at = BASE, nonce = uid(101), label = 'Green', by, tuid, tier = 'lead' } = {}) {
@@ -1068,6 +1068,14 @@ test('questions: q-no-asks-on: an asks row in force is needed; a later plain on,
   // Permission requests need no asks row.
   ledger(fx, [ON(), ...clean()])
   assert.deepEqual(run(fx).anomalies, [])
+})
+test('questions: the two rows one /callboard escalation writes, in the same millisecond, put a later question in force', () => {
+  const fx = fixture()
+  ledger(fx, [ON(BASE - 60_000), ASKS(BASE - 60_000), ...qClean()])
+  assert.deepEqual(run(fx).anomalies, [])
+  // The plain row alone (the asks row never written) is not enough.
+  ledger(fx, [ON(BASE - 60_000), ...qClean()])
+  assert.deepEqual(rules(run(fx)), ['q-no-asks-on'])
 })
 test('questions: q-answer-not-question and q-decided-question', () => {
   const fx = fixture()
