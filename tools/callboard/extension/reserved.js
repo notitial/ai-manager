@@ -1,10 +1,24 @@
 'use strict'
+// Rules the extension's files share: the session id and lane name grammars, the pid check, reserved lane names and the pin rule.
 // Reserved lane names, matched by skeleton as the mod does (mod/hooks/core.ts reservedHit): upper case, no - or _, no
 // trailing digits, look-alike digits read as letters (1 is I or L). MANAGER_, MANAGER-2 and MANAG3R are reserved.
 // The built-in list only. Names a machine reserves with /callboard reserve live in the mod's store; the mod refuses them for every new
 // lane record it writes and refuses to reserve a name a record carries, so such a record is rare (one written in the
 // moment of a reserve); the extension does not protect it.
 const RESERVED = ['MANAGER']
+
+const SID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+const NAME_RE = /^[A-Za-z0-9_-]{1,40}$/
+
+// Whether a process answers a signal 0 (one owned by another user answers EPERM, and is alive).
+function pidAlive(pid) {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    return !!err && err.code === 'EPERM'
+  }
+}
 
 const FOLD = { L: 'I', 1: 'I', 0: 'O', 5: 'S', 3: 'E', 4: 'A', 8: 'B', 7: 'T', 6: 'G', 9: 'G', 2: 'Z' }
 function skeletons(name) {
@@ -14,9 +28,9 @@ function skeletons(name) {
   return [...out]
 }
 
+const RESERVED_SKELETONS = RESERVED.flatMap(skeletons)
 function reservedHit(name) {
-  const bad = RESERVED.flatMap(skeletons)
-  return RESERVED.includes(String(name).toUpperCase()) || skeletons(name).some((k) => bad.includes(k))
+  return RESERVED.includes(String(name).toUpperCase()) || skeletons(name).some((k) => RESERVED_SKELETONS.includes(k))
 }
 
 // A folder too broad to hold lead-made lanes (same rules as the mod's pinRefusal).
@@ -31,4 +45,4 @@ function pinRefusal(pin, home) {
   return undefined
 }
 
-module.exports = { reservedHit, pinRefusal }
+module.exports = { reservedHit, pinRefusal, SID_RE, NAME_RE, pidAlive }

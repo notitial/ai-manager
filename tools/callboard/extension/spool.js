@@ -9,10 +9,8 @@ const path = require('node:path')
 const crypto = require('node:crypto')
 const nodefs = require('node:fs')
 const os = require('node:os')
-const { reservedHit, pinRefusal } = require('./reserved.js')
+const { reservedHit, pinRefusal, SID_RE, NAME_RE } = require('./reserved.js')
 
-const NAME_RE = /^[A-Za-z0-9_-]{1,40}$/
-const SID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const MAX_AGE_MS = 120_000
 const MIN_GAP_MS = 10_000
 const MAX_SKEW_MS = 5000
@@ -354,6 +352,8 @@ function createSpool({ dir, uid = process.getuid(), loadLanes, openLane, closeLa
     }
   }
 
+  // The request kinds a scan handles, by file suffix (the suffixes exclude each other); a name that fails NAME_RE is left alone.
+  const KINDS = [['.close', handleClose], ['.reopen', handleReopen], ['.open', handle]]
   async function scan() {
     if (busy) return []
     busy = true
@@ -366,20 +366,10 @@ function createSpool({ dir, uid = process.getuid(), loadLanes, openLane, closeLa
           if (r && now() - r.mtimeMs > RESULT_KEEP_MS) await drop(path.join(dir, f))
           continue
         }
-        if (f.endsWith('.close')) {
-          const cname = f.slice(0, -6)
-          if (NAME_RE.test(cname)) out.push([cname, await handleClose(cname)])
-          continue
-        }
-        if (f.endsWith('.reopen')) {
-          const rname = f.slice(0, -7)
-          if (NAME_RE.test(rname)) out.push([rname, await handleReopen(rname)])
-          continue
-        }
-        if (!f.endsWith('.open')) continue
-        const name = f.slice(0, -5)
-        if (!NAME_RE.test(name)) continue
-        out.push([name, await handle(name)])
+        const kind = KINDS.find(([suffix]) => f.endsWith(suffix))
+        if (!kind) continue
+        const name = f.slice(0, -kind[0].length)
+        if (NAME_RE.test(name)) out.push([name, await kind[1](name)])
       }
     } catch {
       // an unsafe or unreadable folder is skipped until the next scan

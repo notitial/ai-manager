@@ -5,8 +5,10 @@ const path = require('node:path')
 const { createLanes } = require('./lanes.js')
 const { createSpool, allLanes } = require('./spool.js')
 const { createRegistry } = require('./registry.js')
+const { pidAlive } = require('./reserved.js')
 
-const SESSIONS = path.join(os.homedir(), '.claude', 'sessions')
+const CLAUDE = path.join(os.homedir(), '.claude')
+const SESSIONS = path.join(CLAUDE, 'sessions')
 
 const registry = createRegistry(SESSIONS)
 
@@ -14,16 +16,10 @@ const registry = createRegistry(SESSIONS)
 const SPOOL_OPEN_MS = 5000
 
 // claude-vscode.editor.open opens the panel in the window's first folder, so a lane is only this window's when its folder is that one.
-const pidAlive = (pid) => {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (err) {
-    return !!err && err.code === 'EPERM'
-  }
-}
-
 const primaryFolder = () => (vscode.workspace.workspaceFolders || []).slice(0, 1).map((f) => f.uri.fsPath)
+
+// A registry row of a session that runs in the repo or under it, and whose process still answers when the row names a pid.
+const liveIn = (repo) => (x) => x && typeof x.cwd === 'string' && (x.cwd === repo || x.cwd.startsWith(`${repo}/`)) && (!Number.isInteger(x.pid) || pidAlive(x.pid))
 
 function activate(context) {
   const lanes = createLanes({ vscode, registry, sleep: (ms) => new Promise((r) => setTimeout(r, ms)), now: Date.now,
@@ -34,14 +30,13 @@ function activate(context) {
   reg('callboard.reopen', (sid) => lanes.reopen(sid))
   reg('callboard.close', (sid) => lanes.close(sid))
   const spool = createSpool({
-    dir: path.join(os.homedir(), '.claude', 'callboard', 'open'),
-    loadLanes: () => allLanes({ storeDir: path.join(os.homedir(), '.claude', 'callboard', 'lanes') }),
+    dir: path.join(CLAUDE, 'callboard', 'open'),
+    loadLanes: () => allLanes({ storeDir: path.join(CLAUDE, 'callboard', 'lanes') }),
     openLane: (folder) => lanes.open(folder, { timeoutMs: SPOOL_OPEN_MS, refuseUnnamed: true }),
     closeLane: ({ sid, pid, name }) => lanes.adopt(sid, { name, pid }),
     reopenLane: (sid) => lanes.reopen(sid, { timeoutMs: SPOOL_OPEN_MS }),
     workspaceFolders: primaryFolder,
-    liveInRepo: async (repo) =>
-      (await registry.list()).filter((x) => x && typeof x.cwd === 'string' && (x.cwd === repo || x.cwd.startsWith(`${repo}/`)) && (!Number.isInteger(x.pid) || pidAlive(x.pid))).length,
+    liveInRepo: async (repo) => (await registry.list()).filter(liveIn(repo)).length,
   })
   context.subscriptions.push(spool.start())
   const sweep = setInterval(() => lanes.sweep().catch(() => undefined), 2000)

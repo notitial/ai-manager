@@ -705,6 +705,28 @@ test('sweep: the recorded pid, reused by another process (alive, another start t
   assert.deepEqual(closed, [tab], 'the pid now belongs to another process')
 })
 
+test('sweep: asks ps about a pid once per sweep, for the recorded process and for a row that carries the name', async () => {
+  const asked = []
+  let reused = false
+  const w = world({ alive: () => true, startOf: async (pid) => (asked.push(pid), pid === 4242 && reused ? 'someone else' : `start-${pid}`) })
+  const tab = claudeTab('LABQ')
+  const closed = trackTabs(w, tab)
+  await w.lanes.open(A)
+  w.entries[0].pid = 4242
+  w.entries[0].name = 'LABQ'
+  await w.lanes.sweep()
+  w.entries.length = 0
+  w.entries.push({ sessionId: VALID_SID, cwd: A, entrypoint: 'claude-vscode', name: 'LABQ', pid: 4242, procStart: 'someone else' })
+  reused = true
+  asked.length = 0
+  await w.lanes.sweep()
+  assert.deepEqual(asked, [4242], 'one ps for the pid, though the record and the named row both need it')
+  assert.deepEqual(closed, [], 'the named row is live, so the tab stays')
+  asked.length = 0
+  await w.lanes.sweep()
+  assert.equal(asked.length, 0, 'nothing is left to judge: the record was dropped, and no sweep keeps an answer')
+})
+
 test('sweep: a row of the sid whose check fails (ps failed) keeps the tab even when the recorded pid is dead, until its own pid is dead', async () => {
   const dead = new Set([4242])
   const w = world({ alive: (pid) => !dead.has(pid), startOf: async (pid) => (pid === 4243 ? undefined : `start-${pid}`) })
