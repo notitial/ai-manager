@@ -351,6 +351,103 @@ function collectTranscriptFiles(projects, since, problems) {
   return found
 }
 
+// The label of a relay answer in the result's text form `"<question>"="<label>"`: undefined when the question's pair is not in the text, null when it is and its
+// label cannot be read, else the label.
+export function labelFromText(text, question) {
+  const at = text.indexOf(`"${question}"="`)
+  if (at === -1) return undefined
+  // The text form is `"<question>"="<label>"`, with a quote inside a label left as it is, so the cut at the first quote is the label only when what follows it
+  // is the closing quote of the pair (end of text, `.` or `,`); otherwise the label cannot be read from here.
+  const rest = text.slice(at + question.length + 4)
+  const cutLabel = new RegExp(`^[^"]{0,${LABEL_MAX}}`).exec(rest)?.[0] ?? ''
+  if (rest[cutLabel.length] === '"' && !/^"(?:$|[.,])/.test(rest.slice(cutLabel.length))) return null
+  return cutLabel
+}
+
+// The per-file state `st`: the transcript file `f`, its `since` cut, its session id `fileSid`, the line number, and what is read from it: the tool names by tool_use id
+// (`names`), the relay questions by tool_use id (`relayIds`), the tool_use ids a PermissionRequest hook decided (`permReq`), the sessions the file speaks for
+// (`fileSessions`); the rest is shared by all files (the collections scanTranscripts returns).
+
+// A tool_use block (b, in the line j): its tool's name, a relay question it asks, a prompt_answer call it makes.
+function noteToolUse(b, j, st) {
+  const { names, relayIds, fileSessions, fileSid, relayQs, relayAsks, answerCalls } = st
+  if (typeof b.id === 'string' && typeof b.name === 'string' && names.size < 100000) names.set(b.id, b.name.slice(0, 200))
+  if (typeof b.name === 'string' && /(^|__)AskUserQuestion$/.test(b.name) && Array.isArray(b.input?.questions) && typeof b.id === 'string' && relayIds.size < 100000) {
+    for (const q of b.input.questions.slice(0, 8)) {
+      const m = typeof q?.header === 'string' ? /^Relay ([0-9a-f]{8})$/.exec(q.header) : null
+      if (!m) continue
+      const sidKey = typeof j.sessionId === 'string' ? j.sessionId : fileSid
+      fileSessions.add(sidKey)
+      // One call may carry several relay questions (a tier coalesces): each is kept with its own text, which keys its answer.
+      const list = relayIds.get(b.id) ?? []
+      const entry = { sid: sidKey, short: m[1], question: typeof q.question === 'string' ? q.question : '' }
+      list.push(entry)
+      if (relayQs.length < 5000) relayQs.push({ ...entry, label: undefined })
+      relayIds.set(b.id, list)
+      let per = relayAsks.get(sidKey)
+      if (!per) relayAsks.set(sidKey, (per = new Map()))
+      if (!per.has(m[1])) per.set(m[1], [])
+    }
+  }
+  // A lead's answer is a prompt_answer call of the callboard tool, whose input names the request id.
+  if (typeof b.name === 'string' && /(^|__)prompt_answer$/.test(b.name) && typeof b.input?.id === 'string') {
+    const sidKey = typeof j.sessionId === 'string' ? j.sessionId : fileSid
+    fileSessions.add(sidKey)
+    let set = answerCalls.get(sidKey)
+    if (!set) answerCalls.set(sidKey, (set = new Set()))
+    if (set.size < 100000) set.add(b.input.id.slice(0, 100))
+  }
+}
+
+// The result of a relay question's call (the tool_result block b of the line j; asks: the call's relay questions): the label each question was answered with.
+function noteRelayAnswer(asks, b, j, st) {
+  const { relayAsks, relayQs, relayUnreadable } = st
+  // Each answer belongs to the question whose text keys it (the result's `answers` is keyed by question text); with the structured form missing, to the
+  // quoted `"question"="label"` pair of the result's text. Never pooled across the call's questions.
+  const ans = j.toolUseResult?.answers
+  const text = typeof b.content === 'string' ? b.content : Array.isArray(b.content) ? b.content.map((x) => (typeof x?.text === 'string' ? x.text : '')).join('\n') : ''
+  for (const ask of asks) {
+    let label
+    if (ans && typeof ans === 'object' && Object.prototype.hasOwnProperty.call(ans, ask.question) && typeof ans[ask.question] === 'string') label = ans[ask.question].slice(0, LABEL_MAX)
+    else if (!ans && ask.question !== '') {
+      label = labelFromText(text, ask.question)
+      if (label === null) {
+        relayUnreadable.add(`${ask.sid}\n${ask.short}`)
+        const rec0 = relayQs.find((x) => x.sid === ask.sid && x.short === ask.short && x.question === ask.question && x.label === undefined)
+        if (rec0) rec0.label = '(not readable from the result text)'
+        continue
+      }
+    }
+    if (label !== undefined) relayAsks.get(ask.sid)?.get(ask.short)?.push(label)
+    const rec = relayQs.find((x) => x.sid === ask.sid && x.short === ask.short && x.question === ask.question && x.label === undefined)
+    if (rec) rec.label = label
+  }
+}
+
+// A permission decision: the attachment of a PermissionRequest hook's decision, and a result line that holds one (hasPd, hasAtt: the line's text names them).
+function noteDecision(j, hasPd, hasAtt, st) {
+  const { f, since, names, permReq, decisions } = st
+  const att = j.attachment
+  if (hasAtt && att && typeof att === 'object' && att.type === 'hook_permission_decision' && att.hookEvent === 'PermissionRequest' && typeof att.toolUseID === 'string' && permReq.size < 100000) permReq.add(att.toolUseID.slice(0, 100))
+  if (!hasPd) return
+  const found = findDecision(j)
+  if (!found) return
+  const tsRaw = typeof j.timestamp === 'string' ? j.timestamp : typeof j.message?.timestamp === 'string' ? j.message.timestamp : undefined
+  const ts = tsRaw !== undefined && Number.isFinite(Date.parse(tsRaw)) ? Date.parse(tsRaw) : f.mtimeMs
+  if (since !== undefined && ts < since) return
+  decisions.push({
+    file: basename(f.path),
+    line: st.lineNo,
+    sid: typeof j.sessionId === 'string' ? j.sessionId : typeof j.session_id === 'string' ? j.session_id : basename(f.path, '.jsonl'),
+    ms: ts,
+    source: found.pd.source.slice(0, 40),
+    decision: typeof found.pd.decision === 'string' ? found.pd.decision.slice(0, 20) : '',
+    reasonCode: typeof found.pd.reasonCode === 'string' ? found.pd.reasonCode.slice(0, 60) : '',
+    toolUseId: found.toolUseId,
+    tool: found.toolUseId !== undefined ? names.get(found.toolUseId) : undefined,
+  })
+}
+
 function scanTranscripts(projects, since, notes, problems, budget, lineMax) {
   const decisions = []
   // The prompt_answer calls each session made (session id -> request ids), and the sessions whose transcript was read at all (rule c2).
@@ -378,13 +475,13 @@ function scanTranscripts(projects, since, notes, problems, budget, lineMax) {
     // tool_use ids the engine records as decided by a PermissionRequest hook (an attachment line, hookEvent PermissionRequest).
     const permReq = new Set()
     const first = decisions.length
-    let lineNo = 0
     const fileSid = basename(f.path, '.jsonl')
     // The sessions this file speaks for, counted as read only once the whole file was (a partly read transcript says nothing about a missing call).
     const fileSessions = new Set([fileSid])
+    const st = { f, since, fileSid, fileSessions, names, relayIds, permReq, lineNo: 0, decisions, answerCalls, relayAsks, relayQs, relayUnreadable }
     try {
       const s = eachLine(f.path, { maxLine: lineMax, maxRead: Math.min(TRANSCRIPT_MAX_BYTES, room), markers: TRANSCRIPT_MARKERS }, (line) => {
-        lineNo++
+        st.lineNo++
         const hasPd = line.includes('permissionDecision')
         const hasAtt = line.includes('hook_permission_decision')
         if (!hasPd && !hasAtt && !line.includes('"tool_use"') && !(relayIds.size > 0 && line.includes('"tool_use_id"'))) return
@@ -400,32 +497,7 @@ function scanTranscripts(projects, since, notes, problems, budget, lineMax) {
         if (Array.isArray(content)) {
           for (const b of content) {
             if (!b || b.type !== 'tool_use') continue
-            if (typeof b.id === 'string' && typeof b.name === 'string' && names.size < 100000) names.set(b.id, b.name.slice(0, 200))
-            if (typeof b.name === 'string' && /(^|__)AskUserQuestion$/.test(b.name) && Array.isArray(b.input?.questions) && typeof b.id === 'string' && relayIds.size < 100000) {
-              for (const q of b.input.questions.slice(0, 8)) {
-                const m = typeof q?.header === 'string' ? /^Relay ([0-9a-f]{8})$/.exec(q.header) : null
-                if (!m) continue
-                const sidKey = typeof j.sessionId === 'string' ? j.sessionId : fileSid
-                fileSessions.add(sidKey)
-                // One call may carry several relay questions (a tier coalesces): each is kept with its own text, which keys its answer.
-                const list = relayIds.get(b.id) ?? []
-                const entry = { sid: sidKey, short: m[1], question: typeof q.question === 'string' ? q.question : '' }
-                list.push(entry)
-                if (relayQs.length < 5000) relayQs.push({ ...entry, label: undefined })
-                relayIds.set(b.id, list)
-                let per = relayAsks.get(sidKey)
-                if (!per) relayAsks.set(sidKey, (per = new Map()))
-                if (!per.has(m[1])) per.set(m[1], [])
-              }
-            }
-            // A lead's answer is a prompt_answer call of the callboard tool, whose input names the request id.
-            if (typeof b.name === 'string' && /(^|__)prompt_answer$/.test(b.name) && typeof b.input?.id === 'string') {
-              const sidKey = typeof j.sessionId === 'string' ? j.sessionId : fileSid
-              fileSessions.add(sidKey)
-              let set = answerCalls.get(sidKey)
-              if (!set) answerCalls.set(sidKey, (set = new Set()))
-              if (set.size < 100000) set.add(b.input.id.slice(0, 100))
-            }
+            noteToolUse(b, j, st)
           }
         }
         // The answer to a relay question: the labels of the tool result (toolUseResult.answers, or the quoted pairs of its text).
@@ -433,54 +505,10 @@ function scanTranscripts(projects, since, notes, problems, budget, lineMax) {
           for (const b of content) {
             const asks = b && b.type === 'tool_result' && typeof b.tool_use_id === 'string' ? relayIds.get(b.tool_use_id) : undefined
             if (!asks) continue
-            // Each answer belongs to the question whose text keys it (the result's `answers` is keyed by question text); with the structured form missing, to the
-            // quoted `"question"="label"` pair of the result's text. Never pooled across the call's questions.
-            const ans = j.toolUseResult?.answers
-            const text = typeof b.content === 'string' ? b.content : Array.isArray(b.content) ? b.content.map((x) => (typeof x?.text === 'string' ? x.text : '')).join('\n') : ''
-            for (const ask of asks) {
-              let label
-              if (ans && typeof ans === 'object' && Object.prototype.hasOwnProperty.call(ans, ask.question) && typeof ans[ask.question] === 'string') label = ans[ask.question].slice(0, LABEL_MAX)
-              else if (!ans && ask.question !== '') {
-                const at = text.indexOf(`"${ask.question}"="`)
-                if (at !== -1) {
-                  // The text form is `"<question>"="<label>"`, with a quote inside a label left as it is, so the cut at the first quote is the label only when what follows it
-                  // is the closing quote of the pair (end of text, `.` or `,`); otherwise the label cannot be read from here.
-                  const rest = text.slice(at + ask.question.length + 4)
-                  const cutLabel = new RegExp(`^[^"]{0,${LABEL_MAX}}`).exec(rest)?.[0] ?? ''
-                  if (rest[cutLabel.length] === '"' && !/^"(?:$|[.,])/.test(rest.slice(cutLabel.length))) {
-                    relayUnreadable.add(`${ask.sid}\n${ask.short}`)
-                    const rec0 = relayQs.find((x) => x.sid === ask.sid && x.short === ask.short && x.question === ask.question && x.label === undefined)
-                    if (rec0) rec0.label = '(not readable from the result text)'
-                    continue
-                  }
-                  label = cutLabel
-                }
-              }
-              if (label !== undefined) relayAsks.get(ask.sid)?.get(ask.short)?.push(label)
-              const rec = relayQs.find((x) => x.sid === ask.sid && x.short === ask.short && x.question === ask.question && x.label === undefined)
-              if (rec) rec.label = label
-            }
+            noteRelayAnswer(asks, b, j, st)
           }
         }
-        const att = j.attachment
-        if (hasAtt && att && typeof att === 'object' && att.type === 'hook_permission_decision' && att.hookEvent === 'PermissionRequest' && typeof att.toolUseID === 'string' && permReq.size < 100000) permReq.add(att.toolUseID.slice(0, 100))
-        if (!hasPd) return
-        const found = findDecision(j)
-        if (!found) return
-        const tsRaw = typeof j.timestamp === 'string' ? j.timestamp : typeof j.message?.timestamp === 'string' ? j.message.timestamp : undefined
-        const ts = tsRaw !== undefined && Number.isFinite(Date.parse(tsRaw)) ? Date.parse(tsRaw) : f.mtimeMs
-        if (since !== undefined && ts < since) return
-        decisions.push({
-          file: basename(f.path),
-          line: lineNo,
-          sid: typeof j.sessionId === 'string' ? j.sessionId : typeof j.session_id === 'string' ? j.session_id : basename(f.path, '.jsonl'),
-          ms: ts,
-          source: found.pd.source.slice(0, 40),
-          decision: typeof found.pd.decision === 'string' ? found.pd.decision.slice(0, 20) : '',
-          reasonCode: typeof found.pd.reasonCode === 'string' ? found.pd.reasonCode.slice(0, 60) : '',
-          toolUseId: found.toolUseId,
-          tool: found.toolUseId !== undefined ? names.get(found.toolUseId) : undefined,
-        })
+        noteDecision(j, hasPd, hasAtt, st)
       })
       // The attachment may come before or after the result line, so it is matched once the file is read.
       for (let i = first; i < decisions.length; i++) decisions[i].permissionRequest = decisions[i].toolUseId !== undefined && permReq.has(decisions[i].toolUseId)
