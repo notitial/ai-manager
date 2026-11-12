@@ -179,6 +179,8 @@ let gitBranch: string | undefined = 'feat/x'
 // What the push-target read answers: undefined is no keys (exit 1), a string is the output of the config read.
 let gitPushConfig: string | undefined // a config text, 'FAIL' (status 128), 'THROW' (the process cannot run)
 let pfsFails: ((a: string[]) => boolean) | undefined
+// A shasum whose input (the request id, a newline and a label) the test makes fail: the label hash of a question's answer.
+let shaFailsFor: ((stdin: string) => boolean) | undefined
 const isPromptPath = (p: unknown) => typeof p === 'string' && (p === PROMPTS_DIR || p.startsWith(`${PROMPTS_DIR}/`))
 function promptList(path: string) {
   const pre = path.endsWith('/') ? path : `${path}/`
@@ -583,6 +585,7 @@ function engine(on0: any, argvSeen: string[][], stdins: string[] = [], clk = fal
   gitBranch = 'feat/x'
   gitPushConfig = undefined
   pfsFails = undefined
+  shaFailsFor = undefined
   const installed = new Set<string>()
   on('session.start', (_: any, e: any) => ({ cwd: e.cwd }))
   if (clk) {
@@ -806,6 +809,7 @@ function engine(on0: any, argvSeen: string[][], stdins: string[] = [], clk = fal
       const held = h()
       if (held instanceof Promise) return held.then(() => procRun(_, e))
     }
+    if (a[0] === '/usr/bin/shasum' && shaFailsFor?.(typeof e.init?.stdin === 'string' ? e.init.stdin : '')) return ok('', 1)
     if (a[0] === '/usr/bin/shasum' && recShaFails && typeof e.init?.stdin === 'string' && e.init.stdin.startsWith('LABLANE\n')) return ok('', 1)
     if (a[0] === '/usr/bin/shasum') return ok(`${typeof e.init?.stdin === 'string' && (e.init.stdin.startsWith('LABLANE\n') || /^(ok|bad|absent)\n/.test(e.init.stdin) || e.init.stdin.includes('\nadopted\n')) ? fakeSha(e.init.stdin) : e.init?.stdin === '/Users/x/code/app2' ? 'b'.repeat(64) : e.init?.stdin === '/Users/x/code/cond' ? 'c'.repeat(64) : e.init?.stdin === '/data/x/work' ? 'd'.repeat(64) : 'a'.repeat(64)}  -\n`)
     if (a[0] === '/usr/bin/install') installed.add(a[a.length - 1])
@@ -17062,6 +17066,16 @@ test('prompts PR4 tools: prompt_answer answer N writes the decision with the liv
   expect(JSON.stringify(ledgerRows())).not.toContain('8080')
 })
 
+test('prompts PR4 tools: a label hash that cannot be made refuses the answer with write-failed and leaves no decision file', async ($, on) => {
+  await tier($, on, [], { asksScope: 'all' })
+  putQQ()
+  shaFailsFor = (t) => t.startsWith(`${TID}\n`)
+  expect(said(await $.tool.call(optionQ(2)))).toContain(refusal('write-failed'))
+  shaFailsFor = undefined
+  expect(decFile()).toBeUndefined()
+  expect(answered()).toEqual([])
+})
+
 test('prompts PR4 tools: a question at the top tier: prompt_escalate writes the relay file and the relayed row and returns the steps with no label in them; a truncated one is refused with no relay file', async ($, on) => {
   await tier($, on, [], { asksScope: 'all' })
   putQQ()
@@ -17114,6 +17128,17 @@ test('prompts PR4 relay: a landed pick tells the top tier, in the fixed line, th
   const pq = relayQ(TID2)
   const r2 = await $.classic.PostToolUse(askPost([pq], { [pq.question]: 'No' }))
   expect(JSON.stringify(r2 ?? {})).not.toContain('not an instruction to you')
+})
+
+test('prompts PR4 relay: a label hash that cannot be made writes no decision file: the pick is relay-late and the tier is told', async ($, on) => {
+  await relayQFixture($, on)
+  const q = relayQQ(TID)
+  shaFailsFor = (t) => t.startsWith(`${TID}\n`)
+  const r = await $.classic.PostToolUse(askPost([q as any], { [q.question]: '8080' }))
+  shaFailsFor = undefined
+  expect(decFile()).toBeUndefined()
+  expect(JSON.stringify(r)).toContain(prm.RELAY_LATE_LINE)
+  expect(rowKinds().filter((k) => k.startsWith('relay-'))).toEqual(['relay-late decided'])
 })
 
 test('prompts PR4 relay: Yes on a question relay is never applied as the Yes/No rule; an answer that is not a label (typed Other) is relay-left with the tier told, and the card stays', async ($, on) => {

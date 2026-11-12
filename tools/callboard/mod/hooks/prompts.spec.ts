@@ -1096,3 +1096,15 @@ test('questionsPrune: by the file\'s month; rewrite drops old rows and rows whos
   assert.deepEqual(p.questionsRewrite(text, now).trim().split('\n').map((l) => JSON.parse(l).a), [2])
   assert.equal(p.questionsRewrite('{"t":"2026-01-01T00:00:00.000Z"}\n', now), '')
 })
+
+test('matchLabel: a label with an invisible character the shape allows is matched in the form prompt_list shows it (one escape, escListText)', () => {
+  const labels = ['Ship \u2764\ufe0f now', 'List<String>', 'plain']
+  assert.equal(p.escListText(labels[0]), 'Ship \u2764\\ufe0f now')
+  assert.equal(p.matchLabel(labels, labels[0]), 0)
+  assert.equal(p.matchLabel(labels, p.escListText(labels[0])), 0)
+  assert.equal(p.matchLabel(labels, p.escListText(labels[1])), 1)
+  assert.equal(p.matchLabel(labels, ' plain '), 2)
+  assert.equal(p.matchLabel(labels, 'Ship now'), -1)
+  const shape = p.questionShape({ questions: [{ question: 'q', header: 'h', options: [{ label: labels[0], description: 'd' }, { label: 'b', description: 'd' }], multiSelect: false }] })
+  assert.equal(shape.ok, true)
+})

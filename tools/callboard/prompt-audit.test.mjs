@@ -959,6 +959,13 @@ test('questions: a label holding < is hashed raw by the mod, and found whether t
   relayTranscript(fx, MGR, { answer: 'List\\u003cString>' })
   assert.deepEqual(run(fx).anomalies, [])
 })
+test('questions: a label holding an invisible character is hashed raw by the mod, and found when the tier copied it in the listed \\uXXXX form', () => {
+  const fx = fixture()
+  const label = 'Ship \u2764\ufe0f now'
+  ledger(fx, [ON(), ASKS(), ...qPerson({ label })])
+  relayTranscript(fx, MGR, { answer: 'Ship \u2764\\ufe0f now' })
+  assert.deepEqual(run(fx).anomalies, [])
+})
 test('questions: a label holding a quote with no structured answers is a note, not an anomaly; with the structured answers it is checked', () => {
   const fx = fixture()
   const label = 'Say "hi"'

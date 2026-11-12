@@ -6078,7 +6078,9 @@ async function promptReturnAnswer($: any, w: WaitCtx, d: pr.Decision, index: num
   const liveRaw = typeof live?.options?.[index]?.label === 'string' ? (live.options[index].label as string).trim() : undefined
   const labels = pr.questionLabels(w.input)
   if (liveRaw === undefined || typeof live?.question !== 'string' || labels[index] === undefined) return undefined
-  const back = { ...w.row, kind: 'returned' as const, code: 'answer', why: d.why, tier: d.by.level, by: d.by.sid, opt: String(index), lh: await labelHash($, w.id, labels[index]), ...(d.via ? { via: d.via, ...(short ? { short } : {}) } : {}), tuid: w.tid }
+  const lh = await labelHash($, w.id, labels[index]).catch(() => undefined)
+  if (lh === undefined) return undefined
+  const back = { ...w.row, kind: 'returned' as const, code: 'answer', why: d.why, tier: d.by.level, by: d.by.sid, opt: String(index), lh, ...(d.via ? { via: d.via, ...(short ? { short } : {}) } : {}), tuid: w.tid }
   w.st.pending = { ...w.row, kind: 'abandoned', code: 'hook-failed' }
   if (!(await ledgerAdd($, back))) return undefined
   w.st.closed = true
@@ -6157,6 +6159,12 @@ async function promptRelayPost($: any, e: any): Promise<string | undefined> {
       continue
     }
     const why = (a.outcome === 'answer' ? `the person picked option ${(a.index as number) + 1} via the ${relay.by.level} ${who}` : `the person answered ${a.outcome === 'allow' ? pr.RELAY_YES : pr.RELAY_NO} via the ${relay.by.level} ${who}`).slice(0, pr.WHY_MAX)
+    // The label hash first: a hash that cannot be made leaves no decision file without its row.
+    const lh = label !== undefined ? await labelHash($, id, label).catch(() => undefined) : undefined
+    if (label !== undefined && lh === undefined) {
+      await lateRow()
+      continue
+    }
     const path = `${dir}/${id}.decision.json`
     const body = JSON.stringify({ id, inputHash: q.inputHash, decision: a.outcome, ...(label !== undefined ? { answer: { index: a.index, label } } : {}), why, by: { level: relay.by.level, sid, name: who }, via: 'person', at: now, nonce: q.nonce })
     let put = await promptLinkOnce($, path, body)
@@ -6178,7 +6186,7 @@ async function promptRelayPost($: any, e: any): Promise<string | undefined> {
       await lateRow()
       continue
     }
-    const ok = await ledgerAdd($, { id, nonce: q.nonce, lane: q.lane, repo: q.repo, tool: q.tool, pattern: pr.patternOf(q.tool, q.input, q.repo), hash: q.inputHash, tier: relay.by.level, why, kind: 'answered', code: a.outcome, by: sid, via: 'person', short: relay.short, ...(label !== undefined ? { opt: String(a.index), lh: await labelHash($, id, label) } : {}) })
+    const ok = await ledgerAdd($, { id, nonce: q.nonce, lane: q.lane, repo: q.repo, tool: q.tool, pattern: pr.patternOf(q.tool, q.input, q.repo), hash: q.inputHash, tier: relay.by.level, why, kind: 'answered', code: a.outcome, by: sid, via: 'person', short: relay.short, ...(label !== undefined ? { opt: String(a.index), lh } : {}) })
     if (!ok) {
       await run($, [RM, '-f', '--', path]).catch(() => undefined)
       late = true
@@ -6620,6 +6628,9 @@ async function promptAnswerTool($: any, e: any, answer: boolean): Promise<{ resu
     return true
   }
   if (answer) {
+    // The label hash first: a hash that cannot be made leaves no decision file without its row.
+    const lh = pick ? await labelHash($, id, pick.label).catch(() => undefined) : undefined
+    if (pick && lh === undefined) return refuse('write-failed')
     const path = `${dir}/${id}.decision.json`
     const body = JSON.stringify({ id, inputHash: q.inputHash, decision, ...(pick ? { answer: pick } : {}), why, by: { level: self.level, sid, name }, at: now, nonce: q.nonce })
     const put = await promptLinkOnce($, path, body)
@@ -6633,7 +6644,7 @@ async function promptAnswerTool($: any, e: any, answer: boolean): Promise<{ resu
     }
     // The row is written only after the file is in place; the hook holds a decision it sees a moment before its row for a few seconds. A row that cannot be written
     // takes the file back, so a decision never stands without its row.
-    if (!(await ledgerAdd($, { ...row, kind: 'answered', code: decision, by: sid, ...(cap ? { cap: cap.kind, target: cap.target } : {}), ...(pick ? { opt: String(pick.index), lh: await labelHash($, id, pick.label) } : {}) }))) {
+    if (!(await ledgerAdd($, { ...row, kind: 'answered', code: decision, by: sid, ...(cap ? { cap: cap.kind, target: cap.target } : {}), ...(pick ? { opt: String(pick.index), lh } : {}) }))) {
       await run($, [RM, '-f', '--', path]).catch(() => undefined)
       return refuse('write-failed')
     }
