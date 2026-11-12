@@ -5249,7 +5249,7 @@ async function reserveCommand($: any, sid: string, code: c.OriginCode, op: c.Res
 }
 
 // v13.6: the usage line, for an unknown word (`on` included since v13.6).
-const USAGE = 'Use /callboard off, lead, lanes, claim, status, config, checkin, rest, conductor, reserve, lane [NAME] or lane off.'
+const USAGE = 'Use /callboard off, lead, lanes, claim, status, config, checkin, rest, conductor, reserve, escalation [off], lane [NAME] or lane off.'
 
 // ---- prompt answering (ADR 0004), PR 1: the hook, the floor, the files and the switch. Off by default; nothing here lets an agent write a decision. ----
 // A PermissionRequest hook in the asking session: it refuses what no agent may answer, writes a request file and waits. Every approval would come from
