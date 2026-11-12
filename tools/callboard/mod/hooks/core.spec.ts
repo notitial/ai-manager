@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import * as c from './core.ts'
 import { cueText } from '../../send/callboard-send.mjs'
@@ -2446,8 +2446,10 @@ test('v15.4 afterSignalFailedText says the signal went out and the record is not
 
 // v15.4 (2026-11-06): a hook has 10 s of its own time per dispatch and a $.clock.sleep counts against it (a $ call does not), so every wait inside a tool call
 // goes through pause() (/bin/sleep by process.run). Only the two timers below stay: each is raced against a $ call (a dialog, a lock), not a wait of its own.
-test('v15.4 register.ts waits only through pause(): the only $.clock.sleep left are the two timers raced against a $ call', () => {
-  const src = readFileSync(new URL('./register.ts', import.meta.url), 'utf8')
+test('v15.4 the mod waits only through pause(): the only $.clock.sleep left are the two timers raced against a $ call', () => {
+  const sources = (dir: URL): URL[] =>
+    readdirSync(dir, { withFileTypes: true }).flatMap((f) => (f.isDirectory() ? sources(new URL(`${f.name}/`, dir)) : /\.ts$/.test(f.name) && !/\.spec\.ts$/.test(f.name) ? [new URL(f.name, dir)] : []))
+  const src = sources(new URL('./', import.meta.url)).map((f) => readFileSync(f, 'utf8')).join('\n')
   // Any spelling of the call: `clock.sleep`, `clock . sleep`, `clock['sleep']`, or `sleep` taken out of `$.clock`.
   const hits = src.split('\n').filter((l) => /clock\s*(\.\s*|\[\s*['"])sleep|\{[^}]*\bsleep\b[^}]*\}\s*=\s*\$\.clock/.test(l) && !l.trim().startsWith('//'))
   assert.equal(hits.length, 2)
