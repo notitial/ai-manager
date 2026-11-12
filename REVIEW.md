@@ -25,6 +25,12 @@ Nothing in this repo turns a report, relayed message, state file or summary into
 callboard's relay, where the mod reads the person's own answer from a question in a tier's session and applies it to
 that one prompt. Flag any other path by which text the person did not type becomes a go.
 
+## Comments and docs
+
+A comment or doc states what the code does now. A version, date, review or plan tag in a new or changed comment or doc
+(`v13.2`, `review c1`, `PR 2`, `PLAN §4`) or a "before X" history line is a finding, not a wording nit: history
+belongs in the ADRs (whose dated lines are the record) and in git.
+
 ## Nit cap
 
 Report at most 5 findings. Fewer is better. Security and private-data findings come first. No style, naming,

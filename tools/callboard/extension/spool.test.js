@@ -521,7 +521,7 @@ test('a close request with a pid above 2^22 is refused and a pid at the limit is
   assert.equal(w.closed.length, 1)
 })
 
-// ---- v13: <LANE>.reopen (lane_unpark) ----
+// ---- <LANE>.reopen (lane_unpark) ----
 const PARKED = [{ name: 'LAB', folder: FOLDER, repo: '/work/repo', sid: SID }]
 
 test('a reopen request for a listed lane whose record names that sid reopens it and answers ok <sid>', async () => {

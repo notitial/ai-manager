@@ -94,7 +94,7 @@ async function readStores(dir, { uid = process.getuid(), home = os.homedir() } =
       if (!clean(l.folder) || !(l.folder === j.repo || l.folder.startsWith(`${j.repo}/`))) return true
       // A lane an existing session joined: adopted is exactly true and names the lead's session id; any other record has no lead.
       if (l.adopted === undefined ? l.lead !== undefined : l.adopted !== true || typeof l.lead !== 'string' || !SID_RE.test(l.lead)) return true
-      // v13: sid is absent or a session id; parked is absent or a finite time, and only with a sid.
+      // sid is absent or a session id; parked is absent or a finite time, and only with a sid.
       if (l.sid !== undefined && (typeof l.sid !== 'string' || !SID_RE.test(l.sid))) return true
       if (l.parked !== undefined && (!Number.isFinite(l.parked) || l.sid === undefined)) return true
       return !/^\/[A-Za-z0-9._\/-]{1,200}$/.test(String(l.brief)) || !clean(l.brief) || !l.brief.startsWith(`${l.folder}/`)
@@ -274,7 +274,7 @@ function createSpool({ dir, uid = process.getuid(), loadLanes, openLane, closeLa
     return closeLane({ sid: m[1], pid, name }) ? 'closing' : 'bad-request'
   }
 
-  // v13: a reopen request, <LANE>.reopen, written by lane_unpark: one line, the session id of the lane's saved conversation. The lane's store record must name
+  // A reopen request, <LANE>.reopen, written by lane_unpark: one line, the session id of the lane's saved conversation. The lane's store record must name
   // that very id, and the window must hold the lane folder as its first folder. The same rate limits as an open; answered on
   // <LANE>.result with `ok <sid>` or `error <code>`.
   async function handleReopen(name) {
@@ -397,4 +397,4 @@ function createSpool({ dir, uid = process.getuid(), loadLanes, openLane, closeLa
   return { scan, handle, handleClose, handleReopen, start }
 }
 
-module.exports = { createSpool, readStores, allLanes, NAME_RE, REQUEST_TEXT }
+module.exports = { createSpool, readStores, allLanes, REQUEST_TEXT }

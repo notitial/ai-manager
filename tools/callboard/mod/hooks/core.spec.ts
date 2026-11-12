@@ -155,11 +155,6 @@ test('limits', () => {
   assert.ok(!c.onCueValid(now - c.ON_CUE_TTL_MS - 1, now))
 })
 
-test('eligible: a bound lane only (v13.5: /callboard on is retired)', () => {
-  assert.equal(c.eligible(false), false)
-  assert.equal(c.eligible(true), true)
-})
-
 test('originCode maps the engine origin to a fixed code; only prompt and phone are the person', () => {
   assert.equal(c.originCode({ kind: 'composer' }), 'prompt')
   assert.equal(c.originCode({ kind: 'bridge' }), 'phone')
@@ -470,19 +465,19 @@ test('the ps start table is trusted only whole: every line a pid and a time, at 
 
 const prow = (pid: number, j: Record<string, unknown> = {}) => ({ pid: String(pid), j: { sessionId: `${pid}`.padStart(8, '0') + '-0000-4000-8000-123456789abc', pid, procStart: 'Tue Oct 27 20:37:50 2026', ...j } })
 const PSELF = '00004300-0000-4000-8000-123456789abc'
-test('freshRows drops a row whose process is gone or started at another time, and keeps one with no start time', () => {
+test('freshRowsWhy drops a row whose process is gone or started at another time, and keeps one with no start time', () => {
   const t = c.parsePsStarts(PSA)!
   const self = prow(4300, { sessionId: PSELF, procStart: 'Sun Nov  1 00:48:56 2026' })
   const live = prow(4242, { name: 'LANE' })
   const dead = prow(5555, { name: 'OLD' })
   const reused = prow(4242, { name: 'REUSED', sessionId: 'cccccccc-0000-4000-8000-123456789abc', procStart: 'Wed Oct 28 01:00:00 2026' })
   const noStart = prow(4242, { name: 'NS', procStart: undefined, sessionId: 'aaaaaaaa-0000-4000-8000-123456789abc' })
-  assert.deepEqual(c.freshRows([self, live, dead, reused, noStart], t, PSELF), [self, live, noStart])
+  assert.deepEqual(c.freshRowsWhy([self, live, dead, reused, noStart], t, PSELF).rows, [self, live, noStart])
   assert.deepEqual(c.freshRowsWhy([self, live, dead], undefined, PSELF), { rows: [self, live, dead], why: 'ps-untrusted', absent: [] })
   assert.deepEqual(c.freshRowsWhy([self, live, dead], t, PSELF), { rows: [self, live], absent: [dead] })
 })
 
-test('freshRows keeps every row unless the caller own row is live with its start time; a dead pid always goes, a group of start-time mismatches keeps all', () => {
+test('freshRowsWhy keeps every row unless the caller own row is live with its start time; a dead pid always goes, a group of start-time mismatches keeps all', () => {
   const t = c.parsePsStarts(PSA)!
   const lone = prow(5555, { name: 'GONE' })
   const mineOld = prow(4300, { sessionId: PSELF, procStart: 'Wed Oct 28 01:00:00 2026' })
@@ -493,19 +488,19 @@ test('freshRows keeps every row unless the caller own row is live with its start
   const mineLive = prow(4300, { sessionId: PSELF, procStart: 'Sun Nov 1 00:48:56 2026' })
   assert.deepEqual(c.freshRowsWhy([mineLive, lone], t, ''), { rows: [mineLive, lone], why: 'no-own-row', absent: [] })
   const mineDead = prow(6666, { sessionId: PSELF })
-  assert.deepEqual(c.freshRows([mineLive, mineDead, lone], t, PSELF), [mineLive])
+  assert.deepEqual(c.freshRowsWhy([mineLive, mineDead, lone], t, PSELF).rows, [mineLive])
   const twinA = prow(5555, { name: 'TWIN' })
   const twinB = prow(6666, { name: 'TWIN' })
-  assert.deepEqual(c.freshRows([mineLive, twinA, twinB], t, PSELF), [mineLive])
+  assert.deepEqual(c.freshRowsWhy([mineLive, twinA, twinB], t, PSELF).rows, [mineLive])
   const sidA = prow(5555, { sessionId: 'bbbbbbbb-0000-4000-8000-123456789abc' })
   const sidB = prow(6666, { sessionId: 'bbbbbbbb-0000-4000-8000-123456789abc' })
-  assert.deepEqual(c.freshRows([mineLive, sidA, sidB], t, PSELF), [mineLive])
+  assert.deepEqual(c.freshRowsWhy([mineLive, sidA, sidB], t, PSELF).rows, [mineLive])
   const twinLive = prow(4242, { name: 'TWIN' })
-  assert.deepEqual(c.freshRows([mineLive, twinA, twinLive], t, PSELF), [mineLive, twinLive])
+  assert.deepEqual(c.freshRowsWhy([mineLive, twinA, twinLive], t, PSELF).rows, [mineLive, twinLive])
   const oldA = prow(4242, { name: 'OLDTWIN', procStart: 'Wed Oct 28 01:00:00 2026' })
   const oldB = prow(1, { name: 'OLDTWIN', procStart: 'Wed Oct 28 01:00:00 2026', sessionId: 'dddddddd-0000-4000-8000-123456789abc' })
   assert.deepEqual(c.freshRowsWhy([mineLive, oldA, oldB], t, PSELF), { rows: [mineLive, oldA, oldB], why: 'group-stale', absent: [] })
-  assert.deepEqual(c.freshRows([mineLive, oldA, prow(5555, { name: 'OLDTWIN' })], t, PSELF), [mineLive])
+  assert.deepEqual(c.freshRowsWhy([mineLive, oldA, prow(5555, { name: 'OLDTWIN' })], t, PSELF).rows, [mineLive])
 })
 
 test('the absent rows: only those whose pid the table lacks, never a start-time mismatch, and none while every row is kept', () => {
@@ -920,7 +915,7 @@ test('the new refusal codes each have fixed text, and the ones that may pass lat
   assert.match(c.REASON_TEXT['ambiguous-lead'], /\/rename, or turn all but one off/)
   assert.match(c.REASON_TEXT['store-size'], /too big/)
   assert.doesNotMatch(c.REASON_TEXT['store-size'], /full/)
-  assert.equal(c.REASON_TEXT['lane-origin'], 'Type /callboard lane yourself. A plugin, session or script cannot run it.')
+  assert.equal(c.REASON_TEXT['lane-origin'], 'Only you can change a lane: type /callboard lane yourself.')
   assert.equal(c.refusalText('lane-origin'), c.REASON_TEXT['lane-origin'])
   assert.equal(c.refusalText('no-lead'), `Lane not changed: ${c.REASON_TEXT['no-lead']}`)
   assert.equal(c.refusalText('made-up-code'), 'Lane not changed: made-up-code')
@@ -998,22 +993,21 @@ test('a lead presence file is still the four fields of before, named by its sid;
   const f = { sid: LEAD, pid: 4242, procStart: 'Tue Oct 27 20:37:50 2026', repo: '/Users/x/code/app' }
   const text = c.leadFileText(f)!
   assert.deepEqual(JSON.parse(text), f)
-  assert.deepEqual(c.parseLeadFile(text, LEAD), { ...f, level: 'lead' }, 'a file without level reads as a lead')
-  assert.deepEqual(c.parseLeadFile(JSON.stringify({ ...f, level: 'lead', name: 'LEADX' }), LEAD), { ...f, level: 'lead', name: 'LEADX' })
-  assert.equal(c.parseLeadFile(text, OTHER), undefined)
+  assert.deepEqual(c.parsePresenceFile(text, LEAD), { ...f, level: 'lead' }, 'a file without level reads as a lead')
+  assert.deepEqual(c.parsePresenceFile(JSON.stringify({ ...f, level: 'lead', name: 'LEADX' }), LEAD), { ...f, level: 'lead', name: 'LEADX' })
+  assert.equal(c.parsePresenceFile(text, OTHER), undefined)
   assert.equal(c.leadFileText({ ...f, procStart: 'x'.repeat(5000) }), undefined)
-  assert.equal(c.parseLeadFile(`${text.slice(0, -1)},"x":"${'y'.repeat(4096)}"}`, LEAD), undefined)
-  for (const bad of ['', '{', '[]', 'null', JSON.stringify({ ...f, pid: 1 }), JSON.stringify({ ...f, pid: '4242' }), JSON.stringify({ ...f, procStart: ' ' }), JSON.stringify({ ...f, procStart: 'x'.repeat(65) }), JSON.stringify({ ...f, repo: 'rel' }), JSON.stringify({ ...f, repo: '/a/../b' }), JSON.stringify({ ...f, sid: 'x' })]) assert.equal(c.parseLeadFile(bad, LEAD), undefined, bad)
+  assert.equal(c.parsePresenceFile(`${text.slice(0, -1)},"x":"${'y'.repeat(4096)}"}`, LEAD), undefined)
+  for (const bad of ['', '{', '[]', 'null', JSON.stringify({ ...f, pid: 1 }), JSON.stringify({ ...f, pid: '4242' }), JSON.stringify({ ...f, procStart: ' ' }), JSON.stringify({ ...f, procStart: 'x'.repeat(65) }), JSON.stringify({ ...f, repo: 'rel' }), JSON.stringify({ ...f, repo: '/a/../b' }), JSON.stringify({ ...f, sid: 'x' })]) assert.equal(c.parsePresenceFile(bad, LEAD), undefined, bad)
 })
 
-test('parsePresenceFile reads a conductor and a manager file, and parseLeadFile ignores both (levels plan S1)', () => {
+test('parsePresenceFile reads a conductor and a manager file, and neither reads as a lead', () => {
   const base = { sid: LEAD, pid: 4242, procStart: 'Tue Oct 27 20:37:50 2026' }
   const p = (o: Record<string, unknown>) => c.parsePresenceFile(JSON.stringify({ ...base, ...o }), LEAD)
   // v15: a conductor file names its own repo (home).
   assert.deepEqual(p({ level: 'conductor', repos: ['/w/a', '/w/b'], home: '/w/cond', name: 'CONDUCTOR' }), { ...base, level: 'conductor', repos: ['/w/a', '/w/b'], home: '/w/cond', name: 'CONDUCTOR' })
   assert.deepEqual(p({ level: 'manager', name: 'HARBOR' }), { ...base, level: 'manager', name: 'HARBOR' })
-  assert.equal(c.parseLeadFile(JSON.stringify({ ...base, level: 'conductor', repos: ['/w/a'], home: '/w/cond' }), LEAD), undefined)
-  assert.equal(c.parseLeadFile(JSON.stringify({ ...base, level: 'manager' }), LEAD), undefined)
+  for (const o of [{ level: 'conductor', repos: ['/w/a'], home: '/w/cond' }, { level: 'manager' }]) { assert.ok(p(o)); assert.notEqual(p(o)?.level, 'lead', 'a lead reader ignores conductor and manager files') }
   const sixteen = Array.from({ length: 16 }, (_, i) => `/w/r${i}`)
   assert.equal(p({ level: 'conductor', repos: sixteen, home: '/w/cond' })?.level, 'conductor')
   for (const bad of [
@@ -1078,18 +1072,31 @@ test('noticeAllowed takes its own cap; the old default stays 3', () => {
   assert.equal(c.LANES_NOTICES_PER_HOUR, 12)
 })
 
-test('lanesOfRepo follows the reach rule of leadLane and laneListText writes one fixed line per lane', () => {
+test('helpText is a header and a three-column table with one row per subcommand, markdown-escaped; HELP_USAGE names the full list', () => {
+  const lines = c.helpText().split('\n')
+  assert.deepEqual(lines.slice(0, 4), ['**Callboard commands**', '', '| Command | What it does | Who |', '|---|---|---|'])
+  const words = lines.slice(4).map((l) => /^\| ([^ \\|]+)/.exec(l)![1])
+  assert.deepEqual(words, ['lanes', 'status', 'lead', 'lane', 'escalation', 'prompts', 'conductor', 'manager', 'config', 'reserve', 'claim', 'checkin', 'rest', 'off', 'help'])
+  assert.ok(lines.includes('| lane \\[NAME\\] | Make this session a lane, named NAME if given; lane off takes it out of its lane. | You |'))
+  for (const l of lines.slice(4)) assert.equal(l.replace(/\\\|/g, '').split('|').length, 5, l)
+  assert.match(c.HELP_USAGE, /manager/)
+  assert.match(c.HELP_USAGE, /prompts/)
+  assert.ok(c.HELP_USAGE.endsWith('Run /callboard help for the full list.'))
+})
+
+test('inReach follows the reach rule of leadLane and laneListText writes one fixed line per lane', () => {
   const root = { name: 'R', folder: '/w/repo/r', brief: '/w/repo/r/B.md', repo: '/w/repo' }
   const made = { name: 'M', folder: '/w/repo/m', brief: '/w/repo/m/B.md', repo: '/w/repo', src: 'k' }
   const att = { name: 'ATT', folder: '/w/repo/a', brief: '/w/repo/a/.callboard-attached', repo: '/w/repo', src: 'k', adopted: true as const, lead: LEAD }
   const other = { name: 'O', folder: '/x/o', brief: '/x/o/B.md', repo: '/x' }
   const norepo = { name: 'N', folder: '/w/repo/n', brief: '/w/repo/n/B.md' }
   const all = [root, made, att, other, norepo]
-  assert.deepEqual(c.lanesOfRepo(all, c.leadGrant('/w/repo')).map((l) => l.name), ['R', 'M', 'ATT'])
-  assert.deepEqual(c.lanesOfRepo(all, c.leadGrant('/w/repo/sub')).map((l) => l.name), ['R'])
-  assert.deepEqual(c.lanesOfRepo(all, c.leadGrant('/elsewhere')), [])
-  assert.deepEqual(c.lanesOfRepo([...all, { ...made, name: 'MB', leadName: 'LEADB' }], c.leadGrant('/w/repo', 'LEADA')).map((l) => l.name), ['R', 'M', 'ATT'])
-  assert.equal(c.laneListText(c.lanesOfRepo(all, c.leadGrant('/w/repo')), [{ sessionId: S3_SID, name: 'M', cwd: '/w/repo/m' }], 0), [
+  const ofRepo = (lanes: typeof all, g: c.Grant) => lanes.filter((l) => c.inReach(g, l))
+  assert.deepEqual(ofRepo(all, c.leadGrant('/w/repo')).map((l) => l.name), ['R', 'M', 'ATT'])
+  assert.deepEqual(ofRepo(all, c.leadGrant('/w/repo/sub')).map((l) => l.name), ['R'])
+  assert.deepEqual(ofRepo(all, c.leadGrant('/elsewhere')), [])
+  assert.deepEqual(ofRepo([...all, { ...made, name: 'MB', leadName: 'LEADB' }], c.leadGrant('/w/repo', 'LEADA')).map((l) => l.name), ['R', 'M', 'ATT'])
+  assert.equal(c.laneListText(ofRepo(all, c.leadGrant('/w/repo')), [{ sessionId: S3_SID, name: 'M', cwd: '/w/repo/m' }], 0), [
     '**Lead** · live',
     '',
     '| Lead | Repo | Lane | Folder | Session | Waiting |',
@@ -1356,7 +1363,7 @@ test('v13.2 config texts: one line with (default) on unchanged fields; the level
   assert.equal(c.configText({ ...D, keepalive: false, pingAfterMin: 45, workingK: 450, checkin: false }), 'Callboard settings: keepalive off, ping after 45 min, stop after 3 h (default), idle level 300k (default), working level 450k, check-ins off.')
   assert.equal(c.configSetText('pingAfterMin', { ...D, pingAfterMin: 45 }), 'Callboard setting changed: ping after 45 min. It applies to every session on this Mac within a minute.')
   assert.equal(c.CONFIG_USAGE, 'Use /callboard config [keepalive on|off, ping 30-55, stop 1-8, idle 150-800, working IDLE-900, checkin on|off, reset].')
-  assert.equal(c.CONFIG_NOT_PERSON, 'Only you can change callboard settings: type the command yourself.')
+  assert.equal(c.CONFIG_NOT_PERSON, 'Only you can change callboard settings: type /callboard config yourself.')
   assert.equal(c.configLevelRefusal({ field: 'idleK', value: 450 }, D), 'Raise working first (now 400k).')
   assert.equal(c.configLevelRefusal({ field: 'idleK', value: 400 }, D), undefined)
   assert.equal(c.configLevelRefusal({ field: 'workingK', value: 250 }, D), 'Lower idle first (now 300k).')
@@ -1963,7 +1970,6 @@ test('v14 the manager presence file: level and name, never repo; a lead reader i
   const text = c.leadFileText({ ...f, level: 'manager', name: 'HARBOR' })!
   assert.deepEqual(JSON.parse(text), { ...f, level: 'manager', name: 'HARBOR' })
   assert.deepEqual(c.parsePresenceFile(text, LEAD), { ...f, level: 'manager', name: 'HARBOR' })
-  assert.equal(c.parseLeadFile(text, LEAD), undefined)
   assert.equal(c.leadFileText({ ...f, level: 'manager', name: 'x'.repeat(5000) }), undefined)
   const row = (name: unknown, sid = LEAD) => ({ sessionId: sid, name })
   assert.equal(c.managerNameOf([row('MANAGER')], LEAD), 'MANAGER')

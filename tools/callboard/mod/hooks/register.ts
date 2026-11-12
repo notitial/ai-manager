@@ -28,11 +28,11 @@ type R = { exitCode: number; stdout: string; stderr: string }
 
 let isTicking = false
 let timerOn = false
-// own (v13.3): the registry folder that holds this session's own row, `sessions` unless CLAUDE_CONFIG_DIR names another, undefined when it names a bad one.
+// own: the registry folder that holds this session's own row, `sessions` unless CLAUDE_CONFIG_DIR names another, undefined when it names a bad one.
 let paths: { uid: number; root: string; sessions: string; own: string | undefined } | undefined
 let seq = 0
 const own = new Map<string, number>()
-// v13.2: the own texts that are not real work (the ping, a nudge, a notice, the lanes-changed turn), counted as own is; and every own submit, so the tick can
+// The own texts that are not real work (the ping, a nudge, a notice, the lanes-changed turn), counted as own is; and every own submit, so the tick can
 // tell whether anything went out while it ran.
 const unrealOwn = new Map<string, number>()
 let submits = 0
@@ -50,16 +50,16 @@ const interactiveRef = { plugin: 'callboard', key: 'interactive' } as const
 // When the tick last sent this session a nudge: the grant's start. Only the tick's nudge submit sets it; any stored request_compact, a prompt that is
 // not the mod's own, and /callboard off clear it.
 const nudgedAtRef = { plugin: 'callboard', key: 'nudgedAt' } as const
-// v16.1 (2026-11-11): when a lead, conductor or manager last ordered this lane to compact (c.ORDER_MS).
+// When a lead, conductor or manager last ordered this lane to compact (c.ORDER_MS).
 const orderedAtRef = { plugin: 'callboard', key: 'orderedAt' } as const
-// v13.2, the keepalive ping: when the last main-agent turn ended, when the last real one ended (not started by a ping, a nudge, a notice or the lanes-changed
+// The keepalive ping: when the last main-agent turn ended, when the last real one ended (not started by a ping, a nudge, a notice or the lanes-changed
 // turn), and when the tick last tried a ping. Kept in the session state: a reload keeps them (the cache is still warm), a restart loses them (unknown: no ping).
 const turnEndRef = { plugin: 'callboard', key: 'turnEndAt' } as const
 const realEndRef = { plugin: 'callboard', key: 'realEndAt' } as const
 const pingAtRef = { plugin: 'callboard', key: 'pingAt' } as const
 // `/callboard rest`: when it was typed. A real turn that starts clears it (turn.start), so the next real turn ends it; one typed while a turn runs holds past that turn's end. A reload keeps it.
 const restRef = { plugin: 'callboard', key: 'restAt' } as const
-// v13.6 (2026-11-03): until when /callboard checkin pause holds this session's check-ins. A reload keeps it, a restart loses it.
+// Until when /callboard checkin pause holds this session's check-ins. A reload keeps it, a restart loses it.
 const checkinPauseRef = { plugin: 'callboard', key: 'checkinPauseUntil' } as const
 const ASK_TIMEOUT_MS = 90_000
 const HINT_DELETE_MAX = 50
@@ -67,10 +67,10 @@ const HINT_DELETE_MAX = 50
 const run = ($: any, argv: string[], stdin?: string): Promise<R> =>
   $.process.run(argv, { timeoutMs: 5000, ...(stdin === undefined ? {} : { stdin }) })
 
-// v15.4: the stop calls (by session, verb and the lane as the lead typed it) whose process already got its signal, for the hook's .catch.
+// The stop calls (by session, verb and the lane as the lead typed it) whose process already got its signal, for the hook's .catch.
 const signalledCalls = new Map<string, { name: string; pid: number }>()
 const stopCallKey = (sid: string, verb: string, lane: unknown) => `${sid}\n${verb}\n${String(lane)}`
-// v15.4 (2026-11-06): a wait inside one tool call goes through a host process, never $.clock.sleep. A hook has 10 s of its own time per dispatch (HookBudget.ms),
+// A wait inside one tool call goes through a host process, never $.clock.sleep. A hook has 10 s of its own time per dispatch (HookBudget.ms),
 // and a $.clock.sleep counts against it while no $ call does; a hook past it is cut off, its .catch answers, and the code that was running goes on unseen.
 // false: the process did not run or failed, so the caller must not loop on it.
 async function pause($: any, ms: number): Promise<boolean> {
@@ -87,7 +87,7 @@ async function where($: any) {
   const name = n.stdout.trim()
   if (u.exitCode !== 0 || n.exitCode !== 0 || !Number.isInteger(uid) || !/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/.test(name)) return undefined
   const sessions = `/Users/${name}/.claude/sessions`
-  // v13.3: only the own-row lookups follow CLAUDE_CONFIG_DIR (ownRegistryEntries); the cues, lanes, leads and logs stay under ~/.claude. A throw while reading the
+  // Only the own-row lookups follow CLAUDE_CONFIG_DIR (ownRegistryEntries); the cues, lanes, leads and logs stay under ~/.claude. A throw while reading the
   // variable is a bad value too; null reads as unset. The name is a string literal, as `claude plugin validate` reads it.
   let configDir: unknown
   let envFailed = false
@@ -479,9 +479,9 @@ async function registryEntries($: any): Promise<{ pid: string; j: any }[] | unde
   return (await registryEntriesWhy($)).rows
 }
 
-// The same read, with the reason the dead-row filter was off for it (v13, the rebind): undefined only when this session's own row is live and every row the
+// The same read, with the reason the dead-row filter was off for it (the rebind): undefined only when this session's own row is live and every row the
 // table lacks was confirmed gone or absent; 'ps-confirm' when that confirmation failed or was cut (every row kept).
-// dir (v13.3): the folder to read, `sessions` unless the caller asks for the own registry (ownRegistryEntries). One call reads one folder; rows of two registries
+// dir: the folder to read, `sessions` unless the caller asks for the own registry (ownRegistryEntries). One call reads one folder; rows of two registries
 // are never put in one list.
 async function registryEntriesWhy($: any, dirArg?: string): Promise<{ rows: { pid: string; j: any }[] | undefined; why?: string }> {
   const p = await where($)
@@ -568,7 +568,7 @@ const regOnce = ($: any): Reg => {
   return () => (p ??= registryEntries($))
 }
 
-// v13.3: the registry that holds this session's OWN row: `sessions` unless CLAUDE_CONFIG_DIR names a good folder, none (no row, fails closed) when it names a bad
+// The registry that holds this session's OWN row: `sessions` unless CLAUDE_CONFIG_DIR names a good folder, none (no row, fails closed) when it names a bad
 // one. Used only where the session looks at itself (a person's row, idle, its shells, the nudge and the ping); everything that looks at other sessions or at
 // a cue (names, lanes, leads, the lock owner, a cue's idle check) reads `sessions` alone through registryEntries.
 async function ownRegistryEntries($: any): Promise<{ pid: string; j: any }[] | undefined> {
@@ -607,7 +607,7 @@ const countDown = (m: Map<string, number>, text: string) => {
   else m.delete(text)
 }
 
-// real: false for a turn that is not work (A, v13.2): it moves no stop clock of the keepalive ping. v13.4: the counts are taken down by the turn.start that
+// real: false for a turn that is not work: it moves no stop clock of the keepalive ping. The counts are taken down by the turn.start that
 // carries the text (ownTextOf), or here when the submit throws.
 async function submitOwn($: any, text: string, real = true) {
   own.set(text, (own.get(text) ?? 0) + 1)
@@ -622,7 +622,7 @@ async function submitOwn($: any, text: string, real = true) {
   }
 }
 
-// v13.4 (2026-11-03): the own text a main-loop turn.start carries (see c.OWN_FRAME_HEAD): one submitted and not yet counted down, as it stands or framed.
+// The own text a main-loop turn.start carries (see c.OWN_FRAME_HEAD): one submitted and not yet counted down, as it stands or framed.
 const ownTextOf = (startText: unknown): string | undefined => c.ownTextOf(startText, own.keys())
 
 async function counts($: any): Promise<Counters> {
@@ -639,18 +639,19 @@ async function bump($: any, fn: (ct: Counters) => Counters) {
   throw new Error('counters-conflict')
 }
 
-// v13.5 (2026-11-03): a bound lane only; /callboard on is retired.
+// A session takes lead cues, and may use request_compact with `on-cue`, only when the mod bound it to a lane. A `now` request for itself has its own
+// gate (requestGate).
 async function isEligible($: any): Promise<boolean> {
-  return c.eligible((await $.state.get(lane)).value != null)
+  return (await $.state.get(lane)).value != null
 }
-// Whether a stored request may still run its way: one the nudge or the session itself granted, a bound lane's, or (v14, 2026-11-04) a lead's own on-cue
-// request while it still holds a lead grant (S7: the manager's compact cue acts on it).
+// Whether a stored request may still run its way: one the nudge or the session itself granted, a bound lane's, or a lead's own on-cue
+// request while it still holds a lead grant (the manager's compact cue acts on it).
 async function requestOk($: any, sid: string, req: Request): Promise<boolean> {
   return req.viaNudge === true || (req.viaLead === true && grants.get(sid)?.level === 'lead') || (await isEligible($))
 }
 
-// $.store is a file any same-uid process can write, so this is a hint only (ADR 0002, v7): it is read back only after the person runs
-// /callboard lane (v13.5; /callboard on before) and allows the restore, and never written for a session that is not bound (v13.5: an unbound session's
+// $.store is a file any same-uid process can write, so this is a hint only (ADR 0002): it is read back only after the person runs
+// /callboard lane and allows the restore, and never written for a session that is not bound (an unbound session's
 // lane hint is never overwritten, so it keeps its Restore offer).
 async function saveHint($: any, sid: string) {
   try {
@@ -680,7 +681,7 @@ async function pruneHints($: any, me: string) {
       dels++
     }
   }
-  // v16.1: an order stamp (ord:<sid>) nobody collected (its orderer is gone) goes after a day, under the same cap.
+  // An order stamp (ord:<sid>) nobody collected (its orderer is gone) goes after a day, under the same cap.
   let ordDels = 0
   for (const k of all.filter((x) => x.startsWith(c.ORDER_PREFIX)).slice(0, c.HINT_SCAN_MAX)) {
     if (ordDels >= HINT_DELETE_MAX) break
@@ -694,10 +695,10 @@ async function pruneHints($: any, me: string) {
       .then(() => $.store.delete(k))
       .catch(() => undefined)
   }
-  // v13: lead grants (lead:<sid>), with their own caps. The starting session's own is left to the lead restore, which reads it and deletes it itself.
+  // Lead grants (lead:<sid>), with their own caps. The starting session's own is left to the lead restore, which reads it and deletes it itself.
   const p = await where($)
   if (!p) return
-  // v13.5: a saved on (on:<sid>) is never read now (/callboard on is retired): every other session's goes, unread, under the same cap; a delete that fails
+  // A saved on (on:<sid>) is never read now (/callboard on is retired): every other session's goes, unread, under the same cap; a delete that fails
   // stops nothing. The starting session's own goes in onLeftovers.
   let onDels = 0
   for (const k of all.filter((x) => x.startsWith(c.ON_HINT_PREFIX) && x !== `${c.ON_HINT_PREFIX}${me}`).slice(0, c.HINT_SCAN_MAX)) {
@@ -707,7 +708,7 @@ async function pruneHints($: any, me: string) {
       .then(() => $.store.delete(k))
       .catch(() => undefined)
   }
-  // v13.1: cut-compaction marks (cmp:<sid>) of other sessions, under the same caps; the starting session's own is read at start.
+  // Cut-compaction marks (cmp:<sid>) of other sessions, under the same caps; the starting session's own is read at start.
   for (const [prefix, ok] of [[c.CMP_PREFIX, (v: unknown) => c.cmpMarkFresh(v, now)]] as const) {
     let n = 0
     for (const k of all.filter((x) => x.startsWith(prefix) && x !== `${prefix}${me}`).slice(0, c.HINT_SCAN_MAX)) {
@@ -718,7 +719,7 @@ async function pruneHints($: any, me: string) {
       }
     }
   }
-  // v15: other sessions' saved conductor grants (conductor:<sid>) that fail the parse, under the same caps.
+  // Other sessions' saved conductor grants (conductor:<sid>) that fail the parse, under the same caps.
   let condDels = 0
   for (const k of all.filter((x) => x.startsWith(c.CONDUCTOR_HINT_PREFIX) && x !== `${c.CONDUCTOR_HINT_PREFIX}${me}`).slice(0, c.HINT_SCAN_MAX)) {
     if (condDels >= HINT_DELETE_MAX) break
@@ -727,7 +728,7 @@ async function pruneHints($: any, me: string) {
       condDels++
     }
   }
-  // v15.3: other sessions' saved manager grants (manager:<sid>) that fail the parse, under the same caps.
+  // Other sessions' saved manager grants (manager:<sid>) that fail the parse, under the same caps.
   let mgrDels = 0
   for (const k of all.filter((x) => x.startsWith(c.MANAGER_HINT_PREFIX) && x !== `${c.MANAGER_HINT_PREFIX}${me}`).slice(0, c.HINT_SCAN_MAX)) {
     if (mgrDels >= HINT_DELETE_MAX) break
@@ -776,7 +777,7 @@ function toast($: any, text: string) {
   } catch {}
 }
 
-// v15.2: the live checkout's branch, checked once per session start (ADR 0003). The checkout is found from the mod's own folder ($.plugin.root, the folder
+// The live checkout's branch, checked once per session start (ADR 0003). The checkout is found from the mod's own folder ($.plugin.root, the folder
 // holding plugin.json: <checkout>/tools/callboard/mod); .git/HEAD is read as a plain file with a bound, never through git (a changed .git/config could run
 // code). Main: nothing. Another branch or a detached commit: one toast and `warn live-checkout-not-main`. No checkout at that place, a .git that is a file (a
 // worktree), an unreadable or odd HEAD: `warn live-checkout-unknown`, no toast. It only warns: the mod loads and nothing is blocked. No path enters a log line.
@@ -816,7 +817,7 @@ async function askOnce($: any, sid: string, question: string, yes: string, no: s
   }
 }
 
-// The Join dialog's lead picker (S2b), with ask's time limit and error handling. More… turns the page; a dismissal, a failure or an answer not offered is 'error'.
+// The Join dialog's lead picker, with ask's time limit and error handling. More… turns the page; a dismissal, a failure or an answer not offered is 'error'.
 // The answer is wrapped, so a lead named like the timeout mark is still a name.
 async function pickLead($: any, names: string[]): Promise<{ name: string } | 'error' | 'timed-out'> {
   for (let page = 0; ; page++) {
@@ -838,9 +839,9 @@ async function pickLead($: any, names: string[]): Promise<{ name: string } | 'er
 // The lead grant lives only in this module's memory: a reload or a restart drops it, and /callboard lead has to be run and allowed again.
 // It keeps the cwd the lead had when the person gave it, so a later cd cannot move the lead into another repo's lanes.
 // The engine has no call that removes a tool, so after `off` the tools stay declared and refuse every call.
-// The levels plan (S1b): one grant per session, in the shape every level shares (c.Grant). Only lead grants are made so far.
+// One grant per session, in the shape every level shares (c.Grant).
 const grants = new Map<string, c.Grant>()
-// A lead's one pin; undefined for no grant, and for any other level (a conductor or manager has no single pin; S6 and S4 read their grants whole).
+// A lead's one pin; undefined for no grant, and for any other level (a conductor or manager has no single pin and reads its grant whole).
 const pinOf = (sid: string): string | undefined => {
   const g = grants.get(sid)
   return g?.level === 'lead' ? g.pins[0] : undefined
@@ -853,9 +854,9 @@ const leadBusy = (sid: string) => grants.has(sid) || leadGranting.has(sid)
 const grantOf = (sid: string): c.Grant | undefined => grants.get(sid)
 // The grant's name: the session's registry name just after the grant, by c.leadNameOf ('' when it gives none). Set only if the grant is still the same object,
 // so an off or a re-grant meanwhile is never overwritten. Nothing reads it for reach: leadCore reads the name from the live registry again at every lead tool
-// call (S2). It is read by lane_create, to tell a lead that had a name at its grant and lost it (refused lead-unnamed) from one that never had one, and by the
+// call. It is read by lane_create, to tell a lead that had a name at its grant and lost it (refused lead-unnamed) from one that never had one, and by the
 // rename carry (leadRenameTick), which moves it when the lead is renamed.
-// Run last on both grant paths (S1b review c1), so its registry scan never widens the window in which an off races the grant; bounded by NAME_GRANT_MS.
+// Run last on both grant paths, so its registry scan never widens the window in which an off races the grant; bounded by NAME_GRANT_MS.
 const NAME_GRANT_MS = 5000
 async function nameGrant($: any, sid: string) {
   const g = grants.get(sid)
@@ -891,9 +892,9 @@ const queued = <T>(fn: () => Promise<T>): Promise<T> => {
 // interval, so a burst of lead tool calls against an error that comes back at once cannot spend the budget in a second.
 const PRESENCE_TRIES = 5
 const presenceErrs = new Map<string, { n: number; at: number }>()
-// v15: what a conductor's cached presence text was made from (its repo, name and pins).
+// What a conductor's cached presence text was made from (its repo, name and pins).
 const conductorPresenceKey = new Map<string, string>()
-// v14 (2026-11-04): a manager's file names no repo, so none of the pin checks; it resolves true once the file was written.
+// A manager's file names no repo, so none of the pin checks; it resolves true once the file was written.
 function presenceTouch($: any, sid: string): Promise<boolean | void> {
   return queued(async () => {
     const pin = pinOf(sid)
@@ -915,7 +916,7 @@ function presenceTouch($: any, sid: string): Promise<boolean | void> {
       if ('err' in w) await log($, sid, 'error', 'presence')
       return !('err' in w)
     }
-    // v15 (2026-11-05): a conductor's file names its repos (its pins now) and its own repo, never repo; it is rewritten when those change, and goes when
+    // A conductor's file names its repos (its pins now) and its own repo, never repo; it is rewritten when those change, and goes when
     // no repo is left in reach.
     if (g?.level === 'conductor' && p) {
       const home = conductorHome.get(sid)
@@ -983,7 +984,7 @@ function presenceDrop($: any, sid: string) {
   })
 }
 // The lead grant ends: the tools stay declared and refuse, the presence file goes, the lane-list watch stops.
-// v13 review (F1): bumped by every leadDrop. A lead restore or a save of the grant that awaited across a drop sees the change and does nothing more, so an
+// Bumped by every leadDrop. A lead restore or a save of the grant that awaited across a drop sees the change and does nothing more, so an
 // off or a Cancel is never undone by work that started before it.
 const leadEpoch = new Map<string, number>()
 const epochOf = (sid: string) => leadEpoch.get(sid) ?? 0
@@ -994,29 +995,29 @@ function leadDrop($: any, sid: string): Promise<boolean> {
   briefed.delete(sid)
   watch.delete(sid)
   cappedLogged.delete(sid)
-  // v13.6: the check-in memory goes with the grant; laneNotices (the hourly cap) stays.
+  // The check-in memory goes with the grant; laneNotices (the hourly cap) stays.
   laneObs.delete(sid)
   attnTold.delete(sid)
   attnCapped.delete(sid)
   obsAt.delete(sid)
   orders.delete(sid)
   orderChecked.delete(sid)
-  // v14 (2026-11-04, review c2): what the lead last saw of a manager and the manager's lead-less verdicts go too, so a new grant reads afresh.
+  // What the lead last saw of a manager and the manager's lead-less verdicts go too, so a new grant reads afresh.
   managerSeen.delete(sid)
   managerSeenBusy.delete(sid)
   leadlessSeen.delete(sid)
   leadSavedAt.delete(sid)
   leadRestorePending.delete(sid)
-  // v15 (2026-11-05): a conductor's repo, approved list and pending restore go too, and its saved grant below.
+  // A conductor's repo, approved list and pending restore go too, and its saved grant below.
   conductorHome.delete(sid)
   conductorApproved.delete(sid)
   conductorSavedAt.delete(sid)
   conductorRestorePending.delete(sid)
   conductorReadAt.delete(sid)
-  // v15.3 (2026-11-06): the manager's saved-grant clock goes too. Its pending restore and saved grant do not: a Cancel on a lead's or a conductor's question, or a
+  // The manager's saved-grant clock goes too. Its pending restore and saved grant do not: a Cancel on a lead's or a conductor's question, or a
   // failed manager grant, must not delete a mark the person never answered (managerForget, from /callboard off and the restore's Cancel, does).
   managerSavedAt.delete(sid)
-  // v13: the saved grant goes too, so the session is not lead again after a restart.
+  // The saved grant goes too, so the session is not lead again after a restart.
   const unsave = Promise.resolve()
     .then(() => $.store.delete(`${c.LEAD_HINT_PREFIX}${sid}`))
     .then(() => $.store.delete(`${c.CONDUCTOR_HINT_PREFIX}${sid}`))
@@ -1030,7 +1031,7 @@ function leadDrop($: any, sid: string): Promise<boolean> {
   return Promise.all([presenceDrop($, sid), unsave]).then((r) => r[1])
 }
 
-// v13: the lead grant is kept in $.store as lead:<sid> = { pin, savedAt } (D5), written at the grant, at a restore and once a day while lead is on; leadSavedAt
+// The lead grant is kept in $.store as lead:<sid> = { pin, savedAt }, written at the grant, at a restore and once a day while lead is on; leadSavedAt
 // holds the time of the last write (or try) so the daily check reads no store. A failed write is logged and tried again a day later; the grant stays on.
 const leadSavedAt = new Map<string, number>()
 async function leadSave($: any, sid: string, pin: string) {
@@ -1047,7 +1048,7 @@ async function leadSave($: any, sid: string, pin: string) {
   if (pinOf(sid) !== pin) await Promise.resolve($.store.delete(`${c.LEAD_HINT_PREFIX}${sid}`)).catch(() => log($, sid, 'error', 'lead-hint-delete').catch(() => undefined))
 }
 
-// v13: a session whose saved grant names its own folder is lead again when it starts, with no question (D5). Started in session.start; a cwd read or a tool
+// A session whose saved grant names its own folder is lead again when it starts, with no question. Started in session.start; a cwd read or a tool
 // registration that does not answer in time is tried again from the tick, up to LEAD_RESTORE_TRIES ticks, and the key is kept. A grant for another folder is
 // deleted. A bound session keeps the key and is not made lead. The briefing note stays in the history from the first grant: no second note.
 const LEAD_RESTORE_TRIES = 15
@@ -1057,7 +1058,7 @@ async function leadRestoreTry($: any, me: string, hint: c.LeadHint): Promise<str
   const reject = (code: string) => log($, me, 'lead-restore-rejected', code)
   const epoch = epochOf(me)
   const dropped = () => epochOf(me) !== epoch
-  // A person's session only (F5): a headless run resumed under this id is not made lead; the key is kept and the tick asks again (the registry row of a
+  // A person's session only: a headless run resumed under this id is not made lead; the key is kept and the tick asks again (the registry row of a
   // reopened panel may come a moment after session.start).
   if (!(await interactive($, me))) return dropped() ? undefined : 'not-interactive'
   if (dropped()) return
@@ -1081,7 +1082,7 @@ async function leadRestoreTry($: any, me: string, hint: c.LeadHint): Promise<str
   if (leadBusy(me)) return
   leadGranting.add(me)
   try {
-    // S2b: the same second-lead check as /callboard lead. A refusal ends the try, keeps the key and tells the person. An unreadable session list or a
+    // The same second-lead check as /callboard lead. A refusal ends the try, keeps the key and tells the person. An unreadable session list or a
     // check that does not answer is tried again from the tick, as a cwd read is; the person is told once the tries run out (leadRestore).
     const named = await withTimeout($, secondLeadNo($, me, hint.pin), c.ENGINE_CALL_TIMEOUT_MS)
     if (dropped()) return
@@ -1125,14 +1126,14 @@ async function leadRestore($: any, me: string, hint: c.LeadHint, tries: number) 
   if (tries >= LEAD_RESTORE_TRIES) {
     leadRestorePending.delete(me)
     await log($, me, 'lead-restore-rejected', again)
-    // The second-lead check never got an answer: the key is kept, and the person is told why the lead did not come back (S2b).
+    // The second-lead check never got an answer: the key is kept, and the person is told why the lead did not come back.
     if (again === 'registry-unreadable' || again === 'lead-check-slow') toast($, c.leadNotRestoredToast(again))
     return
   }
   leadRestorePending.set(me, { hint, tries })
 }
 
-// v13.5 (2026-11-03): /callboard on is retired. What it left (the enabled state, the saved on:<sid> of v13.1) is cleared at session.start, with
+// What a retired /callboard on left (the enabled state, the saved on:<sid>) is cleared at session.start, with
 // no toast: it no longer means anything, and the session is eligible only as a bound lane.
 async function onLeftovers($: any, sid: string) {
   try {
@@ -1159,13 +1160,13 @@ async function onLeftovers($: any, sid: string) {
   }
 }
 
-// v13.1: the cut-compaction mark (c.CMP_PREFIX). cmpMarked: this load wrote the mark, so the tick clears it once the request has left `compacting`.
+// The cut-compaction mark (c.CMP_PREFIX). cmpMarked: this load wrote the mark, so the tick clears it once the request has left `compacting`.
 // cmpCutPending: a fresh mark found at start with no request left in $.state; the tick gives the note once the session counts as a person's.
 const cmpMarked = new Set<string>()
 const cmpCutPending = new Map<string, number>()
 const cmpClear = ($: any, sid: string) => {
   cmpMarked.delete(sid)
-  // Bounded (review c1, finding 4): a store that does not answer must not hold up PostCompact or the tick.
+  // Bounded: a store that does not answer must not hold up PostCompact or the tick.
   return withTimeout($, Promise.resolve($.store.delete(`${c.CMP_PREFIX}${sid}`)).catch(() => log($, sid, 'error', 'cmp-clear').catch(() => undefined)), c.ENGINE_CALL_TIMEOUT_MS)
 }
 // The note goes once, to a person's session only: a headless run under this id leaves the mark (it ages out), and after LEAD_RESTORE_TRIES ticks it is let go.
@@ -1192,7 +1193,7 @@ async function cmpCutTick($: any, sid: string, tries: number) {
 // The briefing as one user-role note (c.leadBriefingNote), once per grant and pin. A refused or failed append is logged and changes nothing else: lead stays on, and the
 // session is not marked briefed, so the next /callboard lead tries again. The mark is set before the await, so a second grant during the append adds no second note
 // and a /callboard off during it leaves no mark behind.
-// v14 (2026-11-04): the manager's note, keyed `manager:<name>` in the same map (a pin is an absolute path, so the two never meet).
+// The manager's note, keyed `manager:<name>` in the same map (a pin is an absolute path, so the two never meet).
 async function briefLead($: any, sid: string, pin: string, manager?: string) {
   const key = manager === undefined ? pin : `manager:${manager}`
   if (briefed.get(sid) === key) return
@@ -1211,8 +1212,8 @@ const regEntry = (r: RegRow): c.RegEntry => ({ sessionId: r.j.sessionId as strin
 
 // One presence file, every check: a plain 0600 file of ours, at most c.LEAD_FILE_MAX (4096) bytes, written in the last 30 s, naming its own file name as the sid; the registry has the
 // pid's own file for that session with the same start time, and ps agrees; the repo is one lane_create would accept; the asking folder is in it.
-// v14 (2026-11-04): cwd undefined skips the folder check (the manager's lane_compact looks a lead up by name, in any repo).
-// v14 (2026-11-04, review c2, CR3): errs, when given, is set when the presence check could not be made (a lead not clearly gone).
+// With cwd undefined, the folder check is skipped (the manager's lane_compact looks a lead up by name, in any repo).
+// errs, when given, is set when the presence check could not be made (a lead not clearly gone).
 // only: a filter on the file's repo that runs before any process is asked about it (the list of a conductor reads only the leads of its repos).
 async function leadFileOk($: any, p: { uid: number; root: string }, live: RegRow[], sid: string, cwd: string | undefined, errs?: { error: boolean }, only?: (repo: string) => boolean): Promise<c.LeadFile | undefined> {
   const lf = await presenceFileOk($, p, live, sid, (f) => f.level === 'lead' && (cwd === undefined || cwd === f.repo || c.within(f.repo, cwd)) && (only === undefined || only(f.repo)), errs)
@@ -1226,7 +1227,7 @@ async function presenceFileOk($: any, p: { uid: number; root: string }, live: Re
   if (r === 'error' && errs) errs.error = true
   return typeof r === 'string' ? undefined : r
 }
-// v14 (2026-11-04, review c1, L2): the same checks, saying how a file failed them: 'no' for a clear no (gone, not a plain file of ours, stale, another level, no
+// The same checks, saying how a file failed them: 'no' for a clear no (gone, not a plain file of ours, stale, another level, no
 // registry row, a dead pid, another start time, not claude), 'error' for a check that could not be made (a read that failed or kept changing, a ps that failed).
 // A trust check (presenceFileOk) takes both as no; manager-exists and a manager's stop count 'error' as a file that holds (fail closed).
 // Presence checks that could not be made, counted: an apply that spans one reads the count before and after its lookups (promptApply).
@@ -1241,7 +1242,7 @@ async function presenceRead($: any, p: { uid: number; root: string }, live: RegR
   // A lead rewrites its file by renaming a new one into place: a read that met the swap gets one more try.
   let f = await readSmallR($, path, p.uid, c.LEAD_FILE_MAX)
   if (f.state === 'changed') f = await readSmallR($, path, p.uid, c.LEAD_FILE_MAX)
-  // v14 (2026-11-04, review c2, CR2): one more read before a failed or changing read counts as 'error', so a passing failure is not a check that failed.
+  // One more read before a failed or changing read counts as 'error', so a passing failure is not a check that failed.
   if (f.state === 'failed' || f.state === 'changed') f = await readSmallR($, path, p.uid, c.LEAD_FILE_MAX)
   if (f.state === 'failed' || f.state === 'changed') return 'error'
   if (f.state !== 'ok' || !c.leadFileFresh(await $.clock.now(), f.mtimeMs)) return 'no'
@@ -1258,7 +1259,7 @@ async function presenceRead($: any, p: { uid: number; root: string }, live: RegR
   if (c.processRefusal(args === 'gone' ? undefined : args.out, lf.pid, undefined) !== undefined) return 'no'
   return lf
 }
-// psStart and psArgs with the failure told apart (review c1, L2): exit 0 is the answer; exit 1 with no output is ps's "no such process" (gone); any other
+// psStart and psArgs with the failure told apart: exit 0 is the answer; exit 1 with no output is ps's "no such process" (gone); any other
 // result is a ps that failed. A ps that throws still throws, as before.
 async function psOne($: any, pid: unknown, field: 'lstart=' | 'args='): Promise<{ out: string } | 'gone' | 'error'> {
   if (!Number.isInteger(pid) || (pid as number) <= 1) return 'gone'
@@ -1266,17 +1267,17 @@ async function psOne($: any, pid: unknown, field: 'lstart=' | 'args='): Promise<
   if (r.exitCode === 0) return { out: r.stdout }
   return r.exitCode === 1 && `${r.stdout ?? ''}${r.stderr ?? ''}`.trim() === '' ? 'gone' : 'error'
 }
-// The fresh presence file names, cut to the fresh ones before the cap (as leadsFor). strict (review c2, SA-L1): a list that throws throws, not "none".
+// The fresh presence file names, cut to the fresh ones before the cap (as leadsFor). strict: a list that throws throws, not "none".
 async function freshPresence($: any, p: { root: string }, strict = false): Promise<string[]> {
   const now = await $.clock.now()
   const list = (await (strict ? $.fs.list(`${p.root}/leads`) : $.fs.list(`${p.root}/leads`).catch(() => []))) as { name: string; mtimeMs?: number }[]
   return list.filter((f) => f.name.endsWith('.json') && c.SID_RE.test(f.name.slice(0, -5)) && typeof f.mtimeMs === 'number' && c.leadFileFresh(now, f.mtimeMs)).map((f) => f.name.slice(0, -5)).sort().slice(0, c.LEAD_FILES_MAX)
 }
-// v14 (2026-11-04): every live manager file of another session, each with its registry name if that is a reserved one (c.managerNameOf). manager-exists counts
-// every such file, whatever its name; a lead takes a compact cue only while one with a reserved name is live (S7).
-// Review c1 (L2): a fresh file whose check could not be made (a read or ps that failed) is listed too, unverified, with no name: manager-exists counts it
+// Every live manager file of another session, each with its registry name if that is a reserved one (c.managerNameOf). manager-exists counts
+// every such file, whatever its name; a lead takes a compact cue only while one with a reserved name is live.
+// A fresh file whose check could not be made (a read or ps that failed) is listed too, unverified, with no name: manager-exists counts it
 // (fail closed); managerTrusted never does.
-// Review c2 (SA-L1): a leads folder that is there but fails its checks, or whose list throws, is one unverified manager (manager-exists counts it); a missing
+// A leads folder that is there but fails its checks, or whose list throws, is one unverified manager (manager-exists counts it); a missing
 // folder is none.
 async function managersLive($: any, live: RegRow[], except: string): Promise<{ sid: string; name?: string; unverified?: true }[]> {
   const d = await presenceNames($)
@@ -1293,12 +1294,12 @@ async function managersLive($: any, live: RegRow[], except: string): Promise<{ s
   }
   return out
 }
-// A live manager whose cue a session may take (S7; review c1 W1 and the lead's on-cue section): its file passed every check and the registry gives it a reserved
+// A live manager whose cue a session may take: its file passed every check and the registry gives it a reserved
 // name no other live row carries.
 async function managerTrusted($: any, live: RegRow[], except: string): Promise<boolean> {
   return (await managersLive($, live, except)).some((m) => m.unverified !== true && m.name !== undefined)
 }
-// v15 S7: the live conductors a lead (pin) takes a compact cue from: another session's fresh conductor file that passes presenceCheck and lists the pin, whose
+// The live conductors a lead (pin) takes a compact cue from: another session's fresh conductor file that passes presenceCheck and lists the pin, whose
 // home is its own real path, not too broad and a git root; that session's saved grant (conductor:<sid>) parses, names the same home and approves the pin; and the
 // list file at that home, resolved, lists the pin. Any read that fails: not trusted. Names by c.laneLeadOf; at most 4. A filter, not proof (as the manager's).
 const CONDUCTORS_SEEN_MAX = 4
@@ -1306,7 +1307,7 @@ async function conductorsTrusted($: any, live: RegRow[], except: string, pin: st
   if (pin === undefined) return []
   return conductorsReaching($, live, except, (r) => r === pin)
 }
-// The same checks for the conductors whose approved list holds a repo that `match` accepts (PR 3: a request's folder is in a conductor's reach when a pin holds it,
+// The same checks for the conductors whose approved list holds a repo that `match` accepts (a request's folder is in a conductor's reach when a pin holds it,
 // the same within-folder match a lead's pin gets), every one of them judged against the pins that matched.
 async function conductorsReaching($: any, live: RegRow[], except: string, match: (repo: string) => boolean): Promise<{ sid: string; name?: string }[]> {
   const d = await presenceNames($)
@@ -1332,9 +1333,9 @@ async function conductorsReaching($: any, live: RegRow[], except: string, match:
   }
   return out
 }
-// v14 (2026-11-04, review c1, M2): whether a session holds a fresh presence file of any level (a lead, a conductor, the manager) that passes the checks, or
+// Whether a session holds a fresh presence file of any level (a lead, a conductor, the manager) that passes the checks, or
 // whose check could not be made (fail closed). A manager's stop is never sent to such a session.
-// Review c2 (SA-L1): a leads folder that is there but fails its checks, or whose list throws, counts as held; a missing folder does not.
+// A leads folder that is there but fails its checks, or whose list throws, counts as held; a missing folder does not.
 async function presenceHeld($: any, live: RegRow[], sid: string): Promise<boolean> {
   const d = await presenceNames($)
   if (d === 'none') return false
@@ -1342,7 +1343,7 @@ async function presenceHeld($: any, live: RegRow[], sid: string): Promise<boolea
   if (!d.names.includes(sid)) return false
   return (await presenceCheck($, d.p, live, sid, () => true)) !== 'no'
 }
-// v14 (2026-11-04, review c2, SA-L1): the fresh presence file names for a check that fails closed: 'none' when the callboard or leads folder is not there,
+// The fresh presence file names for a check that fails closed: 'none' when the callboard or leads folder is not there,
 // 'error' when one is there but fails dirOk's rules, its stat could not be made, or the list throws.
 async function presenceNames($: any): Promise<{ p: { uid: number; root: string }; names: string[] } | 'none' | 'error'> {
   const p = await where($)
@@ -1365,7 +1366,7 @@ async function leadsDirOk($: any): Promise<{ uid: number; root: string } | undef
 }
 
 // Every live lead whose repo holds this folder. The list is cut to the fresh files before the cap, so a pile of old files cannot push a live one out of it.
-// v14: cwd undefined, every live lead in any repo. Review c2 (CR3): with errs, the folder and its list fail closed (presenceNames), and errs is set when they,
+// With cwd undefined, every live lead in any repo. With errs, the folder and its list fail closed (presenceNames), and errs is set when they,
 // or a lead's check, could not be made.
 async function leadsFor($: any, live: RegRow[], cwd: string | undefined, repo?: string, errs?: { error: boolean }, only?: (repo: string) => boolean): Promise<c.LeadFile[]> {
   const d = errs ? await presenceNames($) : await leadsDirOk($).then(async (p) => (p ? { p, names: await freshPresence($, p) } : ('none' as const)))
@@ -1380,7 +1381,7 @@ async function leadsFor($: any, live: RegRow[], cwd: string | undefined, repo?: 
   return found
 }
 
-// The live lead for this folder: the one there is, or with several (S2b) the one named pick. Several and no pick: the choices, their usable names (c.leadNameOf)
+// The live lead for this folder: the one there is, or with several the one named pick. Several and no pick: the choices, their usable names (c.leadNameOf)
 // sorted, and ambiguous-lead when none has one. A pick no live lead carries any more: changed.
 async function findLead($: any, live: RegRow[], cwd: string, pick?: string): Promise<{ lead: c.LeadFile } | { no: string } | { choices: string[] }> {
   const found = await leadsFor($, live, cwd)
@@ -1394,7 +1395,7 @@ async function findLead($: any, live: RegRow[], cwd: string, pick?: string): Pro
   return choices.length > 0 ? { choices } : { no: 'ambiguous-lead' }
 }
 
-// S2b: a second lead in the repo of the pin needs a usable name, and so does every other lead there (c.secondLeadRefusal). An unreadable registry refuses.
+// A second lead in the repo of the pin needs a usable name, and so does every other lead there (c.secondLeadRefusal). An unreadable registry refuses.
 async function secondLeadNo($: any, sid: string, pin: string): Promise<string | undefined> {
   const live = await registryEntries($)
   if (!live) return 'registry-unreadable'
@@ -1410,7 +1411,7 @@ const laneBrief = new Map<string, c.LaneFacts>()
 const laneBriefed = new Map<string, string>()
 
 // The facts of a binding just written, kept at once without a lead; then the lead. Only a lead with a valid presence file for the lane's own repo counts (never
-// one of a parent repo, nor any lead of a lane with no repo): for a record naming its lead (S2), the live lead with that registry name and no other; else the
+// one of a parent repo, nor any lead of a lane with no repo): for a record naming its lead, the live lead with that registry name and no other; else the
 // attached record's lead while it holds one, else the one lead of that repo. It is named only as c.laneLeadOf allows. The lead is added only to the entry
 // this call kept, so a detach meanwhile leaves nothing behind. A failure keeps the generic lead wording and is logged as lane-lead; c.laneBriefing checks
 // every field again.
@@ -1449,7 +1450,7 @@ async function briefLane($: any, sid: string) {
 }
 
 // An attached lane works with whichever lead holds a valid grant for its repo (consent given under one lead carries to the next one the person allows there);
-// the store is writable by any process of the user, so the presence file passes every check; the record's leadName (S2) can only narrow it, never stand in.
+// the store is writable by any process of the user, so the presence file passes every check; the record's leadName can only narrow it, never stand in.
 // The lead's repo must be the lane's own repo, not any repo that happens to hold the folder (a lead at a parent repo has no business with a nested one).
 // A record naming its lead needs a live lead of that repo with that registry name (c.leadNameOf); a legacy record, any lead of the repo.
 async function leadHere($: any, cwd: string, repo: string, leadName: string | undefined, reg: Reg = () => registryEntries($)): Promise<boolean> {
@@ -1522,7 +1523,7 @@ async function ownWrite<T>($: any, sid: string, fn: () => Promise<T>): Promise<T
   }
 }
 async function watchTick($: any, sid: string) {
-  // Review c2 (N1): a check-in runs beside the tick; one that went out during this step's reads wins the moment.
+  // A check-in runs beside the tick; one that went out during this step's reads wins the moment.
   const submitsAt = submits
   if (ownWriting.has(sid)) return
   // After a compaction the resume text goes out from the tick: a notice must not take the idle moment before it.
@@ -1567,7 +1568,7 @@ async function leadRun($: any, e: unknown, body: () => Promise<any>) {
   // What the lead is told by this call (or looks at in it) needs no notice of its own; a change that lands while the body runs is news again.
   if (served && w) w.seen = w.told = w.cur
   const out = await body()
-  // v13.6 (review c1, S1): the lead acted on that lane itself (a served call that succeeded), so what the check-in saw of it starts over.
+  // The lead acted on that lane itself (a served call that succeeded), so what the check-in saw of it starts over.
   if (served && typeof out?.result === 'string' && OBS_CLEAR_TOOLS.includes(String((e as { tool?: unknown }).tool))) laneObs.get(sid)?.delete(String((e as { lane?: unknown }).lane))
   if (!moved || !out) return out
   // A lane_list text ends in a table, so the note goes after a blank line, never on a table row.
@@ -1654,7 +1655,7 @@ async function leadTools($: any, sid: string) {
 }
 
 // The three prompt tools, declared for a lead, a conductor and the manager alike (the handlers are shared; what a tier may do with a request depends on its place in
-// the chain, PLAN-PR3 §3). They answer only while the person has turned escalation on.
+// the chain). They answer only while the person has turned escalation on.
 async function promptToolsRegister($: any) {
   const text = { type: 'string' }
   await $.tool.register({
@@ -1674,12 +1675,12 @@ async function promptToolsRegister($: any) {
   })
 }
 
-// v14 (2026-11-04, review c1, 01:39): whether a trusted manager (managerTrusted) runs on the Mac, as a lead's tick last saw it, for the lead's on-cue
+// Whether a trusted manager (managerTrusted) runs on the Mac, as a lead's tick last saw it, for the lead's on-cue
 // section: read at most once a minute, so prompt.compose reads no file. A read that fails or throws counts as none.
-// Review c2 (CR1): a due look runs under ACTION_TIMEOUT_MS (managerSeenStep); one that times out or throws serves no section (live false) and frees the busy
+// A due look runs under ACTION_TIMEOUT_MS (managerSeenStep); one that times out or throws serves no section (live false) and frees the busy
 // mark, so the next minute reads again. managerSeenBusy holds the running look's own token, and an answer is kept only while its stamp is still the one
 // stored: a look that timed out, or a drop meanwhile (leadDrop, session.end), leaves nothing behind.
-// v15 S7: conductors, the names ('' for none) of the conductors trusted for the lead's pin, as the same look saw them.
+// conductors: the names ('' for none) of the conductors trusted for the lead's pin, as the same look saw them.
 const managerSeen = new Map<string, { at: number; live: boolean; conductors?: string[] }>()
 const managerSeenBusy = new Map<string, object>()
 const MANAGER_SEEN_EVERY_MS = 60_000
@@ -1700,7 +1701,7 @@ async function managerSeenStep($: any, sid: string) {
   const now = await $.clock.now()
   const last = managerSeen.get(sid)
   if (managerSeenBusy.has(sid) || (last !== undefined && now >= last.at && now - last.at < MANAGER_SEEN_EVERY_MS)) return
-  // v15 S7b: the conductors last seen stay served while the new look runs, as live does.
+  // The conductors last seen stay served while the new look runs, as live does.
   const stamp = { at: now, live: last?.live ?? false, conductors: last?.conductors }
   managerSeen.set(sid, stamp)
   const token = {}
@@ -1717,7 +1718,7 @@ async function managerSeenStep($: any, sid: string) {
     })
 }
 
-// v14 (2026-11-04): the manager's five tools, declared at its grant (six from v14.1 to v15.2: lane_remove, dropped in v15.3). The handlers are the lead's (leadBase refuses every other lane tool at manager level).
+// The manager's five lane tools, declared at its grant, then the three prompt tools (eight in all, c.MANAGER_TOOLS). The handlers are the lead's (leadBase refuses every other lane tool at manager level).
 const managerDeclared = new Set<string>()
 async function managerTools($: any, sid: string) {
   if (managerDeclared.has(sid)) return
@@ -1742,8 +1743,8 @@ async function recMatch($: any, rec: string | undefined, l: c.Lane): Promise<boo
   return l.adopted === true && l.leadName !== undefined && c.recOk(rec, await sha($, c.recordTextLegacy(l)))
 }
 
-// v15.3 (2026-11-06): lane_remove is gone; lane_retire and lane_terminate delete the lane's record themselves. A lane is live when a registry row carries its
-// name, or (audit L1) when its record names a session that has a live row under any name (renamed by hand, or opened and not yet renamed): name-in-use; a
+// lane_retire and lane_terminate delete the lane's record themselves. A lane is live when a registry row carries its
+// name, or when its record names a session that has a live row under any name (renamed by hand, or opened and not yet renamed): name-in-use; a
 // session holding a live presence file is target-is-lead. Used for a lane with no live session before anything is asked and again inside the store lock.
 async function laneLive($: any, live: RegRow[], l: { name: string; sid?: string }): Promise<string | undefined> {
   const entries = live.flatMap((r) => (typeof r.j.sessionId === 'string' ? [regEntry(r)] : []))
@@ -1809,7 +1810,7 @@ async function stopNoSession($: any, e: unknown, sid: string, verb: 'retire' | '
   if (!live) return no('registry-unreadable', c.reasonWhy('registry-unreadable'))
   const refused = await laneLive($, live, l)
   if (refused) return no(refused, c.reasonWhy(refused))
-  // The same question for both verbs (review): the repo by its path, that the lane has no live session, and the parked sentence. A retire at lead level asks only
+  // The same question for both verbs: the repo by its path, that the lane has no live session, and the parked sentence. A retire at lead level asks only
   // for a parked lane, whose record holds the only callboard pointer to its saved conversation.
   if (verb === 'terminate' || level === 'manager' || l.parked !== undefined) {
     const p = await where($)
@@ -1819,7 +1820,7 @@ async function stopNoSession($: any, e: unknown, sid: string, verb: 'retire' | '
     if (r !== 'yes') return no('not-confirmed', 'the person did not confirm. Nothing was removed.')
   }
   if (!held()) return no('grant-changed', c.reasonWhy('grant-changed'))
-  // v15.4: a call the engine abandoned (its answer went out already) removes nothing.
+  // A call the engine abandoned (its answer went out already) removes nothing.
   if (abandoned()) return { deny: leadReason(verb, c.reasonWhy('abandoned')) }
   const w = await removeRecord($, e, sid, l.src, l.name, { kind: 'idle', sid: l.sid, parked: l.parked !== undefined, seen: l, held })
   if ('no' in w) return no(w.no, w.why ?? c.reasonWhy(w.no))
@@ -1988,7 +1989,7 @@ async function resultDirOk($: any, p: { uid: number; root: string }, folder: str
 async function cueExchange($: any, sid: string, laneName: string, toSid: string, verb: c.Verb, deadline: number, no: (reason: string, why: string) => Promise<{ deny: string }>, retire = false): Promise<{ deny: string } | undefined> {
   const text = c.cueLine(verb, laneName, verb === 'rename' ? sid : undefined)
   if (!text) return no('grammar', 'bad cue.')
-  // v14: any grant (a lead's or the manager's); each tool has checked its own reach.
+  // Any grant (a lead's or the manager's); each tool has checked its own reach.
   if (!grants.has(sid)) return no('off', 'the lead tools are off. Ask the person to turn them on.')
   const p = await where($)
   if (!p) return no('no-paths', 'no-paths')
@@ -2203,25 +2204,25 @@ async function interactive($: any, sid: string): Promise<boolean> {
   if ((await $.state.get(interactiveRef)).value === true) return true
   const row = await registryOf($, sid, ownReg($))
   if (row === undefined) return false
-  // v13.3 (security audit c1): in a config folder other than ~/.claude the row must be a person's (kind interactive): a bg or kind-less row there is not a person's
+  // In a config folder other than ~/.claude the row must be a person's (kind interactive): a bg or kind-less row there is not a person's
   // session for the restores, the rebind or the self request. Under ~/.claude any row still counts, as before.
   const p = await where($)
   return p?.own === p?.sessions || row.kind === 'interactive'
 }
 
-// v13.2 (security audit c1): a person's own registry row, as the engine writes it for a VS Code panel or a terminal (kind interactive). A `claude --bg` background
+// A person's own registry row, as the engine writes it for a VS Code panel or a terminal (kind interactive). A `claude --bg` background
 // worker has a row too (kind background), so interactive() passes it; this does not. A row with no kind, two rows, or no row fail.
-// v13.3: the default registry is the own one (CLAUDE_CONFIG_DIR); a caller that works from a cue passes the plain one.
+// The default registry is the own one (CLAUDE_CONFIG_DIR); a caller that works from a cue passes the plain one.
 async function personRow($: any, sid: string, reg: Reg = ownReg($)): Promise<boolean> {
   return (await registryOf($, sid, reg))?.kind === 'interactive'
 }
 
-// Whether this session may be nudged at all: a person's session with its own interactive registry row (v13.2: no longer isInteractive alone, so a worker is
+// Whether this session may be nudged at all: a person's session with its own interactive registry row (not isInteractive alone, so a worker is
 // never nudged). One that is not bound or on gets the nudge grant for its own `now` request. interactive() still gates the self request and the restores.
 const mayNudge = ($: any, sid: string): Promise<boolean> => personRow($, sid)
 
 // Written only if nudgeDue is unchanged since the read: a lead nudge recorded meanwhile (by the tick, while this hook awaited) is never replaced. ping: the
-// keepalive step recorded it in place of a ping (v13.2), so a drop is logged as a missed ping.
+// keepalive step recorded it in place of a ping, so a drop is logged as a missed ping.
 async function recordNudge($: any, sid: string, kind: c.NudgeDue['kind'], now: number, ifVersion: number, ping = false, again = false) {
   if ((await $.state.set(nudgeDueRef, { kind, at: now, ...(ping ? { ping: true } : {}), ...(again ? { again: true } : {}) }, { ifVersion })).isSet === false) {
     await log($, sid, 'nudge-skipped', 'changed')
@@ -2231,7 +2232,7 @@ async function recordNudge($: any, sid: string, kind: c.NudgeDue['kind'], now: n
   return true
 }
 
-// v13.2: the settings of /callboard config, machine-wide in $.store. Read at session start and then at most once a minute (the tick and the nudge hooks
+// The settings of /callboard config, machine-wide in $.store. Read at session start and then at most once a minute (the tick and the nudge hooks
 // call this), so a change made in one session reaches the others within a minute. A read that fails or times out keeps the last good value (the
 // defaults before any); a field that fell back is logged once per load of the mod.
 let cfg: c.Config = { ...c.CONFIG_DEFAULTS }
@@ -2257,10 +2258,10 @@ async function cfgGet($: any, sid: string, force = false): Promise<c.Config> {
   return cfg
 }
 
-// v15.1 (2026-11-05): this machine's reserved names (c.RESERVE_KEY), read as the settings are: fresh at each start and, review c1, fresh again on each
+// This machine's reserved names (c.RESERVE_KEY), read as the settings are: fresh at each start and fresh again on each
 // path that judges a new name or the manager's (lane_create, /callboard lane, /callboard lead, /callboard manager); else at most once a minute from the tick. A read that fails or times out keeps the last good list. The list lands in core (c.setLocalReserved), where
 // reservedHit and isManagerName read it.
-// Review c1: the read time moves only on a good read, so a failed one is tried again from the next tick; reservedGen drops a read that a /callboard reserve
+// The read time moves only on a good read, so a failed one is tried again from the next tick; reservedGen drops a read that a /callboard reserve
 // write overtook (that write set the list itself).
 let reservedReadAt: number | undefined
 let reservedGen = 0
@@ -2290,7 +2291,7 @@ async function laneSignedDone($: any, sid: string): Promise<boolean> {
 
 // The session's state, judged by the tick (process and report reads, too slow for a hook): a bound lane signed done (its report signed and
 // current) is not nudged by its own level; working is a bound lane not signed done since its last prompt, or a background agent or shell still
-// running. A check that cannot tell counts as working. v16: the state no longer changes which level nudges (the size alone does); the cache nudge
+// running. A check that cannot tell counts as working. The state does not change which level nudges (the size alone does); the cache nudge
 // still goes only to an idle one.
 async function thresholdState($: any, sid: string): Promise<'done' | 'working' | 'idle'> {
   if ((await $.state.get(lane)).value != null) return (await laneSignedDone($, sid)) ? 'done' : 'working'
@@ -2309,9 +2310,9 @@ async function thresholdNudge($: any, sid: string) {
   const ct = await counts($)
   const tokens = (await $.session.usage()).context.tokens ?? 0
   const lv = await cfgGet($, sid)
-  // v14 (2026-11-04): at or past the working level a soft nudge inside the gap may be followed by one hard one.
+  // At or past the working level a soft nudge inside the gap may be followed by one hard one.
   if (!c.nudgeAllowed(ct, now, tokens >= lv.workingK * 1000)) return
-  // v16 (2026-11-08): every session, a lead too, is nudged from the idle level on.
+  // Every session, a lead too, is nudged from the idle level on.
   if (tokens < lv.idleK * 1000 || c.compactAllowed(ct, tokens, now)) return
   // After the level, so a turn below it reads no registry.
   if (!(await mayNudge($, sid))) return
@@ -2319,7 +2320,7 @@ async function thresholdNudge($: any, sid: string) {
 }
 
 // The tick's step: a recorded nudge is dropped once stale (10 minutes), once the session has a request of its own, or once it may not compact;
-// it waits only while the session is not idle (v16: a busy session's nudge may instead be taken by the PostToolUse hook, midTurnNudge). A `threshold` nudge then gets
+// it waits only while the session is not idle (a busy session's nudge may instead be taken by the PostToolUse hook, midTurnNudge). A `threshold` nudge then gets
 // its kind from the size alone (thresholdKind): none for a lane signed done; below the idle level it is dropped. It is cleared and stamped, and the grant (nudgedAt) set, before the submit (as the compaction
 // resume is), so a submit slower than the timeout still goes out once and is never retried; only a submit that threw takes the grant back.
 async function nudgeTick($: any, sid: string) {
@@ -2330,14 +2331,14 @@ async function nudgeTick($: any, sid: string) {
   const drop = async (why: string) => {
     await $.state.set(nudgeDueRef, null)
     await log($, sid, 'nudge-dropped', why)
-    // v13.2: a nudge the keepalive step recorded in place of a ping: that gap gets no ping either.
+    // A nudge the keepalive step recorded in place of a ping: that gap gets no ping either.
     if (due.ping === true) await log($, sid, 'keepalive-skipped', 'nudge-dropped')
   }
   if (!c.nudgeDueFresh(due, now)) return drop('expired')
   if ((await $.state.get(request)).value) return drop('request')
   if (!(await mayNudge($, sid))) return drop('not-interactive')
   const tokens = (await $.session.usage()).context.tokens ?? 0
-  // A lead's nudge is an order (v16.1): no context floor, and the 30-minute gap does not apply (the hourly cap does).
+  // A lead's nudge is an order: no context floor, and the 30-minute gap does not apply (the hourly cap does).
   const no = c.compactAllowed(await counts($), tokens, now, due.kind === 'lead')
   if (no) return drop(no)
   if ((await idleCheck($, sid, ownReg($))) !== undefined) return
@@ -2347,8 +2348,7 @@ async function nudgeTick($: any, sid: string) {
     kind = c.thresholdKind(tokens, await cfgGet($, sid))
     if (!kind) return drop('below-level')
   }
-  // v14: the kind follows the size now; one that fell back to the soft text (a compaction meanwhile) keeps the gap. Every kind is checked here, not only a threshold one
-  // (review, 2026-11-08): a lead's or cache nudge recorded while a mid-turn nudge was being claimed would otherwise go out after it, inside the gap.
+  // The kind follows the size now; one that fell back to the soft text (a compaction meanwhile) keeps the gap. Every kind is checked here, not only a threshold one: a lead's or cache nudge recorded while a mid-turn nudge was being claimed would otherwise go out after it, inside the gap.
   // An order is sent past the 30-minute gap, but not after a nudge that went out since it was recorded (the race this check was added for).
   const ct = await counts($)
   if (kind === 'lead' && (ct.lastNudgeMs ?? 0) >= due.at) return drop('nudge-limit')
@@ -2362,7 +2362,7 @@ async function nudgeTick($: any, sid: string) {
   await log($, sid, sent === 'ok' ? 'nudged' : sent === 'timeout' ? 'nudge-unconfirmed' : 'nudge-failed', kind!)
 }
 
-// v16 (2026-11-08): the nudge in the middle of a turn. A session that crosses a level inside a long turn would otherwise learn of it only when the turn ends
+// The nudge in the middle of a turn. A session that crosses a level inside a long turn would otherwise learn of it only when the turn ends
 // (thresholdNudge) and the tick submits it, and a lane keeps working past 400k meanwhile. After a main-agent tool call (PostToolUse, or its failure) the hook
 // below returns the nudge text as additionalContext, which the model reads with the tool's result, before its next step. Same limits as the tick's nudge:
 // no request of the session's own, a person's interactive session, not a lane signed done, nudgeAllowed (30-minute gap, one hard after a soft, 3 an hour),
@@ -2415,7 +2415,7 @@ async function midTurnNudge($: any, e: any): Promise<string | undefined> {
   }
 }
 
-// The fallback of a mid-turn nudge (2026-11-08). The engine may not surface the context, or the model may read it and not act: when the turn that carried it ends
+// The fallback of a mid-turn nudge. The engine may not surface the context, or the model may read it and not act: when the turn that carried it ends
 // with no request of the session's own (no request_compact), one `threshold` nudge is recorded with `again`, which skips the 30-minute gap, and the tick sends it as
 // the idle turn like any nudge. Once only: that resend is not a mid-turn one, so it records nothing further; a request, a compaction (the compaction gap, or a size back
 // under the idle level), a lane signed done or a pending nudge of another kind send nothing (the tick's own checks).
@@ -2437,26 +2437,26 @@ async function postToolHook($: any, e: any, next: any): Promise<any> {
   return { ...(r ?? {}), additionalContext: [...(Array.isArray(extra) ? extra : []), ...texts] }
 }
 
-// v13.2 (2026-11-02): the keepalive ping. The prompt cache lives an hour from the last call, and a turn's last call is at its end, so a session left idle past
+// The keepalive ping. The prompt cache lives an hour from the last call, and a turn's last call is at its end, so a session left idle past
 // that pays a full re-write at its next turn. The tick's last step sends one fixed ping when, cheap checks first:
 // - keepalive is on and no callboard dialog is open;
 // - a main-agent turn was seen to end (turnEndAt: after a restart nothing is pinged until one has), the gap since then (or since the last prompt, if later) is at
 //   least pingAfterMin, and no ping was tried in this gap;
-// - v13.5: any interactive session (personRow below; until v13.5 a bound lane, on, or a lead, D4);
-// - v13.4: the Mac did not sleep in this gap (else logged once);
+// - any interactive session (personRow below);
+// - the Mac did not sleep in this gap (else logged once);
 // - the last real turn ended less than stopAfterH ago (else logged once; a real turn starts the count again), and the gap is at most KEEPALIVE_COLD_MS (past that
 //   the cache is cold: logged once, and the next turn starts a new gap);
 // - the session has no request and no recorded nudge;
 // - the prompt box is empty, the registry reads idle and waiting for nothing, and the session's own registry row is an interactive one: a `claude --bg` background
 //   worker (kind background) or a run with no row is never pinged;
 // - nothing else was submitted in this tick (a nudge, a resume, a notice, a cue's prompt): one submit per tick.
-// Then pingAt is stamped (one attempt per gap, whatever follows): a lane signed done gets nothing (D5); a session past its compact level that may be nudged gets
-// the nudge instead, recorded for nudgeTick (D2); v13.4: an idle one past CACHE_NUDGE_TOKENS after CACHE_NUDGE_AFTER_PINGS pings gets the cache nudge; any other
+// Then pingAt is stamped (one attempt per gap, whatever follows): a lane signed done gets nothing; a session past its compact level that may be nudged gets
+// the nudge instead, recorded for nudgeTick; an idle one past CACHE_NUDGE_TOKENS after CACHE_NUDGE_AFTER_PINGS pings gets the cache nudge; any other
 // gets the ping. A ping that throws or times out is logged and not tried again in that gap.
 const lastSubmitAt = new Map<string, number>()
 const turnKind = new Map<string, 'ping' | 'unreal'>()
 const kaLogged = new Map<string, string>()
-// v13.4: the pings that went out since the real turn that ended at realEnd.
+// The pings that went out since the real turn that ended at realEnd.
 const pingCount = new Map<string, { realEnd: number; count: number }>()
 async function kaOnce($: any, sid: string, key: string, event: string, reason = '') {
   if (kaLogged.get(sid) === key) return
@@ -2479,8 +2479,8 @@ async function keepaliveTick($: any, sid: string, submitsAtStart: number) {
   // `/callboard rest`: the person left this session alone for this gap, so no ping and no cache nudge in its slot; the cache may expire.
   const restAt = (await $.state.get(restRef)).value
   if (typeof restAt === 'number') return kaOnce($, sid, `rest:${restAt}`, 'keepalive-skipped', 'rest')
-  // v13.5 (2026-11-03): every interactive session, not only a lead, a lane or a session with callboard on; personRow below keeps it to a person's.
-  // v13.4 (2026-11-03): the Mac slept in this gap (lid closed, a dark wake): no ping; the next turn's gap pings as usual.
+  // Every interactive session, not only a lead, a lane or a session with callboard on; personRow below keeps it to a person's.
+  // The Mac slept in this gap (lid closed, a dark wake): no ping; the next turn's gap pings as usual.
   if (wokeAt !== undefined && wokeAt >= gapStart) return kaOnce($, sid, `asleep:${gapStart}`, 'keepalive-skipped', 'asleep')
   if (now - realEnd >= k.stopAfterH * c.HOUR_MS) return kaOnce($, sid, `stopped:${realEnd}`, 'keepalive-stopped')
   if (gap > c.KEEPALIVE_COLD_MS) return kaOnce($, sid, `cold:${gapStart}`, 'keepalive-skipped', 'cold')
@@ -2497,11 +2497,11 @@ async function keepaliveTick($: any, sid: string, submitsAtStart: number) {
   const tokens = (await $.session.usage()).context.tokens ?? 0
   const ct = await counts($)
   const kind = c.thresholdKind(tokens, k)
-  // The reads since the idle check take time: a submit or a draft that came meanwhile wins, and this gap is missed (review c1).
+  // The reads since the idle check take time: a submit or a draft that came meanwhile wins, and this gap is missed.
   const draft = (await $.prompt.read()).text
   if (submits !== submitsAtStart || draft !== '' || (lastSubmitAt.get(sid) ?? 0) > gapStart) return kaOnce($, sid, `late:${gapStart}`, 'keepalive-skipped', 'late')
   if (kind && c.nudgeAllowed(ct, now, kind === 'working') && !c.compactAllowed(ct, tokens, now)) return recordNudge($, sid, kind, now, due.version, true)
-  // v13.4 (2026-11-03): an idle session past CACHE_NUDGE_TOKENS that had CACHE_NUDGE_AFTER_PINGS pings since its last real turn gets the cache nudge
+  // An idle session past CACHE_NUDGE_TOKENS that had CACHE_NUDGE_AFTER_PINGS pings since its last real turn gets the cache nudge
   // in this slot instead: compacting while the cache is warm costs less than keeping it warm.
   const pc = pingCount.get(sid)
   const pinged = pc !== undefined && pc.realEnd === realEnd ? pc.count : 0
@@ -2509,8 +2509,8 @@ async function keepaliveTick($: any, sid: string, submitsAtStart: number) {
     return recordNudge($, sid, 'cache', now, due.version, true)
   const sent = await withTimeout($, submitOwn($, c.KEEPALIVE_TEXT, false).then(() => 'ok' as const, () => 'failed' as const), ACTION_TIMEOUT_MS)
   if (sent === 'ok') pingCount.set(sid, { realEnd, count: pinged + 1 })
-  // A ping that failed leaves no mark its prompt hook may have set: the next turn is not taken for its turn (review c1). A timed-out one may still
-  // go out, so its mark stays (review c2).
+  // A ping that failed leaves no mark its prompt hook may have set: the next turn is not taken for its turn. A timed-out one may still
+  // go out, so its mark stays.
   if (sent === 'failed') turnKind.delete(sid)
   await log($, sid, sent === 'ok' ? 'keepalive' : sent === 'timeout' ? 'keepalive-unconfirmed' : 'keepalive-failed')
 }
@@ -2529,7 +2529,7 @@ async function leadNudge($: any, sid: string, now: number, answer: Answer, refus
     await answer('held', 'nudged')
     return log($, sid, 'nudge-pending', pending.kind)
   }
-  // The order (v16.1): the context floor does not apply and neither does the 30-minute gap; the compaction gap and the hourly nudge cap do.
+  // The order: the context floor does not apply and neither does the 30-minute gap; the compaction gap and the hourly nudge cap do.
   const ct = await counts($)
   const no = c.compactAllowed(ct, (await $.session.usage()).context.tokens ?? 0, now, true)
   if (no) return refuse(no)
@@ -2586,7 +2586,7 @@ async function restoreFromHint($: any, sid: string, now: number, stale: () => bo
     const answer = await ask($, c.restoreQuestion(hint.lane.name), c.RESTORE_YES, c.RESTORE_NO, c.HEADER.restore)
     if (answer !== 'yes') {
       if (answer === 'no') restoredOnce.add(sid)
-      // v13.5: /callboard lane stops on a question nobody answered, and goes on to Join after a Cancel or a refusal.
+      // /callboard lane stops on a question nobody answered, and goes on to Join after a Cancel or a refusal.
       if (answer === 'timed-out') {
         await timedOut($, sid, 'restore-timed-out', c.TIMED_OUT_RESTORE_TOAST)
         return 'timed-out' as const
@@ -2608,7 +2608,7 @@ async function restoreFromHint($: any, sid: string, now: number, stale: () => bo
     const noNow = c.restoreRefusal(hint, lanesNow, await sessionRoot($), othersNow)
     if (noNow) return notRestored(noNow, noNow === 'name-in-use')
     if (stale()) return log($, sid, 'refused', 'off-meanwhile')
-    // A rebind that landed while the question was open (v13) bound the session already, and said so: no "things changed" toast then.
+    // A rebind that landed while the question was open bound the session already, and said so: no "things changed" toast then.
     if (leadBusy(sid) || laneBinding.has(sid)) {
       if (!rebound.has(sid)) toast($, c.restoreChangedToast(hint.lane.name))
       return leadNo()
@@ -2716,9 +2716,9 @@ async function doCompact($: any, sid: string, req: Request, fromCue: boolean, an
     return log($, sid, 'dropped', 'cancelled-before-compact')
   }
   await $.state.set(request, { ...req, phase: 'compacting', compactingMs: await $.clock.now() })
-  // v16.1: a compaction that begins spends the order (whatever request began it): the orderer's deadline finds no stamp. A request that ends without one leaves it.
+  // A compaction that begins spends the order (whatever request began it): the orderer's deadline finds no stamp. A request that ends without one leaves it.
   const spent = await orderSpend($, sid)
-  // v13.1: the mark that survives a restart (c.CMP_PREFIX); set after `compacting`, so a tick in between cannot clear it as left behind.
+  // The mark that survives a restart (c.CMP_PREFIX); set after `compacting`, so a tick in between cannot clear it as left behind.
   cmpMarked.add(sid)
   const markAt = await $.clock.now()
   await withTimeout($, Promise.resolve($.store.set(`${c.CMP_PREFIX}${sid}`, { at: markAt })).catch(() => log($, sid, 'error', 'cmp-mark').catch(() => undefined)), c.ENGINE_CALL_TIMEOUT_MS)
@@ -2760,7 +2760,7 @@ async function handle($: any, sid: string, cue: c.Cue, answer: Answer) {
     // A lead is never renamed into a lane: the two grants would hold one session.
     if (leadBusy(sid)) return refuse('lead-holder')
     if (laneBinding.has(sid)) return refuse('already-bound')
-    // v15.1 (security review): a record name that is reserved on this machine (one written in the moment of a reserve) is never
+    // A record name that is reserved on this machine (one written in the moment of a reserve) is never
     // taken by a rename.
     if (c.reservedHit(cue.name!)) return refuse('name-reserved')
     laneBinding.add(sid)
@@ -2827,20 +2827,20 @@ async function handle($: any, sid: string, cue: c.Cue, answer: Answer) {
     if (!rec) return refuse('unknown-lane')
     if (!rec.repo) return refuse('no-lead')
     if (!(await leadHere($, await sessionRoot($), rec.repo, rec.leadName, reg))) {
-      // v14 (2026-11-04, review c1, W1): with no live lead, the verbs a manager may send (resume, compact, retire) are taken while a live manager passes every
-      // presence check and has a reserved registry name (managerTrusted, as S7). A filter, not proof: any writer of the cue folder can send the cue then.
+      // With no live lead, the verbs a manager may send (resume, compact, retire) are taken while a live manager passes every
+      // presence check and has a reserved registry name (managerTrusted). A filter, not proof: any writer of the cue folder can send the cue then.
       const live = c.MANAGER_CUE_VERBS.includes(cue.verb) ? await reg() : undefined
       if (!live || !(await managerTrusted($, live, sid))) return refuse('no-lead')
     }
   }
-  // v14 (2026-11-04, S7): a session holding a lead grant takes one verb, compact, and only while a live manager file of another session passes every presence
+  // A session holding a lead grant takes one verb, compact, and only while a live manager file of another session passes every presence
   // check and the registry names that session with a reserved name (c.managerNameOf); it acts only on an on-cue request of its own, and is never nudged. A
   // filter, not proof: any writer of the cue folder can send the cue while a manager is live; the request is the lead's own.
   if (!bound && grants.get(sid)?.level === 'lead') {
     if (cue.verb !== 'compact') return refuse('not-eligible')
     const live = await reg()
     if (!live) return refuse('registry-unreadable')
-    // v15 S7: or while a trusted conductor lists the lead's repo (conductorsTrusted).
+    // A trusted conductor that lists the lead's repo also qualifies (conductorsTrusted).
     if (!(await managerTrusted($, live, sid)) && (await conductorsTrusted($, live, sid, pinOf(sid))).length === 0) return refuse('not-eligible')
     const req = (await $.state.get(request)).value as Request | null | undefined
     if (!req || req.viaLead !== true || req.mode !== 'on-cue' || req.phase !== 'armed') return refuse('no-request')
@@ -2935,7 +2935,7 @@ async function modelSet($: any, model: c.LaneModel): Promise<boolean> {
 }
 
 // The folder the session started in ($.session.root(), engine 2.1.316). An engine without root() fails the call, and the live folder ($.session.cwd()) is
-// read instead, the check of v12; a root() read that fails on an engine that has it reads cwd() the same way.
+// read instead; a root() read that fails on an engine that has it reads cwd() the same way.
 async function sessionRoot($: any): Promise<any> {
   try {
     return await $.session.root()
@@ -3029,7 +3029,7 @@ async function renameTick($: any, sid: string) {
   const pr = pendingRename.get(sid)
   if (!pr) return
   pendingRename.delete(sid)
-  // v14 (2026-11-04): the manager's rename, while its grant still names it (probe P6 not run: the outcome is logged either way).
+  // The manager's rename, while its grant still names it (the outcome is logged either way).
   const g = grants.get(sid)
   if (pr.manager ? !(g?.level === 'manager' && g.name === pr.name) : ((await $.state.get(lane)).value as { name?: string } | null | undefined)?.name !== pr.name) return
   const fail = async (why: string) => {
@@ -3046,8 +3046,8 @@ async function renameTick($: any, sid: string) {
   else await fail(done)
 }
 
-// v13: a bound session makes sure its own store record names it, once per binding (name, time and record hash): the record of a lane born through lane_rename,
-// one restored through the dialog, a rebind and every record written before v13. Run from the tick before the cue is claimed, under a time limit. The key is set
+// A bound session makes sure its own store record names it, once per binding (name, time and record hash): the record of a lane born through lane_rename,
+// one restored through the dialog, a rebind and every older record. Run from the tick before the cue is claimed, under a time limit. The key is set
 // first, so a failure is not retried in this process (the next restart falls back to the Restore dialog, whose bind is followed by this sync). The write re-checks the binding inside the store queue, so a /callboard off that cleared it meanwhile is not undone.
 const sidSynced = new Map<string, string>()
 // The cheap part, every tick with no time limit (a state read): the binding the sync is due for, if any; its key is set here.
@@ -3111,7 +3111,7 @@ async function sidSync($: any, sid: string, b: Bound & { name: string }) {
   if (r.text !== '') await log($, sid, 'sid-healed')
 }
 
-// v13: a session that starts again under the id its store record names is that lane again, with no question (D4): an unparked lane, a tab reopened by a window
+// A session that starts again under the id its store record names is that lane again, with no question: an unparked lane, a tab reopened by a window
 // restart, a conversation resumed by hand. session.start marks it; the work runs from the tick, one try per tick, up to REBIND_TRIES. A session no record names
 // ends at the first try with no registry read and no log. A lanes read that fails, a registry read that cannot be trusted (its dead-row filter was off) and a
 // name another live session carries are tried again; any other refusal ends it at once. The bind is the restore's: turns -1, restored, startDone, the record's
@@ -3122,7 +3122,7 @@ const rebindPending = new Map<string, number>()
 const rebound = new Set<string>()
 // The record's name while a rebind is pending, for the toast when it ends refused.
 const rebindName = new Map<string, string>()
-// A rebind write that timed out and lands late is only taken back (W1): the binding goes while it is still this one; the record, its sid and the hint stay,
+// A rebind write that timed out and lands late is only taken back: the binding goes while it is still this one; the record, its sid and the hint stay,
 // so a later start or the Restore question can still bind it. Not detach, which would clear the sid and the hint for good.
 function rebindUndoLate($: any, sid: string, setting: Promise<any>, b: Bound) {
   void setting
@@ -3149,7 +3149,7 @@ async function rebindTick($: any, sid: string) {
     const name = rebindName.get(sid)
     rebindName.delete(sid)
     await log($, sid, 'rebind-rejected', code)
-    // The lead may have been told the lane comes back by itself (lane_unpark): the person is told it did not (W3). Not for a lead, nor a run with no person.
+    // The lead may have been told the lane comes back by itself (lane_unpark): the person is told it did not. Not for a lead, nor a run with no person.
     if (name !== undefined && code !== 'lead-holder' && code !== 'not-interactive') toast($, c.rebindFailedToast(name))
   }
   const retry = async (code: string) => (n >= REBIND_TRIES ? end(code) : undefined)
@@ -3160,11 +3160,11 @@ async function rebindTick($: any, sid: string) {
   const named = lanes.filter((l) => l.sid === sid)
   if (named.length === 0) return void rebindPending.delete(sid)
   if (named.length === 1) rebindName.set(sid, named[0].name)
-  // A lead restore still pending (D5) decides first: a session that becomes lead is refused below as lead-holder.
+  // A lead restore still pending decides first: a session that becomes lead is refused below as lead-holder.
   if (leadRestorePending.has(sid)) return retry('lead-restore-pending')
-  // v15 (c2, M-B): a conductor restore still pending decides first (it ends on a lane record naming this session).
+  // A conductor restore still pending decides first (it ends on a lane record naming this session).
   if (conductorRestorePending.has(sid)) return retry('conductor-restore-pending')
-  // A person's session only (F5): a headless run resumed under this id does not become the lane. Tried again: a reopened panel's own registry row may come a
+  // A person's session only: a headless run resumed under this id does not become the lane. Tried again: a reopened panel's own registry row may come a
   // moment after session.start.
   if (!(await interactive($, sid))) return retry('not-interactive')
   const reg = await registryEntriesWhy($)
@@ -3211,7 +3211,7 @@ async function rebindTick($: any, sid: string) {
   toast($, c.reboundToast(l.name))
 }
 
-// v13.4 (2026-11-03): every timer call records its time, a running tick or not. A gap past SLEEP_GAP_MS since the last one means the Mac slept: wokeAt.
+// Every timer call records its time, a running tick or not. A gap past SLEEP_GAP_MS since the last one means the Mac slept: wokeAt.
 // A reload loses both, so the first call after it only records.
 let lastTimerAt: number | undefined
 let wokeAt: number | undefined
@@ -3225,7 +3225,7 @@ async function tick($: any) {
   } catch {}
   if (isTicking) return
   isTicking = true
-  // v13.2: the keepalive step runs only when no step of this tick submitted anything.
+  // The keepalive step runs only when no step of this tick submitted anything.
   const submitsAtStart = submits
   let sid: unknown
   let answer: Answer | undefined
@@ -3235,7 +3235,7 @@ async function tick($: any) {
     sid = await $.session.id()
     const p = await where($)
     if (typeof sid !== 'string' || !c.SID_RE.test(sid) || !p) return
-    // v15.1: not awaited, so a slow store never holds the tick (reservedGet keeps the last good list meanwhile).
+    // Not awaited, so a slow store never holds the tick (reservedGet keeps the last good list meanwhile).
     void reservedGet($, sid).catch(() => undefined)
     // None of these may stop the cue path below: each logs its own failure.
     const lr = leadRestorePending.get(sid)
@@ -3243,21 +3243,21 @@ async function tick($: any) {
       const r = await withTimeout($, leadRestore($, sid, lr.hint, lr.tries + 1), ACTION_TIMEOUT_MS).catch(() => 'error' as const)
       if (r === 'timeout' || r === 'error') await log($, sid, 'error', `lead-restore-${r}`).catch(() => undefined)
     }
-    // v15: a pending conductor restore, and a running conductor's reach and saved grant.
+    // A pending conductor restore, and a running conductor's reach and saved grant.
     await conductorTick($, sid).catch(() => log($, sid, 'error', 'conductor-tick').catch(() => undefined))
     // ADR 0004: close the requests of sessions that are gone, and any older than a day.
     await promptCloseTick($).catch(() => log($, sid, 'error', 'prompt-close').catch(() => undefined))
     await promptSweep($).catch(() => log($, sid, 'error', 'prompt-sweep').catch(() => undefined))
-    // v15.3: a pending manager restore, and a running manager's saved grant.
+    // A pending manager restore, and a running manager's saved grant.
     await managerTick($, sid).catch(() => log($, sid, 'error', 'manager-tick').catch(() => undefined))
-    // v13.1: the cut-compaction note.
+    // The cut-compaction note.
     const cut = cmpCutPending.get(sid)
     if (cut !== undefined) await cmpCutTick($, sid, cut).catch(() => log($, sid, 'error', 'compact-cut').catch(() => undefined))
     if (grants.has(sid)) {
       // A grant restored at start has no lane-list watch yet; and the saved grant is rewritten once a day, with no store read.
       if (!watch.has(sid) && pinOf(sid) !== undefined) await watchInit($, sid).catch(() => log($, sid, 'error', 'lane-watch').catch(() => undefined))
       const savedAt = leadSavedAt.get(sid)
-      // A lead's pin only (S1b review c1): a later non-lead grant must never save a lead hint without a pin.
+      // A lead's pin only: a later non-lead grant must never save a lead hint without a pin.
       const pin = pinOf(sid)
       if (pin !== undefined && c.leadRefreshDue(savedAt, await $.clock.now())) await leadSave($, sid, pin)
       await presenceTouch($, sid).catch(() => log($, sid, 'error', 'presence').catch(() => undefined))
@@ -3266,8 +3266,8 @@ async function tick($: any) {
       await watchTick($, sid).catch(() => log($, sid, 'error', 'lane-watch').catch(() => undefined))
       // ADR 0004: the notice of a prompt waiting, after the lanes-changed one (a tick submits at most once).
       await promptNoticeTick($, sid, submitsAtStart).catch(() => log($, sid, 'error', 'prompt-notice').catch(() => undefined))
-      // v14 review c1: the lead's look for a live manager, once a minute; not awaited (as the check-in), so its reads never hold the tick. Review c2 (CR1):
-      // a due look runs under a timeout (managerSeenStep).
+      // The lead's look for a live manager, once a minute; not awaited (as the check-in), so its reads never hold the tick.
+      // A due look runs under a timeout (managerSeenStep).
       if (grants.get(sid)?.level === 'lead') void managerSeenStep($, sid as string).catch(() => undefined)
     }
     await unlockRetry($, sid).catch(() => log($, sid, 'error', 'unlock-retry').catch(() => undefined))
@@ -3363,7 +3363,7 @@ async function tick($: any) {
       await log($, sid, 'error', 'tick').catch(() => undefined)
     }
   } finally {
-    // v13.4 (W2): stamped before the keepalive step, so a tick's own length is not read as a sleep by the next call. A tick that itself lasted past
+    // Stamped before the keepalive step, so a tick's own length is not read as a sleep by the next call. A tick that itself lasted past
     // SLEEP_GAP_MS may have spanned one (or hung): its gap gets no ping either way.
     try {
       const end = await $.clock.now()
@@ -3373,8 +3373,8 @@ async function tick($: any) {
     if (nudge) {
       await nudgeTick($, sid as string).catch(() => log($, sid as string, 'error', 'nudge').catch(() => undefined))
       await keepaliveTick($, sid as string, submitsAtStart).catch(() => log($, sid as string, 'error', 'keepalive').catch(() => undefined))
-      // v13.6: the lead check-in, after the ping, so the submits guard covers both. Only once a minute, for a lead: no timer is started on the other ticks.
-      // Review c1 (W3): not awaited, so a slow observation never holds the tick (and the cue it claims); its own flag keeps one step at a time.
+      // The lead check-in, after the ping, so the submits guard covers both. Only once a minute, for a lead: no timer is started on the other ticks.
+      // Not awaited, so a slow observation never holds the tick (and the cue it claims); its own flag keeps one step at a time.
       const s = sid as string
       if (await checkinDue($, s).catch(() => false)) {
         checkinBusy.add(s)
@@ -3382,7 +3382,7 @@ async function tick($: any) {
           .then((r) => (r === 'timeout' ? log($, s, 'error', 'checkin-timeout') : undefined), () => log($, s, 'error', 'checkin-error'))
           .catch(() => undefined)
       }
-      // v16.1: the deadline of an order, for a lead, a conductor or the manager; once a minute, and only while the session has an order out.
+      // The deadline of an order, for a lead, a conductor or the manager; once a minute, and only while the session has an order out.
       if (await orderDue($, s).catch(() => false)) {
         orderBusy.add(s)
         void withTimeout($, orderTick($, s, submitsAtStart).finally(() => orderBusy.delete(s)), ACTION_TIMEOUT_MS)
@@ -3398,9 +3398,9 @@ async function tick($: any) {
 const SUBAGENT = ['subagent', 'for the main agent only.'] as const
 async function leadBase($: any, e: unknown, sid: string) {
   if ((e as { agentId?: string }).agentId !== undefined) return { err: SUBAGENT }
-  // v14 (2026-11-04): the manager has five tools (c.MANAGER_TOOLS; six since v14.1, 2026-11-04); every other lane tool refuses it, declared or not.
+  // The manager has eight tools (c.MANAGER_TOOLS: five lane tools and the three prompt tools); every other lane tool refuses it, declared or not.
   if (grantOf(sid)?.level === 'manager' && !c.MANAGER_TOOLS.includes(String((e as { tool?: unknown }).tool))) return { err: ['manager-tool', c.REASON_TEXT['manager-tool']] as const }
-  // v15: the conductor has three (c.CONDUCTOR_TOOLS).
+  // The conductor has six (c.CONDUCTOR_TOOLS: three lane tools and the three prompt tools).
   if (grantOf(sid)?.level === 'conductor' && !c.CONDUCTOR_TOOLS.includes(String((e as { tool?: unknown }).tool))) return { err: ['conductor-tool', c.REASON_TEXT['conductor-tool']] as const }
   return leadCore($, sid)
 }
@@ -3411,13 +3411,13 @@ async function leadCore($: any, sid: string) {
   if (typeof lanes === 'string') return { err: [lanes, lanes] as const }
   const live = await registryEntries($)
   if (!live) return { err: ['registry-unreadable', c.REASON_TEXT['registry-unreadable']] as const }
-  // Read after the awaits (S1a review c1): an off meanwhile is refused here, not met later as a missing pin.
+  // Read after the awaits: an off meanwhile is refused here, not met later as a missing pin.
   const held = grantOf(sid)
   if (!held) return { err: ['off', 'the lead tools are off. Ask the person to turn them on.'] as const }
-  // The effective grant (S2): its name is read from the live registry now; the stored name is only a cache. No name ('') reaches only lanes that name no lead.
-  // v14: a manager's reach ignores the name, and its name is a reserved one (which c.leadNameOf never gives): it keeps the grant's.
+  // The effective grant: its name is read from the live registry now; the stored name is only a cache. No name ('') reaches only lanes that name no lead.
+  // A manager's reach ignores the name, and its name is a reserved one (which c.leadNameOf never gives): it keeps the grant's.
   let g: c.Grant = held.level === 'lead' ? { ...held, name: c.leadNameOf(live.map((r) => r.j), sid) ?? '' } : held
-  // v15 (2.1 #3): a conductor's pins are read now: the list file, resolved, intersected with the approved list (a read that parses also ratchets it).
+  // A conductor's pins are read now: the list file, resolved, intersected with the approved list (a read that parses also ratchets it).
   if (held.level === 'conductor') {
     const reach = await conductorReach($, sid)
     const now = grantOf(sid)
@@ -3425,7 +3425,7 @@ async function leadCore($: any, sid: string) {
     if ('no' in reach) return { err: ['conductor-list', c.REASON_TEXT['conductor-list']] as const }
     g = { ...now, pins: reach.pins }
   }
-  // v13.6: a lane this read finds live counts as seen live for the check-in's gone.
+  // A lane this read finds live counts as seen live for the check-in's gone.
   const seen = laneObs.get(sid)
   if (seen) {
     const entries = live.map(regEntry)
@@ -3434,7 +3434,7 @@ async function leadCore($: any, sid: string) {
   return { lanes, live, g }
 }
 
-// S6c: every other session's live conductor file that passes presenceCheck, with its registry name (c.laneLeadOf) or none; display only. A file that fails the
+// Every other session's live conductor file that passes presenceCheck, with its registry name (c.laneLeadOf) or none; display only. A file that fails the
 // check gives no box; a leads folder that cannot be read is 'error' (the table is drawn without the Conductor column).
 async function conductorsLive($: any, live: RegRow[], except: string): Promise<c.ConductorView[] | 'error'> {
   const d = await presenceNames($)
@@ -3470,7 +3470,7 @@ async function leadsInReach($: any, live: RegRow[], g: c.Grant): Promise<c.LiveL
 async function laneTable($: any, sid: string) {
   const base = await leadCore($, sid)
   if ('err' in base) return { err: base.err }
-  // S6c (Q6): the manager's list gains a Conductor column naming each live conductor's repos.
+  // The manager's list gains a Conductor column naming each live conductor's repos.
   const conductors = base.g.level === 'manager' ? await conductorsLive($, base.live, sid).catch(() => 'error' as const) : undefined
   const leads = await leadsInReach($, base.live, base.g).catch(() => [])
   const text = c.laneListText(base.lanes.filter((l) => c.inReach(base.g, l)), base.live.map(regEntry), await $.clock.now(), { level: base.g.level, name: base.g.name, conductors, leads })
@@ -3479,7 +3479,7 @@ async function laneTable($: any, sid: string) {
   return { text: orphans.length > 0 ? `${text}\n\n${c.CLAIM_HINT(orphans)}` : text }
 }
 
-// ---- v13.6 (live 2026-11-03): lead check-ins and the shared attention notice ----
+// ---- lead check-ins and the shared attention notice ----
 // Once a minute, whatever the idle gates, a lead observes the lanes in its reach (lanes and registry only, no reports) into laneObs. A lane gone, waiting on a
 // prompt 5 min or quiet 30 min (c.checkinItems) and not yet told is then checked against the timing gates: check-ins on, not paused, no wake in the last 30 min,
 // the lead idle 20 min since its last turn ended or its last prompt. Only then are reports read (signed done drops gone and quiet), and attentionNotice sends.
@@ -3489,21 +3489,21 @@ const obsAt = new Map<string, number>()
 const attnTold = new Map<string, Set<string>>()
 const attnCapped = new Set<string>()
 const checkinBusy = new Set<string>()
-// v14 (2026-11-04, review c2, CR3): the manager's per-repo lead verdicts, kept across evaluations (by the manager's session id; dropped with the grant).
-// v14.1 (2026-11-04, review c3; PR review): evaluations land 60-62 s apart, so the window spans one of them plus a margin: a verdict is reused once and read
+// The manager's per-repo lead verdicts, kept across evaluations (by the manager's session id; dropped with the grant).
+// Evaluations land 60-62 s apart, so the window spans one of them plus a margin: a verdict is reused once and read
 // again at the evaluation after, so leads are read about every 2 min and a gone lead is seen at most ~2 min late (130 s made it ~3 min).
 const leadlessSeen = new Map<string, Map<string, { at: number; leads: c.LeadFile[] | 'held' }>>()
 const LEADLESS_KEEP_MS = c.CHECKIN_EVERY_MS + 10_000
 const OBS_CLEAR_TOOLS = ['terminate', 'retire', 'park', 'unpark', 'resume'].map((v) => `mcp__callboard__lane_${v}`)
 // A lead's observation is due once a minute; the stamp is taken here, so a step that fails or times out waits for the next minute.
 async function checkinDue($: any, sid: string): Promise<boolean> {
-  // v14 (2026-11-04): the manager too, over the lanes no live lead reaches. v15 (Q4): never a conductor.
+  // The manager too, over the lanes no live lead reaches; never a conductor.
   if (!grants.has(sid) || grants.get(sid)?.level === 'conductor') return false
   const now = await $.clock.now()
   const last = obsAt.get(sid)
   if (last !== undefined && now >= last && now - last < c.CHECKIN_EVERY_MS) return false
   obsAt.set(sid, now)
-  // Review c2 (N4): the last step has not settled (an engine read that hangs): no new one; logged once per stall (the log keeps one line per event and reason).
+  // The last step has not settled (an engine read that hangs): no new one; logged once per stall (the log keeps one line per event and reason).
   if (checkinBusy.has(sid)) {
     await log($, sid, 'checkin-stalled').catch(() => undefined)
     return false
@@ -3514,8 +3514,8 @@ async function checkinTick($: any, sid: string, submitsAtStart: number) {
   const now = await $.clock.now()
   const ep = epochOf(sid)
   const base = await leadCore($, sid)
-  // Review c1 (W5): a lead that had a name and has no usable one now (a twin row, a rename, a reserved name) sees only legacy lanes for a while: no observation,
-  // as for a failed read. Review c2 (B1): a lead that never had a name (a lone lead may stay unnamed) is observed as usual.
+  // A lead that had a name and has no usable one now (a twin row, a rename, a reserved name) sees only legacy lanes for a while: no observation,
+  // as for a failed read. A lead that never had a name (a lone lead may stay unnamed) is observed as usual.
   if ('err' in base || (base.g.level === 'lead' && base.g.name === '' && (grants.get(sid)?.name ?? '') !== '') || epochOf(sid) !== ep) return
   const entries = base.live.map(regEntry)
   const prev = laneObs.get(sid) ?? new Map<string, c.LaneObs>()
@@ -3537,11 +3537,11 @@ async function checkinTick($: any, sid: string, submitsAtStart: number) {
   if (wokeAt !== undefined && now - wokeAt < c.CHECKIN_WAKE_MS) return
   const turnEnd = (await $.state.get(turnEndRef)).value
   if (typeof turnEnd !== 'number' || now - Math.max(turnEnd, lastSubmitAt.get(sid) ?? 0) < c.CHECKIN_IDLE_MS) return
-  // v14 (2026-11-04: "we follow hierarchy"): the manager is told only of lanes no live lead reaches, by leadHere's rule (a lane naming its lead: a live
+  // The manager is told only of lanes no live lead reaches, by leadHere's rule (a lane naming its lead: a live
   // lead of its repo with that registry name; a legacy lane: any live lead of its repo). The leads of a repo are read at most once per evaluation. A lane a lead
-  // reaches is left untold, so it is told once its lead is gone. Review c1 (W2): the filter runs right after the timing gates, before the notice's own gate
+  // reaches is left untold, so it is told once its lead is gone. The filter runs right after the timing gates, before the notice's own gate
   // reads, and a manager left with nothing owed stops here.
-  // Review c2 (CR3): a repo's leads are kept LEADLESS_KEEP_MS across evaluations (leadlessSeen); a lead check that could not be made ('held': not clearly
+  // A repo's leads are kept LEADLESS_KEEP_MS across evaluations (leadlessSeen); a lead check that could not be made ('held': not clearly
   // gone) counts as a live lead of the repo, so no notice.
   const leadless = async (items: c.AttentionItem[]) => {
     const rows = base.live.map((r) => r.j)
@@ -3564,7 +3564,7 @@ async function checkinTick($: any, sid: string, submitsAtStart: number) {
   }
   const mine = base.g.level === 'manager' ? await leadless(owed) : owed
   if (mine.length === 0) return
-  // Signed done drops gone and quiet. Read only once the notice's own gates hold (review c1, W2); quiet by the live session's id, gone by the record's (W4).
+  // Signed done drops gone and quiet. Read only once the notice's own gates hold; quiet by the live session's id, gone by the record's.
   const signed = async (items: c.AttentionItem[]) => {
     const send: c.AttentionItem[] = []
     for (const i of items) {
@@ -3584,7 +3584,7 @@ async function checkinTick($: any, sid: string, submitsAtStart: number) {
   await attentionNotice($, sid, mine, submitsAtStart, ep, signed)
 }
 
-// ---- v16.1 (2026-11-11): the deadline of an order ----
+// ---- the deadline of an order ----
 // What each orderer (lead, conductor or manager) ordered: lane session id to { lane name, time of the first order }, in module memory (lost with the session or a reload,
 // then no notice). Once a minute, an order older than c.ORDER_MS is looked up in $.store: the lane's own stamp (c.ORDER_PREFIX + its session id) is still there only if
 // no compaction began (orderSpend), so only then, and only while the lane's session is live, the orderer gets one fixed notice, and the stamp goes. Nothing is
@@ -3639,7 +3639,7 @@ async function orderTick($: any, sid: string, submitsAtStart: number) {
   })
 }
 
-// The shared attention notice (§2a; PR 4 reuses it): the caller owns timing and pause, this owns the mechanical gates. One notice per key; the hourly cap is
+// The shared attention notice: the caller owns timing and pause, this owns the mechanical gates. One notice per key; the hourly cap is
 // the lanes-changed notice's (a notice over it stays owed, logged once per capped stretch); a submit that throws puts its items back, one that times out does not.
 // filter: the caller's own last reads (the check-in's report signatures), run only once the gates hold.
 async function attentionNotice($: any, sid: string, items: c.AttentionItem[], submitsAtStart: number, ep: number, filter?: (items: c.AttentionItem[]) => Promise<c.AttentionItem[]>, opts?: { render?: (items: c.AttentionItem[]) => string | undefined; label?: string; sent?: (items: c.AttentionItem[]) => Promise<void> }) {
@@ -3666,7 +3666,7 @@ async function attentionNotice($: any, sid: string, items: c.AttentionItem[], su
   if ((await backgroundShells($, sid, reg)) !== undefined) return
   const kept = filter ? await filter(untold(items)) : items
   // The reads since the first checks take time: a draft, a prompt, a dialog, a request or nudge, another submit or a grant change meanwhile wins. The cap and
-  // the told set are read again (review c1, S3). Review c2 (N1, N2): every read comes before the last guard, so nothing is awaited between it and the submit.
+  // the told set are read again. Every read comes before the last guard, so nothing is awaited between it and the submit.
   if (await capped()) return
   const now = await $.clock.now()
   if (dialogOpen.has(sid) || (await $.state.get(request)).value != null || (await $.state.get(nudgeDueRef)).value != null) return
@@ -3692,7 +3692,7 @@ async function attentionNotice($: any, sid: string, items: c.AttentionItem[], su
   await log($, sid, sent === 'ok' ? label : sent === 'timeout' ? `${label}-unconfirmed` : `${label}-failed`, `${codes}:${fresh.length}`)
 }
 
-// /callboard checkin pause <N>m|<N>h and checkin on: the person's own, as config (D3); a plugin, another session or a script gets a fixed refusal.
+// /callboard checkin pause <N>m|<N>h and checkin on: the person's own, as config; a plugin, another session or a script gets a fixed refusal.
 async function checkinCommand($: any, sid: string, code: c.OriginCode, op: c.CheckinOp): Promise<{ text: string }> {
   if (op === 'bad') return { text: c.CHECKIN_USAGE }
   if (!c.originIsPerson(code)) {
@@ -3860,7 +3860,7 @@ async function leadPrep($: any, e: unknown, sid: string) {
   return { lane: pick.lane, entries: base.live.flatMap((r) => (typeof r.j.sessionId === 'string' ? [regEntry(r)] : [])) }
 }
 
-// v14 (2026-11-04, S7): the live lead whose registry name (c.leadNameOf) is the tool's lane argument, in any repo, never this session. undefined: no live lead
+// The live lead whose registry name (c.leadNameOf) is the tool's lane argument, in any repo, never this session. undefined: no live lead
 // carries it (the caller goes on to the lanes). A lane record of the same name refuses lane-or-lead: lane and lead names follow the same rules (NAME_RE, not
 // reserved), so the two can meet, and neither is taken over the other.
 async function leadByName($: any, e: unknown, sid: string): Promise<{ sid: string; name: string } | { err: readonly [string, string] } | undefined> {
@@ -3872,23 +3872,23 @@ async function leadByName($: any, e: unknown, sid: string): Promise<{ sid: strin
   const leads = (await leadsFor($, base.live, undefined)).filter((x) => x.sid !== sid && c.leadNameOf(rows, x.sid) === name)
   if (leads.length === 0) return undefined
   if (leads.length > 1 || base.lanes.some((l) => l.name === name)) return { err: ['lane-or-lead', c.reasonWhy('lane-or-lead')] }
-  // v15 (F, Q3): a conductor compacts only a lead of its repos.
+  // A conductor compacts only a lead of its repos.
   if (base.g.level === 'conductor' && !base.g.pins.includes(leads[0].repo)) return { err: ['other-repo', c.reasonWhy('other-repo')] }
   return { sid: leads[0].sid, name }
 }
 
 // ---- /callboard lane: an existing session becomes a lane of the lead that runs in its repo ----
-// leadName: the lead's registry name now (c.leadNameOf), stamped on the record so only that lead reaches the lane (S2); none leaves the record legacy.
-// pick: the lead the person picked in the Join dialog when several run in the repo (S2b); without it several leads give { choices }.
+// leadName: the lead's registry name now (c.leadNameOf), stamped on the record so only that lead reaches the lane; none leaves the record legacy.
+// pick: the lead the person picked in the Join dialog when several run in the repo; without it several leads give { choices }.
 type Plan = { name: string; rename: boolean; repo: string; lead: string; cwd: string; key: string; leadName?: string; pick?: string }
 async function attachPlan($: any, sid: string, want: string | undefined, pick?: string): Promise<Plan | { no: string } | { choices: string[] }> {
   await reservedGet($, sid, true)
   if ((await $.state.get(lane)).value != null) return { no: 'already-bound' }
   if (grants.get(sid)?.level === 'manager') return { no: 'manager-holder' }
-  // v15: nor a conductor, nor a session that was one since it started.
+  // Nor a conductor, nor a session that was one since it started.
   if (grants.get(sid)?.level === 'conductor' || conductorRestorePending.has(sid)) return { no: 'conductor-holder' }
   if (conductorDeclared.has(sid)) return { no: 'lane-after-conductor' }
-  // v14 (2026-11-04, review c2): nor a session that was the manager since it started (its manager tools stay declared), before the dialog and after a yes.
+  // Nor a session that was the manager since it started (its manager tools stay declared), before the dialog and after a yes.
   if (managerDeclared.has(sid)) return { no: 'lane-after-manager' }
   if (grants.has(sid)) return { no: 'lead-holder' }
   const live = await registryEntries($)
@@ -3898,7 +3898,7 @@ async function attachPlan($: any, sid: string, want: string | undefined, pick?: 
   const me = mine.length === 1 ? mine[0].j : undefined
   if (!live || !me) return { no: 'registry-unreadable' }
   // The session's current name, whatever set it (/rename, -n, a restore hook or an automatic title): the dialog shows the
-  // name and the person confirms it, or answers no and passes NAME (2026-11-02).
+  // name and the person confirms it, or answers no and passes NAME.
   const own = typeof me.name === 'string' && me.name !== '' ? me.name : undefined
   const name = want ?? own
   if (name === undefined) return { no: 'pass-name' }
@@ -3906,10 +3906,10 @@ async function attachPlan($: any, sid: string, want: string | undefined, pick?: 
   if (c.reservedHit(name)) return { no: 'name-reserved' }
   const lanes = await loadLanes($)
   if (typeof lanes === 'string') return { no: lanes }
-  // A live name in any letter case (S2): a lane `alpha` beside lead `Alpha` would make c.leadNameOf void the lead's name and strand its lanes.
+  // A live name in any letter case: a lane `alpha` beside lead `Alpha` would make c.leadNameOf void the lead's name and strand its lanes.
   if (lanes.some((l) => l.name === name) || live.some((e) => typeof e.j.name === 'string' && e.j.name.toLowerCase() === name.toLowerCase() && e.j.sessionId !== sid)) return { no: 'name-taken' }
   const cwd = await sessionRoot($)
-  // The checks on the session's own folder come before the lead (S2b), so they refuse before any dialog, the lead picker included.
+  // The checks on the session's own folder come before the lead, so they refuse before any dialog, the lead picker included.
   if ((await real($, cwd)) !== cwd) return { no: 'folder-bad' }
   if (!c.isSafeBrief(`${cwd}/${c.ATTACH_BRIEF}`)) return { no: 'folder-chars' }
   const found = await findLead($, live, cwd, pick)
@@ -3949,7 +3949,7 @@ async function dropRecord($: any, name: string, key: string | undefined, rec: st
   return 'text' in r
 }
 
-// A born store lane's record stops naming this session (v13), so a lane the person turned off does not come back by itself after a restart. The record is
+// A born store lane's record stops naming this session, so a lane the person turned off does not come back by itself after a restart. The record is
 // found by name and by the binding's hash (a born binding has no store key); it is changed only while it still names this session. true: nothing names this
 // session any more, or nothing needed clearing; false: a record may still name it (the lanes or the store could not be read or written).
 async function sidClear($: any, sid: string, b: Bound): Promise<boolean> {
@@ -3985,7 +3985,7 @@ async function sidClear($: any, sid: string, b: Bound): Promise<boolean> {
 // Clears the binding and its hint first, then removes an attached session's record (or clears a born store lane's sid): whatever the removal does, the session
 // is unbound. whole false: the record could not be removed (the person is told to rename the session). sidKept: a born lane's record may still name this
 // session, so it could become the lane again after a restart (the person is told).
-// v13 review (F4): /callboard off in a session that is not bound: no store record may keep naming it, or a restart would rebind it into that lane.
+// /callboard off in a session that is not bound: no store record may keep naming it, or a restart would rebind it into that lane.
 async function sidClearAll($: any, sid: string): Promise<{ ok: boolean; name?: string }> {
   const lanes = await loadLanes($)
   if (typeof lanes === 'string') return { ok: false }
@@ -4026,7 +4026,7 @@ async function detach($: any, sid: string, b: Bound): Promise<{ whole: boolean; 
   lastSaved.delete(sid)
   const whole = !b.adopted || (await dropRecord($, b.name, b.key, b.rec, folder).catch(() => false))
   if (!whole) await log($, sid, 'detach-incomplete')
-  // A born lane's record stays and loses its sid. An attached record is removed whole; when that failed, its sid is cleared instead (F3), so a restart cannot
+  // A born lane's record stays and loses its sid. An attached record is removed whole; when that failed, its sid is cleared instead, so a restart cannot
   // rebind the session into it.
   const sidKept = (!b.adopted || !whole) && !(await sidClear($, sid, b).catch(() => false))
   if (sidKept) await log($, sid, 'sid-uncleared')
@@ -4071,10 +4071,10 @@ async function laneCommand($: any, sid: string, code: c.OriginCode, arg: c.Comma
   }
   const seq = offSeq.get(sid) ?? 0
   const want = (arg as { lane: string | undefined }).lane
-  // v13.5 (2026-11-03): the Restore fallback /callboard on had. An unbound session whose hint names a lane, with no restore decided yet, is asked
+  // The Restore fallback: an unbound session whose hint names a lane, with no restore decided yet, is asked
   // the Restore question first (restoreFromHint, every check as before). A restored lane or a question nobody answered ends here; no hint, a refused or a
   // declined restore goes on to Join.
-  // A session that was the manager skips the Restore question: attachPlan refuses it (review c2). v15 PR review (#284): so does one that was a conductor.
+  // A session that was the manager skips the Restore question: attachPlan refuses it. So does one that was a conductor.
   if (!bound && want === undefined && !restoredOnce.has(sid) && !managerDeclared.has(sid) && !conductorDeclared.has(sid)) {
     const now = await $.clock.now()
     if (c.parseHint(await $.store.get(`${c.HINT_PREFIX}${sid}`).catch(() => undefined), now)?.lane) {
@@ -4103,7 +4103,7 @@ async function laneCommand($: any, sid: string, code: c.OriginCode, arg: c.Comma
   }
   const first = await attachPlan($, sid, want)
   if ('no' in first) return refuse(first.no)
-  // With several leads the person picks one first (S2b): the picker and the Join question hold one dialog slot together.
+  // With several leads the person picks one first: the picker and the Join question hold one dialog slot together.
   if (dialogOpen.has(sid)) return busy()
   dialogOpen.add(sid)
   let plan: Plan
@@ -4144,7 +4144,7 @@ async function laneCommand($: any, sid: string, code: c.OriginCode, arg: c.Comma
   laneBinding.add(sid)
   try {
     const now = await $.clock.now()
-    // The record names this session (sid, v13), so the lane rebinds itself when the session starts again; sid is not part of the record's hash.
+    // The record names this session (sid), so the lane rebinds itself when the session starts again; sid is not part of the record's hash.
     const rec: c.Lane & { createdAt: number } = { name: plan.name, folder: plan.cwd, brief: `${plan.cwd}/${c.ATTACH_BRIEF}`, repo: plan.repo, createdAt: now, adopted: true, lead: plan.lead, sid, ...(plan.leadName !== undefined ? { leadName: plan.leadName } : {}) }
     const recHash = await sha($, c.recordText(rec))
     const w = await editStore($, plan.key, async (cur) => {
@@ -4157,7 +4157,7 @@ async function laneCommand($: any, sid: string, code: c.OriginCode, arg: c.Comma
       const kept = st ? await keptLanes($, st.lanes) : []
       if (kept.some((l) => l.name === plan.name)) return { no: 'name-taken' }
       if (kept.length >= c.STORE_MAX_LANES) return { no: 'lane-cap' }
-      // The lead's name is read again under the lock (S2): a lead renamed since the re-check must not be stamped with its old name.
+      // The lead's name is read again under the lock: a lead renamed since the re-check must not be stamped with its old name.
       const rows = await withTimeout($, registryEntries($), c.ENGINE_CALL_TIMEOUT_MS)
       if (rows === 'timeout' || !rows) return { no: 'registry-unreadable' }
       if (c.leadNameOf(rows.map((e) => e.j), plan.lead) !== plan.leadName) return { no: 'changed' }
@@ -4224,15 +4224,15 @@ async function laneCommand($: any, sid: string, code: c.OriginCode, arg: c.Comma
   }
 }
 
-// ---- v14 (live 2026-11-03/04): /callboard manager [NAME] ----
+// ---- /callboard manager [NAME] ----
 // Any origin, as /callboard lead: the dialog is the gate the person answers, and another origin is named in its question. Refused before the dialog and again
 // after a yes: in a bound lane, in a lead, in a session that ever was a lead (its lane tools stay declared: manager-after-lead), and while another live
-// session holds a valid manager file (manager-exists). The grant lives in memory, and since v15.3 the person's yes also saves manager:<sid> (managerSave), so the
+// session holds a valid manager file (manager-exists). The grant lives in memory, and the person's yes also saves manager:<sid> (managerSave), so the
 // same conversation asks again when it starts or resumes (managerRestoreAsk runs this function with restore set: the restore question, and its own log lines).
 // After the grant the presence file must be written (one per machine rests on it), and a second manager that won the same moment makes both step back.
 async function managerCommand($: any, sid: string, code: c.OriginCode, want: string | undefined, busy: () => Promise<{ text: string }>, restore = false, alive: () => boolean = () => true): Promise<{ text: string }> {
   await reservedGet($, sid, true)
-  // v14.1 (2026-11-04): with no NAME, a session whose registry name (one row) is already reserved keeps it; otherwise MANAGER. An unreadable registry
+  // With no NAME, a session whose registry name (one row) is already reserved keeps it; otherwise MANAGER. An unreadable registry
   // gives MANAGER here and is refused by the check below.
   const own = want === undefined ? ((await registryEntries($).catch(() => undefined)) ?? []).filter((e) => e.j.sessionId === sid) : []
   const name = want ?? (own.length === 1 && c.managerNameRefusal(own[0].j.name) === undefined ? (own[0].j.name as string) : c.MANAGER_DEFAULT)
@@ -4241,13 +4241,13 @@ async function managerCommand($: any, sid: string, code: c.OriginCode, want: str
     return { text: c.managerRefusalText(why) }
   }
   if (c.managerNameRefusal(name)) return refuse('manager-name')
-  // Review c1 (S10): another NAME changes nothing, and the answer says so.
+  // Another NAME changes nothing, and the answer says so.
   const cur = grants.get(sid)
   if (cur?.level === 'manager') return { text: c.managerAlreadyText(cur.name, want) }
   // marks: the lane and lead marks are this call's to read, not its own (the re-check below runs while it holds leadGranting).
   const held = async (marks: boolean): Promise<string | undefined> => {
     if ((marks && laneBinding.has(sid)) || (await $.state.get(lane)).value != null) return 'lane-holder'
-    // v15: a conductor (or one being restored), and a session that was one.
+    // A conductor (or one being restored), and a session that was one.
     if (grants.get(sid)?.level === 'conductor' || conductorRestorePending.has(sid)) return 'conductor-holder'
     if (grants.has(sid) || (marks && leadGranting.has(sid)) || leadRestorePending.has(sid)) return 'lead-holder'
     if (leadDeclared.has(sid)) return 'manager-after-lead'
@@ -4339,7 +4339,7 @@ async function managerCommand($: any, sid: string, code: c.OriginCode, want: str
   return { text: c.MANAGER_ON_TEXT }
 }
 
-// v15.3 (2026-11-06): the saved manager grant, manager:<sid> = { name, savedAt }: written at the person's yes and once a day while the manager runs; removed by
+// The saved manager grant, manager:<sid> = { name, savedAt }: written at the person's yes and once a day while the manager runs; removed by
 // leadDrop (off) and by a Cancel on the restore question. A failed write is logged and tried again a day later; a drop while the write was in flight deletes the
 // key again.
 const managerSavedAt = new Map<string, number>()
@@ -4424,7 +4424,7 @@ async function managerTick($: any, sid: string) {
   void managerRestoreAsk($, sid, pend).catch(() => log($, sid, 'error', 'manager-restore-ask').catch(() => undefined))
 }
 
-// ---- v15 (2026-11-05): the conductor level (PR 2 of the levels plan) ----
+// ---- the conductor level ----
 // A conductor's reach is the list file in its own repo (c.CONDUCTOR_FILE), resolved at every read, intersected with the approved list: what the person approved in
 // a dialog of this session (the grant, a later add or a restore that asked). The file only narrows. conductorHome: the conductor repo (the session's start folder at
 // the grant). conductorApproved: the approved real paths. Both go with leadDrop.
@@ -4462,7 +4462,7 @@ async function readConductorFile($: any, home: string): Promise<CondRead> {
   const d = await statR($, `${home}/.claude`)
   if (d === 'error') return { state: 'error' }
   if (d === 'absent') return { state: 'absent' }
-  // v15 security review (F1): nor a .claude group or other may write.
+  // Nor a .claude group or other may write.
   if (d.kind !== 'dir' || d.uid !== p.uid || (d.mode & 0o022) !== 0) return { state: 'unsafe' }
   const path = `${home}/${c.CONDUCTOR_FILE}`
   const f = await statR($, path)
@@ -4504,7 +4504,7 @@ async function resolveConductorList($: any, home: string, entries: string[]): Pr
     else if (r.path !== path) out.push({ entry, why: 'not-real' })
     else {
       const g = await gitRoot($, path)
-      // v15 review c1 (W3): two entries naming one repo (../app and its absolute path, written by hand) reach it once.
+      // Two entries naming one repo (../app and its absolute path, written by hand) reach it once.
       if (g === 'yes') ok.includes(path) ? undefined : ok.push(path)
       else out.push({ entry, why: g === 'error' ? 'error' : 'not-git' })
     }
@@ -4528,7 +4528,7 @@ async function conductorHere($: any): Promise<{ home: string } | { no: string }>
   return { home }
 }
 
-// Q9 (2026-11-05): a conductor repo is a repo of its own: no lane store with a lane, and no live lead whose repo holds it (a lead on a parent repo included).
+// A conductor repo is a repo of its own: no lane store with a lane, and no live lead whose repo holds it (a lead on a parent repo included).
 // A check that cannot be made refuses (conductor-repo-check).
 async function conductorRepoInUse($: any, home: string): Promise<string | undefined> {
   const p = await where($)
@@ -4600,13 +4600,13 @@ async function writeConductorFile($: any, home: string, fn: (entries: string[]) 
       await run($, [RM, '-f', '--', tmp])
       return { no: code }
     }
-    // v15 review c1 (S4): a step that throws removes the temp file too.
+    // A step that throws removes the temp file too.
     try {
       await run($, [INSTALL, '-m', '644', '/dev/null', tmp])
       const t = await facts($, tmp)
       if (!t || t.kind !== 'file' || t.uid !== p.uid || (t.mode & 0o7022) !== 0 || t.nlink !== 1) return drop('conductor-file-write')
       if ((await run($, [TEE, '--', tmp], text)).exitCode !== 0) return drop('conductor-file-write')
-      // v15 security review (F1): the temp file is still the one checked (not swapped for a link) before it is renamed into place.
+      // The temp file is still the one checked (not swapped for a link) before it is renamed into place.
       const t2 = await facts($, tmp)
       if (!t2 || t2.ino !== t.ino || t2.uid !== p.uid || t2.kind !== 'file' || t2.nlink !== 1) return drop('conductor-file-write')
       const again = await readConductorFile($, home)
@@ -4658,12 +4658,12 @@ async function conductorAddPlan($: any, sid: string, arg: string, marks: boolean
   if (!c.conductorPresenceFits(home, list)) return { no: 'conductor-too-long', home }
   // No repo may be added that no grant dialog could carry.
   const h = homeOf(p)
-  // v15 review (S2, F2): and the grant and restore questions that may follow, with the new repo marked.
+  // Also the grant and restore questions that may follow, with the new repo marked.
   if (c.conductorQuestion(home, list, h, [target]).length > c.QUESTION_MAX || c.conductorAddQuestion(home, target, list, h, true).length > c.QUESTION_MAX || c.conductorRestoreQuestion(home, list, [target], h).length > c.QUESTION_MAX) return { no: 'conductor-list-long', home }
   return { home, target, list }
 }
 
-// v15: /callboard conductor add|remove, the person's own command only (from the prompt or the phone); any other origin is refused with no dialog. add asks once
+// /callboard conductor add|remove, the person's own command only (from the prompt or the phone); any other origin is refused with no dialog. add asks once
 // (naming the whole list as it would be); remove asks nothing (it only narrows). Neither grants: the grant is /callboard conductor and its own dialog.
 async function conductorListCommand($: any, sid: string, code: c.OriginCode, op: { add: string } | { remove: string }, busy: () => Promise<{ text: string }>): Promise<{ text: string }> {
   const verb = 'add' in op ? 'add' : 'remove'
@@ -4708,7 +4708,7 @@ async function conductorListCommand($: any, sid: string, code: c.OriginCode, op:
   }
   const plan = await conductorAddPlan($, sid, op.add, true)
   if ('no' in plan) return refuse(plan.no, plan.home)
-  // v15 security review (F3): the click approves the repo for this session only when the dialog said so and the grant is the same one after it.
+  // The click approves the repo for this session only when the dialog said so and the grant is the same one after it.
   const askedHere = inConductor(plan.home)
   const askedEpoch = epochOf(sid)
   const r = await askOnce($, sid, c.conductorAddQuestion(plan.home, plan.target, plan.list, h, askedHere), c.CONDUCTOR_ADD_YES, c.CONDUCTOR_ADD_NO, c.HEADER.conductor)
@@ -4731,7 +4731,7 @@ async function conductorListCommand($: any, sid: string, code: c.OriginCode, op:
   })
   if ('no' in w) return w.no.startsWith('conductor-file-') && w.no !== 'conductor-file-bad' ? (await log($, sid, 'error', w.no), { text: c.conductorRefusalText(w.no, plan.home) }) : refuse(w.no, plan.home)
   await log($, sid, 'conductor-add', code)
-  // v15 (2.1 #6): in a conductor session the click also approves the repo for this session.
+  // In a conductor session the click also approves the repo for this session.
   const here = askedHere && inConductor(plan.home) && epochOf(sid) === askedEpoch
   if (here) {
     const was = conductorApproved.get(sid) ?? []
@@ -4749,12 +4749,12 @@ async function conductorReach($: any, sid: string): Promise<{ pins: string[]; ou
   const epoch = epochOf(sid)
   const home = conductorHome.get(sid)
   if (grants.get(sid)?.level !== 'conductor' || home === undefined) return { no: 'off' }
-  // v15 review c1 (W2): the approved list as this read began; an add click that lands during the read is not ratcheted away by it.
+  // The approved list as this read began; an add click that lands during the read is not ratcheted away by it.
   const snap = conductorApproved.get(sid) ?? []
   const f = await readConductorFile($, home)
   if (epochOf(sid) !== epoch || grants.get(sid)?.level !== 'conductor') return { no: 'off' }
   if (f.state !== 'ok') {
-    // v15 security review (F4): nothing is in reach, so the presence file, the briefing and the status say none (the approved list stays).
+    // Nothing is in reach, so the presence file, the briefing and the status say none (the approved list stays).
     const g0 = grants.get(sid)!
     if (g0.pins.length > 0) grants.set(sid, { ...g0, pins: [] })
     return { no: 'conductor-list' }
@@ -4778,8 +4778,8 @@ async function conductorReach($: any, sid: string): Promise<{ pins: string[]; ou
   return { pins, out }
 }
 
-// ---- v15 S6b: the conductor grant by dialog, its saved grant and restore, its tools ----
-// The conductor's three tools, declared at its grant. The handlers are the lead's (leadBase refuses every other lane tool at conductor level).
+// ---- the conductor grant by dialog, its saved grant and restore, its tools ----
+// The conductor's three lane tools, declared at its grant, then the three prompt tools (six in all, c.CONDUCTOR_TOOLS). The handlers are the lead's (leadBase refuses every other lane tool at conductor level).
 async function conductorTools($: any, sid: string) {
   if (conductorDeclared.has(sid)) return
   const lane = { type: 'object', properties: { lane: { type: 'string' } }, required: ['lane'] }
@@ -4846,7 +4846,7 @@ async function conductorShowable($: any, sid: string, marks: boolean): Promise<{
   return { home, ok: r.ok, out: r.out }
 }
 
-// v15 (F2): /callboard conductor, the grant. Any origin, as /callboard lead: the dialog is the gate the person answers, and another origin is named in its question.
+// /callboard conductor, the grant. Any origin, as /callboard lead: the dialog is the gate the person answers, and another origin is named in its question.
 // The dialog names every repo in reach (../NAME beside the conductor repo, any other in full; nothing cut). A yes approves exactly that list for this session; the
 // file can only narrow it later. In a conductor session the command opens the dialog again only when the file names repos this session has not approved, and
 // only from the person's own prompt or phone: another origin never widens a conductor.
@@ -4897,8 +4897,8 @@ async function conductorGrant($: any, sid: string, code: c.OriginCode, busy: () 
       await log($, sid, 'refused', 'off-meanwhile')
       return { text: 'Nothing changed: callboard was turned off meanwhile.' }
     }
-    // (c2, M-F) the list resolved now must be the list the dialog showed.
-    // v15 review c1 (S1): the same repos in another order (a writer sorts the file) are no change.
+    // The list resolved now must be the list the dialog showed.
+    // The same repos in another order (a writer sorts the file) are no change.
     if (again.home !== home || [...again.ok].sort().join('\n') !== [...first.ok].sort().join('\n')) return refuse('conductor-changed', home)
     const a = await conductorApply($, sid, home, first.ok, first.ok, epochOf(sid))
     if (a !== 'ok') {
@@ -4906,7 +4906,7 @@ async function conductorGrant($: any, sid: string, code: c.OriginCode, busy: () 
       return { text: c.CONDUCTOR_FAILED }
     }
     grantEpoch = epochOf(sid)
-    // v15 PR review (#284): a grant the person made while a restore question was still pending stands, as the lead's does; the pending restore ends here,
+    // A grant the person made while a restore question was still pending stands, as the lead's does; the pending restore ends here,
     // so a later Cancel on its question cannot delete this grant's saved key.
     conductorRestorePending.delete(sid)
   } finally {
@@ -4922,7 +4922,7 @@ async function conductorGrant($: any, sid: string, code: c.OriginCode, busy: () 
   return { text: `${c.CONDUCTOR_ON_TEXT}${c.conductorOutText(first.out)}` }
 }
 
-// v15 (F2): a session whose saved conductor grant names its own folder is a conductor again when it starts, as a lead is (leadRestore), with these differences:
+// A session whose saved conductor grant names its own folder is a conductor again when it starts, as a lead is (leadRestore), with these differences:
 // the gate is a person's own registry row (personRow: never a --bg worker); a lane on its way back keeps it off; and the approved list caps the reach. A list
 // that names nothing new (the same, or narrowed) restores with no question; one that names a repo outside the approved list asks first (conductorRestoreAsk,
 // from the tick once the session is idle with an empty prompt box). The tries count only the ticks before a dialog.
@@ -4937,7 +4937,7 @@ async function conductorRestoreTry($: any, me: string, box: { hint: c.ConductorH
   const reject = (code: string) => log($, me, 'conductor-restore-rejected', code)
   const epoch = epochOf(me)
   const dropped = () => epochOf(me) !== epoch
-  // (c1, B1) a person's own row: kind interactive. No row yet: tried again (a reopened panel's row may come a moment after session.start). Another kind (a
+  // A person's own row: kind interactive. No row yet: tried again (a reopened panel's row may come a moment after session.start). Another kind (a
   // --bg worker resumed under this id) or none: the try ends and the key is kept.
   const row = await registryOf($, me, ownReg($))
   if (dropped()) return
@@ -4955,7 +4955,7 @@ async function conductorRestoreTry($: any, me: string, box: { hint: c.ConductorH
     await $.store.delete(key)
     return void (await reject('wrong-folder'))
   }
-  // (c1, M2; c2, M-B) a lane on its way back: its binding, its restore hint, or a store record naming this session. A pending rebind alone is tried again:
+  // A lane on its way back: its binding, its restore hint, or a store record naming this session. A pending rebind alone is tried again:
   // rebindTick clears it once it finds no record, and waits for this restore while it is pending.
   const held = await withTimeout($, $.state.get(lane), c.ENGINE_CALL_TIMEOUT_MS)
   if (dropped()) return
@@ -4974,7 +4974,7 @@ async function conductorRestoreTry($: any, me: string, box: { hint: c.ConductorH
   if (dropped()) return
   if (used === 'conductor-repo-in-use') return void (await reject(used))
   if (used) return used
-  // (c2, M-E) a list file that cannot be read now restores nothing and is tried again; one that is not there has nothing to restore.
+  // A list file that cannot be read now restores nothing and is tried again; one that is not there has nothing to restore.
   const f = await readConductorFile($, hint.home)
   if (dropped()) return
   if (f.state === 'absent') {
@@ -4984,14 +4984,14 @@ async function conductorRestoreTry($: any, me: string, box: { hint: c.ConductorH
   if (f.state !== 'ok') return 'file-bad'
   const r = await resolveConductorList($, hint.home, f.entries)
   if (dropped()) return
-  // (c2, M-C) the ratchet: the approved list keeps only what the file still lists and resolves (a check that could not be made keeps its repo).
+  // The ratchet: the approved list keeps only what the file still lists and resolves (a check that could not be made keeps its repo).
   const keep = new Set([...r.ok, ...r.out.filter((o) => o.why === 'error').map((o) => c.entryPath(hint.home, o.entry))])
   const approved = hint.repos.filter((x) => keep.has(x))
   if (approved.length < hint.repos.length) {
     await log($, me, 'conductor-ratchet', String(hint.repos.length - approved.length))
     box.hint = { ...hint, repos: approved, savedAt: now }
     await Promise.resolve($.store.set(key, box.hint)).catch(() => log($, me, 'conductor-unsaved').catch(() => undefined))
-    // v15 review c1 (W1): an off that landed during the write deleted the key first; delete it again, as conductorSave does.
+    // An off that landed during the write deleted the key first; delete it again, as conductorSave does.
     if (dropped()) return void (await Promise.resolve($.store.delete(key)).catch(() => log($, me, 'error', 'conductor-hint-delete').catch(() => undefined)))
   }
   const added = r.ok.filter((x) => !approved.includes(x))
@@ -5040,8 +5040,8 @@ async function conductorRestore($: any, me: string, hint: c.ConductorHint, tries
   if ((again === 'rebind-pending' || again === 'file-bad') && again !== last) await log($, me, 'conductor-restore-retry', again)
   conductorRestorePending.set(me, { hint: box.hint, tries, last: again })
 }
-// (F2, decided) the restore dialog, when the list names repos the person has not approved: every repo shown, the new ones named. Conductor restores with the
-// whole shown list (the approved list becomes it); Cancel is the person's no (the saved grant goes); no answer restores nothing and keeps the key. (c2, M-F) An
+// The restore dialog, when the list names repos the person has not approved: every repo shown, the new ones named. Conductor restores with the
+// whole shown list (the approved list becomes it); Cancel is the person's no (the saved grant goes); no answer restores nothing and keeps the key. An
 // off or a lead grant while it is open grants nothing, and the list resolved after the click must be the one shown.
 async function conductorRestoreAsk($: any, me: string, pend: CondPending) {
   const { hint } = pend
@@ -5126,7 +5126,7 @@ async function conductorTick($: any, sid: string) {
   }
 }
 
-// Probe P2: /color from a mod is refused inside a hook the turn waits on and works from a timer. Best effort, while the same grant holds; logged either way.
+// /color from a mod is refused inside a hook the turn waits on and works from a timer. Best effort, while the same grant holds; logged either way.
 const COLOR_AFTER_MS = 1000
 function colorLater($: any, sid: string, epoch: number) {
   const failed = () => log($, sid, 'error', 'manager-color').catch(() => undefined)
@@ -5147,8 +5147,8 @@ function colorLater($: any, sid: string, epoch: number) {
   }
 }
 
-// v13.2: /callboard config. Reading works from any origin and logs nothing (as status). A change is the person's own: from the prompt or the phone it is applied,
-// from a plugin, another session or a script it is refused with a fixed text and no dialog (D3). That is a convenience, not a control: any same-uid process can
+// /callboard config. Reading works from any origin and logs nothing (as status). A change is the person's own: from the prompt or the phone it is applied,
+// from a plugin, another session or a script it is refused with a fixed text and no dialog. That is a convenience, not a control: any same-uid process can
 // write the key itself, and the field bounds are what limit it. The change is a read-modify-write right before the write (two sessions in the same second: the
 // last write wins), and the two levels are checked against each other as stored.
 async function configCommand($: any, sid: string, code: c.OriginCode, op: c.ConfigOp): Promise<{ text: string }> {
@@ -5158,7 +5158,7 @@ async function configCommand($: any, sid: string, code: c.OriginCode, op: c.Conf
     await log($, sid, 'refused', `config-not-person:${code}`).catch(() => undefined)
     return { text: c.CONFIG_NOT_PERSON }
   }
-  // Each store call runs inside an async function, so a call that throws at once is answered like one that rejects (review c1).
+  // Each store call runs inside an async function, so a call that throws at once is answered like one that rejects.
   const raw = await withTimeout($, (async () => $.store.get(c.CONFIG_KEY))(), c.ENGINE_CALL_TIMEOUT_MS).catch(() => 'timeout' as const)
   if (raw === 'timeout') return { text: c.CONFIG_UNREADABLE }
   const cur = c.parseConfig(raw).cfg
@@ -5183,7 +5183,7 @@ async function configCommand($: any, sid: string, code: c.OriginCode, op: c.Conf
   return { text: op === 'reset' ? c.CONFIG_RESET_TEXT : c.configSetText(op.field, next) }
 }
 
-// v15.1 (2026-11-05): /callboard reserve, this machine's reserved names. Showing works from any origin and logs nothing; a change is the person's own,
+// /callboard reserve, this machine's reserved names. Showing works from any origin and logs nothing; a change is the person's own,
 // as /callboard config (the same convenience, not a control: any same-uid process can write the key, and parseReserved bounds what it can hold). An add is
 // refused while a lane record, a lead stamp or a live lead carries the name in any letter case: a lead would lose its lead name and its lanes with it.
 async function reserveCommand($: any, sid: string, code: c.OriginCode, op: c.ReserveOp): Promise<{ text: string }> {
@@ -5202,7 +5202,7 @@ async function reserveCommand($: any, sid: string, code: c.OriginCode, op: c.Res
   if ('remove' in op) {
     const hit = cur.find((x) => x.toUpperCase() === key)
     if (!hit) return { text: c.reserveNotListedText(op.remove) }
-    // Review c1: the live manager's name stays reserved while it runs, or leads would stop trusting it with nothing said.
+    // The live manager's name stays reserved while it runs, or leads would stop trusting it with nothing said.
     const live = await registryEntries($)
     if (!live) return { text: c.RESERVE_UNREADABLE }
     const mgrs = await managersLive($, live, '')
@@ -5213,7 +5213,7 @@ async function reserveCommand($: any, sid: string, code: c.OriginCode, op: c.Res
     let inUse: string | undefined
     const lanes = await loadLanes($)
     if (typeof lanes === 'string') return { text: c.RESERVE_UNREADABLE }
-    // Security review (M1): judged by skeleton, as enforcement is, so a look-alike in use (LEAD2 for LEAD) counts too.
+    // Judged by skeleton, as enforcement is, so a look-alike in use (LEAD2 for LEAD) counts too.
     const hit = (n: unknown) => typeof n === 'string' && c.reservedHit(n, [name])
     const rec = lanes.find((l) => hit(l.name) || hit(l.leadName))
     if (rec) inUse = hit(rec.name) ? `lane ${rec.name}` : `the lead stamp on lane ${rec.name}`
@@ -5230,7 +5230,7 @@ async function reserveCommand($: any, sid: string, code: c.OriginCode, op: c.Res
     const no = c.reserveAddRefusal(name, cur, inUse)
     if (no) return { text: no }
   }
-  // Review c1: the checks above take time; apply the change to the list as stored right now, so a change another session made meanwhile is kept.
+  // The checks above take time; apply the change to the list as stored right now, so a change another session made meanwhile is kept.
   const raw2 = await withTimeout($, (async () => $.store.get(c.RESERVE_KEY))(), c.ENGINE_CALL_TIMEOUT_MS).catch(() => 'timeout' as const)
   if (raw2 === 'timeout') return { text: c.RESERVE_UNREADABLE }
   const fresh = c.parseReserved(raw2)
@@ -5254,15 +5254,14 @@ async function reserveCommand($: any, sid: string, code: c.OriginCode, op: c.Res
   return { text: 'add' in op ? c.reserveAddedText(op.add) : c.reserveRemovedText(cur.find((x) => x.toUpperCase() === op.remove.toUpperCase())!) }
 }
 
-// v13.6: the usage line, for an unknown word (`on` included since v13.6).
-const USAGE = 'Use /callboard off, lead, lanes, claim, status, config, checkin, rest, conductor, reserve, escalation [off], lane [NAME] or lane off.'
-
-// ---- prompt answering (ADR 0004), PR 1: the hook, the floor, the files and the switch. Off by default; nothing here lets an agent write a decision. ----
-// A PermissionRequest hook in the asking session: it refuses what no agent may answer, writes a request file and waits. Every approval would come from
-// prompt_answer (PR 2); until then a decision file can only be made by hand, and the hook applies it under every check of pr.applyCheck.
+// ---- prompt answering (ADR 0004): the hook, the floor, the files and the switch. Off by default; nothing here lets an agent write a decision. ----
+// A PermissionRequest hook in the asking session: it refuses what no agent may answer, writes a request file and waits. The decision comes from
+// prompt_answer or the person, and the hook applies it under every check of pr.applyCheck.
 const UUIDGEN = '/usr/bin/uuidgen'
 const GREP = '/usr/bin/grep'
 const GIT_BIN = '/usr/bin/git'
+const LN = '/bin/ln'
+const PROMPT_DIRS_MAX = 512
 const ANSWERING_KEY = 'answering'
 const CHECK_TTL_MS = 60_000
 const CHECKS_MAX = 256
@@ -5275,7 +5274,7 @@ type CheckEntry = { toolUseId: string; at: number; approver: unknown; facts: pr.
 // the approver nor the tool_use_id (probed), so both come from here.
 const checks = new Map<string, CheckEntry>()
 // The calls whose request is open (or about to be), by tool_use_id: the three done events mark them, so a person's Yes (which fires no signal) is seen.
-const openReqs = new Map<string, { sid: string; id?: string; dir?: string }>()
+const openReqs = new Map<string, { id?: string; dir?: string }>()
 const doneIds = new Set<string>()
 // Requests whose hook ended with no closing row written (the write failed, or the dispatch was cut off by the person's No): the files stay and the tick writes the
 // row, so every closed request ends with one. After UNCLOSED_TRIES failed tries the files are left to the sweep (session-gone, or swept after a day).
@@ -5330,7 +5329,7 @@ async function ledgerAdd($: any, row: Omit<pr.LedgerRow, 't'>): Promise<boolean>
   }
 }
 
-// The questions file (PLAN-PR4 §3.7): one redacted row per answered question, appended to this month's file as the ledger is. A failed write never stops the answer: the
+// The questions file: one redacted row per answered question, appended to this month's file as the ledger is. A failed write never stops the answer: the
 // `returned` row is the record, and the audit notes the gap.
 async function questionsAdd($: any, row: Omit<pr.QuestionsRow, 't'>): Promise<boolean> {
   try {
@@ -5555,7 +5554,7 @@ async function promptLeadOf($: any, level: 'lane' | 'lead', sid: string, cwd: st
   const live = await registryEntries($)
   if (!live) return undefined
   const leads = (await leadsFor($, live, cwd).catch(() => [] as c.LeadFile[])).filter((l) => l.sid !== sid)
-  // Record first, as the briefing does (S2): a lane record that names its lead is reached by the live lead of that registry name and no other (none live: nobody).
+  // Record first, as the briefing does: a lane record that names its lead is reached by the live lead of that registry name and no other (none live: nobody).
   // Else the lead the lane is bound to, if it is live; with no binding, the one live lead of the repo. Two leads and no binding: nobody can be asked.
   // A bound lane whose record cannot be read, or that has none, reaches no lead: the prompt stays the person's.
   const rec = await reportLaneOf($, sid).catch(() => undefined)
@@ -5563,7 +5562,7 @@ async function promptLeadOf($: any, level: 'lane' | 'lead', sid: string, cwd: st
   const rows = live.map((r) => r.j)
   const lead = rec?.leadName !== undefined ? leads.find((l) => c.leadNameOf(rows, l.sid) === rec.leadName) : bound !== undefined ? leads.find((l) => l.sid === bound) : leads.length === 1 ? leads[0] : undefined
   if (!lead) return undefined
-  return { sid: lead.sid, name: c.leadNameOf(live.map((r) => r.j), lead.sid) ?? undefined }
+  return { sid: lead.sid, name: c.leadNameOf(rows, lead.sid) ?? undefined }
 }
 
 // This session's own registry row, by one file read (not the whole table): the row of the pid the request was made under, kept only if it names this session and
@@ -5719,13 +5718,13 @@ async function promptAskingClear($: any, sid: string, always = false): Promise<b
   return true
 }
 
-// The hook (§3.1). nextOnce runs the chain beneath at most once, so a failure after it never runs it a second time.
+// The hook. nextOnce runs the chain beneath at most once, so a failure after it never runs it a second time.
 async function promptHook($: any, e: any, nextOnce: (x: any) => Promise<any>, signal: AbortSignal): Promise<any> {
   const sid = await $.session.id()
   if (!c.SID_RE.test(sid)) return nextOnce(e)
   // A request left without its closing row is retried here as well as on the tick (a no-op while none is owed).
   if (unclosed.size > 0) await promptCloseTick($).catch(() => undefined)
-  // 0. A tier's relay question (PLAN-PR3 §3.5): it is the person's already (AskUserQuestion), so it raises no request. It marks the relay asked and the tier asking,
+  // 0. A tier's relay question: it is the person's already (AskUserQuestion), so it raises no request. It marks the relay asked and the tier asking,
   // before the coverage gate, so a conductor's or the manager's question is marked too. The chain beneath runs as it always did.
   if (String(e.tool_name) === 'AskUserQuestion' && relayShorts(e.tool_input).length > 0) {
     // A relay question for a lane's QUESTION must offer exactly the lane's labels (the tier copies them, and a model does not copy exactly): checked before the person sees it.
@@ -5762,7 +5761,7 @@ async function promptHook($: any, e: any, nextOnce: (x: any) => Promise<any>, si
   const tid = usable ? entry.toolUseId : undefined
   // The call is marked open now, so a click (and the tool's end) during the chain beneath is seen.
   if (tid !== undefined) {
-    openReqs.set(tid, { sid })
+    openReqs.set(tid, {})
     doneIds.delete(tid)
   }
   const reqDir: { dir?: string; id?: string } = {}
@@ -5771,7 +5770,7 @@ async function promptHook($: any, e: any, nextOnce: (x: any) => Promise<any>, si
     // 3. The chain beneath: any non-empty result stands and is returned whole (a settings hook's deny, another plugin's answer).
     const beneath = await nextOnce(e)
     if (beneath && typeof beneath === 'object' && Object.keys(beneath).length > 0) return beneath
-    // A No click aborted the signal; a Yes ended the dialog with no signal, so the done events are looked at again (probed P-I6).
+    // A No click aborted the signal; a Yes ended the dialog with no signal, so the done events are looked at again.
     if (signal.aborted || (tid !== undefined && doneIds.has(tid))) return beneath
     const cwd = String(await sessionRoot($).catch(() => ''))
     // A session the switch does not cover leaves no row: a scope of one lane or one lead is judged first, and only a scope that names a lead needs the lead's name.
@@ -5797,7 +5796,7 @@ async function promptHook($: any, e: any, nextOnce: (x: any) => Promise<any>, si
       await ledgerAdd($, { ...base, kind: 'not-judgeable', code: judged.why })
       return beneath
     }
-    // 5b. A question (PLAN-PR4 §3.2): the questions scope covers this lane (a lead's own question is the person's), then the mechanical shape. Each refusal is a row with its
+    // 5b. A question: the questions scope covers this lane (a lead's own question is the person's), then the mechanical shape. Each refusal is a row with its
     // code, no request and no notice. Checked first, so with the scope unset nothing else about the question is read.
     if (tool === pr.QUESTION_TOOL) {
       if (cov.level !== 'lane' || !pr.coversAsks(cov.a, { lane: cov.lane, lead: lead?.name, self: cov.self })) {
@@ -5850,13 +5849,13 @@ async function promptHook($: any, e: any, nextOnce: (x: any) => Promise<any>, si
     }
     reqDir.dir = dir
     reqDir.id = id
-    openReqs.set(tid as string, { sid, id, dir })
+    openReqs.set(tid as string, { id, dir })
     if (doneIds.has(tid as string)) await promptDone($, { tool_use_id: tid })
     const row = { ...base, ...(ctx ? { ctx } : {}), id, tier: [...reach].sort((x, y) => pr.TIER_RANK[x.level] - pr.TIER_RANK[y.level])[0].level }
     // Without a `requested` row no decision could ever pass the ledger check: the dialog is left to the person.
     if (!(await ledgerAdd($, { ...row, kind: 'requested', nonce }))) throw new Error('ledger-unwritable')
     st.requested = true
-    return await promptWait($, e, beneath, signal, { sid, tid: tid as string, id, nonce, dir, hash, input, tool, cwd, ecwd, home: homeOf(p), p, started, row, req, leadName, cap: pr.claudeCap(tool, input), st })
+    return await promptWait($, beneath, signal, { sid, tid: tid as string, id, nonce, dir, input, tool, cwd, ecwd, home: homeOf(p), p, started, row, req, leadName, cap: pr.claudeCap(tool, input), st })
   } catch (err) {
     // A failing hook answers nothing: the dialog stays (the caller returns what the chain beneath gives).
     if (!st.closed) {
@@ -5878,11 +5877,11 @@ async function promptHook($: any, e: any, nextOnce: (x: any) => Promise<any>, si
   }
 }
 
-type WaitCtx = { sid: string; tid: string; id: string; nonce: string; dir: string; hash: string; input: unknown; tool: string; cwd: string; home: string; p: { uid: number; root: string; own?: string }; started: number; row: Omit<pr.LedgerRow, 't' | 'kind'>; req: pr.Request; leadName?: string; cap?: { kind: pr.CapKind; target: string }; ecwd?: string; st: CloseState }
+type WaitCtx = { sid: string; tid: string; id: string; nonce: string; dir: string; input: unknown; tool: string; cwd: string; home: string; p: { uid: number; root: string; own?: string }; started: number; row: Omit<pr.LedgerRow, 't' | 'kind'>; req: pr.Request; leadName?: string; cap?: { kind: pr.CapKind; target: string }; ecwd?: string; st: CloseState }
 
-// The wait (§3.1a, §6.1). Each poll: a click, the switch, the dialog's own row, the relay (§3.2 of PLAN-PR3), expiry, then a decision file. The awake clock adds each gap,
+// The wait. Each poll: a click, the switch, the dialog's own row, the relay, expiry, then a decision file. The awake clock adds each gap,
 // capped. A relay (a tier put the prompt to the person) makes the wait `withPerson`: expiry at 2 hours, a 10 s poll, and no 20-minute deny.
-async function promptWait($: any, e: any, beneath: any, signal: AbortSignal, w: WaitCtx): Promise<any> {
+async function promptWait($: any, beneath: any, signal: AbortSignal, w: WaitCtx): Promise<any> {
   const end = async (kind: pr.RowKind, code?: string) => {
     const row = { ...w.row, kind, ...(code ? { code } : {}) }
     w.st.pending = row
@@ -5957,7 +5956,7 @@ async function promptWait($: any, e: any, beneath: any, signal: AbortSignal, w: 
     // Off stops the wait whichever way it was turned off: the emergency file or /callboard escalation off.
     if (!(await stillOn())) return end('off')
     if (await clickSeen()) return end('superseded')
-    // The relay (§3.2): a tier has put the prompt to the person. It is lost when its question is never asked, or its tier is not live for two checks in a row;
+    // The relay: a tier has put the prompt to the person. It is lost when its question is never asked, or its tier is not live for two checks in a row;
     // it ends with `relay-left` when the person dismissed the question.
     const rf = await readRelay()
     if (rf === 'bad') {
@@ -6025,7 +6024,7 @@ async function promptWait($: any, e: any, beneath: any, signal: AbortSignal, w: 
           if (d.via !== 'person' && (await statR($, relayPath)) !== 'absent') {
             // The relay is read at the next poll.
           } else if (d.decision === 'answer' && d.answer !== undefined) {
-            // A question's answer (PLAN-PR4 §3.5): built here from the LIVE input, never from the decision file, and returned as an allow with `answers` filled in. A click, the
+            // A question's answer: built here from the LIVE input, never from the decision file, and returned as an allow with `answers` filled in. A click, the
             // switch and the done events were looked at by guards() just above (a click fires no abort, so clickSeen and doneIds must stay).
             const answered = await promptReturnAnswer($, w, d, d.answer.index, applied.tier, relay?.short)
             if (answered === undefined) return beneath
@@ -6134,7 +6133,7 @@ async function promptReturnAnswer($: any, w: WaitCtx, d: pr.Decision, index: num
   return { behavior: 'allow', updatedInput: { ...(w.input as object), answers: { [live.question]: text } } }
 }
 
-// The light link (PLAN-PR3 §3.3): an AskUserQuestion of this tier's own session has ended. For each question headed `Relay <short>` that names a relay of this session,
+// The light link: an AskUserQuestion of this tier's own session has ended. For each question headed `Relay <short>` that names a relay of this session,
 // the person's answer exactly `Yes` or `No` becomes the decision (written here, by the mod, with `via: person`); a dismissal or any other answer is `relay-left`; one for
 // a prompt that has closed, or whose decision is already in, is `relay-late` and the tier is told in one fixed line. The question's wording is never read.
 async function promptRelayPost($: any, e: any): Promise<string | undefined> {
@@ -6299,7 +6298,7 @@ async function promptSweep($: any): Promise<void> {
   }
 }
 
-// The questions file's 90-day prune (PLAN-PR4 §3.7), at most once a day per process, from the sweep. By file name: a file whose month ended before the cut is removed; the one file
+// The questions file's 90-day prune, at most once a day per process, from the sweep. By file name: a file whose month ended before the cut is removed; the one file
 // the cut falls inside is rewritten without its old rows (filter, temp file, mv); appends go only to the current month's file, so a prune never touches a file being appended to.
 // Two processes pruning at once are kept apart by a lock folder (one more than a day old is taken over).
 const QUESTIONS_PRUNE_EVERY_MS = 24 * 3_600_000
@@ -6423,10 +6422,8 @@ async function promptsCommand($: any): Promise<{ text: string }> {
   return { text: `${pr.escalationState(a, await promptsOff($))} Open requests: ${open}. ${pr.FLOOR_LINE}` }
 }
 
-// ---- PR 2: the lead tier (prompt_list, prompt_answer, prompt_escalate) and its notice ----
-const LN = '/bin/ln'
+// ---- the prompt tools of every tier (prompt_list, prompt_answer, prompt_escalate) and the lead's notice ----
 const PROMPT_REQUESTS_MAX = 64
-const PROMPT_DIRS_MAX = 512
 const promptReason = (tool: string, why: string) => `${tool} refused: ${why}`
 const promptRefuse = (code: string): string => pr.PROMPT_REFUSE[code] ?? code
 
@@ -6459,7 +6456,7 @@ async function promptRequests($: any, p: { uid: number; root: string }, accept?:
   return out
 }
 
-// The tiers a request reaches (PLAN-PR3 §2.1), lead first, then the conductors, then the manager: the asker must be a live row under the pid and start the request
+// The tiers a request reaches, lead first, then the conductors, then the manager: the asker must be a live row under the pid and start the request
 // names; a lead is a live lead of the repo (narrowed to the lead the request names), a conductor one whose approved pins hold the request's folder, the manager a
 // trusted one. The switch's scope applies to each. Nobody is the asker. noLead: the lane's own lead could not be resolved (its record names another, or none is
 // found), so no lead is asked, whichever leads are live. Empty: nobody can be asked, and the prompt stays the person's.
@@ -6537,7 +6534,7 @@ async function promptTierCtx($: any, e: unknown, sid: string) {
 }
 
 // A request by id, with every refusal the answering tools share. Each refusal is a code of pr.PROMPT_REFUSE.
-async function promptFind($: any, t: { p: { uid: number; root: string }; live: RegRow[]; g: c.Grant; answering: pr.Answering }, sid: string, id: string, allowDecided = false): Promise<{ file: PromptFile; stand: Stand; self: pr.Tier } | { no: string }> {
+async function promptFind($: any, t: { p: { uid: number; root: string }; live: RegRow[]; answering: pr.Answering }, sid: string, id: string, allowDecided = false): Promise<{ file: PromptFile; stand: Stand; self: pr.Tier } | { no: string }> {
   const base = `${t.p.root}/prompts`
   if (!(await dirOk($, base, t.p.uid))) return { no: 'unknown-request' }
   const dirs = ((await $.fs.list(base).catch(() => [])) as { name: string }[]).filter((d) => c.SID_RE.test(d.name)).map((d) => d.name).sort().slice(0, PROMPT_DIRS_MAX)
@@ -6649,13 +6646,13 @@ async function promptAnswerTool($: any, e: any, answer: boolean): Promise<{ resu
   const why = pr.cleanWhy(e.why)
   if (!pr.ID_RE.test(id) || why === undefined || (answer && decision !== 'allow' && decision !== 'deny' && decision !== 'answer')) return refuse('bad-input')
   if (!t.answering || t.off) return refuse('off')
-  const found = await promptFind($, { p: t.p, live: t.live, g: t.g, answering: t.answering }, sid, id, !answer)
+  const found = await promptFind($, { p: t.p, live: t.live, answering: t.answering }, sid, id, !answer)
   if ('no' in found) return refuse(found.no)
   const { dir, req: q, names } = found.file
   const { stand, self } = found
   const name = self.name === '' ? self.level : self.name
   const now = await $.clock.now()
-  // A question (PLAN-PR4 §3.4) takes only decision `answer`, by the number prompt_list showed (`option`), with the label as an optional echo; nothing else takes `answer`.
+  // A question takes only decision `answer`, by the number prompt_list showed (`option`), with the label as an optional echo; nothing else takes `answer`.
   const isQ = q.tool === pr.QUESTION_TOOL
   let pick: { index: number; label: string } | undefined
   if (answer && isQ) {
@@ -6746,7 +6743,7 @@ async function promptAnswerTool($: any, e: any, answer: boolean): Promise<{ resu
   return { result: isQ ? pr.relayQuestionSteps(short, q.lane ?? '') : pr.relaySteps(short, q.lane ?? '') }
 }
 
-// The tick's notice (§6.2): one fixed turn to an idle lead (a busy one gets the text mid-turn, promptMidTurnNotice), covering every open request in reach. A request is told once; a notice over the hourly cap stays owed
+// The tick's notice: one fixed turn to an idle lead (a busy one gets the text mid-turn, promptMidTurnNotice), covering every open request in reach. A request is told once; a notice over the hourly cap stays owed
 // (the next tick tries again). Nothing is read while answering is off, but one store read.
 // Per lead: request id to 0 (told) or to the time it was found not to be in reach (looked at again after PROMPT_RECHECK_MS: a check that failed once must not
 // hide a request for good).
@@ -6926,7 +6923,7 @@ export const register: Register = (on) => {
     // One of the two signs of a person's session for the self-threshold nudge (interactive(): this, or an own registry row). A recorded nudge is left alone (it expires on its own).
     await $.state.set(interactiveRef, (e as { isInteractive?: unknown }).isInteractive === true).catch(async () => log($, await $.session.id(), 'error', 'interactive').catch(() => undefined))
     const req = (await $.state.get(request)).value as Request | null | undefined
-    // v13.1: a request still in $.state means the state survived (a reload, not a restart): a cut-compaction mark then gives no note.
+    // A request still in $.state means the state survived (a reload, not a restart): a cut-compaction mark then gives no note.
     const stateKept = req != null
     if (req) {
       await $.state.set(request, null)
@@ -6944,11 +6941,11 @@ export const register: Register = (on) => {
     })
     const me = await $.session.id()
     try {
-      await $.command.register({ name: 'callboard', description: 'Give lead, make this session a lane, list the lanes, show status, show or change the settings, or turn lead and lane off for this session', argumentHint: 'off|lead|lanes|status|rest|config [SETTING VALUE]|conductor [add|remove NAME]|reserve [remove] [NAME]|lane [NAME]|lane off|escalation [off]|prompts' })
+      await $.command.register({ name: 'callboard', description: 'Give lead, make this session a lane, list the lanes, show status, show or change the settings, or turn lead and lane off for this session', argumentHint: 'help|lanes|status|lead|lane [NAME]|escalation [off]|off' })
     } catch {
       await log($, me, 'error', 'command-register')
     }
-    // v13.5: what a retired /callboard on left, after /callboard is registered, so a slow store cannot hold the command up.
+    // What a retired /callboard on left, after /callboard is registered, so a slow store cannot hold the command up.
     await onLeftovers($, me)
     try {
       await pruneHints($, me)
@@ -6956,13 +6953,13 @@ export const register: Register = (on) => {
     } catch {
       await log($, me, 'error', 'hint-scan').catch(() => undefined)
     }
-    // v13.2: the settings, read fresh at each start (cfgGet keeps the last good value when the read fails).
+    // The settings, read fresh at each start (cfgGet keeps the last good value when the read fails).
     await cfgGet($, me, true)
     await reservedGet($, me, true)
     await pruneResults($).catch(() => log($, me, 'error', 'result-prune').catch(() => undefined))
     await pruneLogs($, me).catch(() => log($, me, 'error', 'log-prune').catch(() => undefined))
     await presenceDrop($, me).catch(() => log($, me, 'error', 'presence-drop').catch(() => undefined))
-    // v13: a saved lead grant for this session (D5), then whether a store record names it, looked at from the tick (D4).
+    // A saved lead grant for this session, then whether a store record names it, looked at from the tick.
     if (c.SID_RE.test(me)) {
       try {
         const raw = await $.store.get(`${c.LEAD_HINT_PREFIX}${me}`)
@@ -6978,7 +6975,7 @@ export const register: Register = (on) => {
       } catch {
         await log($, me, 'lead-restore-rejected', 'error').catch(() => undefined)
       }
-      // v15 (F2): a saved conductor grant for this session, restored as the lead's is (conductorRestore).
+      // A saved conductor grant for this session, restored as the lead's is (conductorRestore).
       try {
         const raw = await $.store.get(`${c.CONDUCTOR_HINT_PREFIX}${me}`)
         if (raw !== undefined) {
@@ -6993,7 +6990,7 @@ export const register: Register = (on) => {
       } catch {
         await log($, me, 'conductor-restore-rejected', 'error').catch(() => undefined)
       }
-      // v15.3: a saved manager grant for this session: asked about from the tick (managerTick), not restored here. A session that still holds the grant (a
+      // A saved manager grant for this session: asked about from the tick (managerTick), not restored here. A session that still holds the grant (a
       // compaction) is not asked.
       try {
         const raw = await $.store.get(`${c.MANAGER_HINT_PREFIX}${me}`)
@@ -7008,7 +7005,7 @@ export const register: Register = (on) => {
       } catch {
         await log($, me, 'manager-restore-rejected', 'error').catch(() => undefined)
       }
-      // v13.1: a compaction cut off by the restart. A stale mark, or one found while the state survived, goes with no note.
+      // A compaction cut off by the restart. A stale mark, or one found while the state survived, goes with no note.
       try {
         const raw = await $.store.get(`${c.CMP_PREFIX}${me}`)
         if (raw !== undefined) {
@@ -7022,7 +7019,7 @@ export const register: Register = (on) => {
       rebindName.delete(me)
     }
     ensureTimer($)
-    // v15.2: once per session start, after the restores and the timer, so a slow read delays none of them; it only warns.
+    // Once per session start, after the restores and the timer, so a slow read delays none of them; it only warns.
     await liveCheckoutCheck($, me)
     return next(e)
   }).catch(($, e, next) => next(e))
@@ -7037,10 +7034,11 @@ export const register: Register = (on) => {
     // It only narrows (it stops pings), so any origin may type it, as `escalation off`.
     if (line === 'rest') return restCommand($, sid, c.originCode((e as { origin?: unknown }).origin))
     if (line === 'escalation' || line.startsWith('escalation ')) return escalationCommand($, sid, c.originCode((e as { origin?: unknown }).origin), pr.parseEscalationArgs(line.slice(10)))
+    if (line === '' || line === 'help') return { text: c.helpText() }
     const arg = c.parseCommandArgs(rawArgs)
-    if (!arg) return { text: USAGE }
+    if (!arg) return { text: c.HELP_USAGE }
     const code = c.originCode((e as { origin?: unknown }).origin)
-    // v13.2: before the verb below, which would take any other object for a lane command.
+    // Before the verb below, which would take any other object for a lane command.
     if (typeof arg === 'object' && 'config' in arg) return configCommand($, sid, code, arg.config)
     if (typeof arg === 'object' && 'checkin' in arg) return checkinCommand($, sid, code, arg.checkin)
     if (typeof arg === 'object' && 'reserve' in arg) return reserveCommand($, sid, code, arg.reserve)
@@ -7054,7 +7052,7 @@ export const register: Register = (on) => {
     if (verb === 'lane' || verb === 'lane-off') return laneCommand($, sid, code, arg as c.CommandArg, busy)
     if (arg === 'claim') return claimCommand($, sid, code, busy)
     if (typeof arg === 'object' && 'manager' in arg) return managerCommand($, sid, code, arg.manager, busy)
-    // v15 (2026-11-05): the conductor list (add, remove) and the conductor grant.
+    // The conductor list (add, remove) and the conductor grant.
     if (typeof arg === 'object' && 'conductor' in arg) {
       const op = arg.conductor
       if (op === 'bad') return { text: c.CONDUCTOR_USAGE }
@@ -7065,12 +7063,12 @@ export const register: Register = (on) => {
     if (arg === 'lanes') {
       const t = await laneTable($, sid)
       if (!('err' in t)) return { text: t.text }
-      if (t.err[0] === 'off') return { text: 'Lead is off in this session. Run /callboard lead first.' }
+      if (t.err[0] === 'off') return { text: (await isEligible($)) ? c.LANES_IS_LANE : c.LANES_NO_LEVEL }
       return { text: `Lanes unavailable: ${c.hasText(t.err[0]) ? c.REASON_TEXT[t.err[0]] : t.err[1]}` }
     }
     if (arg === 'off' && !c.originIsPerson(code)) {
       const leaves = ((await $.state.get(lane)).value as Bound | null | undefined)?.name
-      // v15 (c2): in a conductor session the question names the conductor and its saved grant.
+      // In a conductor session the question names the conductor and its saved grant.
       const offQ = grants.get(sid)?.level === 'conductor' ? c.CONDUCTOR_OFF_QUESTION : c.offQuestionFor(leaves)
       const r = await askOnce($, sid, c.askedFrom(offQ, code), c.OFF_YES, c.OFF_NO, c.HEADER.enable)
       if (r === 'busy') return busy()
@@ -7080,9 +7078,9 @@ export const register: Register = (on) => {
         return { text: 'Cancelled. Nothing changed.' }
       }
     }
-    // The saved lead grant could not be deleted: the reply says lead may come back after a restart (F2).
+    // The saved lead grant could not be deleted: the reply says lead may come back after a restart.
     let leadKept = false
-    // v13.5: what off found, for its answer, read before the drops below: a lead (a grant, or a saved one still being restored), a rebind still waiting
+    // What off found, for its answer, read before the drops below: a lead (a grant, or a saved one still being restored), a rebind still waiting
     // (and the lane it would take, once the tick has read it), and a saved lead grant with neither.
     let wasLead = false
     let wasManager = false
@@ -7099,12 +7097,12 @@ export const register: Register = (on) => {
       wasLead = !wasManager && !wasConductor && (grants.has(sid) || leadRestorePending.has(sid))
       rebindWas = rebindPending.has(sid)
       rebindLane = rebindName.get(sid)
-      // A rebind still waiting is cancelled (F4) before any await: a tick that starts after the bump would pass its own check and could bind after
+      // A rebind still waiting is cancelled before any await: a tick that starts after the bump would pass its own check and could bind after
       // off has read the binding.
       rebindPending.delete(sid)
       rebindName.delete(sid)
       if (!wasLead && !wasManager && !wasConductor) {
-        // A read that timed out says nothing about the grant: the reply then leaves it out (#268 review).
+        // A read that timed out says nothing about the grant: the reply then leaves it out.
         const got = await withTimeout($, (async () => $.store.get(`${c.LEAD_HINT_PREFIX}${sid}`))(), c.ENGINE_CALL_TIMEOUT_MS).catch(() => undefined)
         savedLead = got !== undefined && got !== 'timeout'
         const gotC = await withTimeout($, (async () => $.store.get(`${c.CONDUCTOR_HINT_PREFIX}${sid}`))(), c.ENGINE_CALL_TIMEOUT_MS).catch(() => undefined)
@@ -7123,19 +7121,19 @@ export const register: Register = (on) => {
         return { text: `${grants.has(sid) ? 'Lead stays on' : 'Lead stays off'}: ${c.REASON_TEXT['lane-holder']}` }
       }
       if (await laneHeld()) return laneNo()
-      // v14 (2026-11-04): the manager is never made a lead in place: a no would drop its grant and a yes replace it.
+      // The manager is never made a lead in place: a no would drop its grant and a yes replace it.
       if (grants.get(sid)?.level === 'manager') {
         await log($, sid, 'refused', 'lead-manager-holder')
         return { text: `Lead stays off: ${c.REASON_TEXT['manager-holder']}` }
       }
-      // v14 (2026-11-04, review c1, W3): nor is a session that was the manager since it started: its manager tools stay declared, and the lead's would be
+      // Nor is a session that was the manager since it started: its manager tools stay declared, and the lead's would be
       // declared over them. Asked before the dialog and again after a yes (as manager-after-lead).
       const wasManagerNo = async () => {
         await log($, sid, 'refused', 'lead-after-manager')
         return { text: `Lead stays off: ${c.REASON_TEXT['lead-after-manager']}` }
       }
       if (managerDeclared.has(sid)) return wasManagerNo()
-      // v15: nor a conductor, nor a session that was one; asked again after a yes. A conductor restore still pending does not refuse: the person's lead grant
+      // Nor a conductor, nor a session that was one; asked again after a yes. A conductor restore still pending does not refuse: the person's lead grant
       // stands, and the restore then ends (lead-holder).
       const conductorNo = async (): Promise<{ text: string } | undefined> => {
         const code = grants.get(sid)?.level === 'conductor' ? 'conductor-holder' : conductorDeclared.has(sid) ? 'lead-after-conductor' : undefined
@@ -7154,7 +7152,7 @@ export const register: Register = (on) => {
       }
       // A grant from a plugin, session or script keeps the folder an earlier grant pinned; only the person's own prompt or phone moves it.
       const pinned = (!c.originIsPerson(code) && pinOf(sid)) || cwd
-      // S2b: with another lead in the repo, both need a usable name. Asked before the dialog and again after a yes.
+      // With another lead in the repo, both need a usable name. Asked before the dialog and again after a yes.
       const nameNo = async (why: string) => {
         await log($, sid, 'refused', why)
         return { text: `${grants.has(sid) ? 'Lead stays on' : 'Lead stays off'}: ${c.REASON_TEXT[why]}` }
@@ -7196,7 +7194,7 @@ export const register: Register = (on) => {
           await log($, sid, 'error', 'lead-register-timeout').catch(() => undefined)
           return { text: 'Lead could not be set up.' }
         }
-        // v13.6 (review c1, S4): a re-grant with a new folder is a new reach: work in flight for the old one (a check-in) sees the epoch move and stops.
+        // A re-grant with a new folder is a new reach: work in flight for the old one (a check-in) sees the epoch move and stops.
         const oldPin = pinOf(sid)
         if (oldPin !== undefined && oldPin !== pinned) {
           leadEpoch.set(sid, epochOf(sid) + 1)
@@ -7208,9 +7206,9 @@ export const register: Register = (on) => {
       } finally {
         leadGranting.delete(sid)
       }
-      // v13: the grant survives a restart (D5).
+      // The grant survives a restart.
       await leadSave($, sid, pinned)
-      // S1b review c1: an off or a Cancel during the save leaves no presence, log, briefing or "Lead is on" behind.
+      // An off or a Cancel during the save leaves no presence, log, briefing or "Lead is on" behind.
       if (epochOf(sid) !== grantEpoch) return { text: 'Lead is now off.' }
       // A new grant may pin another folder: the old file and its checks go first.
       await presenceDrop($, sid).catch(() => undefined)
@@ -7222,10 +7220,10 @@ export const register: Register = (on) => {
       return { text: 'Lead is on from your next prompt.\nOnly a force stop asks you.' }
     }
     const bound = (await $.state.get(lane)).value as Bound | null | undefined
-    // v13.5 (2026-11-03): no ON or OFF part; /callboard on is retired and every session gets the keepalive and the nudges.
-    // v13.6: a lead's status adds its check-ins.
+    // No ON or OFF part; /callboard on is retired and every session gets the keepalive and the nudges.
+    // A lead's status adds its check-ins.
     const ckStatus = arg === 'status' && grants.has(sid) && grants.get(sid)?.level !== 'conductor' ? ` ${c.checkinStatus((await cfgGet($, sid)).checkin, (await $.state.get(checkinPauseRef)).value, await $.clock.now())}` : ''
-    // v14: the manager's status names its level in place of the lead's.
+    // The manager's status names its level in place of the lead's.
     const gs = grants.get(sid)
     const grantPart = gs?.level === 'manager' ? 'Manager: ON.' : gs?.level === 'conductor' ? c.conductorStatus(gs.pins.length) : `Lead: ${grants.has(sid) ? 'ON' : 'OFF'}.`
     if (arg === 'status') return { text: `Lane: ${bound ? bound.name : 'NONE'}. ${grantPart}${ckStatus}${bound ? c.laneStatusLead(laneBrief.get(sid), bound.name) : ''}` }
@@ -7235,10 +7233,10 @@ export const register: Register = (on) => {
       await $.state.set(nudgedAtRef, null)
       if (!(await leadDrop($, sid))) leadKept = true
       // The rebind was cancelled above. No store record may keep naming a session that is off, or a restart would rebind it.
-      // v13.5: a session that is neither a lane nor a lead keeps its request as it is: off turns nothing off there, and its own request needs no lane.
+      // A session that is neither a lane nor a lead keeps its request as it is: off turns nothing off there, and its own request needs no lane.
       const cur = await $.state.get(request)
       const live = bound || wasLead || wasManager || wasConductor ? (cur.value as Request | null | undefined) : undefined
-      // v13.5: what off did, for its answer: a request dropped, or a compaction under way that loses its resume.
+      // What off did, for its answer: a request dropped, or a compaction under way that loses its resume.
       let reqDone: 'dropped' | 'no-resume' | undefined
       if (live && live.phase !== 'compacting') {
         await dropRequest($, sid, 'disabled')
@@ -7260,7 +7258,7 @@ export const register: Register = (on) => {
       const d = bound ? await detach($, sid, bound) : { whole: true, sidKept: false }
       const loose = bound ? undefined : await sidClearAll($, sid).catch(() => ({ ok: false, name: undefined }))
       await log($, sid, 'disabled')
-      // v13.5: the answer says what off did; it never stops the keepalive or the nudges, which every session gets.
+      // The answer says what off did; it never stops the keepalive or the nudges, which every session gets.
       const rebindTo = rebindWas ? (rebindLane ?? loose?.name) : undefined
       const did = [
         wasManager ? 'Manager is now off.' : wasConductor ? 'Conductor is now off.' : wasLead ? 'Lead is now off.' : savedLead ? 'Its saved lead grant was removed.' : savedConductor ? 'Its saved conductor grant was removed.' : savedManager ? 'Its saved manager grant was removed.' : '',
@@ -7271,8 +7269,8 @@ export const register: Register = (on) => {
       ].filter((x) => x !== '').join(' ')
       return { text: `${did || c.OFF_NOTHING}${d.whole ? '' : ` ${c.DETACH_INCOMPLETE}`}${bound && !bound.adopted ? c.STOPPABLE_BY_NAME(bound.name) : ''}${bound && d.sidKept ? c.SID_KEPT(bound.name) : ''}${loose && !loose.ok && loose.name ? c.SID_KEPT(loose.name) : ''}${leadKept ? (wasConductor || savedConductor ? c.CONDUCTOR_KEPT : wasManager || savedManager ? c.MANAGER_KEPT : c.LEAD_KEPT) : ''}` }
     }
-    // v13.6 (2026-11-03): no verb is left here; /callboard on is an unknown word (the usage line above).
-    return { text: USAGE }
+    // No verb is left here; /callboard on is an unknown word (the usage line above).
+    return { text: c.HELP_USAGE }
   }).catch(() => ({ text: 'Callboard hit an error. Run /callboard status.' }))
 
   on('tool.call', { tool: `mcp__callboard__${TOOL}` }, async ($, e, next) => {
@@ -7289,7 +7287,7 @@ export const register: Register = (on) => {
     // Any interactive session may compact itself now (self; requestGate keeps it to mode `now`); the person's session check reads the registry only when the
     // session is not eligible.
     const elig = await isEligible($)
-    // v14 (2026-11-04, S7): a session holding a lead grant may ask on-cue too: only the manager's compact cue acts on it.
+    // A session holding a lead grant may ask on-cue too: only the manager's compact cue acts on it.
     const leadCue = !elig && v.req.mode === 'on-cue' && grants.get(sid)?.level === 'lead'
     const self = !elig && !leadCue && (await interactive($, sid))
     const gate = leadCue ? 'lead' : c.requestGate(elig, v.req.mode, (await $.state.get(nudgedAtRef)).value, now, self)
@@ -7333,8 +7331,8 @@ export const register: Register = (on) => {
         await log($, sid, 'refused', `lead-${reason}`)
         return { deny: leadReason(verb, why) }
       }
-      // v14 (2026-11-04, S7): the manager's lane_compact may name a live lead by its session name, in any repo (leadByName).
-      // v15: the conductor's too, for a lead of its repos.
+      // The manager's lane_compact may name a live lead by its session name, in any repo (leadByName).
+      // The conductor's too, for a lead of its repos.
       if (verb === 'compact' && (grantOf(sid)?.level === 'manager' || grantOf(sid)?.level === 'conductor')) {
         const ld = await leadByName($, e, sid)
         if (ld && 'err' in ld) return no(...ld.err)
@@ -7357,7 +7355,7 @@ export const register: Register = (on) => {
         to = c.leadTarget(prep.entries, prep.lane, sid, verb, (e as { sid?: unknown }).sid)
       }
       if (!to.ok) return no(to.reason, c.reasonWhy(to.reason))
-      // v14 (2026-11-04, review c1, L1): a lead's lane_compact never cues a session that holds a live presence file (another lead carrying the lane's name),
+      // A lead's lane_compact never cues a session that holds a live presence file (another lead carrying the lane's name),
       // as leadByName's lane-or-lead; a file whose check could not be made counts (fail closed).
       if (verb === 'compact' && (grantOf(sid)?.level === 'lead' || grantOf(sid)?.level === 'conductor')) {
         const live = await registryEntries($)
@@ -7380,7 +7378,7 @@ export const register: Register = (on) => {
       return { deny: leadReason('create', why) }
     }
     if ((e as { agentId?: string }).agentId !== undefined) return no('subagent', 'for the main agent only.')
-    // v14: the manager never creates a lane (it has no pin either).
+    // The manager never creates a lane (it has no pin either).
     if (grantOf(sid)?.level === 'manager') return no('manager-tool', c.REASON_TEXT['manager-tool'])
     if (grantOf(sid)?.level === 'conductor') return no('conductor-tool', c.REASON_TEXT['conductor-tool'])
     const pin = pinOf(sid)
@@ -7414,10 +7412,10 @@ export const register: Register = (on) => {
         if (!r.ok) return { no: r.reason, why: c.reasonWhy(r.reason) }
         const reg = await registryEntries($)
         if (!reg) return { no: 'registry-unreadable', why: c.REASON_TEXT['registry-unreadable'] }
-        // Any letter case (S2): a lane `alpha` beside lead `Alpha` would make c.leadNameOf void the lead's name and strand its lanes.
+        // Any letter case: a lane `alpha` beside lead `Alpha` would make c.leadNameOf void the lead's name and strand its lanes.
         if (reg.some((x) => typeof x.j.name === 'string' && x.j.name.toLowerCase() === r.lane.name.toLowerCase())) return { no: 'name-in-use', why: 'name-in-use: a live session already carries that name.' }
-        // The record names this lead by its registry name now (S2), so only it reaches the lane. A lead that had a name at its grant (the cached one) and has
-        // none now is refused, so its lane is not made legacy by a passing clash; so is one with no name beside another live lead of the repo (S2b), whose
+        // The record names this lead by its registry name now, so only it reaches the lane. A lead that had a name at its grant (the cached one) and has
+        // none now is refused, so its lane is not made legacy by a passing clash; so is one with no name beside another live lead of the repo, whose
         // legacy lane that lead would reach too. A lone lead that never had a name makes a legacy lane, reachable by any lead of the repo.
         const leadName = c.leadNameOf(reg.map((x) => x.j), sid)
         if (leadName === undefined && ((grantOf(sid)?.name ?? '') !== '' || (await leadsFor($, reg, pin, pin)).some((x) => x.sid !== sid))) return { no: 'lead-unnamed', why: c.reasonWhy('lead-unnamed') }
@@ -7490,7 +7488,7 @@ export const register: Register = (on) => {
     return no('open-timeout', 'no window answered in time. A VS Code window with the lane folder as its first workspace folder must run the callboard panels extension. A panel may still appear: check for an unnamed session in that folder first.')
   })).catch(() => ({ deny: 'lane_open failed closed.' }))
 
-  // v13: lane_unpark reopens a store lane's saved conversation by its session id (the record's sid), through <LANE>.reopen in the spool; the reopened session
+  // lane_unpark reopens a store lane's saved conversation by its session id (the record's sid), through <LANE>.reopen in the spool; the reopened session
   // rebinds itself (the tick's rebind step). Live means a registry row of that id whose process still has its start time. A row of the parked process that
   // started before the park mark is waited for (up to 5 s) first: right after lane_park the stopped process can still be exiting.
   on('tool.call', { tool: 'mcp__callboard__lane_unpark' }, async ($, e, next) => leadRun($, e, async () => {
@@ -7514,7 +7512,7 @@ export const register: Register = (on) => {
     }
     const stopped = (x: c.RegEntry) => rec.parked === undefined || typeof x.startedAt !== 'number' || x.startedAt <= rec.parked
     let live = await liveOf(prep.entries)
-    // With no parked mark there is no park to wait for: one poll, so a process just stopped by a park whose mark failed is not taken for live (S5).
+    // With no parked mark there is no park to wait for: one poll, so a process just stopped by a park whose mark failed is not taken for live.
     for (let i = 0; i < (rec.parked === undefined ? 1 : 10) && live.some(stopped); i++) {
       if (!(await pause($, c.OPEN_POLL_MS))) break
       const again = await leadPrep($, e, sid)
@@ -7601,23 +7599,23 @@ export const register: Register = (on) => {
         await log($, sid, 'refused', `lead-${reason}`)
         return { deny: leadReason(verb, why) }
       }
-      // v14 (2026-11-04): the level the call started under. At manager reach every stop asks the person once, in a dialog that names the repo, and nothing is
+      // The level the call started under. At manager reach every stop asks the person once, in a dialog that names the repo, and nothing is
       // signalled unless the grant still holds at that level after the click.
       const level = grantOf(sid)?.level
-      // v15.3 (review): the grant is the same one, not only the same level (an off and a new grant meanwhile ends the call).
+      // The grant is the same one, not only the same level (an off and a new grant meanwhile ends the call).
       const epoch = epochOf(sid)
       const heldNow = () => grantOf(sid)?.level === level && epochOf(sid) === epoch
-      // v15.4: the engine abandons the dispatch when its time ran out or the person interrupted (`next.signal` aborts: plugin-authoring reference, "Work that outlives a dispatch");
+      // The engine abandons the dispatch when its time ran out or the person interrupted (`next.signal` aborts: plugin-authoring reference, "Work that outlives a dispatch");
       // the answer then went out already, so nothing may be signalled after it. An abandoned call answers nothing anyone reads, so it logs nothing and returns at once.
       const abandoned = () => next?.signal?.aborted === true
       const cut = () => ({ deny: leadReason(verb, c.reasonWhy('abandoned')) })
       let prep = await leadPrep($, e, sid)
       if ('err' in prep) return no(...prep.err)
       let one = c.laneSession(prep.entries, prep.lane, sid)
-      // v15.3 (2026-11-06): a retire or a force stop of a lane no live session carries removes its record directly (stopNoSession); a park has nothing to stop.
+      // A retire or a force stop of a lane no live session carries removes its record directly (stopNoSession); a park has nothing to stop.
       if (!one.ok && one.reason === 'no-live-session' && verb !== 'park') return stopNoSession($, e, sid, verb, level, prep, no, abandoned)
       if (!one.ok) return no(one.reason, c.reasonWhy(one.reason))
-      // v15.3 (2026-11-06): a retire or park waits for the lane's idle time itself, up to c.IDLE_WAIT_MS, so a lead that calls it right after the lane's last turn
+      // A retire or park waits for the lane's idle time itself, up to c.IDLE_WAIT_MS, so a lead that calls it right after the lane's last turn
       // need not time it. Every poll reads the lane and the registry afresh (leadPrep, laneSession) and the grant again; the session must stay the same process.
       // Past the wait the check below refuses, naming the seconds left. The answer wait of the cue starts after this one (the deadline is set again).
       if (verb !== 'terminate' && c.idleRefusal(one.entry, await $.clock.now())) {
@@ -7651,10 +7649,10 @@ export const register: Register = (on) => {
       // Exactly one entry of this session, as attach: with two, neither pid is known to be this process, so the self check below has none.
       const selfRows = prep.entries.filter((x) => x.sessionId === sid)
       const selfPid = selfRows.length === 1 ? selfRows[0].pid : undefined
-      // v14 (2026-11-04, review c1, M2): at manager reach, before any dialog and again after it: a record that names a session must name this one, and the
+      // At manager reach, before any dialog and again after it: a record that names a session must name this one, and the
       // session must hold no live presence file (a lead, a conductor or the manager may carry a lane's name: leadByName guards only lane_compact).
       const targetNo = async (lane: c.Lane, t: c.RegEntry) => {
-        // v15: a conductor's stop takes the manager's wide path.
+        // A conductor's stop takes the manager's wide path.
         if (level === 'lead') return undefined
         if (lane.sid !== undefined && lane.sid !== t.sessionId) return no('sid-mismatch', c.reasonWhy('sid-mismatch'))
         const live = await registryEntries($)
@@ -7721,7 +7719,7 @@ export const register: Register = (on) => {
         }
         const early = await procCheck(target)
         if (early) return early
-        // v14: a retire at manager reach asks the person once before the cue; anything but Retire sends nothing.
+        // A retire at manager reach asks the person once before the cue; anything but Retire sends nothing.
         if (verb === 'retire' && level === 'manager') {
           const r = await askOnce($, sid, c.retireQuestion(prep.lane.name, prep.lane.repo!, !prep.lane.adopted), c.RETIRE_YES, c.RETIRE_NO, c.HEADER.stop)
           if (r === 'busy') return no('busy', c.reasonWhy('busy'))
@@ -7747,7 +7745,7 @@ export const register: Register = (on) => {
         victim = fresh.victim
       }
       await log($, sid, verb === 'terminate' ? 'terminating' : verb === 'retire' ? 'retiring' : 'parking', prep.lane.name)
-      // v14 (2026-11-04, review c1, S8): the grant is read once more right before the signal (the process checks and the log line above awaited).
+      // The grant is read once more right before the signal (the process checks and the log line above awaited).
       const stale = !heldNow() ? 'grant-changed' : abandoned() ? 'abandoned' : undefined
       if (stale === 'abandoned') {
         if (verb === 'terminate') toast($, 'Force stop not sent: abandoned')
@@ -7763,7 +7761,7 @@ export const register: Register = (on) => {
       // The hook's .catch reads this: a call cut off from here on answers that the session was signalled, not "failed closed".
       const callKey = stopCallKey(sid, verb, (e as { lane?: unknown }).lane)
       signalledCalls.set(callKey, { name: prep.lane.name, pid: victim.pid as number })
-      // v15.4 (2026-11-06): from here the session has its signal, so a failure is answered as what it is: signalled, record unknown (code in the log), never "failed closed".
+      // From here the session has its signal, so a failure is answered as what it is: signalled, record unknown (code in the log), never "failed closed".
       const afterSignal = async () => {
         // Ask the VS Code window to close the dead tab: the extension's sweep acts only once that pid is dead and no live session carries the name. Best effort.
         const closeReq = await writeIn($, 'open', `${prep.lane.name}.close`, `${victim.sessionId}\n${victim.pid}\n${prep.lane.name}\n`).catch(() => ({ err: 'throw' }))
@@ -7781,7 +7779,7 @@ export const register: Register = (on) => {
           await log($, sid, 'parked', prep.lane.name)
           return { result: c.parkedText(prep.lane.name, victim.pid as number) } as never
         }
-        // v15.3 (2026-11-06): retire and force stop end the lane for good: once the session got its signal, its store record goes too (the .archive folder and the
+        // Retire and force stop end the lane for good: once the session got its signal, its store record goes too (the .archive folder and the
         // report stay). A lane a session joined keeps its record, which stops naming the stopped session, as before. A failed removal is told, with its code; the call
         // can be made again: the record stops naming the stopped session, so a retry goes by name and a by-hand reopen of that conversation asks Restore.
         // The record goes only once the process (that pid and start time) has ended, polled up to c.STOP_POLLS times.
@@ -7828,7 +7826,7 @@ export const register: Register = (on) => {
         signalledCalls.delete(callKey)
       }
     })).catch(async ($, e, next) => {
-      // v15.4 (2026-11-06): the kind of the failure goes to the log, never its text (it could hold a path): throw, or timeout (the hook outran its 10 s of own time;
+      // The kind of the failure goes to the log, never its text (it could hold a path): throw, or timeout (the hook outran its 10 s of own time;
       // `next.error.kind`, HookFailure in the hook API). Before the signal nothing was done, and the run-on code stops at abandoned(). A call cut off after the signal
       // answers what happened (signalledCalls), never "failed closed". Nothing here may throw: the answer is built first, the log is best effort.
       const kind = next?.error?.kind === 'timeout' ? 'timeout' : 'throw'
@@ -7847,7 +7845,7 @@ export const register: Register = (on) => {
     midDelivered.delete(sid)
     promptMidSent.delete(sid)
     promptMidRetold.delete(sid)
-    // v14 (2026-11-04, review c2, CR1): what a lead last saw of a manager goes with the session.
+    // What a lead last saw of a manager goes with the session.
     managerSeen.delete(sid)
     managerSeenBusy.delete(sid)
     await presenceDrop($, sid).catch(() => undefined)
@@ -7873,7 +7871,7 @@ export const register: Register = (on) => {
       await dropRequest($, sid, 'turn-complete-error').catch(() => undefined)
     }
     if ((e as { agentId?: string }).agentId === undefined) {
-      // v13.2: when the main agent's turn ended starts the keepalive gap; a real turn (not one the mod's ping, nudge, notice or lanes-changed text started)
+      // When the main agent's turn ended starts the keepalive gap; a real turn (not one the mod's ping, nudge, notice or lanes-changed text started)
       // also restarts the stop clock. A ping turn never records a nudge: a session waiting past its level would otherwise get one after every ping.
       const kind = turnKind.get(sid)
       turnKind.delete(sid)
@@ -7911,10 +7909,10 @@ export const register: Register = (on) => {
     const sid = await $.session.id()
     const pin = pinOf(sid)
     const gated = pin !== undefined && !e.traits.includes('teammate') && Array.isArray(e.tools) && e.tools.includes(c.LEAD_LANE_TOOL)
-    // v14 (2026-11-04): the manager's section, on the same gates.
+    // The manager's section, on the same gates.
     const mg = grants.get(sid)
     const managerText = mg?.level === 'manager' && !e.traits.includes('teammate') && Array.isArray(e.tools) && e.tools.includes(c.LEAD_LANE_TOOL) ? c.managerBriefing(mg.name) : undefined
-    // v15: the conductor's section, on the same gates.
+    // The conductor's section, on the same gates.
     const condHome = conductorHome.get(sid)
     const conductorText = mg?.level === 'conductor' && condHome !== undefined && !e.traits.includes('teammate') && Array.isArray(e.tools) && e.tools.includes(c.LEAD_LANE_TOOL) ? c.conductorBriefing(mg.name, condHome, mg.pins) : undefined
     let brief: c.LaneFacts | undefined
@@ -7928,9 +7926,9 @@ export const register: Register = (on) => {
       }
     }
     const laneText = brief ? c.laneBriefing(brief) : undefined
-    // v14 (2026-11-04, review c1): a lead is told of on-cue compaction only while its tick last saw a live manager (no file read here).
+    // A lead is told of on-cue compaction only while its tick last saw a live manager (no file read here).
     const leadManager = gated && grants.get(sid)?.level === 'lead' && managerSeen.get(sid)?.live === true
-    // v15 S7b: and of a trusted conductor over its repo.
+    // And of a trusted conductor over its repo.
     const seenConductors = gated && grants.get(sid)?.level === 'lead' ? (managerSeen.get(sid)?.conductors ?? []) : []
     const out = await next(e)
     if ((!gated && laneText === undefined && managerText === undefined && conductorText === undefined) || !Array.isArray(out?.sections)) return out
@@ -7942,7 +7940,7 @@ export const register: Register = (on) => {
     if (gated) sections = [...sections.filter((x) => x.id !== c.LEAD_CONDUCTOR_ID), ...(seenConductors.length > 0 ? [{ id: c.LEAD_CONDUCTOR_ID, text: c.leadConductorText(seenConductors), scope: 'session' as const }] : [])]
     if (managerText !== undefined) sections = [...sections.filter((x) => x.id !== c.MANAGER_BRIEFING_ID), { id: c.MANAGER_BRIEFING_ID, text: managerText, scope: 'session' as const }]
     if (conductorText !== undefined) sections = [...sections.filter((x) => x.id !== c.CONDUCTOR_BRIEFING_ID), { id: c.CONDUCTOR_BRIEFING_ID, text: conductorText, scope: 'session' as const }]
-    // PR 3: the conductor's and the manager's prompt section (the lead's is above).
+    // The conductor's and the manager's prompt section (the lead's is above).
     {
       const lvl = grants.get(sid)?.level
       const tierText = lvl === 'conductor' && conductorText !== undefined ? pr.tierPromptBriefing('conductor') : lvl === 'manager' && managerText !== undefined ? pr.tierPromptBriefing('manager') : undefined
@@ -7955,8 +7953,8 @@ export const register: Register = (on) => {
   on('prompt.submit', async ($, e, next) => {
     const sid = await $.session.id()
     const n = own.get(e.text) ?? 0
-    // v13.2: a prompt starts a new keepalive gap. v13.4: the mod's own prompts do not reach this hook (engine 2.1.316); their gap starts at their turn's end.
-    // Were an engine to show them, the ping is the one prompt that leaves the turn mark alone (F1): it is no work, so a lane's signed report stays current
+    // A prompt starts a new keepalive gap. The mod's own prompts do not reach this hook (engine 2.1.316); their gap starts at their turn's end.
+    // Were an engine to show them, the ping is the one prompt that leaves the turn mark alone: it is no work, so a lane's signed report stays current
     // and a lane signed done is not read as working.
     const ping = n > 0 && e.text === c.KEEPALIVE_TEXT
     lastSubmitAt.set(sid, await $.clock.now())
@@ -7964,7 +7962,7 @@ export const register: Register = (on) => {
     if (!ping) await markTurn($, sid)
     if (n > 0) {
       // A turn the ping, a nudge, a notice or the lanes-changed text starts is not real work (A): it does not restart the keepalive stop clock.
-      // v13.4: nothing is counted down here; the turn.start that carries the text does it, so nothing is counted twice.
+      // Nothing is counted down here; the turn.start that carries the text does it, so nothing is counted twice.
       if ((unrealOwn.get(e.text) ?? 0) > 0) turnKind.set(sid, ping ? 'ping' : 'unreal')
       else turnKind.delete(sid)
       return next(e)
@@ -7982,9 +7980,9 @@ export const register: Register = (on) => {
   }).catch(($, e, next) => next(e))
 
   on('turn.start', async ($, e, next) => {
-    // The ping's own turn leaves the turn mark alone, as its prompt does (F1).
+    // The ping's own turn leaves the turn mark alone, as its prompt does.
     if ((e as { agentId?: string }).agentId === undefined) {
-      // v13.4: a turn that carries one of the mod's own texts (framed or not) is that submit's: counted down, and not real for a not-real text. Any other
+      // A turn that carries one of the mod's own texts (framed or not) is that submit's: counted down, and not real for a not-real text. Any other
       // (a person's prompt, a wake, a queued message) is real.
       const t = ownTextOf((e as { text?: unknown }).text)
       let kind: 'ping' | 'unreal' | undefined
@@ -8018,7 +8016,7 @@ export const register: Register = (on) => {
   }).catch(($, e, next) => next(e))
 
   on('classic.PermissionRequest', async ($, e, next) => {
-    // P-I5 (probed 2026-11-06): the dialog of a subagent's ask is shown only after the hooks return, so a wait would hide it from the person. Its ask stays his:
+    // The dialog of a subagent's ask is shown only after the hooks return, so a wait would hide it from the person. Its ask stays his:
     // the chain beneath at once, with no request file, no wait and no notice.
     const agent = (e as { agent_id?: unknown }).agent_id
     if (typeof agent === 'string' && agent !== '') return next(e)
@@ -8048,10 +8046,10 @@ export const register: Register = (on) => {
         await saveHint($, sid)
       }
     } finally {
-      // v13.1: any compaction that ended clears the mark, whatever the request says (a reload may have dropped it) and even if the step above threw;
+      // Any compaction that ended clears the mark, whatever the request says (a reload may have dropped it) and even if the step above threw;
       // after the request, so it delays nothing.
       await cmpClear($, sid)
-      // v16.1: a compaction the mod did not start (the engine's own, the person's /compact) ends the order too, so the orderer is not sent after a lane that compacted.
+      // A compaction the mod did not start (the engine's own, the person's /compact) ends the order too, so the orderer is not sent after a lane that compacted.
       await orderSpend($, sid).catch(() => undefined)
     }
     return next(e)

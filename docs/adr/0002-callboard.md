@@ -5,6 +5,8 @@
 
 Scope: the callboard mod, its VS Code panels extension and its sender, as they stand at v15. The user-facing guide is `tools/callboard/README.md`; the code is `tools/callboard/mod/hooks/core.ts` (pure logic) and `register.ts` (engine calls). The manager role that uses callboard is ADR 0001.
 
+**Amended 2026-11-12:** five sentences below still read as an earlier design and stand as written. Four are install-era text that [ADR 0003](0003-symlinked-install.md) replaced: the Options Considered entry 7 sentence "The terminal wrapper `claude-callboard` stays for testing" (the wrapper is retired); the Decision's opening "loaded into every session from a root-owned copy" (the mod loads from a live checkout); the Made bullet's "The root-owned `/usr/local/libexec/callboard/lanes.json` stays optional and wins a name clash" (dropped, lanes come from the store only); and, under Not verified live, "The installer's sudo branches run in tests only through `--no-sudo`" (there is no installer). The fifth is the Scope line's "as they stand at v15": the Decision body also describes v16 and v16.1 (the nudge reach and the order).
+
 ## Context
 
 The person runs several Claude Code sessions at once: lanes doing the work, a lead per repo directing them, and one manager over all of them. Most sessions are VS Code panels. A lead needs to name a new session, give it its first prompt, resume it, time its compaction and stop it, without the person typing each step.
@@ -218,6 +220,7 @@ Each addition is part of the decision above; these sections hold what it decided
 - **List headers.** A `lane_list` box header names the repo by its folder name, not its path; a lane's own Folder column is unchanged.
 - **Retire and terminate remove the lane; `lane_remove` is dropped.** Once the session has ended after its signal (a survivor keeps its record), `lane_retire` and `lane_terminate` delete the lane's store record (the `.archive/<LANE>/` folder and signed report stay); a lane a session joined keeps its record while a session carries it (see the stuck-lanes addition below); `lane_park` is the only stop that keeps a lane. A lane with no live session is cleared the same way: `lane_retire` needs no signed report (nothing runs) and asks only for a parked lane or at manager reach, `lane_terminate` asks the person, and the v14.1 liveness checks run before the dialog, after the click and inside the store lock. The manager's batch remove is folded into the two stops, one lane per call. Decided by the person (2026-11-06): a record kept after a retire left lanes that only `lane_remove` could clear, and a second tool was one more thing for a lead to mis-time. The conductor's `lane_terminate`, which asks the person, can now remove a record too. A lane a session joined kept its record, and with `lane_remove` gone nothing removed it but `/callboard lane off` in that session (an open question for the person); superseded 2026-11-08, see the stuck-lanes addition below. Residual: a stop that removes a record is not undone by lane_unpark; the session's conversation file is still on disk.
 - **Retire and park wait for idleness.** The lead's call polls the registry every second for up to 40 seconds for the 30 idle seconds the target must have, then refuses `not-idle` naming the seconds left. A lead that called early used to be refused and retry in a loop. The lane's own confirmation is unchanged.
+- **Amended 2026-11-12:** the wait polls every 2 seconds (`IDLE_POLL_MS`), not every second. The 40-second limit (`IDLE_WAIT_MS`) is unchanged.
 
 ### Design addition: stuck lanes (2026-11-08)
 
@@ -255,6 +258,8 @@ Probes named by the design and the README. Status as recorded; "open" means not 
 - P-L: a settings `ask` rule on a mod-registered tool does not prompt in a Manual-mode panel. Answered, live: ask rules do not gate mod tools.
 
 (The callboard README's manager section ("unprobed (P6)") and its `/color` note ("P2") are probes of the levels plan, not the P1-P8 above: a rename right after the manager grant, and a command run from a timer rather than from inside a hook.)
+
+*Amended 2026-11-12:* the README carries no P2 note on the `/color` call, so only the "unprobed (P6)" half of the note above still points at anything. The P2 half is dropped.
 
 **Lanes (L1-L9).**
 
@@ -307,6 +312,7 @@ Questions the design left unanswered; none is decided.
 
 - A lead names, starts, resumes, compacts, parks and stops lanes with nothing typed by the person, in panels and terminals, and no text from a cue ever reaches a model. Every interactive session keeps its cache warm and is told to compact before its context grows costly.
 - New surface: the cue, result, open and leads folders under `~/.claude/callboard/`, the lane stores, the `$.store` keys (`lead:`, `conductor:`, `sess:`, `cmp:`, `config`), the conductor list file and the brief files.
+  - **Amended 2026-11-12:** the key list above is short. The mod's `$.store` keys are `lead:`, `conductor:`, `manager:` (the saved manager grant), `sess:`, `cmp:`, `ord:` (a lane's compaction order, `ord:<sid>`), `config`, `reserved` (the machine's reserved names) and `answering` (the prompt-answering switch, ADR 0004). The retired `on:` key is only deleted, never read.
 - **Accepted residual: same-uid forgery.** Any process running as the person can write cues, result files, open and close requests, store records, presence files, registry rows, `$.store` keys, the conductor list and the settings line that loads the mod. Nothing here defends against code already running as the person; that code could send the signal or edit the files itself. What bounds the gain:
   - cues carry no text; every submitted turn is fixed text that carries no approval;
   - the target runs its own checks (binding, record hash, folder, birth window, idle, empty box, background work, signed report);
