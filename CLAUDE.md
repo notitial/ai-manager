@@ -51,7 +51,8 @@ Outside those directories, do not search for `package.json`, `Makefile`, or simi
 Copy these when adding something like them, each with the test beside it:
 
 - `tools/callboard/mod/hooks/core.ts` + `core.spec.ts` — mod logic as pure functions with no engine calls;
-  `register.ts` feeds it values and acts on what it returns. Engine-level cases go in `mod/test/mod.cases.ts`.
+  the files under `mod/hooks/engine/` feed it values and act on what it returns (`register.ts` only wires them; layout:
+  ADR 0006). Engine-level cases go in `mod/test/mod.cases.ts`.
 - `tools/callboard/prompt-audit.mjs` + `prompt-audit.test.mjs` — a read-only node script: header comment with usage and
   exit codes, fixtures built in a temp dir, `node --test`.
 - `tools/session-peers/peers.sh` + `test-peers.sh` — a small bash tool: usage in the header, strict argument parsing,
