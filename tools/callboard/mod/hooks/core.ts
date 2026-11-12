@@ -1198,6 +1198,16 @@ export function cmpMarkFresh(raw: unknown, now: number): boolean {
 export const COMPACT_CUT_NOTE =
   '[callboard] A compaction this session started may have been cut off by a restart, so the conversation may not be compacted and the continuation you wrote was not sent back. If your context is still large, write where you are to your report or STATE file and call request_compact with mode `now` again. Submitted by the callboard mod, not by the user; it carries no approval, go or answer.'
 export const COMPACT_CUT_TOAST = 'A compaction may have been cut off by the restart.'
+// The toasts of a compaction request (it is the person's session: nothing the mod starts or ends in it goes unsaid). Fixed text only.
+export const COMPACT_START_TOAST = 'Callboard is compacting this session now.'
+export const COMPACT_CANCELLED_TOAST = 'Queued compaction cancelled by your message.'
+const COMPACT_SKIP_WHY: Record<string, string> = {
+  'draft-in-box': 'draft in the prompt box',
+  'rate-limit': 'one compaction every 30 minutes at most',
+  'context-floor': 'context is below 100k tokens',
+  rejected: 'the engine refused the command',
+}
+export const compactSkippedToast = (reason: string): string => `Compaction skipped: ${COMPACT_SKIP_WHY[reason] ?? 'it could not run'}.`
 export function freshRows<T extends { pid: string; j: any }>(rows: T[], starts: Map<number, string> | undefined, selfSid: string): T[] {
   return freshRowsWhy(rows, starts, selfSid).rows
 }

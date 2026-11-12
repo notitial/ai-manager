@@ -187,6 +187,22 @@ acts only when a prompt exists: it stops no shell write that nothing prompts for
 **Limits.** A shell command is a string: `eval`, an encoded payload or a script file can hide a delete. A delete
 offered by an unrelated MCP server isn't recognised.
 
+*Amended 2026-11-12: a lane's own report.* The edit-of-settings rule holds every file under a live checkout, so a lane
+that runs in that checkout and signs `.archive/<LANE>/REPORT.md` got a `floor settings` row, no request and no notice
+(seen 2026-11-11: the dialog sat with the person and no tier knew). The floor now leaves out exactly that write, and
+only the live-checkout part of the rule for it: a `Write`, `Edit` or `MultiEdit` whose `file_path`, spelled exactly
+(the case too), is the path the session's own lane record gives (`<repo>/.archive/<LANE>/REPORT.md`), whose real path is
+that repo's real path plus the same tail, and whose file is absent or a plain file of the person's with one link. The
+hook checks this at the request and at apply; it writes the path into the request file (`ownReport`), and a tier's
+`prompt_answer` takes it from there, accepting it only if it reads as `<repo>/.archive/<the request's own lane>/REPORT.md`.
+Everything else stays floor: another lane's report, any other `.archive` file, any other path under the checkout, a
+link or hard link, a changed case, a `..` road to another file, a notebook tool, a shell append, callboard's state folder
+and every settings or hooks path. The report is the file `lane_retire` trusts, so what a tier allows here is a lane
+signing its own done line, judged under the normal rubric; a wrong allow can make a lane read as done, and `lane_retire`
+still asks the lane itself (idle, an empty box, a signature newer than its last turn). The tiers' judgment is the only
+check on what the lane writes into it. The checks run before the write, as every check of the hook does: a link or hard link swapped in between by another process in the same checkout is the old window, now open for this one file name inside a live checkout too; it is accepted. The repo must be its own real path, and a tier takes the path from the request only if a lane record of that name gives it. A whole-file `Write` of a long report is a truncated copy, which a tier may not allow (it passes up to the person); a lane signs with `Edit` or a short `Write` to be answerable. A prompt that stays the person's still leaves only a ledger row; a notice to the
+lane's lead for those is not built, as it needs a new fixed turn with its own cap.
+
 ### The risk list is judgment, not floor
 
 **The risk list rests on the agents' judgment, not on the hook.** It can't be matched by a hook without the word belt
@@ -297,6 +313,12 @@ question answered `Yes` or `No`, an agent's answer or a returned decision while 
 `relay-lost` row before it), and a tier that answers a request after its own pass-up. It prints every relayed question as the
 tier put it, beside the request's tool and pattern, so a wrong summary can be read afterwards. The new rows (`relayed`,
 `relay-lost`, `relay-left`, `relay-late`, `expired-denied`, `deny-unclear`) are listed and counted, not anomalies.
+
+*Amended 2026-11-12: rule e.* The audit compares each request with the latest `answering-on` or `answering-off` row in
+force at its time, not with the first `answering-on` row ever written: a request raised while answering was off is
+flagged (`requested-while-answering-off`). If `/callboard escalation` writes the plain `answering-on` row and then fails
+to write the `asks` row, the stored value is put back and the ledger gets rows that agree with it, so the audit does not
+read a wider "on" than what is stored. The relay-left count shows the tier that asked.
 
 With questions (amended 2026-11-11) the audit also reports an answer that is not for a question, a person's relayed pick whose
 label hash matches no label of the question, a `returned` answer that differs from the decision, and a question answered
