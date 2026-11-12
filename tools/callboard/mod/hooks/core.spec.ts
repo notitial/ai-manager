@@ -788,6 +788,33 @@ test('noticeAllowed lets 3 notices through an hour, counting only the last hour'
   assert.equal(c.noticeAllowed([now + 5, now - 2, now - 3], now), true)
 })
 
+test('pushRecent keeps the last hour that is not in the future, then adds now', () => {
+  const now = 10 * c.HOUR_MS
+  assert.deepEqual(c.pushRecent([], now), [now])
+  assert.deepEqual(c.pushRecent([now - c.HOUR_MS, now - c.HOUR_MS + 1, now - 5, now + 1], now), [now - c.HOUR_MS + 1, now - 5, now])
+  const list = [now - 5]
+  c.pushRecent(list, now)
+  assert.deepEqual(list, [now - 5])
+})
+
+test('dueEvery: not due while the last time is not after now and under the gap ago; no time, a future time and a full gap are due', () => {
+  const now = 10_000
+  assert.equal(c.dueEvery(undefined, now, 1000), true)
+  assert.equal(c.dueEvery(now - 999, now, 1000), false)
+  assert.equal(c.dueEvery(now - 1000, now, 1000), true)
+  assert.equal(c.dueEvery(now, now, 1000), false)
+  assert.equal(c.dueEvery(now + 1, now, 1000), true)
+})
+
+test('homePath is fullPath cut to its last 80 characters', () => {
+  const home = '/Users/x'
+  for (const p of ['', '/', '/Users/x', '/Users/x/repo', '/other/repo', '/a\u0000b\u007fc']) assert.equal(c.homePath(p, home), c.fullPath(p, home), JSON.stringify(p))
+  assert.equal(c.homePath('/Users/x/repo'), '/Users/x/repo')
+  const long = `/Users/x/${'d/'.repeat(60)}end`
+  assert.equal(c.homePath(long, home), `…${c.fullPath(long, home).slice(-80)}`)
+  assert.equal(c.homePath(long, home).length, 81)
+})
+
 test('compactDenyText says when to try again, and that a small context should not call again', () => {
   const now = 10 * c.HOUR_MS
   assert.match(c.compactDenyText('rate-limit', now - 60_000, now), /rate-limit.*about 29 minutes/)

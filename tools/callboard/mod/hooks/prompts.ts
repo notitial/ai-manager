@@ -1950,7 +1950,9 @@ export function ledgerLine(row: LedgerRow): string {
   }
   return `${line}\n`
 }
-export const ledgerFile = (now: number): string => `ledger-${new Date(now).toISOString().slice(0, 7)}.jsonl`
+// A monthly file's name: <prefix>-YYYY-MM.jsonl. The audit reads these names, so the form is fixed.
+const monthFile = (prefix: string, now: number): string => `${prefix}-${new Date(now).toISOString().slice(0, 7)}.jsonl`
+export const ledgerFile = (now: number): string => monthFile('ledger', now)
 // The ledger file of the month before, for a decision written near a month's end.
 export const ledgerFilePrev = (now: number): string => {
   const d = new Date(now)
@@ -2047,7 +2049,7 @@ export const QUESTIONS_ROW_MAX = 4096
 const QUESTION_TEXT_MAX = 1024
 const QUESTION_HEADER_MAX = 64
 export type QuestionsRow = { t: string; id: string; lane?: string; repo?: string; tier: string; by: string; header: string; question: string; options: string[]; label: string; via?: 'person' }
-export const questionsFile = (now: number): string => `questions-${new Date(now).toISOString().slice(0, 7)}.jsonl`
+export const questionsFile = (now: number): string => monthFile('questions', now)
 // The row as one line: every string redacted, the question cut at 1 KB and the header at 64 bytes, and the whole line under QUESTIONS_ROW_MAX after JSON.stringify. Past the
 // cap the question is shortened first, so a row never splits; then the repo goes.
 export function questionsLine(row: QuestionsRow): string {

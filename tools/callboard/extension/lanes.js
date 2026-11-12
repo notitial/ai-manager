@@ -2,29 +2,18 @@
 // Panel control for callboard. All vscode and filesystem access is injected so the
 // registry-diff race can be tested with a fake registry.
 
-const SID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+const { execFile } = require('node:child_process')
+const { reservedHit, SID_RE, NAME_RE, pidAlive } = require('./reserved.js')
 
-const { reservedHit } = require('./reserved.js')
-
-const NAME_RE = /^[A-Za-z0-9_-]{1,40}$/
 const ADOPT_MAX = 64
 const PID_MAX = 2 ** 22
 // An adopted panel is dropped when its process is still alive this long after the request and no registry entry ever showed it: a close request for an unrelated live process.
 const ADOPT_TTL_MS = 5 * 60_000
 
-function pidAlive(pid) {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (err) {
-    return !!err && err.code === 'EPERM'
-  }
-}
-
 // Start time of a process as `ps` prints it in UTC, the way the session registry records procStart; undefined when it cannot be read.
 function psStart(pid) {
   return new Promise((resolve) => {
-    require('node:child_process').execFile('/bin/ps', ['-o', 'lstart=', '-p', String(pid)], { timeout: 5000, env: { TZ: 'UTC', LC_ALL: 'C' } }, (err, out) =>
+    execFile('/bin/ps', ['-o', 'lstart=', '-p', String(pid)], { timeout: 5000, env: { TZ: 'UTC', LC_ALL: 'C' } }, (err, out) =>
       resolve(err ? undefined : String(out)),
     )
   })
@@ -172,11 +161,16 @@ function createLanes({ vscode, registry, sleep, now, workspaceFolders = () => un
   //   'live'  its pid answers and `ps` gave the recorded start time;
   //   'maybe' its pid answers but nothing proves it is the same process: no start time was recorded, or `ps` failed or timed out.
   // reopen takes only 'live'; the sweep closes a tab only on 'dead', so a check that fails keeps the tab.
-  const procState = async (pid, procStart) => {
+  // starts: a sweep's own pid -> start time map (only a start that was read is kept, so a failed `ps` is asked again); a sweep drops it at its end.
+  const procState = async (pid, procStart, starts) => {
     if (!Number.isInteger(pid) || pid < 2 || !alive(pid)) return 'dead'
     const want = startKey(procStart)
     if (want === undefined) return 'maybe'
-    const got = startKey(await startOf(pid))
+    let got = starts && starts.get(pid)
+    if (got === undefined) {
+      got = startKey(await startOf(pid))
+      if (got !== undefined && starts) starts.set(pid, got)
+    }
     if (got === undefined) return 'maybe'
     return got === want ? 'live' : 'dead'
   }
@@ -230,6 +224,11 @@ function createLanes({ vscode, registry, sleep, now, workspaceFolders = () => un
   // Sweeps never overlap (the interval may fire while one still waits on `ps`): a call during a sweep returns that sweep.
   const lastSeen = new Map()
   const adoptedAt = new Map()
+  const forget = (sid) => {
+    opened.delete(sid)
+    lastSeen.delete(sid)
+    adoptedAt.delete(sid)
+  }
   const claudeTabs = () =>
     vscode.window.tabGroups.all.flatMap((g) => g.tabs).filter((t) => /claude/i.test(String(t.input && t.input.viewType)))
   let sweeping
@@ -242,13 +241,14 @@ function createLanes({ vscode, registry, sleep, now, workspaceFolders = () => un
     const all = await registry.list()
     if (all.complete === false) return
     const list = panels(all)
+    const starts = new Map()
     for (const sid of [...opened.keys()]) {
       let e
       let firstMaybe
       const maybePids = []
       for (const x of list) {
         if (x.sessionId !== sid) continue
-        const st = await procState(x.pid, x.procStart)
+        const st = await procState(x.pid, x.procStart, starts)
         if (st === 'live') { e = x; break }
         if (st === 'maybe') { maybePids.push(x.pid); if (!firstMaybe) firstMaybe = x }
       }
@@ -271,25 +271,17 @@ function createLanes({ vscode, registry, sleep, now, workspaceFolders = () => un
         continue
       }
       if (!Number.isInteger(rec.pid) || rec.pid < 2) {
-        opened.delete(sid)
-        lastSeen.delete(sid)
-        adoptedAt.delete(sid)
+        forget(sid)
         continue
       }
-      if (maybePids.some((p) => p !== rec.pid) || (await procState(rec.pid, rec.procStart)) !== 'dead') {
-        if (adoptedAt.has(sid) && now() - adoptedAt.get(sid) > adoptTtlMs) {
-          opened.delete(sid)
-          lastSeen.delete(sid)
-          adoptedAt.delete(sid)
-        }
+      if (maybePids.some((p) => p !== rec.pid) || (await procState(rec.pid, rec.procStart, starts)) !== 'dead') {
+        if (adoptedAt.has(sid) && now() - adoptedAt.get(sid) > adoptTtlMs) forget(sid)
         continue
       }
-      opened.delete(sid)
-      lastSeen.delete(sid)
-      adoptedAt.delete(sid)
+      forget(sid)
       if (!rec.name || reservedHit(rec.name)) continue
       let held = false
-      for (const x of all) if (x.name === rec.name && (await procState(x.pid, x.procStart)) !== 'dead') { held = true; break }
+      for (const x of all) if (x.name === rec.name && (await procState(x.pid, x.procStart, starts)) !== 'dead') { held = true; break }
       if (held) continue
       const tabs = claudeTabs().filter((t) => t.label === rec.name)
       const tab = rec.tab && tabs.includes(rec.tab) ? rec.tab : tabs.length === 1 ? tabs[0] : undefined
@@ -320,9 +312,7 @@ function createLanes({ vscode, registry, sleep, now, workspaceFolders = () => un
     for (const e of panels(await registry.list())) if (e.sessionId === sid && (await rowLive(e))) { entry = e; break }
     if (!entry || !entry.name) throw new Error('no such open panel')
     if (reservedHit(entry.name)) throw new Error('refusing to close a reserved lane name')
-    const tabs = vscode.window.tabGroups.all
-      .flatMap((g) => g.tabs)
-      .filter((t) => t.label === entry.name && /claude/i.test(String(t.input && t.input.viewType)))
+    const tabs = claudeTabs().filter((t) => t.label === entry.name)
     if (tabs.length !== 1) throw new Error(`expected one tab named for the panel, found ${tabs.length}`)
     await vscode.window.tabGroups.close(tabs[0])
     return sid
