@@ -352,6 +352,36 @@ test('e: a request with no earlier answering-on row is an anomaly', () => {
   assert.deepEqual(run(fx).anomalies, [])
 })
 
+test('e: each request is compared with the latest answering row at its time: a later off makes the on row stale, a later on restores it', () => {
+  const fx = fixture()
+  // On, then off, then a request raised while it was off: flagged.
+  ledger(fx, [ON(BASE - 3000), R('answering-off', BASE - 1000, { code: 'off' }), ...clean()])
+  const rep = run(fx)
+  assert.deepEqual(rules(rep), ['requested-while-answering-off'])
+  assert.match(rep.anomalies[0].detail, /answering was off/)
+  // On, off, on again, then the request: fine.
+  ledger(fx, [ON(BASE - 3000), R('answering-off', BASE - 2000, { code: 'off' }), ON(BASE - 1000), ...clean()])
+  assert.deepEqual(run(fx).anomalies, [])
+  // The questions row (a plain on followed by the asks row) is on.
+  ledger(fx, [ON(BASE - 3000), R('answering-on', BASE - 2900, { code: 'asks' }), ...clean()])
+  assert.deepEqual(run(fx).anomalies, [])
+  // An off that only turned the questions off (an earlier mod's answering-off with code asks) leaves permission answering on.
+  ledger(fx, [ON(BASE - 3000), R('answering-off', BASE - 1000, { code: 'asks' }), ...clean()])
+  assert.deepEqual(run(fx).anomalies, [])
+  // An off written in the same millisecond as the request but after it does not count for it; one written before does.
+  ledger(fx, [ON(BASE - 3000), ...clean().slice(0, 1), R('answering-off', BASE, { code: 'off' }), ...clean().slice(1)])
+  assert.deepEqual(run(fx).anomalies, [])
+  ledger(fx, [ON(BASE - 3000), R('answering-off', BASE, { code: 'off' }), ...clean()])
+  assert.deepEqual(rules(run(fx)), ['requested-while-answering-off'])
+  // Two requests either side of an off are judged separately; a later off does not touch the earlier one.
+  const a = clean(uid(1), BASE, uid(101))
+  const b = clean(uid(2), BASE + 20_000, uid(102))
+  ledger(fx, [ON(BASE - 3000), ...a, R('answering-off', BASE + 10_000, { code: 'off' }), ...b])
+  const two = run(fx)
+  assert.deepEqual(rules(two), ['requested-while-answering-off'])
+  assert.equal(two.anomalies[0].id, uid(2))
+})
+
 test('f: a request file older than 24 h in a session folder is an anomaly, by age only', () => {
   const fx = fixture()
   ledger(fx, [ON(), ...clean()])
@@ -827,6 +857,9 @@ test('tiers: relay-left, relay-late, expired-denied and deny-unclear are listed 
   assert.match(text, /relay-late: 1 \(closed 1\)/)
   assert.match(text, /expired-denied: 1 \(timeout 1\)/)
   assert.match(text, /relayed: 1 \(conductor 1\)/)
+  // The tier that asked, not "(none)": a relay-left row carries it in `tier`.
+  assert.deepEqual(r['relay-left'].codes, { conductor: 1 })
+  assert.match(text, /relay-left: 1 \(conductor 1\)/)
 })
 // One call with two relay questions, answered differently: each answer belongs to its own question.
 function relayTranscript2(fx, sid, pairs) {

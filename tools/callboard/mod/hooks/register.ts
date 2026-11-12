@@ -2651,11 +2651,13 @@ async function restoreFromHint($: any, sid: string, now: number, stale: () => bo
   await log($, sid, 'restored')
 }
 
-async function dropRequest($: any, sid: string, reason: string) {
+async function dropRequest($: any, sid: string, reason: string): Promise<boolean> {
   if ((await $.state.get(request)).value) {
     await $.state.set(request, null)
     await log($, sid, 'dropped', reason)
+    return true
   }
+  return false
 }
 
 // Notice turns sent per session in the last hour (module memory: a reload starts the count over).
@@ -2672,7 +2674,8 @@ async function failRequest($: any, sid: string, reason: string, notice: boolean,
   if (ifVersion === undefined) await $.state.set(request, null)
   else if ((await $.state.set(request, null, { ifVersion })).isSet === false) return log($, sid, 'dropped', 'changed-meanwhile')
   await log($, sid, 'refused', reason)
-  if (!notice) return
+  // No notice turn goes to the session for these (the person is at it, or the refusal is final): a toast says that the request ended and why.
+  if (!notice) return void toast($, c.compactSkippedToast(reason))
   const now = await $.clock.now()
   const times = noticeTimes.get(sid) ?? []
   if (!c.noticeAllowed(times, now)) return log($, sid, 'notice-capped', reason)
@@ -2700,7 +2703,6 @@ async function doCompact($: any, sid: string, req: Request, fromCue: boolean, an
   }
   const blocked = fromCue ? await idleCheck($, sid) : (await $.prompt.read()).text !== '' ? 'draft-in-box' : undefined
   if (blocked === 'draft-in-box') {
-    toast($, 'Compaction skipped: draft in the prompt box.')
     await answer('refused', 'draft-in-box')
     return failRequest($, sid, 'draft-in-box', false)
   }
@@ -2723,12 +2725,16 @@ async function doCompact($: any, sid: string, req: Request, fromCue: boolean, an
   // A compaction runs far longer than the lead waits: `ok` means it began; its end is in the log (`compacted`).
   await answer('ok')
   await log($, sid, 'compacting', req.mode)
+  // Said before the command goes: from here the session compacts, and the person sees that callboard started it.
+  toast($, c.COMPACT_START_TOAST)
   try {
     await $.command.run({ command: 'compact', args: req.focus })
   } catch {
     // The engine refused the command: the lane did not compact, so the order stands (its stamp goes back while it is still fresh).
     if (spent !== null && c.orderFresh(spent, await $.clock.now())) await orderStamp($, sid, spent, true).catch(() => undefined)
     await failRequest($, sid, 'rejected', true)
+    // The start toast above was said: the person is told it did not start.
+    toast($, c.compactSkippedToast('rejected'))
   }
 }
 
@@ -5439,7 +5445,41 @@ async function pushTargetOf($: any, dir: string, branch: string, remote?: string
 }
 
 // cwdKnown: cwd is the folder the engine said the call ran in. When it said none, the floor reads every relative path as having an unknown base.
-async function promptFloorOpts($: any, tool: string, input: any, cwd: string, home: string, cwdKnown = true): Promise<pr.FloorOpts> {
+// A lane's own report (a lane signs by writing it), for the floor: the path and its real path, only when everything about it checks out. In the asking session (`sid`)
+// the path is the one its lane record gives, the one lane_retire reads. A prompt_answer in a tier's session has only the request, which carries that path (`path`);
+// it must still read as `<repo>/.archive/<lane>/REPORT.md` of the request's own lane and be the path a lane record of that name gives. Anything that does not check out gives undefined, and the floor holds as before.
+async function ownReportOf($: any, own: { lane: string; sid?: string; path?: string }, file: { filePath: unknown; cwd: string | undefined }): Promise<pr.FloorOpts['ownReport']> {
+  try {
+    let path = own.path
+    if (own.sid !== undefined) {
+      const l = await reportLaneOf($, own.sid)
+      if (!l || l.name !== own.lane) return undefined
+      path = c.reportPath(l)
+    } else {
+      // A tier has only the request: the path it names must be the one a lane record of that name gives.
+      const lanes = await loadLanes($)
+      if (typeof lanes === 'string' || !lanes.some((x) => x.name === own.lane && c.reportPath(x) === path)) return undefined
+    }
+    const tail = `/.archive/${own.lane}/REPORT.md`
+    const repo = path !== undefined && path.endsWith(tail) ? path.slice(0, -tail.length) : undefined
+    const p = await where($)
+    if (path === undefined || repo === undefined || pr.ownReportPath(repo, own.lane) !== path || !p) return undefined
+    // Only a call that names the report pays for the file system checks, and only it gets the exception.
+    if (!pr.namesOwnReport(file.filePath, file.cwd, path)) return undefined
+    // The repo is its own real path: a folder that was swapped for a link since the lane was made gets no exception.
+    const real = await realR($, repo)
+    if (typeof real === 'string' || real.path !== repo) return undefined
+    // The file is ours and plain (a link or a second hard link would write somewhere else), or not made yet.
+    const st = await statR($, path)
+    if (st === 'error' || (st !== 'absent' && (st.kind !== 'file' || st.nlink !== 1 || st.uid !== p.uid))) return undefined
+    return { path, real: `${real.path === '/' ? '' : real.path}${tail}` }
+  } catch {
+    return undefined
+  }
+}
+
+// own: the session's lane, for its own report (see ownReportOf); only a write by a file tool uses it.
+async function promptFloorOpts($: any, tool: string, input: any, cwd: string, home: string, cwdKnown = true, own?: { lane: string; sid?: string; path?: string }): Promise<pr.FloorOpts> {
   const o: pr.FloorOpts = { home, roots: [], cwd, ...(cwdKnown ? {} : { cwdUnknown: true }) }
   const isGit = tool.startsWith('mcp__git-mcp__')
   try {
@@ -5481,6 +5521,10 @@ async function promptFloorOpts($: any, tool: string, input: any, cwd: string, ho
       else real.push(r.path)
     }
     o.real = real
+  }
+  if (own && PERSON_HOLDS.has(tool)) {
+    const r = await ownReportOf($, own, { filePath: input?.file_path, cwd: o.cwdUnknown === true ? undefined : cwd })
+    if (r) o.ownReport = r
   }
   return o
 }
@@ -5769,7 +5813,7 @@ async function promptHook($: any, e: any, nextOnce: (x: any) => Promise<any>, si
     // 6. The floor.
     // The floor reads relative paths against the folder the engine says the call ran in (a shell keeps its cd between calls), not the folder the session started in.
     const ecwd = typeof e.cwd === 'string' && e.cwd.startsWith('/') ? e.cwd : undefined
-    const fo = await promptFloorOpts($, tool, input, ecwd ?? cwd, homeOf(p), ecwd !== undefined)
+    const fo = await promptFloorOpts($, tool, input, ecwd ?? cwd, homeOf(p), ecwd !== undefined, cov.level === 'lane' && cov.lane !== undefined ? { lane: cov.lane, sid } : undefined)
     const floor = pr.floorCheck(tool, input, fo)
     // What the floor read besides the input: the audit compares it between a floor row and a later request of the same input.
     const ctx = (await sha($, JSON.stringify(fo)).catch(() => '')).slice(0, 16)
@@ -5798,7 +5842,7 @@ async function promptHook($: any, e: any, nextOnce: (x: any) => Promise<any>, si
     const id = await promptNewId($)
     const nonce = await promptNewId($)
     const capped = pr.capInput(input)
-    const req: pr.Request = { id, sid, pid: own.pid, procStart: own.procStart, level: cov.level, lane: cov.lane ?? cov.self, ...(leadName ? { leadName } : {}), ...(cov.level === 'lane' && lead === undefined ? { noLead: true } : {}), repo: cwd, tool, ...(ecwd !== undefined ? { cwd: ecwd } : {}), inputHash: hash, raisedBy: judged.raisedBy, at: started, expiresAt: started + pr.EXPIRES_MS, nonce, input: capped.input, truncated: capped.truncated }
+    const req: pr.Request = { id, sid, pid: own.pid, procStart: own.procStart, level: cov.level, lane: cov.lane ?? cov.self, ...(leadName ? { leadName } : {}), ...(cov.level === 'lane' && lead === undefined ? { noLead: true } : {}), repo: cwd, tool, ...(ecwd !== undefined ? { cwd: ecwd } : {}), inputHash: hash, ...(fo.ownReport !== undefined ? { ownReport: fo.ownReport.path } : {}), raisedBy: judged.raisedBy, at: started, expiresAt: started + pr.EXPIRES_MS, nonce, input: capped.input, truncated: capped.truncated }
     const text = pr.requestText(req)
     if (new TextEncoder().encode(text).length > pr.REQUEST_MAX || !(await promptPut($, `${dir}/${id}.request.json`, text))) {
       await ledgerAdd($, { ...base, kind: 'abandoned', code: 'hook-failed' })
@@ -6037,7 +6081,7 @@ async function promptApply($: any, w: WaitCtx, d: pr.Decision, awake: number, gr
   try {
     liveHash = await sha($, pr.canonical(w.input))
   } catch {}
-  const fo = await promptFloorOpts($, w.tool, w.input, w.ecwd ?? w.cwd, w.home, w.ecwd !== undefined)
+  const fo = await promptFloorOpts($, w.tool, w.input, w.ecwd ?? w.cwd, w.home, w.ecwd !== undefined, w.req.level === 'lane' && w.req.lane !== undefined ? { lane: w.req.lane, sid: w.sid } : undefined)
   let byOk = false
   // The tier of the presence-checked stand that matches the decision's author: the name an answer prints comes from here, never from the decision file.
   let tier: pr.Tier | undefined
@@ -6342,7 +6386,8 @@ async function escalationCommand($: any, sid: string, code: c.OriginCode, op: pr
   // The dialog took time: an `escalation off` typed meanwhile is overridden by this Allow, the person's own last word.
   // Both rows must land, plain first: the audit reads a question as covered only by the asks row, and a switch with no row is an anomaly. Else the value before stays.
   const hash = await sha($, pr.canonical(value)).catch(() => undefined)
-  if (!(await ledgerAdd($, { kind: 'answering-on', hash })) || !(await ledgerAdd($, { kind: 'answering-on', code: 'asks', hash }))) {
+  const plainRow = await ledgerAdd($, { kind: 'answering-on', hash })
+  if (!plainRow || !(await ledgerAdd($, { kind: 'answering-on', code: 'asks', hash }))) {
     await log($, sid, 'error', 'escalation-ledger').catch(() => undefined)
     try {
       if (before === undefined || before === null) await $.store.delete(ANSWERING_KEY)
@@ -6350,9 +6395,21 @@ async function escalationCommand($: any, sid: string, code: c.OriginCode, op: pr
     } catch {
       return { text: 'Escalation could not be turned on, and the store would not take it back: the ledger did not answer. Whether escalation is on is now unknown. Create ~/.claude/callboard/prompts/OFF to stop it now.' }
     }
+    // The plain row may already be in the ledger, which would then read as a wider "on" than the value put back: it gets rows for that value (best effort, the ledger just failed once).
+    if (plainRow && !(await ledgerRestore($, before))) await log($, sid, 'error', 'escalation-ledger-restore').catch(() => undefined)
     return { text: 'Escalation could not be turned on: the ledger did not answer. Nothing changed.' }
   }
   return { text: `${pr.escalationState(value, await promptsOff($))} ${pr.FLOOR_LINE}` }
+}
+
+// Rows that make the ledger end on the stored value again, after the value was put back: no valid value is off; a valid one is its plain row, and the asks row when it carried
+// a questions scope (the audit reads a question as covered only by that row).
+async function ledgerRestore($: any, before: unknown): Promise<boolean> {
+  const a = pr.parseAnswering(before)
+  if (!a) return ledgerAdd($, { kind: 'answering-off', code: 'off' })
+  const hash = await sha($, pr.canonical(before)).catch(() => undefined)
+  if (!(await ledgerAdd($, { kind: 'answering-on', hash }))) return false
+  return a.asksScope === undefined || (await ledgerAdd($, { kind: 'answering-on', code: 'asks', hash }))
 }
 
 async function promptsCommand($: any): Promise<{ text: string }> {
@@ -6615,7 +6672,7 @@ async function promptAnswerTool($: any, e: any, answer: boolean): Promise<{ resu
   if (answer) {
     if (q.truncated && decision === 'allow') return refuse('truncated')
     if (!q.truncated) {
-      const fo = await promptFloorOpts($, q.tool, q.input, q.cwd ?? q.repo, homeOf(t.p), q.cwd !== undefined)
+      const fo = await promptFloorOpts($, q.tool, q.input, q.cwd ?? q.repo, homeOf(t.p), q.cwd !== undefined, q.level === 'lane' && q.lane !== undefined && q.ownReport !== undefined ? { lane: q.lane, path: q.ownReport } : undefined)
       if (pr.floorCheck(q.tool, q.input, fo) !== undefined) return refuse('floor')
     }
     if (promptWindowShut(q, stand, sid, now)) return refuse('window')
@@ -7916,7 +7973,11 @@ export const register: Register = (on) => {
     // A prompt that is not the mod's own ends the nudge grant: it covers the nudge turn and the turns that follow without the person typing.
     if ((await $.state.get(nudgedAtRef)).value != null) await $.state.set(nudgedAtRef, null)
     const req = (await $.state.get(request)).value as Request | null | undefined
-    if (req && req.phase !== 'compacting') await dropRequest($, sid, req.phase === 'compacted' ? 'user-message-cancelled-resume' : 'new-prompt')
+    if (req && req.phase !== 'compacting') {
+      const dropped = await dropRequest($, sid, req.phase === 'compacted' ? 'user-message-cancelled-resume' : 'new-prompt')
+      // A compaction that was queued (called, or armed for the turn's end) is cancelled by the person's message: said, not silent. A resume after a compaction is not a queued one.
+      if (dropped && req.phase !== 'compacted') toast($, c.COMPACT_CANCELLED_TOAST)
+    }
     return next(e)
   }).catch(($, e, next) => next(e))
 

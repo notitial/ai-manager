@@ -152,6 +152,9 @@ export type FloorOpts = {
   home?: string
   // Tracked folders of the live checkouts (ai-manager, ai-toolkit): an edit under one is the floor.
   roots?: string[]
+  // A lane's own report, which the hook sets only after checking it: `path` is `<repo>/.archive/<lane>/REPORT.md` of the session's own lane, `real` is the same
+  // path under the repo's real path. A Write, Edit or MultiEdit of exactly this file is not held by `roots` (every other floor rule still is). See ownReportWrite.
+  ownReport?: { path: string; real: string }
   // The folder the session runs in: a git call with no path acts there.
   cwd?: string
   // The event carried no folder: the base for relative paths is unknown, as after a cd to a variable (the hook sets this instead of guessing a cwd).
@@ -217,6 +220,30 @@ function lexical(p: string, home: string | undefined): string {
     else out.push(s)
   }
   return (abs ? '/' : '') + out.join('/')
+}
+// A lane signs by writing its own report: `<repo>/.archive/<lane>/REPORT.md`, which lies under a live checkout when the repo is one. The path of that report for a repo and a
+// lane name; undefined for anything but an absolute repo path with no dot segment or control character and a plain lane name.
+export function ownReportPath(repo: unknown, lane: unknown): string | undefined {
+  if (typeof repo !== 'string' || typeof lane !== 'string' || !repo.startsWith('/') || repo.length < 2 || /[\u0000-\u001f\u007f]/.test(repo) || repo.split('/').some((x) => x === '.' || x === '..')) return undefined
+  if (!/^[A-Za-z0-9_-]{1,40}$/.test(lane)) return undefined
+  return `${repo.replace(/\/+$/, '')}/.archive/${lane}/REPORT.md`
+}
+// Whether a file tool's file_path names the path, lexically and spelled exactly (a relative one reads against cwd): the cheap test before the file system is asked anything.
+export function namesOwnReport(filePath: unknown, cwd: string | undefined, path: string): boolean {
+  if (typeof filePath !== 'string') return false
+  const full = filePath.startsWith('/') ? filePath : cwd === undefined ? undefined : `${cwd}/${filePath}`
+  return full !== undefined && lexical(full, undefined) === path
+}
+// Whether a call is a write of exactly the lane's own report: a Write, Edit or MultiEdit (no notebook, no second path argument) whose file_path is that path, spelled
+// exactly (the case too: the volume ignores it, so another spelling is not shown to be the same file), and whose one real path is the expected real path.
+function ownReportWrite(tool: string, input: Record<string, unknown>, o: FloorOpts): boolean {
+  const own = o.ownReport
+  if (own === undefined || !/^(Write|Edit|MultiEdit)$/.test(tool)) return false
+  const fp = input.file_path
+  if (typeof fp !== 'string' || input.notebook_path !== undefined || input.path !== undefined) return false
+  const full = fp.startsWith('/') ? fp : o.cwd === undefined || o.cwdUnknown === true ? undefined : `${o.cwd}/${fp}`
+  if (full === undefined || lexical(full, undefined) !== own.path) return false
+  return o.real !== undefined && o.real.length === 1 && o.real[0] === own.real
 }
 // Whether a path is a live checkout or inside one (lexical, case-insensitive).
 function underRoot(p0: string, o: FloorOpts): boolean {
@@ -1625,7 +1652,9 @@ function floorCore(tool: string, input0: unknown, o: FloorOpts = {}): FloorCateg
   // File tools: settings, hooks, callboard state.
   if (WRITE_TOOLS.has(tool)) {
     if (o.unresolved) return 'settings'
-    if (pathArgs(input).concat(o.real ?? []).some((p) => settingsPath(p, o))) return 'settings'
+    // The lane's own report is the one file under a live checkout that stays answerable: the rest of the settings rules still apply to it.
+    const po = ownReportWrite(tool, input, o) ? { ...o, roots: [] } : o
+    if (pathArgs(input).concat(o.real ?? []).some((p) => settingsPath(p, po))) return 'settings'
   }
   if (tool === 'Bash') {
     const cmd0 = str(input.command)
@@ -1815,6 +1844,8 @@ export type Request = {
   agentType?: string
   // The folder the call ran in (the event's own cwd), for the tier's floor check; absent when the event gave none.
   cwd?: string
+  // The lane's own report, when this call is a write of it that the floor let through (see FloorOpts.ownReport); the tier's floor check reads it from here.
+  ownReport?: string
   inputHash: string
   raisedBy: Raised
   at: number
@@ -2386,8 +2417,8 @@ export function parseRequest(text: string): Request | undefined {
   if (typeof o.repo !== 'string' || typeof o.tool !== 'string' || typeof o.inputHash !== 'string' || !HASH_RE.test(o.inputHash) || typeof o.nonce !== 'string' || o.nonce === '') return undefined
   if (o.raisedBy !== 'mode' && o.raisedBy !== 'rule' && o.raisedBy !== 'guard') return undefined
   if (!finite(o.at) || !finite(o.expiresAt) || typeof o.truncated !== 'boolean') return undefined
-  if ((o.lane !== undefined && typeof o.lane !== 'string') || (o.leadName !== undefined && typeof o.leadName !== 'string') || (o.agentType !== undefined && typeof o.agentType !== 'string') || (o.cwd !== undefined && typeof o.cwd !== 'string') || (o.noLead !== undefined && typeof o.noLead !== 'boolean')) return undefined
-  return { id: o.id, sid: o.sid, pid: o.pid as number, procStart: o.procStart, level: o.level, lane: o.lane as string | undefined, leadName: o.leadName as string | undefined, ...(o.noLead === true ? { noLead: true } : {}), repo: o.repo, tool: o.tool, agentType: o.agentType as string | undefined, cwd: o.cwd as string | undefined, inputHash: o.inputHash, raisedBy: o.raisedBy, at: o.at, expiresAt: o.expiresAt, nonce: o.nonce, input: o.input, truncated: o.truncated }
+  if ((o.lane !== undefined && typeof o.lane !== 'string') || (o.leadName !== undefined && typeof o.leadName !== 'string') || (o.agentType !== undefined && typeof o.agentType !== 'string') || (o.cwd !== undefined && typeof o.cwd !== 'string') || (o.noLead !== undefined && typeof o.noLead !== 'boolean') || (o.ownReport !== undefined && typeof o.ownReport !== 'string')) return undefined
+  return { id: o.id, sid: o.sid, pid: o.pid as number, procStart: o.procStart, level: o.level, lane: o.lane as string | undefined, leadName: o.leadName as string | undefined, ...(o.noLead === true ? { noLead: true } : {}), repo: o.repo, tool: o.tool, agentType: o.agentType as string | undefined, cwd: o.cwd as string | undefined, ...(typeof o.ownReport === 'string' ? { ownReport: o.ownReport } : {}), inputHash: o.inputHash, raisedBy: o.raisedBy, at: o.at, expiresAt: o.expiresAt, nonce: o.nonce, input: o.input, truncated: o.truncated }
 }
 // prompt_escalate by position (PR 3): a tier that is not the top passes the request up, and its right to answer ends. The file is `<id>.escalate-<level>.json`
 // (level: the tier that passed it; sid: that tier's session). An old `<id>.escalate.json` (tier 'person', no level) still parses: it ended the lead's right.

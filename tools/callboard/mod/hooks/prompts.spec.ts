@@ -154,6 +154,63 @@ test('floor: settings, hooks and callboard state, by path (written and real) and
     assert.equal(floor('Bash', { command }, HOME), 'settings', command)
   assert.equal(floor('Bash', { command: 'ls /Users/x/code' }, HOME), undefined)
 })
+// ---- a lane's own report: the one file under a live checkout that a tier may answer ----
+const OWN = { path: '/live/ai-manager/.archive/HARDEN/REPORT.md', real: '/live/ai-manager/.archive/HARDEN/REPORT.md' }
+const ownOpts = (over: Partial<p.FloorOpts> = {}): p.FloorOpts => ({ ...HOME, roots: ['/live/ai-manager', '/live/toolkit'], cwd: '/live/ai-manager', ownReport: OWN, real: [OWN.real], ...over })
+test('ownReportPath: an absolute repo and a plain lane name, nothing else', () => {
+  assert.equal(p.ownReportPath('/live/ai-manager', 'HARDEN'), '/live/ai-manager/.archive/HARDEN/REPORT.md')
+  assert.equal(p.ownReportPath('/live/ai-manager/', 'HARDEN'), '/live/ai-manager/.archive/HARDEN/REPORT.md')
+  for (const repo of ['live/ai-manager', '/', '', '/live/../ai-manager', '/live/./x', '/live/a\nb', undefined, 5]) assert.equal(p.ownReportPath(repo, 'HARDEN'), undefined, String(repo))
+  for (const lane of ['', '.', '..', 'a/b', '../x', 'a b', '.git', 'x'.repeat(41), undefined, 5]) assert.equal(p.ownReportPath('/live/ai-manager', lane), undefined, String(lane))
+})
+test('floor: the lane\'s own report is answerable by Write, Edit and MultiEdit, and only that exact file', () => {
+  const o = ownOpts()
+  for (const tool of ['Write', 'Edit', 'MultiEdit']) assert.equal(floor(tool, { file_path: OWN.path }, o), undefined, tool)
+  // Without the verified opts (or on a root that is not the live one) the old rule holds.
+  assert.equal(floor('Write', { file_path: OWN.path }, ownOpts({ ownReport: undefined })), 'settings')
+  assert.equal(floor('Write', { file_path: OWN.path }, { ...HOME, roots: ['/live/ai-manager'], real: [OWN.real] }), 'settings')
+  // A relative spelling of the same file reads against the folder the call ran in.
+  assert.equal(floor('Edit', { file_path: '.archive/HARDEN/REPORT.md' }, o), undefined)
+  assert.equal(floor('Edit', { file_path: '.archive/HARDEN/REPORT.md' }, ownOpts({ cwd: '/live/ai-manager/docs' })), 'settings')
+  assert.equal(floor('Edit', { file_path: '.archive/HARDEN/REPORT.md' }, ownOpts({ cwdUnknown: true })), 'settings')
+})
+test('floor: nothing but the own report became answerable: another lane, another file, another repo, a case change, a path trick, a link', () => {
+  const o = ownOpts()
+  const held = (file_path: string, over: Partial<p.FloorOpts> = {}, extra: Record<string, unknown> = {}) => floor('Write', { file_path, ...extra }, ownOpts({ real: [file_path], ...over }))
+  for (const f of ['/live/ai-manager/.archive/OTHER/REPORT.md', '/live/ai-manager/.archive/HARDEN/BRIEF.md', '/live/ai-manager/.archive/HARDEN/sub/REPORT.md', '/live/ai-manager/.archive/REPORT.md', '/live/ai-manager/REPORT.md',
+    '/live/ai-manager/.archive/HARDEN/REPORT.md.bak', '/live/ai-manager/.archive/HARDEN/REPORT.md/x', '/live/toolkit/.archive/HARDEN/REPORT.md', '/live/ai-manager/tools/callboard/mod/hooks/register.ts', '/live/ai-manager/.archive/MANAGER/STATE.md',
+    '/live/ai-manager/.claude/settings.json', '/live/ai-manager/.git/hooks/pre-commit', '/Users/x/.claude/callboard/prompts/ledger-2026-11.jsonl', '/Users/x/.claude/settings.json'])
+    assert.equal(held(f), 'settings', f)
+  // The case: the volume ignores it, so another spelling is not shown to be the same file.
+  for (const f of ['/live/ai-manager/.archive/harden/REPORT.md', '/live/ai-manager/.archive/HARDEN/report.md', '/LIVE/AI-MANAGER/.archive/HARDEN/REPORT.md', '/live/ai-manager/.ARCHIVE/HARDEN/REPORT.md']) assert.equal(floor('Write', { file_path: f }, ownOpts({ real: [f] })), 'settings', f)
+  // `..` and `.` collapse lexically to the real path: another file by that road is judged as itself, and the same file by it is the same file.
+  assert.equal(floor('Write', { file_path: '/live/ai-manager/.archive/HARDEN/../OTHER/REPORT.md' }, ownOpts({ real: ['/live/ai-manager/.archive/OTHER/REPORT.md'] })), 'settings')
+  assert.equal(floor('Write', { file_path: '/live/ai-manager/.archive/HARDEN/../HARDEN/REPORT.md' }, o), undefined)
+  // A link: the written path is the report's, its real path is somewhere else (inside the checkout or out of it, or into settings).
+  for (const real of ['/live/ai-manager/tools/callboard/mod/hooks/register.ts', '/live/ai-manager/.archive/OTHER/REPORT.md', '/Users/x/.claude/settings.json', '/elsewhere/REPORT.md', '/live/ai-manager/.archive/harden/REPORT.md']) assert.equal(floor('Write', { file_path: OWN.path }, ownOpts({ real: [real] })), 'settings', real)
+  // No real path read, more than one, or one that could not be resolved: held.
+  for (const over of [{ real: undefined }, { real: [] }, { real: [OWN.real, OWN.real] }, { unresolved: true }]) assert.equal(floor('Write', { file_path: OWN.path }, ownOpts(over)), 'settings', JSON.stringify(over))
+  // A second path argument, a notebook, another tool: held.
+  assert.equal(floor('Write', { file_path: OWN.path, path: '/live/ai-manager/docs/a.md' }, o), 'settings')
+  assert.equal(floor('Write', { file_path: OWN.path, notebook_path: '/live/ai-manager/a.ipynb' }, o), 'settings')
+  assert.equal(floor('NotebookEdit', { notebook_path: OWN.path }, o), 'settings')
+  assert.equal(floor('NotebookEdit', { file_path: OWN.path }, o), 'settings')
+  assert.equal(floor('Bash', { command: `echo 'status: done x' >> ${OWN.path}` }, o), 'settings')
+  assert.equal(floor('Read', { file_path: OWN.path }, o), undefined)
+  assert.equal(floor('mcp__fs__write_file', { path: OWN.path, content: 'x' }, o), 'settings')
+  assert.equal(floor('Write', { file_path: 5 }, o), 'settings')
+  // The report's folder is not under a settings path by another rule: those still apply to it.
+  const inClaude = { path: '/Users/x/.claude/.archive/HARDEN/REPORT.md', real: '/Users/x/.claude/.archive/HARDEN/REPORT.md' }
+  assert.equal(floor('Write', { file_path: inClaude.path }, ownOpts({ ownReport: inClaude, real: [inClaude.real] })), 'settings')
+  const inGit = { path: '/live/ai-manager/.git/.archive/HARDEN/REPORT.md', real: '/live/ai-manager/.git/.archive/HARDEN/REPORT.md' }
+  assert.equal(floor('Write', { file_path: inGit.path }, ownOpts({ ownReport: inGit, real: [inGit.real] })), 'settings')
+})
+test('request: ownReport round-trips and must be text', () => {
+  const base: p.Request = { id: ID, sid: SID_A, pid: 1, procStart: 'x', level: 'lane', lane: 'HARDEN', repo: '/r', tool: 'Write', inputHash: H, raisedBy: 'mode', at: 1, expiresAt: 2, nonce: 'n', input: {}, truncated: false }
+  assert.equal(p.parseRequest(p.requestText({ ...base, ownReport: OWN.path }))?.ownReport, OWN.path)
+  assert.equal(p.parseRequest(p.requestText(base))?.ownReport, undefined)
+  assert.equal(p.parseRequest(JSON.stringify({ ...base, ownReport: 5 })), undefined)
+})
 test('floor: a mutating git call on a live checkout is settings; reads and other folders are not', () => {
   const o = { ...HOME, roots: ['/live/ai-manager', '/live/toolkit'], cwd: '/tmp/clone' }
   for (const tool of ['git_checkout', 'git_pull', 'git_reset', 'git_commit', 'git_merge', 'git_push', 'git_branch', 'git_fetch'])

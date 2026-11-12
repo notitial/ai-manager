@@ -20,6 +20,7 @@ const test: typeof kitTest = ((name: string, ...rest: any[]) => {
 import * as prm from '../hooks/prompts'
 import { recordText, recordTextLegacy, CLAIM_OTHER_UNNAMED, REST_TEXT, orderText } from '../hooks/core'
 import { CLAIM_HINT, CLAIM_NOT_PERSON, CLAIM_NOT_LEAD, CLAIM_UNNAMED, CLAIM_NONE, claimQuestion, claimedText, claimRefusedText } from '../hooks/core'
+import { COMPACT_START_TOAST, COMPACT_CANCELLED_TOAST } from '../hooks/core'
 import { LEAD_MANAGER_TEXT, HINT_PREFIX, MANAGER_RESTORE_QUESTION, MANAGER_RESTORED_TOAST, MANAGER_UNANSWERED_TOAST, HINT_REFRESH_MS } from '../hooks/core'
 import { reserveShowText, reserveAddedText, reserveRemovedText, reserveNotListedText, reserveManagerText, RESERVE_NOT_PERSON, RESERVE_USAGE } from '../hooks/core'
 import { conductorFileText, conductorAddQuestion, conductorRefusalText, conductorAddedText, CONDUCTOR_NOT_PERSON, CONDUCTOR_USAGE, conductorQuestion, conductorRestoreQuestion, conductorBriefing, conductorBriefingNote, conductorRestoredToast, conductorUnansweredToast, conductorFileBadToast, conductorNoReposToast, CONDUCTOR_ON_TEXT, CONDUCTOR_OFF_QUESTION, conductorStatus } from '../hooks/core'
@@ -1339,6 +1340,63 @@ test('a user prompt drops an armed now-request, which lives one turn', async ($,
   await $.prompt.submit({ text: 'hello' } as any)
   expect(events(stdins).map((e) => `${e.event}:${e.reason}`)).toEqual(['requested:now', 'armed:now', 'dropped:new-prompt'])
 })
+
+test('a person\'s message that cancels a queued compaction says so in a toast, for an on-cue and a now request; a resume after a compaction is not a queued one', async ($, on) => {
+  await started($, on, [], { bound: true })
+  for (const mode of ['on-cue', 'now']) {
+    toasts.length = 0
+    await $.tool.call({ ...GOOD, mode } as any)
+    await $.turn.complete(TURN as any)
+    await $.prompt.submit({ text: 'hello' } as any)
+    expect(toasts.filter((t) => t === COMPACT_CANCELLED_TOAST).length, mode).toBe(1)
+  }
+  // No request: no toast.
+  toasts.length = 0
+  await $.prompt.submit({ text: 'again' } as any)
+  expect(toasts).toEqual([])
+})
+
+test('a compaction that callboard starts is announced in a toast, once, as it starts', async ($, on) => {
+  const stdins: string[] = []
+  await started($, on, stdins, { clock: true })
+  await $.tool.call({ ...GOOD, mode: 'now' } as any)
+  await $.turn.complete(TURN as any)
+  expect(toasts.filter((t) => t === COMPACT_START_TOAST).length).toBe(0)
+  await clock!.advance(2000)
+  expect(seen.compacted).toBe(true)
+  expect(toasts.filter((t) => t === COMPACT_START_TOAST).length).toBe(1)
+})
+
+test('a compact command the engine refuses: the start toast is followed by a toast that says it did not start', async ($, on) => {
+  await started($, on, [], { clock: true })
+  compactThrows = true
+  await $.tool.call({ ...GOOD, mode: 'now' } as any)
+  await $.turn.complete(TURN as any)
+  await clock!.advance(2000)
+  expect(toasts.indexOf(COMPACT_START_TOAST)).toBeGreaterThanOrEqual(0)
+  expect(toasts).toContain('Compaction skipped: the engine refused the command.')
+})
+let theTrace: Trace
+for (const [name, why, set, undo] of [
+  ['a draft in the prompt box', 'draft in the prompt box', () => { draftNow = 'half a sentence' }, () => { draftNow = '' }],
+  ['a context that fell under the floor after the request was accepted', 'context is below 100k tokens', () => { tokensNow = 5 }, () => { tokensNow = 150_000 }],
+  ['a compaction inside the gap, after the request was accepted', 'one compaction every 30 minutes at most', () => theTrace.st!.set('counters', { value: { lastCompactMs: nowMs - 60_000 }, version: 99 }), () => undefined],
+] as [string, string, () => void, () => void][]) {
+  test(`a queued compaction refused with no notice turn (${name}) says so in a toast, and starts nothing`, async ($, on) => {
+    const stdins: string[] = []
+    theTrace = { log: [], failCounters: false }
+    await started($, on, stdins, { clock: true, bound: true, trace: theTrace })
+    await $.tool.call({ ...GOOD, mode: 'now' } as any)
+    await $.turn.complete(TURN as any)
+    set()
+    await clock!.advance(2000)
+    expect(seen.compacted).toBe(false)
+    expect(toasts).toContain(`Compaction skipped: ${why}.`)
+    expect(toasts).not.toContain(COMPACT_START_TOAST)
+    expect(submitted.some((t) => t.includes('Compaction did not run'))).toBe(false)
+    undo()
+  })
+}
 
 test('a repeated identical refusal is logged once', async ($, on) => {
   const stdins: string[] = []
@@ -14907,6 +14965,29 @@ test('prompts: /callboard escalation: a ledger that cannot take its rows puts ba
     pfsFails = undefined
   }
 })
+test('prompts: /callboard escalation: the plain row lands and the asks row fails: the value before is back and the ledger ends on a row that says so', async ($, on) => {
+  await started($, on, [])
+  askAnswer = YES
+  const cases: [string, unknown, string[]][] = [
+    ['nothing stored', undefined, ['answering-on', 'answering-off off']],
+    ['an earlier narrower value with a questions scope', { scope: 'svc-api', asks: false, asksScope: 'svc-api', savedAt: T0 - 5 }, ['answering-on', 'answering-on', 'answering-on asks']],
+    ['an earlier value with no questions scope', { scope: 'svc-api', asks: false, savedAt: T0 - 5 }, ['answering-on', 'answering-on']],
+    ['an earlier value that is not a valid switch', { scope: 5 }, ['answering-on', 'answering-off off']],
+  ]
+  for (const [, old, rows] of cases) {
+    store.delete('answering')
+    pfs.delete(LEDGER_FILE)
+    if (old !== undefined) store.set('answering', old)
+    let appends = 0
+    pfsFails = (a) => a[0] === '/usr/bin/tee' && a[1] === '-a' && ++appends === 2
+    const r = await $.command.run(lane('escalation'))
+    expect(r.text).toBe('Escalation could not be turned on: the ledger did not answer. Nothing changed.')
+    if (old === undefined) expect(store.has('answering')).toBe(false)
+    else expect(store.get('answering')).toEqual(old)
+    expect(rowKinds()).toEqual(rows)
+    pfsFails = undefined
+  }
+})
 test('prompts: the state line reads a value an earlier version stored (a narrowed scope, the old asks flag) and names the OFF file', async ($, on) => {
   await started($, on, [])
   store.set('answering', { scope: 'svc-api', asks: false, asksScope: 'svc-api', savedAt: T0 })
@@ -14984,6 +15065,93 @@ test('prompts: floor: an edit under the folder that the hooks of ~/.claude link 
   clockHooks.push(stop(8000))
   expect(await startReq($, c3.over)).toEqual({})
   expect(rowKinds()).toEqual(['floor settings', 'requested', 'off'])
+})
+// ---- the lane's own report under a live checkout: the one write a tier may answer (ADR 0004, 2026-11-12) ----
+// The lane svc-api's repo is PIN, made a live root here the way the toolkit's is: through a link from ~/.claude/hooks.
+const OWN_REPORT = `${PIN}/.archive/svc-api/REPORT.md`
+const liveRootIsPin = () => {
+  hooksList = ['guard.sh']
+  realMap.set('/Users/x/.claude/hooks/guard.sh', `${PIN}/hooks/guard.sh`)
+}
+test('prompts: floor: a lane\'s own REPORT.md under a live root raises a request; every other path under it stays the floor', async ($, on) => {
+  await answerer($, on, [])
+  liveRootIsPin()
+  const held: [string, string, Record<string, unknown>][] = [
+    ['another lane\'s report', 'Write', { file_path: `${PIN}/.archive/OTHER/REPORT.md`, content: 'x' }],
+    ['the lane\'s own brief', 'Write', { file_path: `${PIN}/.archive/svc-api/BRIEF.md`, content: 'x' }],
+    ['a file of the checkout', 'Edit', { file_path: `${PIN}/docs/a.md`, old_string: 'a', new_string: 'b' }],
+    ['the report with another case', 'Write', { file_path: `${PIN}/.archive/SVC-API/REPORT.md`, content: 'x' }],
+    ['the report through a dot-dot road to another lane', 'Write', { file_path: `${PIN}/.archive/svc-api/../OTHER/REPORT.md`, content: 'x' }],
+    ['a shell append to the own report', 'Bash', { command: `echo 'status: done x' >> ${OWN_REPORT}` }],
+  ]
+  let n = 0
+  for (const [, tool, input] of held) {
+    const c2 = callOf(tool, input)
+    expect(await runRequest($, [], c2.over, { ...c2.check, tool_use_id: `tu${++n}` })).toEqual({})
+  }
+  expect(rowKinds()).toEqual(held.map(() => 'floor settings'))
+  expect(reqFiles().length).toBe(0)
+  // A link in place of the report, a second hard link to it, and a real path that is somewhere else: held.
+  realMap.set(OWN_REPORT, `${PIN}/tools/callboard/mod/hooks/register.ts`)
+  const cw = callOf('Write', { file_path: OWN_REPORT, content: 'x' })
+  expect(await runRequest($, [], cw.over, { ...cw.check, tool_use_id: 'tu20' })).toEqual({})
+  realMap.delete(OWN_REPORT)
+  extraStat.set(OWN_REPORT, '501 600 2 Regular File 55 40 1700000000\n')
+  expect(await runRequest($, [], cw.over, { ...cw.check, tool_use_id: 'tu21' })).toEqual({})
+  extraStat.set(OWN_REPORT, '501 600 1 Symbolic Link 55 40 1700000000\n')
+  expect(await runRequest($, [], cw.over, { ...cw.check, tool_use_id: 'tu22' })).toEqual({})
+  expect(rowKinds().slice(held.length)).toEqual(['floor settings', 'floor settings', 'floor settings'])
+  expect(reqFiles().length).toBe(0)
+})
+test('prompts: floor: the lane\'s own REPORT.md (Write, Edit or MultiEdit) gets a request that names the file, and a decision on it is applied', async ($, on) => {
+  await answerer($, on, [])
+  liveRootIsPin()
+  for (const [tool, input] of [
+    ['Write', { file_path: OWN_REPORT, content: 'x' }],
+    ['Edit', { file_path: OWN_REPORT, old_string: 'a', new_string: 'b' }],
+    ['MultiEdit', { file_path: OWN_REPORT, edits: [{ old_string: 'a', new_string: 'b' }] }],
+  ] as [string, Record<string, unknown>][]) {
+    pfs.delete(LEDGER_FILE)
+    const c2 = callOf(tool, input)
+    let seenReq: any
+    const r = await runRequest($, [at(4000, () => { seenReq = readReq(); handDecision(seenReq) })], c2.over, c2.check)
+    expect(seenReq.ownReport, tool).toBe(OWN_REPORT)
+    expect(r, tool).toEqual({ decision: { behavior: 'allow' } })
+    expect(rowKinds(), tool).toEqual(['requested', 'answered allow', 'returned allow'])
+  }
+  // A write of any other file raises its request with no ownReport on it.
+  pfs.delete(LEDGER_FILE)
+  const other = callOf('Write', { file_path: '/Users/x/code/other/a.md', content: 'x' })
+  let otherReq: any
+  await runRequest($, [at(4000, () => { otherReq = readReq() }), stop(6000)], other.over, { ...other.check, tool_use_id: 'tu30' })
+  expect(otherReq.ownReport).toBeUndefined()
+})
+test('prompts: floor: a decision on the own report is not applied if the file became a second hard link while the request waited', async ($, on) => {
+  await answerer($, on, [])
+  liveRootIsPin()
+  const c2 = callOf('Write', { file_path: OWN_REPORT, content: 'x' })
+  const r = await runRequest($, [at(4000, () => { extraStat.set(OWN_REPORT, '501 600 2 Regular File 55 40 1700000000\n') }), at(5000, () => handDecision(readReq())), stop(9000)], c2.over, c2.check)
+  expect(r).toEqual({})
+  expect(rowKinds()).not.toContain('returned allow')
+})
+test('prompts: floor: with no verified own report on the request the old rule holds for a tier too (floor), and with one it is answered', async ($, on) => {
+  await tier($, on)
+  liveRootIsPin()
+  // The lane's record, as the tier's own store has it (an attached lane in SVC, whose repo is PIN).
+  putStore([attRec(LEADSID, 'svc-api')])
+  const w = (file_path: string) => ({ tool: 'Write', input: { file_path, content: 'x' } })
+  // The request carries no ownReport, or one for another lane or another file: the floor, whichever way the tier decides.
+  for (const over of [{ ...w(OWN_REPORT) }, { ...w(OWN_REPORT), ownReport: `${PIN}/.archive/OTHER/REPORT.md` }, { ...w(`${PIN}/.archive/OTHER/REPORT.md`), ownReport: OWN_REPORT }, { ...w(`${PIN}/docs/a.md`), ownReport: OWN_REPORT },
+    // The request's lane has no record that gives that path.
+    { ...w(`${PIN}/.archive/ghost/REPORT.md`), ownReport: `${PIN}/.archive/ghost/REPORT.md`, lane: 'ghost' },
+    { ...w(OWN_REPORT), ownReport: `${PIN}/.archive/svc-api/../svc-api/REPORT.md` }, { ...w(OWN_REPORT), ownReport: `${PIN}/.archive/svc-api/BRIEF.md` }, { ...w(OWN_REPORT), ownReport: 'REPORT.md' }]) {
+    putQ(over)
+    for (const decision of ['allow', 'deny']) expect(said(await $.tool.call(answerCall({ decision }))), JSON.stringify(over)).toContain(refusal('floor'))
+  }
+  expect(decFile()).toBeUndefined()
+  putQ({ ...w(OWN_REPORT), ownReport: OWN_REPORT })
+  expect(said(await $.tool.call(answerCall()))).toContain('Recorded: allow')
+  expect(decFile()).toBeDefined()
 })
 test('prompts: sweep: folders past the first 64 are reached on a later tick; an old orphan file and the empty folder of a gone session go', async ($, on) => {
   await answerer($, on, [], { clock: true })
