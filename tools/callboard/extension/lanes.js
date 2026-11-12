@@ -331,4 +331,4 @@ function createLanes({ vscode, registry, sleep, now, workspaceFolders = () => un
   return { open, reopen, close, sweep, adopt }
 }
 
-module.exports = { createLanes, SID_RE }
+module.exports = { createLanes }

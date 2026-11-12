@@ -1,7 +1,7 @@
 'use strict'
 // Reserved lane names, matched by skeleton as the mod does (mod/hooks/core.ts reservedHit): upper case, no - or _, no
 // trailing digits, look-alike digits read as letters (1 is I or L). MANAGER_, MANAGER-2 and MANAG3R are reserved.
-// v15.1: the built-in list only. Names a machine reserves with /callboard reserve live in the mod's store; the mod refuses them for every new
+// The built-in list only. Names a machine reserves with /callboard reserve live in the mod's store; the mod refuses them for every new
 // lane record it writes and refuses to reserve a name a record carries, so such a record is rare (one written in the
 // moment of a reserve); the extension does not protect it.
 const RESERVED = ['MANAGER']
@@ -31,4 +31,4 @@ function pinRefusal(pin, home) {
   return undefined
 }
 
-module.exports = { RESERVED, reservedHit, pinRefusal }
+module.exports = { reservedHit, pinRefusal }

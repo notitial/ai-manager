@@ -18,7 +18,7 @@ const test: typeof kitTest = ((name: string, ...rest: any[]) => {
   return currentShard === myShard ? (kitTest as any)(name, ...rest) : undefined
 }) as any
 import * as prm from '../hooks/prompts'
-import { recordText, recordTextLegacy, CLAIM_OTHER_UNNAMED, REST_TEXT, orderText } from '../hooks/core'
+import { recordText, recordTextLegacy, CLAIM_OTHER_UNNAMED, REST_TEXT, orderText, helpText } from '../hooks/core'
 import { CLAIM_HINT, CLAIM_NOT_PERSON, CLAIM_NOT_LEAD, CLAIM_UNNAMED, CLAIM_NONE, claimQuestion, claimedText, claimRefusedText } from '../hooks/core'
 import { COMPACT_START_TOAST, COMPACT_CANCELLED_TOAST } from '../hooks/core'
 import { LEAD_MANAGER_TEXT, HINT_PREFIX, MANAGER_RESTORE_QUESTION, MANAGER_RESTORED_TOAST, MANAGER_UNANSWERED_TOAST, HINT_REFRESH_MS } from '../hooks/core'
@@ -1264,7 +1264,7 @@ const events = (stdins: string[]) => allEvents(stdins).filter((e) => e.event !==
 
 const PERSON = { kind: 'composer' } as const
 // v13.6: the usage line, which /callboard on now gets too.
-const USAGE = 'Use /callboard off, lead, lanes, claim, status, config, checkin, rest, conductor, reserve, escalation [off], lane [NAME] or lane off.'
+const USAGE = 'Use /callboard help, lanes, status, lead, lane [NAME], escalation [off], prompts, manager or off. Run /callboard help for the full list.'
 const lane = (args: string, origin: unknown = PERSON) => ({ command: 'callboard', args, origin }) as any
 
 // The mocked engine answers each dialog with `askAnswer` (`restoreAnswer` for the Restore question). v13.5: /callboard on is retired, so a session starts
@@ -3996,7 +3996,7 @@ test('lane is refused at once from a plugin, a session or a script, with a fixed
   for (const [origin, code] of [[{ kind: 'plugin', name: 'evil <b>' }, 'plugin'], [{ kind: 'peer' }, 'session'], [{ kind: 'peer-send-message' }, 'session'], [{ kind: 'sdk' }, 'other'], [null, 'other']] as const) {
     for (const args of ['lane svc-api', 'lane', 'lane off']) {
       const r = await doLane($, args, origin)
-      expect(r.text).toBe('Type /callboard lane yourself. A plugin, session or script cannot run it.')
+      expect(r.text).toBe('Only you can change a lane: type /callboard lane yourself.')
       expect(logged(stdins)).toContain(`refused:lane-origin:${code}`)
     }
   }
@@ -4411,10 +4411,16 @@ test('lane off detaches: the record is removed under the lock, the binding and t
   expect(logged(stdins)).not.toContain('detach-incomplete:')
 })
 
+test('/callboard lanes in a lane says it is a lane and that its lead lists the lanes, with no lead hint', async ($, on) => {
+  await attacher($, on)
+  await doLane($, 'lane svc-api')
+  expect((await $.command.run(lane('lanes'))).text).toBe('This session is a lane: its lead lists the lanes.')
+})
+
 test('lane off needs the person; off from anything else asks first and then detaches too', async ($, on) => {
   await attacher($, on)
   await doLane($, 'lane svc-api')
-  expect((await doLane($, 'lane off', { kind: 'plugin', name: 'x' })).text).toBe('Type /callboard lane yourself. A plugin, session or script cannot run it.')
+  expect((await doLane($, 'lane off', { kind: 'plugin', name: 'x' })).text).toBe('Only you can change a lane: type /callboard lane yourself.')
   expect((await $.command.run(lane('status'))).text).toContain('Lane: svc-api')
   askAnswer = NO
   expect((await $.command.run(lane('off', { kind: 'peer' }))).text).toContain('Cancelled. Nothing changed.')
@@ -4666,7 +4672,7 @@ test('/callboard lanes prints the lane_list table to the person; with lead off i
   storeFiles.clear()
   expect((await $.command.run(lane('lanes'))).text).toBe('no lanes in this repo')
   expect((await $.command.run(lane('off'))).text).toBe('Lead is now off.')
-  expect((await $.command.run(lane('lanes'))).text).toBe('Lead is off in this session. Run /callboard lead first.')
+  expect((await $.command.run(lane('lanes'))).text).toBe('Lanes need a lead, conductor or manager here: run /callboard lead to make this session a lead.')
 })
 
 test('/callboard lanes with an unreadable session list says so, and the lead tool refuses for the same reason', async ($, on) => {
@@ -10226,6 +10232,19 @@ test('v13.2 config: /callboard config prints the settings from any origin and lo
   expect((await $.command.run(lane('bogus'))).text).toBe(USAGE)
 })
 
+test('/callboard help and a bare /callboard print the same command table; a word it does not know prints the short usage', async ($, on) => {
+  const stdins: string[] = []
+  await started($, on, stdins)
+  const help = (await $.command.run(lane('help'))).text
+  expect(help).toBe(helpText())
+  expect(help.startsWith('**Callboard commands**\n\n| Command | What it does | Who |\n|---|---|---|\n| lanes |')).toBe(true)
+  expect((await $.command.run(lane(''))).text).toBe(help)
+  expect((await $.command.run(lane('  help '))).text).toBe(help)
+  for (const origin of [{ kind: 'plugin' }, { kind: 'peer' }, { kind: 'script' }, null]) expect((await $.command.run(lane('help', origin))).text).toBe(help)
+  for (const word of ['help me', 'helps', 'bogus']) expect((await $.command.run(lane(word))).text).toBe(USAGE)
+  expect(logged(stdins)).toEqual([])
+})
+
 test('v13.2 config: the person sets each setting from the prompt or the phone; it is stored, logged and printed; it is never a lane command', async ($, on) => {
   const stdins: string[] = []
   await person($, on, stdins)
@@ -11551,7 +11570,7 @@ test('v13.6 /callboard checkin: only the person pauses (a fixed refusal otherwis
   await ckLead($, on, stdins)
   const status = async () => (await $.command.run(lane('status'))).text
   expect(await status()).toBe('Lane: NONE. Lead: ON. Check-ins: ON.')
-  for (const origin of [{ kind: 'plugin', name: 'x' }, { kind: 'peer' }, null]) expect((await $.command.run(lane('checkin pause 2h', origin))).text).toBe('Only you can pause check-ins: type the command yourself.')
+  for (const origin of [{ kind: 'plugin', name: 'x' }, { kind: 'peer' }, null]) expect((await $.command.run(lane('checkin pause 2h', origin))).text).toBe('Only you can pause check-ins: type /callboard checkin yourself.')
   expect(logged(stdins).filter((x) => x.startsWith('refused:checkin'))).toEqual(['refused:checkin-not-person:plugin', 'refused:checkin-not-person:session', 'refused:checkin-not-person:other'])
   expect(await status()).toBe('Lane: NONE. Lead: ON. Check-ins: ON.')
   await $.command.run(lane('config checkin off'))
@@ -11640,7 +11659,7 @@ test('v13.6 /callboard checkin outside a lead is refused and stores nothing (rev
   const trace: Trace = { log: [], failCounters: false }
   await started($, on, [], { trace })
   const writes = trace.log.length
-  for (const a of ['checkin pause 1h', 'checkin on']) expect((await $.command.run(lane(a))).text).toBe('Check-ins are only for a lead: run /callboard lead first. Nothing changed.')
+  for (const a of ['checkin pause 1h', 'checkin on']) expect((await $.command.run(lane(a))).text).toBe('Check-ins are for a lead or manager, and this session is neither. Nothing changed.')
   expect(trace.log.slice(writes)).toEqual([])
 })
 

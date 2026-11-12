@@ -57,6 +57,9 @@ Copy these when adding something like them, each with the test beside it:
 - `tools/session-peers/peers.sh` + `test-peers.sh` — a small bash tool: usage in the header, strict argument parsing,
   tested against fake config dirs in a temp dir.
 
+Comments and docs state what the code does now, with no version, review or plan tags (`v13.2`, `review c1`, `PR 2`)
+and no "before X" history. History belongs in the ADRs and in git.
+
 ## Git Conventions
 
 - Commit titles: `<prefix>: <description>` — prefix is one of `docs` (role docs, ADRs), `feat` (new tool or skill

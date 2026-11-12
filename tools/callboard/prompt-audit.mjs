@@ -39,22 +39,22 @@ import { homedir } from 'node:os'
 import { pathToFileURL } from 'node:url'
 
 export const LEDGER_MAX_BYTES = 16 * 1024 * 1024
-export const LEDGER_LINE_MAX = 64 * 1024
-// A transcript line holds a whole tool result or attachment, so real ones pass 1 MB (live test A: three sessions). Lines up to this size are read and tested like any other;
+const LEDGER_LINE_MAX = 64 * 1024
+// A transcript line holds a whole tool result or attachment, so real ones pass 1 MB. Lines up to this size are read and tested like any other;
 // a longer one is streamed past, looking only for the text a decision needs (TRANSCRIPT_MARKERS), and is a problem only if it holds one.
-export const TRANSCRIPT_LINE_MAX = 32 * 1024 * 1024
+const TRANSCRIPT_LINE_MAX = 32 * 1024 * 1024
 const TRANSCRIPT_MARKERS = ['permissionDecision', 'hook_permission_decision']
 // A request whose hook ended without a row is closed by the mod's tick within seconds; a request with no ending row and no request file after this long is a fault.
-export const CLOSE_GRACE_MS = 10 * 60 * 1000
-export const TRANSCRIPT_MAX_BYTES = 1024 * 1024 * 1024
-export const TRANSCRIPT_TOTAL_MAX_BYTES = 2 * 1024 * 1024 * 1024
-export const TRANSCRIPT_FILES_MAX = 2000
-export const DIR_ENTRIES_MAX = 50000
-export const WALK_DEPTH_MAX = 6
-export const JSON_DEPTH_MAX = 8
-export const JSON_NODES_MAX = 5000
-export const DAY_MS = 24 * 60 * 60 * 1000
-export const WINDOW_MS = 10 * 60 * 1000
+const CLOSE_GRACE_MS = 10 * 60 * 1000
+const TRANSCRIPT_MAX_BYTES = 1024 * 1024 * 1024
+const TRANSCRIPT_TOTAL_MAX_BYTES = 2 * 1024 * 1024 * 1024
+const TRANSCRIPT_FILES_MAX = 2000
+const DIR_ENTRIES_MAX = 50000
+const WALK_DEPTH_MAX = 6
+const JSON_DEPTH_MAX = 8
+const JSON_NODES_MAX = 5000
+const DAY_MS = 24 * 60 * 60 * 1000
+const WINDOW_MS = 10 * 60 * 1000
 const LIST_MAX = 200
 const QUESTION_TOOL = 'AskUserQuestion'
 const QUESTION_DAYS = 90
@@ -67,7 +67,6 @@ const FIELDS = ['code', 'id', 'lane', 'repo', 'tool', 'pattern', 'hash', 'ctx', 
 const ENDS = new Set(['returned', 'superseded', 'expired-denied', 'off', 'abandoned'])
 // A `dropped` row with one of these codes is a decision the hook refused as forged or wrong: an anomaly. The others are ordinary.
 const DROP_ANOMALY = new Set(['no-answered-row', 'id', 'hash', 'nonce', 'by-sid', 'kind', 'answer'])
-const DROP_FINE = new Set(['expired', 'ledger-unreadable', 'file', 'shape', 'floor'])
 
 // The small built-in floor check of rule d, best effort. A ledger row never holds arguments (patternOf keeps a command's first word,
 // a tool's repository and number, a file's repo-relative path), so only shapes visible in `tool` and `pattern` can be recognised:
@@ -360,7 +359,7 @@ function scanTranscripts(projects, since, notes, problems, budget, lineMax) {
   const answerCalls = new Map()
   // The person-relay questions each session asked (session id -> short -> the labels it was answered with): an AskUserQuestion whose header is `Relay <8 hex>`.
   const relayAsks = new Map()
-  // Every relay question as the tier asked it, with the answer it got (for the list the person reads, plan section 4).
+  // Every relay question as the tier asked it, with the answer it got (for the list the person reads).
   const relayQs = []
   // The relay questions (session id + "\n" + short) whose answer was only in the result's text and holds a quote that cuts it short: not verifiable.
   const relayUnreadable = new Set()
@@ -447,7 +446,7 @@ function scanTranscripts(projects, since, notes, problems, budget, lineMax) {
                 const at = text.indexOf(`"${ask.question}"="`)
                 if (at !== -1) {
                   // The text form is `"<question>"="<label>"`, with a quote inside a label left as it is, so the cut at the first quote is the label only when what follows it
-                  // is the closing quote of the pair (end of text, `.` or `,`); otherwise the label cannot be read from here (P-Q6 c).
+                  // is the closing quote of the pair (end of text, `.` or `,`); otherwise the label cannot be read from here.
                   const rest = text.slice(at + ask.question.length + 4)
                   const cutLabel = new RegExp(`^[^"]{0,${LABEL_MAX}}`).exec(rest)?.[0] ?? ''
                   if (rest[cutLabel.length] === '"' && !/^"(?:$|[.,])/.test(rest.slice(cutLabel.length))) {
@@ -609,7 +608,7 @@ export function audit({ root, projects, since, now = Date.now(), projectsExplici
     for (const d of g.dropped) {
       if (DROP_ANOMALY.has(d.code)) flag('a', `dropped-${d.code}`, `request ${g.id}: the hook refused a decision (${d.code})`, { id: g.id, t: d.t })
     }
-    // Questions (PR 4). The tool is the request's own (the first row that names one when the requested row is missing); `answer` belongs to an AskUserQuestion only, and a question is never decided allow or deny.
+    // Questions. The tool is the request's own (the first row that names one when the requested row is missing); `answer` belongs to an AskUserQuestion only, and a question is never decided allow or deny.
     const qTool = req?.tool ?? g.rows.find((r) => r.tool !== undefined)?.tool
     for (const r of g.rows) {
       const decided = r.kind === 'answered' || r.kind === 'returned'
@@ -625,7 +624,7 @@ export function audit({ root, projects, since, now = Date.now(), projectsExplici
       }
       if (!asksOn) flag('q', 'q-no-asks-on', `request ${g.id} (a question) was asked with no answering-on row (code asks) still in force`, { id: g.id, t: req.t })
     }
-    // Tiers (PR 3). A tier that passed the request up (an `escalated` row, code = its level) does not answer it afterwards; a request taken to the person (`relayed`) is decided by the person, and
+    // Tiers. A tier that passed the request up (an `escalated` row, code = its level) does not answer it afterwards; a request taken to the person (`relayed`) is decided by the person, and
     // an agent's answer after it counts only if a relay-lost row came first (the relay never reached the person, so the tiers had it again).
     for (const a of g.answered) {
       if (a.via === 'person') continue
@@ -802,7 +801,7 @@ export function audit({ root, projects, since, now = Date.now(), projectsExplici
   }
 
   // c2. a lead's answer must be a real call: for each answered row, the answering lead's own transcript holds a prompt_answer call for that request id. This is what shows a
-  // decision file and an answered row written by hand (PLAN 8.7). Its bound: someone who also writes that call into the lead's transcript passes, as does one who
+  // decision file and an answered row written by hand. Its bound: someone who also writes that call into the lead's transcript passes, as does one who
   // writes both with the lead's own tool; it is a check against a forged row, not against a forger who can rewrite files the lead's session owns.
   if (txRan) {
     const missingLead = new Set()
@@ -930,7 +929,7 @@ export function audit({ root, projects, since, now = Date.now(), projectsExplici
 // ---- output ----
 // C0 and C1 controls, DEL, the line and paragraph separators and the bidi controls, shown as \uXXXX so the text stays readable and inert.
 const CONTROLS_RE = /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g
-export const escapeControls = (s) => String(s).replace(CONTROLS_RE, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)
+const escapeControls = (s) => String(s).replace(CONTROLS_RE, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)
 const cut = (s, n) => (s.length > n ? `${s.slice(0, n - 1)}~` : s)
 const sec = (v) => (v === undefined ? '-' : v < 100 ? v.toFixed(1) : Math.round(v).toString())
 function pad(rows) {
@@ -1003,7 +1002,7 @@ export function render(rep) {
 
 // ---- command line ----
 const USAGE = 'usage: prompt-audit.mjs [--since DATE] [--root DIR] [--projects DIR] [--json]'
-export function parseArgs(argv, env = process.env) {
+function parseArgs(argv, env = process.env) {
   const cfg = env.CLAUDE_CONFIG_DIR && env.CLAUDE_CONFIG_DIR !== '' ? env.CLAUDE_CONFIG_DIR : join(homedir(), '.claude')
   const o = { root: join(cfg, 'callboard', 'prompts'), projects: join(cfg, 'projects'), since: undefined, json: false }
   for (let i = 0; i < argv.length; i++) {
