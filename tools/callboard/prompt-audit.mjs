@@ -172,14 +172,20 @@ function list(dir) {
 }
 
 // ---- the ledger ----
-function parseRow(line) {
+// A line as a JSON object, or undefined when it is no JSON or no plain object (an array is not one).
+function parseObj(line) {
   let j
   try {
     j = JSON.parse(line)
   } catch {
     return undefined
   }
-  if (!j || typeof j !== 'object' || Array.isArray(j) || typeof j.kind !== 'string' || !KINDS.has(j.kind)) return undefined
+  return j && typeof j === 'object' && !Array.isArray(j) ? j : undefined
+}
+
+function parseRow(line) {
+  const j = parseObj(line)
+  if (!j || typeof j.kind !== 'string' || !KINDS.has(j.kind)) return undefined
   const ms = typeof j.t === 'string' ? Date.parse(j.t) : NaN
   if (!Number.isFinite(ms)) return undefined
   const r = { t: j.t, ms, kind: j.kind }
@@ -192,33 +198,38 @@ function parseRow(line) {
   return r
 }
 
-function readLedger(root, entries, problems, notes) {
-  const rows = []
-  let garbage = 0
+// The monthly files `<prefix>-YYYY-MM.jsonl` of a folder, in name order, each line handed to onLine(line, fileName). A symlink or a non-file is a problem and is not read;
+// so is a file that cannot be read (its lines up to that point were handed over). Returns the files read and the lines skipped for length in them.
+function eachMonthFile(root, entries, prefix, problems, onLine) {
   let files = 0
-  const names = entries.filter((d) => /^ledger-\d{4}-\d{2}\.jsonl$/.test(d.name)).sort((a, b) => (a.name < b.name ? -1 : 1))
-  for (const d of names) {
-    if (d.isSymbolicLink()) {
-      problems.push(`${d.name}: a symlink, not read`)
-      continue
-    }
+  let skippedLong = 0
+  const name = new RegExp(`^${prefix}-\\d{4}-\\d{2}\\.jsonl$`)
+  for (const d of entries.filter((x) => name.test(x.name)).sort((a, b) => (a.name < b.name ? -1 : 1))) {
     if (!d.isFile()) {
-      problems.push(`${d.name}: not a regular file, not read`)
+      problems.push(`${d.name}: ${d.isSymbolicLink() ? 'a symlink' : 'not a regular file'}, not read`)
       continue
     }
     try {
-      const s = eachLine(join(root, d.name), { maxLine: LEDGER_LINE_MAX, maxFileBytes: LEDGER_MAX_BYTES }, (line) => {
-        if (line.trim() === '') return
-        const r = parseRow(line)
-        if (r) rows.push({ ...r, seq: rows.length, file: d.name })
-        else garbage++
-      })
-      garbage += s.skippedLong
+      const s = eachLine(join(root, d.name), { maxLine: LEDGER_LINE_MAX, maxFileBytes: LEDGER_MAX_BYTES }, (line) => onLine(line, d.name))
+      skippedLong += s.skippedLong
       files++
     } catch (e) {
       problems.push(e instanceof AuditError ? `${d.name}: ${e.code}, not read` : `${d.name}: ${e.message}`)
     }
   }
+  return { files, skippedLong }
+}
+
+function readLedger(root, entries, problems, notes) {
+  const rows = []
+  let garbage = 0
+  const { files, skippedLong } = eachMonthFile(root, entries, 'ledger', problems, (line, file) => {
+    if (line.trim() === '') return
+    const r = parseRow(line)
+    if (r) rows.push({ ...r, seq: rows.length, file })
+    else garbage++
+  })
+  garbage += skippedLong
   if (garbage > 0) notes.push(`${garbage} ledger line(s) were not valid rows and were ignored`)
   rows.sort((a, b) => a.ms - b.ms || a.seq - b.seq)
   return { rows, garbage, files }
@@ -226,13 +237,8 @@ function readLedger(root, entries, problems, notes) {
 
 // One row of a questions file: { t, id, lane, repo, tier, by, header, question, options, label, via? }. Every string is cut; a row that is no JSON object is undefined.
 function parseQuestionRow(line) {
-  let j
-  try {
-    j = JSON.parse(line)
-  } catch {
-    return undefined
-  }
-  if (!j || typeof j !== 'object' || Array.isArray(j)) return undefined
+  const j = parseObj(line)
+  if (!j) return undefined
   const str = (v, n) => (typeof v === 'string' ? v.slice(0, n) : '')
   const ms = typeof j.t === 'string' ? Date.parse(j.t) : NaN
   return {
@@ -253,31 +259,23 @@ function parseQuestionRow(line) {
 // `byId` indexes every parsed row by request id, with no cap and no --since cut, for the joins; `rows` (raw, cut) and `list` (parsed) keep the listing's own cap and the --since cut.
 function readQuestions(root, entries, since, problems, now) {
   const out = { files: 0, count: 0, rows: [], list: [], unreadable: 0, old: 0, byId: new Map() }
-  for (const d of entries.filter((x) => /^questions-\d{4}-\d{2}\.jsonl$/.test(x.name)).sort((a, b) => (a.name < b.name ? -1 : 1))) {
-    if (!d.isFile()) {
-      problems.push(`${d.name}: ${d.isSymbolicLink() ? 'a symlink' : 'not a regular file'}, not read`)
-      continue
-    }
-    try {
-      eachLine(join(root, d.name), { maxLine: LEDGER_LINE_MAX, maxFileBytes: LEDGER_MAX_BYTES }, (line) => {
-        if (line.trim() === '') return
-        const q = parseQuestionRow(line)
-        const ms = q?.ms
-        if (q?.id !== undefined) out.byId.set(q.id, q)
-        if (q && Number.isFinite(ms) && now - ms > QUESTION_DAYS * DAY_MS) out.old++
-        if (since !== undefined && Number.isFinite(ms) && ms < since) return
-        out.count++
-        if (out.rows.length < LIST_MAX) out.rows.push(line.length > 200 ? `${line.slice(0, 200)}...` : line)
-        if (!q) out.unreadable++
-        else if (out.list.length < LIST_MAX) out.list.push(q)
-      })
-      out.files++
-    } catch (e) {
-      problems.push(e instanceof AuditError ? `${d.name}: ${e.code}, not read` : `${d.name}: ${e.message}`)
-    }
-  }
+  out.files = eachMonthFile(root, entries, 'questions', problems, (line) => {
+    if (line.trim() === '') return
+    const q = parseQuestionRow(line)
+    const ms = q?.ms
+    if (q?.id !== undefined) out.byId.set(q.id, q)
+    if (q && Number.isFinite(ms) && now - ms > QUESTION_DAYS * DAY_MS) out.old++
+    if (since !== undefined && Number.isFinite(ms) && ms < since) return
+    out.count++
+    if (out.rows.length < LIST_MAX) out.rows.push(line.length > 200 ? `${line.slice(0, 200)}...` : line)
+    if (!q) out.unreadable++
+    else if (out.list.length < LIST_MAX) out.list.push(q)
+  }).files
   return out
 }
+
+// A label as the audit's escaped listing shows it (\\u003c, \\ufe0f, \\u{e0001}), back to its characters; an escape past U+10FFFF stays as it is.
+const unescape = (t) => t.replace(/\\u\{([0-9a-f]+)\}|\\u([0-9a-f]{4})/gi, (m, big, small) => { const n = parseInt(big ?? small, 16); return n <= 0x10ffff ? String.fromCodePoint(n) : m })
 
 // The salted label hash the mod writes in `lh` (prompts.ts): the first 16 hex of SHA-256(id + "\n" + label).
 const labelHash = (id, label) => createHash('sha256').update(`${id}\n${label}`).digest('hex').slice(0, 16)
@@ -595,7 +593,8 @@ export function audit({ root, projects, since, now = Date.now(), projectsExplici
     // What the hook returned must be what the tier answered: the same decision, by the same lead (each checked only when both rows carry it).
     if (ret && g.answered.length > 0) {
       const before = g.answered.filter((r) => r.ms <= ret.ms)
-      const ref = (before.length > 0 ? before : g.answered)[(before.length > 0 ? before : g.answered).length - 1]
+      const pool = before.length > 0 ? before : g.answered
+      const ref = pool[pool.length - 1]
       if (ret.code !== undefined && ref.code !== undefined && ret.code !== ref.code) flag('a', 'returned-differs-from-answered', `request ${g.id}: returned ${ret.code} but the answered row says ${ref.code}`, { id: g.id, t: ret.t })
       else if (ret.by !== undefined && ref.by !== undefined && ret.by !== ref.by) flag('a', 'returned-differs-from-answered', `request ${g.id}: the returned row's author differs from the answered row's`, { id: g.id, t: ret.t })
       // A returned question answer must carry the option and label hash of the answer (both rows carry both).
@@ -641,7 +640,7 @@ export function audit({ root, projects, since, now = Date.now(), projectsExplici
     // b. a request nothing ended, older than 24 h. Restarts and failed hooks write `abandoned`, which ends it.
     if (req && g.ends.length === 0 && now - req.ms > DAY_MS) flag('b', 'request-unended', `request ${g.id} (${req.tool ?? '?'}) has no ending row after ${Math.floor((now - req.ms) / 3600000)} h`, { id: g.id, t: req.t })
     // The two benign shapes.
-    if (g.ends.some((r) => r.kind === 'abandoned')) for (const r of g.ends.filter((x) => x.kind === 'abandoned')) abandoned.push({ id: g.id, t: r.t, code: r.code ?? '', tool: meta.tool ?? '' })
+    for (const r of g.ends.filter((x) => x.kind === 'abandoned')) abandoned.push({ id: g.id, t: r.t, code: r.code ?? '', tool: meta.tool ?? '' })
     if (ret && g.ends.some((r) => r.kind === 'superseded')) lostRaces.push({ id: g.id, t: ret.t, via: 'ledger', detail: 'a returned row and a superseded row for one request' })
     for (const d of g.dropped) if (!DROP_ANOMALY.has(d.code)) dropsFine.push({ id: g.id, t: d.t, code: d.code ?? '' })
   }
@@ -823,7 +822,6 @@ export function audit({ root, projects, since, now = Date.now(), projectsExplici
           const labels = tx.relayAsks.get(a.by)?.get(short)
           if (a.code === 'answer') {
             // Each answer read from the transcript is trimmed and hashed as it is: the tier copied the label from prompt_list, already redacted; a `<` or an invisible character in it is listed as an escape (\\u003c, \\ufe0f, \\u{e0001}), so the unescaped form is tried too.
-            const unescape = (t) => t.replace(/\\u\{([0-9a-f]+)\}|\\u([0-9a-f]{4})/gi, (m, big, small) => { const n = parseInt(big ?? small, 16); return n <= 0x10ffff ? String.fromCodePoint(n) : m })
             if (a.lh !== undefined && labels?.some((l) => labelHash(g.id, l.trim()) === a.lh || labelHash(g.id, unescape(l.trim())) === a.lh)) continue
             if (a.lh !== undefined && tx.relayUnreadable.has(`${a.by}\n${short}`)) notes.push(`question-label-unverifiable: request ${g.id}: the person's pick through tier session ${a.by} could not be read from the result text (a quote in the label, and no structured answers), so its label hash was not checked`)
             else flag('c', 'person-answer-without-relay-question', `request ${g.id}: the answered row (${a.t}) is the person's pick through tier session ${a.by}, whose transcript holds no "Relay ${short}" question answered with a label that matches the row's label hash`, { id: g.id, t: a.t })
