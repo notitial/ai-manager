@@ -6,10 +6,10 @@ set -uo pipefail
 cd "$(dirname "$0")"
 rc=0
 step() { echo "== $1"; shift; "$@" || rc=1; }
-step "core logic" node --test mod/hooks/core.spec.ts mod/hooks/prompts.spec.ts mod/hooks/prompts-tier.spec.ts
+step "core logic" node --test mod/hooks/*.spec.ts
 step "sender" node --test send/callboard-send.test.mjs
 step "prompt audit" node --test prompt-audit.test.mjs
-step "extension" node --test extension/lanes.test.js extension/spool.test.js extension/registry.test.js
+step "extension" node --test extension/*.test.js
 step "mod validate" claude plugin validate mod
 if [ "${CALLBOARD_SKIP_MOD_TESTS:-}" = 1 ]; then
   echo "== mod tests"
