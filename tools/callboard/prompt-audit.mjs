@@ -616,7 +616,7 @@ export function audit({ root, projects, since, now = Date.now(), projectsExplici
       if (decided && r.code === 'answer' && qTool !== QUESTION_TOOL) flag('q', 'q-answer-not-question', `request ${g.id} (${qTool ?? 'tool unknown'}): the ${r.kind} row (${r.t}) is an answer, but the request is not an ${QUESTION_TOOL}`, { id: g.id, t: r.t })
       if (qTool === QUESTION_TOOL && ((decided && (r.code === 'allow' || r.code === 'deny')) || r.kind === 'expired-denied')) flag('q', 'q-decided-question', `request ${g.id}: an ${r.kind} row (${r.t}${r.code ? `, ${r.code}` : ''}) decides a question with allow or deny; a question is only ever answered`, { id: g.id, t: r.t })
     }
-    // A question's request needs an `answering-on` row with code asks still in force: a later plain `answering-on` (an `on Y` clears the questions scope) or any `answering-off` ends it.
+    // A question's request needs an `answering-on` row with code asks still in force: a later plain `answering-on` (a value written without the questions scope) or any `answering-off` ends it; `/callboard escalation` writes the plain row and then the asks row.
     if (req && qTool === QUESTION_TOOL) {
       let asksOn = false
       for (const r of onOff) {

@@ -105,7 +105,7 @@ test('cleanWhy: one non-empty line of at most 200 characters, no control charact
 // ---- prompt_list's text ----
 const item = (o: Partial<p.ListItem> = {}): p.ListItem => ({ id: ID, lane: 'svc-api', tool: 'Bash', repo: '/w/svc', raisedBy: 'rule', ageSec: 40, truncated: false, input: { command: 'ssh host uptime' }, ...o })
 test('promptListText: off, empty, and one request with its input in the frame and the rubric after it', () => {
-  assert.match(p.promptListText([], { on: false }), /^Prompt answering is off on this Mac\./)
+  assert.match(p.promptListText([], { on: false }), /^Escalation is off on this Mac\./)
   assert.match(p.promptListText([], { on: true }), /^No prompt is waiting in your reach\./)
   const t = p.promptListText([item()], { on: true })
   assert.ok(t.startsWith('1 prompt waiting.'))
@@ -365,9 +365,11 @@ test('coversAsks and requestCovered: a question needs both scopes; a permission 
   assert.equal(p.requestCovered(a, { tool: 'AskUserQuestion' }, { lane: 'LANE1' }), true)
   assert.equal(p.requestCovered(a, { tool: 'Bash' }, { lane: 'LANE2' }), true)
   assert.equal(p.requestCovered(a, { tool: 'AskUserQuestion' }, { lane: 'LANE2' }), false)
-  assert.ok(p.asksQuestion('LANE1').includes('LANE1') && p.asksQuestion('all').includes('EVERY lane') && p.asksQuestion('all').includes('Turn it off with /callboard answering off asks.'))
-  assert.ok(p.asksQuestion('all').includes('Questions headed Person and questions with several parts or choices always stay yours; the sessions are told to leave anything on the risk list to you too.'))
-  assert.ok(p.answeringState(a, false).includes('questions: answered for LANE1') && p.answeringState({ ...a, asksScope: undefined }, false).includes('questions: yours'))
+  // The one dialog keeps every limit the two old ones stated, and names both ways out.
+  for (const part of ['EVERY lane and lead', 'EVERY lane (a lead\'s own questions stay yours)', 'settled or harmless', 'the sessions are told to leave anything on the risk list to you too', 'your click always wins', '30 seconds', 'merges, force pushes, pushes to main, master or production, destructive deletes, edits to settings, hooks or callboard', 'anything from a subagent', 'the risk list', 'Questions headed Person and questions with several parts or choices always stay yours', 'put to you in the top session', 'kept, redacted, for 90 days', '/callboard escalation off turns it off', "/callboard off in a lane's session takes that lane out"]) assert.ok(p.ESCALATION_QUESTION.includes(part), part)
+  assert.ok(!/answering/i.test(p.ESCALATION_QUESTION) && !/answering/i.test(p.ESCALATION_USAGE) && !/answering/i.test(p.ESCALATION_NOT_PERSON))
+  // The state line still reads a narrower value an earlier version stored.
+  assert.ok(p.escalationState(a, false).includes('questions: answered for LANE1') && p.escalationState({ ...a, asksScope: undefined }, false).includes('questions: yours'))
 })
 const QR = '4a1b2c3d-0000-4000-8000-123456789abc'
 const qLabels = ['Red', 'Green', 'a < b']

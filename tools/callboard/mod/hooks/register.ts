@@ -1654,12 +1654,12 @@ async function leadTools($: any, sid: string) {
 }
 
 // The three prompt tools, declared for a lead, a conductor and the manager alike (the handlers are shared; what a tier may do with a request depends on its place in
-// the chain, PLAN-PR3 §3). They answer only while the person has turned answering on.
+// the chain, PLAN-PR3 §3). They answer only while the person has turned escalation on.
 async function promptToolsRegister($: any) {
   const text = { type: 'string' }
   await $.tool.register({
     name: 'prompt_list',
-    description: "List the permission prompts and the lane questions in your reach that are waiting for an answer: each one's id, lane, tool, how long it has been open, where it stands for you (whether you are the top tier, whether your window has opened) and its input (data from the lane, in an untrusted frame), then the rubric to judge it by. Call it when told a lane has a prompt waiting. Shows nothing while prompt answering is off.",
+    description: "List the permission prompts and the lane questions in your reach that are waiting for an answer: each one's id, lane, tool, how long it has been open, where it stands for you (whether you are the top tier, whether your window has opened) and its input (data from the lane, in an untrusted frame), then the rubric to judge it by. Call it when told a lane has a prompt waiting. Shows nothing while escalation is off.",
     inputSchema: { type: 'object', properties: {} },
   })
   await $.tool.register({
@@ -5910,7 +5910,7 @@ async function promptWait($: any, e: any, beneath: any, signal: AbortSignal, w: 
       w.st.closed = true
       return beneath
     }
-    // Off stops the wait whichever way it was turned off: the emergency file or /callboard answering off.
+    // Off stops the wait whichever way it was turned off: the emergency file or /callboard escalation off.
     if (!(await stillOn())) return end('off')
     if (await clickSeen()) return end('superseded')
     // The relay (§3.2): a tier has put the prompt to the person. It is lost when its question is never asked, or its tier is not live for two checks in a row;
@@ -6306,51 +6306,49 @@ async function promptSweepAsking($: any, base: string): Promise<void> {
   for (const f of files) if (!live.some((r) => r.j.sessionId === f.name)) await run($, [RM, '-f', '--', `${base}/asking/${f.name}`]).catch(() => undefined)
 }
 
-async function answeringCommand($: any, sid: string, code: c.OriginCode, op: pr.AnsweringOp): Promise<{ text: string }> {
-  if (op === 'bad') return { text: pr.ANSWERING_USAGE }
-  const read = async () => pr.parseAnswering(await $.store.get(ANSWERING_KEY).catch(() => undefined))
-  if (op === 'show') return { text: pr.answeringState(await read(), await promptsOff($)) }
-  // Off narrows only: any origin, no dialog. It clears the stored switch as well, so deleting the OFF file later does not turn answering back on.
-  if (op === 'off' || op === 'off-asks') {
-    const a = await read()
+// /callboard escalation (the person's own command, one dialog) and /callboard escalation off (any origin, no dialog). One Allow stores scope `all` for permission prompts and questions alike;
+// the two ledger rows are the ones the audit reads (the plain `answering-on`, then the one with code asks that opens the questions).
+async function escalationCommand($: any, sid: string, code: c.OriginCode, op: pr.EscalationOp): Promise<{ text: string }> {
+  if (op === 'bad') return { text: pr.ESCALATION_USAGE }
+  // Off narrows only: any origin, no dialog. It clears the stored switch as well, so deleting the OFF file later does not turn escalation back on.
+  if (op === 'off') {
     try {
-      if (op === 'off') await $.store.delete(ANSWERING_KEY)
-      // Built field by field: a `{...a}` spread would keep the questions scope.
-      else if (a) await $.store.set(ANSWERING_KEY, { scope: a.scope, asks: false, savedAt: a.savedAt })
+      await $.store.delete(ANSWERING_KEY)
     } catch {
-      await log($, sid, 'error', 'answering-store').catch(() => undefined)
-      return { text: 'Prompt answering could not be changed: the store did not answer. Create ~/.claude/callboard/prompts/OFF to stop it now.' }
+      await log($, sid, 'error', 'escalation-store').catch(() => undefined)
+      return { text: 'Escalation could not be changed: the store did not answer. Create ~/.claude/callboard/prompts/OFF to stop it now.' }
     }
-    await ledgerAdd($, { kind: 'answering-off', code: op })
-    return { text: op === 'off' ? 'Prompt answering is off on this Mac.' : 'Answering questions is off; permission prompts are unchanged.' }
+    await ledgerAdd($, { kind: 'answering-off', code: 'off' })
+    return { text: 'Escalation is off on this Mac.' }
   }
   // On is the person's own command, with a dialog that names exactly what turns on.
   if (!c.originIsPerson(code)) {
-    await log($, sid, 'refused', `answering-not-person:${code}`).catch(() => undefined)
-    return { text: pr.ANSWERING_NOT_PERSON }
+    await log($, sid, 'refused', `escalation-not-person:${code}`).catch(() => undefined)
+    return { text: pr.ESCALATION_NOT_PERSON }
   }
-  // The questions scope: its own command and dialog, refused while answering is off. Only an Allow stores it, and the row names it (code `asks`).
-  const wantsAsks = 'asks' in op
-  const cur = wantsAsks ? await read() : undefined
-  if (wantsAsks && !cur) return { text: pr.ASKS_NEEDS_ON }
-  const r = await askOnce($, sid, 'asks' in op ? pr.asksQuestion(op.asks) : pr.answeringQuestion(op.on), pr.ANSWERING_YES, pr.ANSWERING_NO, pr.ANSWERING_HEADER)
+  const r = await askOnce($, sid, pr.ESCALATION_QUESTION, pr.ESCALATION_YES, pr.ESCALATION_NO, pr.ESCALATION_HEADER)
   if (r === 'busy') return { text: 'A callboard question is already open. Answer it first.' }
   if (r !== 'yes') return { text: r === 'timed-out' ? 'Nothing changed: the question timed out.' : 'Cancelled. Nothing changed.' }
-  // `on X` writes a fresh value, so re-scoping permission answering never keeps a wider questions scope.
-  let value: pr.Answering
-  if ('asks' in op) {
-    // The dialog took time: answering may have been turned off meanwhile, and the store is read again.
-    const now = await read()
-    if (!now) return { text: pr.ASKS_NEEDS_ON }
-    value = { scope: now.scope, asks: false, savedAt: now.savedAt, asksScope: op.asks }
-  } else value = { scope: op.on, asks: false, savedAt: await $.clock.now() }
+  // `asks: false` stays in the value so that an older mod after a rollback still reads it.
+  const value: pr.Answering = { scope: 'all', asks: false, asksScope: 'all', savedAt: await $.clock.now() }
   try {
     await $.store.set(ANSWERING_KEY, value)
   } catch {
-    return { text: 'Prompt answering could not be turned on: the store did not answer. Nothing changed.' }
+    return { text: 'Escalation could not be turned on: the store did not answer. Nothing changed.' }
   }
-  await ledgerAdd($, { kind: 'answering-on', ...('asks' in op ? { code: 'asks' } : {}), hash: await sha($, pr.canonical(value)).catch(() => undefined) })
-  return { text: `${pr.answeringState(value, await promptsOff($))} ${pr.FLOOR_LINE}` }
+  // The dialog took time: an `escalation off` typed meanwhile is overridden by this Allow, the person's own last word.
+  // Both rows must land, plain first: the audit reads a question as covered only by the asks row, and a switch with no row is an anomaly. Else it is not left on.
+  const hash = await sha($, pr.canonical(value)).catch(() => undefined)
+  if (!(await ledgerAdd($, { kind: 'answering-on', hash })) || !(await ledgerAdd($, { kind: 'answering-on', code: 'asks', hash }))) {
+    await log($, sid, 'error', 'escalation-ledger').catch(() => undefined)
+    try {
+      await $.store.delete(ANSWERING_KEY)
+    } catch {
+      return { text: 'Escalation could not be turned on, and the store would not take it back: the ledger did not answer. Create ~/.claude/callboard/prompts/OFF to stop it now.' }
+    }
+    return { text: 'Escalation could not be turned on: the ledger did not answer. Nothing changed.' }
+  }
+  return { text: `${pr.escalationState(value, await promptsOff($))} ${pr.FLOOR_LINE}` }
 }
 
 async function promptsCommand($: any): Promise<{ text: string }> {
@@ -6361,7 +6359,7 @@ async function promptsCommand($: any): Promise<{ text: string }> {
     for (const d of ((await $.fs.list(`${p.root}/prompts`).catch(() => [])) as { name: string }[]).filter((x) => c.SID_RE.test(x.name)).slice(0, 512))
       open += ((await $.fs.list(`${p.root}/prompts/${d.name}`).catch(() => [])) as { name: string }[]).filter((f) => f.name.endsWith('.request.json')).length
   }
-  return { text: `${pr.answeringState(a, await promptsOff($))} Open requests: ${open}. ${pr.FLOOR_LINE}` }
+  return { text: `${pr.escalationState(a, await promptsOff($))} Open requests: ${open}. ${pr.FLOOR_LINE}` }
 }
 
 // ---- PR 2: the lead tier (prompt_list, prompt_answer, prompt_escalate) and its notice ----
@@ -6885,7 +6883,7 @@ export const register: Register = (on) => {
     })
     const me = await $.session.id()
     try {
-      await $.command.register({ name: 'callboard', description: 'Give lead, make this session a lane, list the lanes, show status, show or change the settings, or turn lead and lane off for this session', argumentHint: 'off|lead|lanes|status|rest|config [SETTING VALUE]|conductor [add|remove NAME]|reserve [remove] [NAME]|lane [NAME]|lane off|answering [on LANE|LEAD|all|asks LANE|LEAD|all|off [asks]]|prompts' })
+      await $.command.register({ name: 'callboard', description: 'Give lead, make this session a lane, list the lanes, show status, show or change the settings, or turn lead and lane off for this session', argumentHint: 'off|lead|lanes|status|rest|config [SETTING VALUE]|conductor [add|remove NAME]|reserve [remove] [NAME]|lane [NAME]|lane off|escalation [off]|prompts' })
     } catch {
       await log($, me, 'error', 'command-register')
     }
@@ -6973,11 +6971,11 @@ export const register: Register = (on) => {
     ensureTimer($)
     const rawArgs = (e as { args?: unknown }).args
     const line = typeof rawArgs === 'string' ? rawArgs.trim().replace(/[ \t]+/g, ' ') : ''
-    // Prompt answering (ADR 0004): `answering` and `prompts` are read here, so core's parser keeps its own forms.
+    // Escalation (ADR 0004): `escalation` and `prompts` are read here, so core's parser keeps its own forms.
     if (line === 'prompts') return promptsCommand($)
-    // It only narrows (it stops pings), so any origin may type it, as `answering off`.
+    // It only narrows (it stops pings), so any origin may type it, as `escalation off`.
     if (line === 'rest') return restCommand($, sid, c.originCode((e as { origin?: unknown }).origin))
-    if (line === 'answering' || line.startsWith('answering ')) return answeringCommand($, sid, c.originCode((e as { origin?: unknown }).origin), pr.parseAnsweringArgs(line.slice(10)))
+    if (line === 'escalation' || line.startsWith('escalation ')) return escalationCommand($, sid, c.originCode((e as { origin?: unknown }).origin), pr.parseEscalationArgs(line.slice(10)))
     const arg = c.parseCommandArgs(rawArgs)
     if (!arg) return { text: USAGE }
     const code = c.originCode((e as { origin?: unknown }).origin)

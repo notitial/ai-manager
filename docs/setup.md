@@ -170,9 +170,9 @@ under umask 002). Run this once:
 chmod go-w <conductor repo>/.claude
 ```
 
-### Before prompt answering: two lines (by hand)
+### Before escalation: two lines (by hand)
 
-Prompt answering ([ADR 0004](adr/0004-prompt-answering.md)) is off by default after any install. Before you turn it on for
+Escalation, the switch for prompt answering ([ADR 0004](adr/0004-prompt-answering.md)), is off by default after any install. Before you turn it on for
 any lane on a machine, add these two lines yourself in your global `~/.claude/settings.json`. An agent never edits
 settings: the person adds them. The deny rule goes in `permissions.deny`:
 
@@ -190,8 +190,8 @@ They answer the likely forger, the asking lane's own shell writing the decision 
 command that names callboard's folder now raises a prompt, and the floor keeps that prompt the person's, so no agent can
 answer it. Without the ask rule, a Bash write that auto mode or an allow rule settles would never reach the hook. The
 floor itself stops no shell write: a script, or a path built at run time, gets past both lines, so the lines narrow the
-risk and do not close it. Prompt answering turns on only when you type `/callboard answering on ...` yourself, and
-`touch ~/.claude/callboard/prompts/OFF` stops it at once.
+risk and do not close it. Escalation turns on only when you type `/callboard escalation` yourself, and
+`touch ~/.claude/callboard/prompts/OFF` stops it at once (`/callboard escalation off` does too).
 
 ```
 touch ~/.claude/callboard/prompts/OFF
@@ -318,7 +318,7 @@ lane or a live lead carries cannot be reserved. Details: callboard README, The m
 | Mod loaded | type `/callboard status` in a session | it answers `Lane: NONE. Lead: OFF.` or similar |
 | Reserved names | type `/callboard reserve` | the manager's name, when it is not `MANAGER`, is listed |
 | Deny lines | read `permissions.deny` in `~/.claude/settings.json` | the two store and list-file lines and the six live-checkout lines are there |
-| Prompt answering lines | read `permissions.deny` and `permissions.ask` in `~/.claude/settings.json` | `Edit(~/.claude/callboard/**)` is in deny and `Bash(*.claude/callboard*)` is in ask, before any `/callboard answering on` |
+| Prompt answering lines | read `permissions.deny` and `permissions.ask` in `~/.claude/settings.json` | `Edit(~/.claude/callboard/**)` is in deny and `Bash(*.claude/callboard*)` is in ask, before any `/callboard escalation` |
 | Usage watcher | `bash tools/usage-watcher/install.sh --status --ref <commit>` | exit 0, the job loaded |
 | Summary | `ls -l ~/.local/state/usage-watcher/usage-summary.json` | written in the last 5 minutes |
 | Retired hook | read `hooks.SessionStart` in `~/.claude/settings.json` | no `account-stamp.sh` entry |

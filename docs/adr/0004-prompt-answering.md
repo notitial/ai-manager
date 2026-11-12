@@ -242,7 +242,7 @@ anything on the risk list to the person. An answer ending `(answered by …)` is
 the risk list.
 
 - **The scope.** Questions have a scope of their own, `asks`, set by the person with `/callboard answering asks LANE|LEAD|all`
-  and stored in the answering value. With no scope, or with the old `asks: true` of the first version, a lane's question is
+  and stored in the answering value (replaced 2026-11-12 by `/callboard escalation`; see the note under Rollout). With no scope, or with the old `asks: true` of the first version, a lane's question is
   the person's and its shape is not read. A lead's own question is the person's. The scope needs answering to be on, and
   `off asks` or a narrowed scope ends a waiting question, while permission prompts keep waiting.
 - **The answer.** A tier answers with `prompt_answer` decision `answer` and the number of an offered option; `allow` and
@@ -277,6 +277,15 @@ Off is any origin and no dialog, or a file a terminal can create. It is read at 
 Questions have their own, narrower switch (amended 2026-11-11): `/callboard answering asks LANE|LEAD|all`, the person's own
 command with its own dialog, valid only while answering is on. `on X asks` is dropped (it gets the usage line), and
 `/callboard answering on X` clears the questions scope; `off asks` clears only the questions scope, from any origin.
+
+*Amended 2026-11-12: one command.* The switch is now `/callboard escalation`, the person's own command with one dialog, and
+`/callboard escalation off`, any origin and no dialog. One Allow stores scope `all` for permission prompts and an asks
+scope `all` for questions, and writes the two ledger rows the audit reads (`answering-on`, then `answering-on` with
+code `asks`); off clears everything, and the OFF file works as before. The `/callboard answering` command is removed with
+its `on LANE|LEAD|all`, `asks ...` and `off asks` forms (they get the usage line), so no command narrows the scope any
+more. A narrower value an earlier version stored is still read and still applies, with no migration. A lane is taken out
+with the regular `/callboard off` in its session, which leaves its prompts and questions the person's. The two paragraphs
+above record the design before this note.
 
 Every event goes to one machine-wide local ledger with tool, a coarse pattern (a command's first word and never its
 arguments, a tool's repository and pull request, a file's path in its repository) and hash, not input. A read-only

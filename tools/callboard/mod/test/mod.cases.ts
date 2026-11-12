@@ -14285,9 +14285,9 @@ test('prompts: touch OFF during a wait closes it within one poll: row off, dialo
   expect(noFiles()).toBe(true)
 })
 
-test('prompts: /callboard answering off during a wait closes it too, and a decision made after is not applied', async ($, on) => {
+test('prompts: /callboard escalation off during a wait closes it too, and a decision made after is not applied', async ($, on) => {
   await answerer($, on, [])
-  const r = await runRequest($, [at(4000, async () => { await $.command.run(lane('answering off', { kind: 'plugin' })) }), at(6000, () => handDecision(readReq()))])
+  const r = await runRequest($, [at(4000, async () => { await $.command.run(lane('escalation off', { kind: 'plugin' })) }), at(6000, () => handDecision(readReq()))])
   expect(r).toEqual({})
   expect(rowKinds()).toContain('off')
   expect(rowKinds()).not.toContain('returned allow')
@@ -14802,95 +14802,107 @@ test('prompts: sweep: with no prompts folder the tick makes no process call for 
   expect(argv.slice(before).filter((a) => a.some((x) => typeof x === 'string' && x.includes('/prompts'))).length).toBe(0)
 })
 
-// ---- /callboard answering and /callboard prompts ----
-const EXPECT_Q = (scope: string) => prm.answeringQuestion(scope)
-test('prompts: /callboard answering shows the state, off by default', async ($, on) => {
+// ---- /callboard escalation and /callboard prompts ----
+const EXPECT_Q = prm.ESCALATION_QUESTION
+const ESC_VALUE = { scope: 'all', asks: false, asksScope: 'all', savedAt: T0 }
+test('prompts: /callboard prompts shows escalation off by default, with the floor', async ($, on) => {
   await started($, on, [])
-  expect((await $.command.run(lane('answering'))).text).toBe('Prompt answering: off.')
+  expect((await $.command.run(lane('prompts'))).text).toContain('Escalation: off.')
   expect((await $.command.run(lane('prompts'))).text).toContain('Open requests: 0.')
   expect((await $.command.run(lane('prompts'))).text).toContain('Floor (never answered by an agent)')
 })
-test('prompts: /callboard answering on all: the person\'s own command, a dialog naming exactly what turns on, stored on Allow with a ledger row', async ($, on) => {
+test('prompts: /callboard escalation: the person\'s own command, one dialog naming exactly what turns on, stored on Allow with the two ledger rows the audit reads', async ($, on) => {
   await started($, on, [])
   askAnswer = YES
-  const r = await $.command.run(lane('answering on all'))
-  expect(lastQuestion).toBe(EXPECT_Q('all'))
-  expect(lastHeader).toBe('Answering')
+  const r = await $.command.run(lane('escalation'))
+  expect(askCount).toBe(1)
+  expect(lastQuestion).toBe(EXPECT_Q)
+  expect(lastHeader).toBe('Escalation')
   expect(askedOptions[0]).toEqual(['Allow', 'Cancel'])
-  expect(store.get('answering')).toEqual({ scope: 'all', asks: false, savedAt: T0 })
-  expect(r.text).toContain('Prompt answering: on for all lanes and leads; questions: yours.')
+  // Scope all for permission prompts and questions alike; `asks: false` stays for an older mod.
+  expect(store.get('answering')).toEqual(ESC_VALUE)
+  expect(r.text).toContain('Escalation: on for all lanes and leads; questions: answered for all lanes.')
   expect(r.text).toContain('Floor (never answered by an agent)')
-  expect(ledgerRows().map((x) => x.kind)).toEqual(['answering-on'])
-  expect(ledgerRows()[0].hash).toMatch(/^[0-9a-f]{64}$/)
-  expect((await $.command.run(lane('answering'))).text).toBe('Prompt answering: on for all lanes and leads; questions: yours.')
+  expect(rowKinds()).toEqual(['answering-on', 'answering-on asks'])
+  for (const row of ledgerRows()) expect(row.hash).toMatch(/^[0-9a-f]{64}$/)
+  expect(ledgerRows()[0].hash).toBe(ledgerRows()[1].hash)
+  expect((await $.command.run(lane('prompts'))).text).toContain('Escalation: on for all lanes and leads; questions: answered for all lanes.')
 })
-test('prompts: /callboard answering on X asks is the usage line, nothing asked or stored', async ($, on) => {
+test('prompts: the old /callboard answering command is gone: every form is the main usage line, nothing asked or stored', async ($, on) => {
   await started($, on, [])
   askAnswer = YES
-  const r = await $.command.run(lane('answering on svc-api asks'))
-  expect(r.text).toBe(prm.ANSWERING_USAGE)
+  for (const old of ['answering', 'answering on all', 'answering asks all', 'answering off', 'answering off asks']) {
+    const r = await $.command.run(lane(old))
+    expect(r.text).not.toMatch(/answering/i)
+    expect(r.text).toMatch(/^Use \/callboard /)
+  }
   expect(askCount).toBe(0)
   expect(store.has('answering')).toBe(false)
+  expect(ledgerRows()).toEqual([])
 })
-test('prompts: /callboard answering asks X: the person only, needs answering on, its own dialog, stores the asks scope and a row', async ($, on) => {
+test('prompts: /callboard escalation with anything after it but off gets the usage line, nothing asked or stored', async ($, on) => {
   await started($, on, [])
   askAnswer = YES
-  expect((await $.command.run(lane('answering asks all'))).text).toBe(prm.ASKS_NEEDS_ON)
+  for (const bad of ['escalation on', 'escalation on all', 'escalation all', 'escalation asks all', 'escalation off asks', 'escalation off all', 'escalation svc-api']) {
+    expect((await $.command.run(lane(bad))).text).toBe(prm.ESCALATION_USAGE)
+  }
   expect(askCount).toBe(0)
-  store.set('answering', { scope: 'all', asks: false, savedAt: T0 })
-  const r0 = await $.command.run(lane('answering asks svc-api', { kind: 'plugin' }))
-  expect(r0.text).toBe(prm.ANSWERING_NOT_PERSON)
-  expect(askCount).toBe(0)
-  const r = await $.command.run(lane('answering asks svc-api'))
-  expect(lastQuestion).toBe(prm.asksQuestion('svc-api'))
-  expect(store.get('answering')).toEqual({ scope: 'all', asks: false, asksScope: 'svc-api', savedAt: T0 })
-  expect(r.text).toContain('questions: answered for svc-api')
-  const rows = ledgerRows()
-  expect(rows.map((x) => x.kind)).toEqual(['answering-on'])
-  expect(rows[0].code).toBe('asks')
-  await $.command.run(lane('answering on all'))
-  expect((store.get('answering') as any).asksScope).toBeUndefined()
-  await $.command.run(lane('answering asks svc-api'))
-  await $.command.run(lane('answering off asks'))
-  expect(store.get('answering')).toEqual({ scope: 'all', asks: false, savedAt: T0 })
+  expect(store.has('answering')).toBe(false)
+  expect(ledgerRows()).toEqual([])
 })
-test('prompts: /callboard answering on: Cancel or a timeout stores nothing', async ($, on) => {
+test('prompts: /callboard escalation again writes a fresh value and both rows again', async ($, on) => {
+  await started($, on, [])
+  askAnswer = YES
+  store.set('answering', { scope: 'svc-api', asks: false, savedAt: T0 - 1 })
+  await $.command.run(lane('escalation'))
+  expect(store.get('answering')).toEqual(ESC_VALUE)
+  expect(rowKinds()).toEqual(['answering-on', 'answering-on asks'])
+})
+test('prompts: /callboard escalation: Cancel or a timeout stores nothing', async ($, on) => {
   await started($, on, [])
   askAnswer = NO
-  expect((await $.command.run(lane('answering on all'))).text).toBe('Cancelled. Nothing changed.')
+  expect((await $.command.run(lane('escalation'))).text).toBe('Cancelled. Nothing changed.')
   expect(store.has('answering')).toBe(false)
   expect(ledgerRows()).toEqual([])
 })
 for (const kind of ['plugin', 'peer', 'other']) {
-  test(`prompts: /callboard answering on from another origin (${kind}) is refused with no dialog and nothing stored`, async ($, on) => {
+  test(`prompts: /callboard escalation from another origin (${kind}) is refused with no dialog and nothing stored`, async ($, on) => {
     await started($, on, [])
     askAnswer = YES
-    const r = await $.command.run(lane('answering on all', { kind }))
-    expect(r.text).toBe(prm.ANSWERING_NOT_PERSON)
+    const r = await $.command.run(lane('escalation', { kind }))
+    expect(r.text).toBe(prm.ESCALATION_NOT_PERSON)
     expect(askCount).toBe(0)
     expect(store.has('answering')).toBe(false)
+    expect(ledgerRows()).toEqual([])
   })
 }
-test('prompts: /callboard answering off from any origin: no dialog, the stored switch is cleared, a row is written', async ($, on) => {
+test('prompts: /callboard escalation off from any origin: no dialog, everything stored is cleared (an old narrowed value too), a row is written', async ($, on) => {
   await started($, on, [])
-  store.set('answering', { scope: 'all', asks: true, savedAt: T0 })
-  const r = await $.command.run(lane('answering off', { kind: 'plugin' }))
-  expect(r.text).toBe('Prompt answering is off on this Mac.')
-  expect(askCount).toBe(0)
+  for (const old of [{ scope: 'all', asks: true, savedAt: T0 }, ESC_VALUE, { scope: 'svc-api', asks: false, asksScope: 'svc-api', savedAt: T0 }]) {
+    store.set('answering', old)
+    const r = await $.command.run(lane('escalation off', { kind: 'plugin' }))
+    expect(r.text).toBe('Escalation is off on this Mac.')
+    expect(askCount).toBe(0)
+    expect(store.has('answering')).toBe(false)
+  }
+  expect(rowKinds()).toEqual(['answering-off off', 'answering-off off', 'answering-off off'])
+})
+test('prompts: /callboard escalation: a ledger that cannot take its rows leaves nothing on, with no store value kept', async ($, on) => {
+  await started($, on, [])
+  askAnswer = YES
+  pfsFails = (a) => a[0] === '/usr/bin/tee' && a[1] === '-a'
+  const r = await $.command.run(lane('escalation'))
+  expect(r.text).toBe('Escalation could not be turned on: the ledger did not answer. Nothing changed.')
   expect(store.has('answering')).toBe(false)
-  expect(rowKinds()).toEqual(['answering-off off'])
 })
-test('prompts: /callboard answering off asks narrows only the questions flag', async ($, on) => {
+test('prompts: the state line reads a value an earlier version stored (a narrowed scope, the old asks flag) and names the OFF file', async ($, on) => {
   await started($, on, [])
-  store.set('answering', { scope: 'all', asks: true, savedAt: T0 })
-  await $.command.run(lane('answering off asks', { kind: 'plugin' }))
-  expect(store.get('answering')).toEqual({ scope: 'all', asks: false, savedAt: T0 })
-})
-test('prompts: /callboard answering with an unknown form gets the usage line, and the state line names the OFF file', async ($, on) => {
-  await started($, on, [])
-  for (const bad of ['answering on', 'answering enable', 'answering on a b']) expect((await $.command.run(lane(bad))).text).toBe(prm.ANSWERING_USAGE)
+  store.set('answering', { scope: 'svc-api', asks: false, asksScope: 'svc-api', savedAt: T0 })
+  expect((await $.command.run(lane('prompts'))).text).toContain('Escalation: on for svc-api; questions: answered for svc-api.')
+  store.set('answering', { scope: 'LEAD', asks: true, savedAt: T0 })
+  expect((await $.command.run(lane('prompts'))).text).toContain('Escalation: on for LEAD; questions: yours.')
   pfs.set(OFF_FILE, { text: '', mtimeSec: T0 / 1000 })
-  expect((await $.command.run(lane('answering'))).text).toContain('The OFF file exists')
+  expect((await $.command.run(lane('prompts'))).text).toContain('The OFF file exists')
 })
 test('prompts: /callboard prompts counts open requests', async ($, on) => {
   await started($, on, [])
@@ -15063,7 +15075,7 @@ test('prompts PR2: prompt_list is empty while answering is off, and says so', as
   await tier($, on, [], { off: true })
   putQ()
   const t = said(await $.tool.call(pcall('prompt_list')))
-  expect(t).toContain('Prompt answering is off on this Mac. Nothing is waiting for you.')
+  expect(t).toContain('Escalation is off on this Mac. Nothing is waiting for you.')
   expect(t).not.toContain(TID)
 })
 
@@ -16988,7 +17000,7 @@ test('prompts PR4 hook: a click with no abort ends a waiting question superseded
 })
 
 for (const [name, narrow] of [
-  ['off asks', async ($: any) => { store.set('answering', { scope: 'all', asks: false, savedAt: T0 }) }],
+  ['a value with no questions scope (an older one)', async ($: any) => { store.set('answering', { scope: 'all', asks: false, savedAt: T0 }) }],
   ['an asks scope narrowed to another lane', async ($: any) => { store.set('answering', { scope: 'all', asks: false, asksScope: 'other-lane', savedAt: T0 }) }],
   ['the OFF file', async ($: any) => { pfs.set(OFF_FILE, { text: '', mtimeSec: nowMs / 1000 }) }],
 ] as [string, ($: any) => Promise<void>][]) {
@@ -17005,6 +17017,48 @@ for (const [name, narrow] of [
     }
   })
 }
+
+// No per-lane command: the regular /callboard off in a lane's session takes that lane out, with the switch left on for the rest.
+test('prompts: /callboard off in a lane\'s session takes it out of escalation: its prompt and its question stay the person\'s, no request and no notice', async ($, on) => {
+  const argv: string[][] = []
+  await answerer($, on, [], { asksScope: 'all', argv })
+  // Control: while the session is a lane, a prompt is covered (a request is made and a lead answers it) and a question is too.
+  expect(await runRequest($, [at(4000, () => handDecision(readReq()))])).toEqual({ decision: { behavior: 'allow' } })
+  expect(rowKinds()).toEqual(['requested', 'answered allow', 'returned allow'])
+  prVerdict = QASK
+  const rq = await runRequest($, [at(4000, () => handDecision(readReq(), answerBy(0, '3000')))], QCALL.over, QCALL.check)
+  expect(rq).toMatchObject({ decision: { behavior: 'allow', updatedInput: { answers: { [QTEXT]: expect.stringContaining('3000') } } } })
+  expect(rowKinds()).toContain('returned answer')
+  const rowsBefore = ledgerRows().length
+  // The person takes the lane out; the stored switch is untouched, since it is the one switch for every lane.
+  await $.command.run(lane('off'))
+  expect(store.get('answering')).toMatchObject({ scope: 'all', asksScope: 'all' })
+  for (const [verdict, call] of [[{ decision: 'ask', rule: 'Bash(ssh:*)' }, { check: {}, over: {} }], [QASK, QCALL]] as [any, { check: object; over: object }][]) {
+    prVerdict = verdict
+    prBeneathCalls = 0
+    await askCheck($, call.check)
+    sessions = waitingRow(T0 + 500)
+    driveClock()
+    const before = argv.length
+    const r = await startReq($, call.over)
+    // The chain beneath answers as if escalation did not exist: nothing is raised, waited on, written or sent.
+    expect(r).toEqual({})
+    expect(prBeneathCalls).toBe(1)
+    expect(reqFiles().length).toBe(0)
+    expect(noFiles()).toBe(true)
+    expect(argv.slice(before).filter((a) => a.some((x) => typeof x === 'string' && x.includes('/prompts'))).length).toBe(0)
+  }
+  expect(ledgerRows().length).toBe(rowsBefore)
+})
+
+test('prompts: /callboard off in a lane\'s session during a wait ends it off: a decision made after is not applied', async ($, on) => {
+  await answerer($, on, [])
+  const r = await runRequest($, [at(4000, async () => { await $.command.run(lane('off')) }), at(6000, () => handDecision(readReq()))])
+  expect(r).toEqual({})
+  expect(rowKinds()).toEqual(['requested', 'off'])
+  expect(rowKinds()).not.toContain('returned allow')
+  expect(store.get('answering')).toMatchObject({ scope: 'all' })
+})
 
 longTest('prompts PR4 hook: no tier answers a question: no deny at 20 minutes, abandoned expired at 21, the chain beneath returns; a Bash request is still denied at 20', async ($, on) => {
   await answerer($, on, [], { verdict: QASK, asksScope: 'all' })
