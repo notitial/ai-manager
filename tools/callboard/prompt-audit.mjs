@@ -6,7 +6,7 @@
 // limit lives in the mod. Exit 0: no anomalies. 1: anomalies. 2: usage error, an unreadable root, or a ledger file that could
 // not be read (an audit that missed a ledger file proves nothing, so it never exits 0).
 //
-// The ledger rows it reads (prompts.ts, LedgerRow): { t, kind, code?, id?, lane?, repo?, tool?, pattern?, hash?, tier?, why?, nonce? }.
+// The ledger rows it reads (prompts.ts, LedgerRow): { t, kind, code?, id?, lane?, repo?, tool?, pattern?, hash?, tier?, why?, nonce?, opt?, lh? }.
 //   requested  id, nonce, lane, repo, tool, pattern, hash, tier     the hook asked a tier
 //   answered   id, nonce (the requested row's), code allow|deny, by (the answering lead's session id), tier, why, lane, repo, tool, pattern, hash
 //              a tier decided (written by prompt_answer)
@@ -18,6 +18,8 @@
 //   relay-lost id?, code (not-asked | gone | ...), short, by, tier   the relay did not reach the person; the request is open to the tiers again
 //   relay-left id, short, by, tier   the person dismissed or answered something else; relay-late short, by, code (closed | decided)   an answer after the request ended
 //   deny-unclear   a deny whose reason the cleaner-command rule found too vague to judge
+//   answered / returned rows of a question's answer carry code: "answer", opt (the chosen option's index, as a string) and lh (the first 16 hex of SHA-256(id + "\n" + label), the label redacted
+//              and trimmed); the labels themselves are in prompts/questions-YYYY-MM.jsonl, { t, id, lane, repo, tier, by, header, question, options, label, via? }
 //   answered / returned rows of the person's own answer carry via: "person", short and by = the relaying tier's session id (no prompt_answer call exists for them)
 //   floor <category>, not-judgeable, no-tier, escalated, floor-confirmed, floor-off, answering-on, answering-off   no request of their own
 //
@@ -31,6 +33,7 @@
 // record"); if a later engine stops writing the attachment, rule c goes quiet while that count rises, so read the count. A hook deny
 // is never flagged: it grants nothing.
 import { openSync, closeSync, readSync, fstatSync, lstatSync, readdirSync, realpathSync, constants } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { join, basename } from 'node:path'
 import { homedir } from 'node:os'
 import { pathToFileURL } from 'node:url'
@@ -53,13 +56,17 @@ export const JSON_NODES_MAX = 5000
 export const DAY_MS = 24 * 60 * 60 * 1000
 export const WINDOW_MS = 10 * 60 * 1000
 const LIST_MAX = 200
+const QUESTION_TOOL = 'AskUserQuestion'
+const QUESTION_DAYS = 90
+// The longest answer label the audit reads from a transcript (the mod caps a label at 200 bytes).
+const LABEL_MAX = 256
 
 const ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const KINDS = new Set(['requested', 'answered', 'escalated', 'dropped', 'returned', 'superseded', 'expired-denied', 'off', 'abandoned', 'floor', 'not-judgeable', 'no-tier', 'floor-confirmed', 'floor-off', 'answering-on', 'answering-off', 'relayed', 'relay-lost', 'relay-left', 'relay-late', 'deny-unclear'])
-const FIELDS = ['code', 'id', 'lane', 'repo', 'tool', 'pattern', 'hash', 'ctx', 'tier', 'why', 'nonce', 'tuid', 'by', 'via', 'short']
+const FIELDS = ['code', 'id', 'lane', 'repo', 'tool', 'pattern', 'hash', 'ctx', 'tier', 'why', 'nonce', 'tuid', 'by', 'via', 'short', 'opt', 'lh']
 const ENDS = new Set(['returned', 'superseded', 'expired-denied', 'off', 'abandoned'])
 // A `dropped` row with one of these codes is a decision the hook refused as forged or wrong: an anomaly. The others are ordinary.
-const DROP_ANOMALY = new Set(['no-answered-row', 'id', 'hash', 'nonce', 'by-sid'])
+const DROP_ANOMALY = new Set(['no-answered-row', 'id', 'hash', 'nonce', 'by-sid', 'kind', 'answer'])
 const DROP_FINE = new Set(['expired', 'ledger-unreadable', 'file', 'shape', 'floor'])
 
 // The small built-in floor check of rule d, best effort. A ledger row never holds arguments (patternOf keeps a command's first word,
@@ -218,8 +225,35 @@ function readLedger(root, entries, problems, notes) {
   return { rows, garbage, files }
 }
 
-function readQuestions(root, entries, since, problems) {
-  const out = { files: 0, count: 0, rows: [] }
+// One row of a questions file: { t, id, lane, repo, tier, by, header, question, options, label, via? }. Every string is cut; a row that is no JSON object is undefined.
+function parseQuestionRow(line) {
+  let j
+  try {
+    j = JSON.parse(line)
+  } catch {
+    return undefined
+  }
+  if (!j || typeof j !== 'object' || Array.isArray(j)) return undefined
+  const str = (v, n) => (typeof v === 'string' ? v.slice(0, n) : '')
+  const ms = typeof j.t === 'string' ? Date.parse(j.t) : NaN
+  return {
+    t: str(j.t, 40),
+    ms,
+    id: typeof j.id === 'string' && ID_RE.test(j.id) ? j.id : undefined,
+    lane: str(j.lane, 200),
+    tier: str(j.tier, 40),
+    by: str(j.by, 100),
+    via: str(j.via, 20),
+    header: str(j.header, 200),
+    question: str(j.question, 4096),
+    options: Array.isArray(j.options) ? j.options.filter((o) => typeof o === 'string').slice(0, 4).map((o) => o.slice(0, 200)) : [],
+    label: str(j.label, 500),
+  }
+}
+
+// `byId` indexes every parsed row by request id, with no cap and no --since cut, for the joins; `rows` (raw, cut) and `list` (parsed) keep the listing's own cap and the --since cut.
+function readQuestions(root, entries, since, problems, now) {
+  const out = { files: 0, count: 0, rows: [], list: [], unreadable: 0, old: 0, byId: new Map() }
   for (const d of entries.filter((x) => /^questions-\d{4}-\d{2}\.jsonl$/.test(x.name)).sort((a, b) => (a.name < b.name ? -1 : 1))) {
     if (!d.isFile()) {
       problems.push(`${d.name}: ${d.isSymbolicLink() ? 'a symlink' : 'not a regular file'}, not read`)
@@ -228,14 +262,15 @@ function readQuestions(root, entries, since, problems) {
     try {
       eachLine(join(root, d.name), { maxLine: LEDGER_LINE_MAX, maxFileBytes: LEDGER_MAX_BYTES }, (line) => {
         if (line.trim() === '') return
-        let ms
-        try {
-          const t = JSON.parse(line)?.t
-          ms = typeof t === 'string' ? Date.parse(t) : NaN
-        } catch {}
+        const q = parseQuestionRow(line)
+        const ms = q?.ms
+        if (q?.id !== undefined) out.byId.set(q.id, q)
+        if (q && Number.isFinite(ms) && now - ms > QUESTION_DAYS * DAY_MS) out.old++
         if (since !== undefined && Number.isFinite(ms) && ms < since) return
         out.count++
         if (out.rows.length < LIST_MAX) out.rows.push(line.length > 200 ? `${line.slice(0, 200)}...` : line)
+        if (!q) out.unreadable++
+        else if (out.list.length < LIST_MAX) out.list.push(q)
       })
       out.files++
     } catch (e) {
@@ -244,6 +279,9 @@ function readQuestions(root, entries, since, problems) {
   }
   return out
 }
+
+// The salted label hash the mod writes in `lh` (prompts.ts): the first 16 hex of SHA-256(id + "\n" + label).
+const labelHash = (id, label) => createHash('sha256').update(`${id}\n${label}`).digest('hex').slice(0, 16)
 
 // ---- transcripts (rule c) ----
 function findDecision(root0) {
@@ -324,6 +362,8 @@ function scanTranscripts(projects, since, notes, problems, budget, lineMax) {
   const relayAsks = new Map()
   // Every relay question as the tier asked it, with the answer it got (for the list the person reads, plan section 4).
   const relayQs = []
+  // The relay questions (session id + "\n" + short) whose answer was only in the result's text and holds a quote that cuts it short: not verifiable.
+  const relayUnreadable = new Set()
   const sessions = new Set()
   let longUnmarked = 0
   let scanned = 0
@@ -402,10 +442,22 @@ function scanTranscripts(projects, since, notes, problems, budget, lineMax) {
             const text = typeof b.content === 'string' ? b.content : Array.isArray(b.content) ? b.content.map((x) => (typeof x?.text === 'string' ? x.text : '')).join('\n') : ''
             for (const ask of asks) {
               let label
-              if (ans && typeof ans === 'object' && Object.prototype.hasOwnProperty.call(ans, ask.question) && typeof ans[ask.question] === 'string') label = ans[ask.question].slice(0, 100)
+              if (ans && typeof ans === 'object' && Object.prototype.hasOwnProperty.call(ans, ask.question) && typeof ans[ask.question] === 'string') label = ans[ask.question].slice(0, LABEL_MAX)
               else if (!ans && ask.question !== '') {
                 const at = text.indexOf(`"${ask.question}"="`)
-                if (at !== -1) label = /^[^"]{0,100}/.exec(text.slice(at + ask.question.length + 4))?.[0]
+                if (at !== -1) {
+                  // The text form is `"<question>"="<label>"`, with a quote inside a label left as it is, so the cut at the first quote is the label only when what follows it
+                  // is the closing quote of the pair (end of text, `.` or `,`); otherwise the label cannot be read from here (P-Q6 c).
+                  const rest = text.slice(at + ask.question.length + 4)
+                  const cutLabel = new RegExp(`^[^"]{0,${LABEL_MAX}}`).exec(rest)?.[0] ?? ''
+                  if (rest[cutLabel.length] === '"' && !/^"(?:$|[.,])/.test(rest.slice(cutLabel.length))) {
+                    relayUnreadable.add(`${ask.sid}\n${ask.short}`)
+                    const rec0 = relayQs.find((x) => x.sid === ask.sid && x.short === ask.short && x.question === ask.question && x.label === undefined)
+                    if (rec0) rec0.label = '(not readable from the result text)'
+                    continue
+                  }
+                  label = cutLabel
+                }
               }
               if (label !== undefined) relayAsks.get(ask.sid)?.get(ask.short)?.push(label)
               const rec = relayQs.find((x) => x.sid === ask.sid && x.short === ask.short && x.question === ask.question && x.label === undefined)
@@ -450,7 +502,7 @@ function scanTranscripts(projects, since, notes, problems, budget, lineMax) {
     }
   }
   if (longUnmarked > 0) notes.push(`transcripts: ${longUnmarked} line(s) over ${lineMax} bytes held no permission-decision text and were streamed past unparsed`)
-  return { decisions, scanned, filesFound: files.length, answerCalls, relayAsks, relayQs, sessions }
+  return { decisions, scanned, filesFound: files.length, answerCalls, relayAsks, relayQs, relayUnreadable, sessions }
 }
 
 // ---- stats ----
@@ -481,7 +533,8 @@ export function audit({ root, projects, since, now = Date.now(), projectsExplici
     throw new AuditError(`cannot list the prompts folder: ${e.code ?? e.message}`)
   }
   const { rows, files: ledgerFiles } = readLedger(rootReal, entries, problems, notes)
-  const questions = readQuestions(rootReal, entries, since, problems)
+  const questions = readQuestions(rootReal, entries, since, problems, now)
+  const qById = questions.byId
   const inRange = (ms) => since === undefined || ms >= since
 
   // Group by request id.
@@ -509,6 +562,7 @@ export function audit({ root, projects, since, now = Date.now(), projectsExplici
   const table = []
   const waits = []
 
+  const onOff = rows.filter((r) => r.kind === 'answering-on' || r.kind === 'answering-off')
   for (const g of groups) {
     const req = g.requested[0]
     const ret = g.returned[0]
@@ -545,6 +599,8 @@ export function audit({ root, projects, since, now = Date.now(), projectsExplici
       const ref = (before.length > 0 ? before : g.answered)[(before.length > 0 ? before : g.answered).length - 1]
       if (ret.code !== undefined && ref.code !== undefined && ret.code !== ref.code) flag('a', 'returned-differs-from-answered', `request ${g.id}: returned ${ret.code} but the answered row says ${ref.code}`, { id: g.id, t: ret.t })
       else if (ret.by !== undefined && ref.by !== undefined && ret.by !== ref.by) flag('a', 'returned-differs-from-answered', `request ${g.id}: the returned row's author differs from the answered row's`, { id: g.id, t: ret.t })
+      // A returned question answer must carry the option and label hash of the answer (both rows carry both).
+      if (ret.code === 'answer' && ref.code === 'answer' && (ret.opt !== ref.opt || ret.lh !== ref.lh)) flag('q', 'q-returned-differs', `request ${g.id}: the returned answer's option or label hash differs from the answered row's`, { id: g.id, t: ret.t })
     }
     for (const a of g.answered) {
       if (!req) flag('a', 'answered-without-requested', `request ${g.id} has an answered row and no requested row`, { id: g.id, t: a.t })
@@ -552,6 +608,22 @@ export function audit({ root, projects, since, now = Date.now(), projectsExplici
     }
     for (const d of g.dropped) {
       if (DROP_ANOMALY.has(d.code)) flag('a', `dropped-${d.code}`, `request ${g.id}: the hook refused a decision (${d.code})`, { id: g.id, t: d.t })
+    }
+    // Questions (PR 4). The tool is the request's own (the first row that names one when the requested row is missing); `answer` belongs to an AskUserQuestion only, and a question is never decided allow or deny.
+    const qTool = req?.tool ?? g.rows.find((r) => r.tool !== undefined)?.tool
+    for (const r of g.rows) {
+      const decided = r.kind === 'answered' || r.kind === 'returned'
+      if (decided && r.code === 'answer' && qTool !== QUESTION_TOOL) flag('q', 'q-answer-not-question', `request ${g.id} (${qTool ?? 'tool unknown'}): the ${r.kind} row (${r.t}) is an answer, but the request is not an ${QUESTION_TOOL}`, { id: g.id, t: r.t })
+      if (qTool === QUESTION_TOOL && ((decided && (r.code === 'allow' || r.code === 'deny')) || r.kind === 'expired-denied')) flag('q', 'q-decided-question', `request ${g.id}: an ${r.kind} row (${r.t}${r.code ? `, ${r.code}` : ''}) decides a question with allow or deny; a question is only ever answered`, { id: g.id, t: r.t })
+    }
+    // A question's request needs an `answering-on` row with code asks still in force: a later plain `answering-on` (an `on Y` clears the questions scope) or any `answering-off` ends it.
+    if (req && qTool === QUESTION_TOOL) {
+      let asksOn = false
+      for (const r of onOff) {
+        if (r.ms > req.ms) break
+        asksOn = r.kind === 'answering-on' && r.code === 'asks'
+      }
+      if (!asksOn) flag('q', 'q-no-asks-on', `request ${g.id} (a question) was asked with no answering-on row (code asks) still in force`, { id: g.id, t: req.t })
     }
     // Tiers (PR 3). A tier that passed the request up (an `escalated` row, code = its level) does not answer it afterwards; a request taken to the person (`relayed`) is decided by the person, and
     // an agent's answer after it counts only if a relay-lost row came first (the relay never reached the person, so the tiers had it again).
@@ -655,7 +727,7 @@ export function audit({ root, projects, since, now = Date.now(), projectsExplici
   //  - A returned row without `tuid` (an older ledger) backs the nearest decision within 10 minutes with the same tool (the tool named by
   //    the tool_use block of the same tool_use_id in the same file; when that block is not seen, any tool). The ledger holds no session id.
   // Decisions are taken in time order, so the result does not depend on file order.
-  let tx = { decisions: [], scanned: 0, filesFound: 0, answerCalls: new Map(), relayAsks: new Map(), relayQs: [], sessions: new Set() }
+  let tx = { decisions: [], scanned: 0, filesFound: 0, answerCalls: new Map(), relayAsks: new Map(), relayQs: [], relayUnreadable: new Set(), sessions: new Set() }
   let txRan = false
   if (projects !== undefined) {
     try {
@@ -674,7 +746,9 @@ export function audit({ root, projects, since, now = Date.now(), projectsExplici
   const returnedRows = rows.filter((r) => r.kind === 'returned')
   const used = new Set()
   const backing = (d, want, consume) => {
-    const codeOk = (r) => want === undefined || r.code === want
+    // A question's `returned answer` row backs a hook allow, but only when the request's tool is AskUserQuestion: the 10-minute fallback must not pair it with another tool's allow.
+    const questionAnswer = (r) => r.code === 'answer' && (byId.get(r.id)?.requested[0]?.tool ?? r.tool) === QUESTION_TOOL
+    const codeOk = (r) => want === undefined || r.code === want || (want === 'allow' && questionAnswer(r))
     let hit
     if (d.toolUseId !== undefined) hit = returnedRows.find((r) => r.tuid === d.toolUseId && !used.has(r) && codeOk(r))
     if (!hit) {
@@ -725,7 +799,8 @@ export function audit({ root, projects, since, now = Date.now(), projectsExplici
           missingLead.add(a.by)
           continue
         }
-        // The person's own answer (via person) is not a prompt_answer call: the relaying tier's transcript must hold the `Relay <short>` question, answered Yes (allow) or No (deny).
+        // The person's own answer (via person) is not a prompt_answer call: the relaying tier's transcript must hold the `Relay <short>` question, answered Yes (allow) or No (deny),
+        // or, for a question (code answer), answered with a label whose salted hash is the row's `lh`.
         if (a.via === 'person') {
           // The short id is the request's own (its first eight characters), never the row's say-so.
           const short = a.id.slice(0, 8)
@@ -733,6 +808,14 @@ export function audit({ root, projects, since, now = Date.now(), projectsExplici
           const rel = g.relayed.find((x) => x.ms <= a.ms && x.by === a.by && (x.short ?? short) === short)
           if (!rel) flag('c', 'person-answer-without-relayed-row', `request ${g.id}: the answered row (${a.t}) is the person's, but no relayed row of tier session ${a.by} with that short id came before it`, { id: g.id, t: a.t })
           const labels = tx.relayAsks.get(a.by)?.get(short)
+          if (a.code === 'answer') {
+            // Each answer read from the transcript is trimmed and hashed as it is: the tier copied the label from prompt_list, already redacted; a `<` or an invisible character in it is listed as an escape (\\u003c, \\ufe0f, \\u{e0001}), so the unescaped form is tried too.
+            const unescape = (t) => t.replace(/\\u\{([0-9a-f]+)\}|\\u([0-9a-f]{4})/gi, (m, big, small) => { const n = parseInt(big ?? small, 16); return n <= 0x10ffff ? String.fromCodePoint(n) : m })
+            if (a.lh !== undefined && labels?.some((l) => labelHash(g.id, l.trim()) === a.lh || labelHash(g.id, unescape(l.trim())) === a.lh)) continue
+            if (a.lh !== undefined && tx.relayUnreadable.has(`${a.by}\n${short}`)) notes.push(`question-label-unverifiable: request ${g.id}: the person's pick through tier session ${a.by} could not be read from the result text (a quote in the label, and no structured answers), so its label hash was not checked`)
+            else flag('c', 'person-answer-without-relay-question', `request ${g.id}: the answered row (${a.t}) is the person's pick through tier session ${a.by}, whose transcript holds no "Relay ${short}" question answered with a label that matches the row's label hash`, { id: g.id, t: a.t })
+            continue
+          }
           const want = a.code === 'allow' ? 'Yes' : a.code === 'deny' ? 'No' : undefined
           if (!labels || want === undefined || !labels.includes(want)) flag('c', 'person-answer-without-relay-question', `request ${g.id}: the answered row (${a.t}) is the person's ${a.code ?? '?'} through tier session ${a.by}, whose transcript holds no "Relay ${short}" question answered ${want ?? '?'}`, { id: g.id, t: a.t })
           continue
@@ -741,6 +824,19 @@ export function audit({ root, projects, since, now = Date.now(), projectsExplici
       }
     }
     for (const sidMissing of missingLead) problems.push(`transcripts: the transcript of lead session ${sidMissing} was not found, so its answered rows were not checked against a prompt_answer call`)
+  }
+
+  // Question notes (not anomalies).
+  const noQuestionRow = groups.filter((g) => g.returned[0]?.code === 'answer' && !qById.has(g.id)).length
+  if (noQuestionRow > 0) notes.push(`${noQuestionRow} returned question answer(s) have no questions row (a failed write, or the row was pruned)`)
+  if (questions.old > 0) notes.push(`${questions.old} questions row(s) are older than ${QUESTION_DAYS} days (the prune is behind)`)
+  const notJudged = {}
+  for (const r of rows) if (r.kind === 'not-judgeable' && /^question(-|$)/.test(r.code ?? '') && inRange(r.ms)) notJudged[r.code] = (notJudged[r.code] ?? 0) + 1
+  if (Object.keys(notJudged).length > 0) notes.push(`not-judgeable question rows by code: ${Object.entries(notJudged).sort().map(([c, n]) => `${c} ${n}`).join(', ')}`)
+  if (txRan) {
+    const hooked = new Set(tx.decisions.filter((d) => d.source === 'hook' && d.toolUseId !== undefined).map((d) => d.toolUseId))
+    const noHook = groups.filter((g) => g.returned[0]?.code === 'answer' && g.returned[0].tuid !== undefined && !hooked.has(g.returned[0].tuid)).length
+    if (noHook > 0) notes.push(`${noHook} returned question answer(s) have a tool_use id with no hook decision in the transcripts read (the card closed first: a lost race)`)
   }
 
   anomalies.sort((x, y) => (x.rule < y.rule ? -1 : x.rule > y.rule ? 1 : 0))
@@ -783,7 +879,8 @@ export function audit({ root, projects, since, now = Date.now(), projectsExplici
       const short = g.id.slice(0, 8)
       const qs = tx.relayQs.filter((x) => x.sid === r.by && x.short === short)
       const req = g.requested[0] ?? g.rows[0]
-      relayedList.push({ id: g.id, t: r.t, tier: r.code ?? '', tool: req.tool ?? '', pattern: req.pattern ?? '', questions: qs.length > 0 ? qs.map((x) => ({ question: x.question.slice(0, 400), answer: x.label ?? '(none)' })) : [{ question: '(transcript not read)', answer: '' }] })
+      const lq = qById.get(g.id)
+      relayedList.push({ id: g.id, t: r.t, tier: r.code ?? '', tool: req.tool ?? '', pattern: req.pattern ?? '', laneQuestion: lq ? { header: lq.header, question: lq.question.slice(0, 400), options: lq.options } : undefined, questions: qs.length > 0 ? qs.map((x) => ({ question: x.question.slice(0, 400), answer: x.label ?? '(none)' })) : [{ question: '(transcript not read)', answer: '' }] })
     }
   }
   const personAnswers = rows.filter((r) => r.kind === 'answered' && r.via === 'person' && inRange(r.ms)).length
@@ -806,7 +903,7 @@ export function audit({ root, projects, since, now = Date.now(), projectsExplici
       hookAllowsOtherEvent: hookAllowOther,
     },
     counts: { byTier: group('tier'), byTool: group('tool'), rowsByKind: kinds, wait: waitStats(waits.map((w) => w.age)) },
-    questions,
+    questions: { files: questions.files, count: questions.count, rows: questions.rows, list: questions.list, unreadable: questions.unreadable },
     problems,
     notes,
   }
@@ -855,6 +952,7 @@ export function render(rep) {
     out.push('', 'RELAYED QUESTIONS (as the tier put them to the person; read them: a tier\'s summary is its own)')
     for (const r of n.relayedQuestions) {
       out.push(`  ${r.t} ${r.id.slice(0, 8)} ${r.tier} ${r.tool} ${r.pattern}`)
+      if (r.laneQuestion) out.push(`    the lane asked: ${r.laneQuestion.header ? `[${r.laneQuestion.header}] ` : ''}${r.laneQuestion.question.replace(/\s+/g, ' ')}${r.laneQuestion.options.length > 0 ? ` (options: ${r.laneQuestion.options.join(' | ')})` : ''}`)
       for (const x of r.questions) out.push(`    ${x.question.replace(/\s+/g, ' ')}${x.answer ? ` -> ${x.answer}` : ''}`)
     }
     out.push('')
@@ -872,8 +970,12 @@ export function render(rep) {
   }
   out.push(`rows by kind: ${Object.entries(c.rowsByKind).sort().map(([k, v]) => `${k} ${v}`).join(', ') || '(none)'}`)
   if (rep.questions.files > 0 || rep.questions.count > 0) {
-    out.push('', `QUESTIONS: ${rep.questions.count} row(s) in ${rep.questions.files} file(s) (raw, truncated)`)
-    for (const r of rep.questions.rows) out.push(`  ${r}`)
+    out.push('', `QUESTIONS: ${rep.questions.count} row(s) in ${rep.questions.files} file(s)`)
+    if (rep.questions.list.length > 0) {
+      const head = ['time', 'lane', 'tier', 'header', 'question', 'label']
+      out.push(...pad([head, ...rep.questions.list.map((q) => [q.t.replace(/\.\d+Z$/, 'Z'), cut(q.lane, 14), q.via === 'person' ? `person via ${q.tier}` : q.tier, cut(q.header, 20), cut(q.question.replace(/\s+/g, ' '), 200), cut(q.label.replace(/\s+/g, ' '), 60)])]).map((l) => `  ${l}`))
+    }
+    if (rep.questions.unreadable > 0) out.push(`  (${rep.questions.unreadable} row(s) were not valid JSON objects)`)
   }
   if (rep.problems.length > 0) out.push('', 'PROBLEMS (the audit is incomplete)', ...rep.problems.map((p) => `  ${p}`))
   if (rep.notes.length > 0) out.push('', 'NOTES', ...rep.notes.map((p) => `  ${p}`))

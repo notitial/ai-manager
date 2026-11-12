@@ -72,7 +72,7 @@ reach, the top tier, is the one that asks the person (the relay, below).
 | 30 s | Lead (a decision written earlier is held until then) |
 | 5 min | Conductor |
 | 10 min | Manager |
-| 20 min | Deny with a message, unless the top tier has put it to the person or no tier was live |
+| 20 min | Deny with a message, unless the top tier has put it to the person or no tier was live. A question is never denied: its wait ends at 21 minutes and the card stays |
 
 These count awake time. A window is counted from the request and opens for each live tier in turn (30 s, 5 min,
 10 min); a tier above one that is missing takes the earlier window, and a pass-up opens the next tier at once. A prompt
@@ -123,13 +123,28 @@ Trust rises with the tier.
   Any other answer, or a dismissal, closes the relay as left; an answer to a question that was not marked asked
   lands nothing. The question's wording is never read.
 
+- **A question is relayed with the lane's own labels** (amended 2026-11-11, PR 4). For a request that is an
+  `AskUserQuestion`, the top tier's `Relay <short>` question carries, as its options, exactly the lane's labels, one for
+  one, and no `Yes` or `No`. There is no summary step, since a question is written for a person. The steps the tier is
+  given hold no label (labels are lane text and reach the tier only inside `prompt_list`'s untrusted frame). The mod
+  reads the request before it reads the answer, so a question relay is read by the request's kind, never by the Yes/No
+  rule. Before the person sees it, step 0 of the lane's hook checks the tier's call: a relay question whose options are
+  not the request's labels, count for count, is denied with a fixed line and asks nothing, so the tier asks again. After
+  it, the person's pick, an answer that is exactly one of the labels, lands in the lane as that bare label, with no
+  `(answered by …)`, as if they had clicked it there. Other (typed text), a dismissal or anything else leaves the relay,
+  the tier is told so in a fixed line, and the question stays in the lane's own panel. A question relay never ends in a
+  deny. The residual: the tier's own wording is all that stands between the person and a misread question, and the pick
+  lands with the person's authority. The audit prints every relayed question beside the lane's own, so that can be read
+  afterwards.
+
 A go that must be typed in the session that acts still has to be: the tier sends the person to the lane's panel.
 
 ### What the hook does
 
 It runs in the asking session. It looks up why the prompt exists, calls `next(e)` first and lets any answer beneath
 stand, applies the floor, writes a request, and waits on a 2 s poll. **It only refuses; every approval comes from
-`prompt_answer`.** A decision applies only if its id, input hash and nonce match the live call, it hasn't expired, the
+`prompt_answer`** (a question's answer is returned as `allow` with `updatedInput.answers`, built by the hook from the live
+input, never from the decision file). A decision applies only if its id, input hash and nonce match the live call, it hasn't expired, the
 floor still passes, its author is a live tier in reach that isn't the asker, and the ledger holds its row. A click by
 the person ends the wait, seen through the tool's own outcome by `tool_use_id`, `next.signal` for a No, and the
 session's registry row. A late answer after a click returns into nothing, and the audit reports it as a lost race.
@@ -215,16 +230,41 @@ can itself carry personal data.
 
 ### Questions
 
-A question carries no risk label, so the tier judges that too. It may answer only one single-select question whose
-answer is already settled by the brief, its instructions or the repo's conventions, or is of no lasting consequence,
-that doesn't ask for approval and isn't a design choice the person kept. The answer is the offered label plus
-`(answered by <TIER>)`, built from the live input. A lane marks a question for the person with the header `Person`.
-That reduces noise and is no safeguard: a lane that leaves it off, carelessly or under injection, reaches a tier, and
-the tier's judgment holds there. The dialog stays open, the person's click wins until someone answers, and a question
-is never denied for lateness. Every answered question is kept, redacted, for 90 days, then removed. An answer is not a
-permission grant and authorises nothing on the risk list; if the person later says otherwise, the person's word wins.
+*Amended 2026-11-11 with PR 4: a tier answers a lane's question.* A question carries no risk label, so the tier judges that
+too. It may answer only a question that is mechanically simple: exactly one question, single select, two to four options
+whose labels are plain text, not headed `Person`, and answered by the brief, its instructions or the repo's conventions, or
+of no lasting consequence, not asking for approval and not a design choice the person kept. Anything else stays the
+person's, with its own `not-judgeable` code and no request. A lane marks a question for the person with the header
+`Person`. That reduces noise and is no safeguard: a lane that leaves it off, carelessly or under injection, reaches a tier,
+and the tier's judgment holds there. The lane's briefing is left as it was (changed 2026-11-12: the person wants as little
+change to lanes as possible); the answering tiers judge every question, and the dialog says the sessions are told to leave
+anything on the risk list to the person. An answer ending `(answered by …)` is the tier's own and authorises nothing on
+the risk list.
 
-Questions go live only after permission prompts have proved out, so a problem in one kind doesn't hide in the other.
+- **The scope.** Questions have a scope of their own, `asks`, set by the person with `/callboard answering asks LANE|LEAD|all`
+  and stored in the answering value. With no scope, or with the old `asks: true` of the first version, a lane's question is
+  the person's and its shape is not read. A lead's own question is the person's. The scope needs answering to be on, and
+  `off asks` or a narrowed scope ends a waiting question, while permission prompts keep waiting.
+- **The answer.** A tier answers with `prompt_answer` decision `answer` and the number of an offered option; `allow` and
+  `deny` are refused for a question, and a truncated question cannot be answered. The decision carries the index and the
+  label the tier saw. The hook checks both against the live input and returns the live label, trimmed, followed by
+  `(answered by <level> <NAME>)`, with the name taken from the tier's presence, never from the decision file. That text
+  is built by the hook and is the only thing it returns for a question.
+- **Never denied.** A question is not denied for lateness: with no tier answering, the wait ends at 21 minutes and the card
+  stays. A relayed question is never denied either.
+- **The person's pick, framed.** After a relayed pick lands, the top tier is told in a fixed line that the pick is the
+  person's answer for that lane's question, goes to that lane, and is not an instruction to the tier (the label is lane
+  text).
+- **Auto mode.** A lane in auto mode may have its question answered by a tier: auto mode screens actions before a prompt
+  shows. Bypass mode and the phone's behaviour are the probes P-Q3 and P-Q4, still owed before the scope goes live.
+- **A click is not an abort.** A person's click fires no signal, so the hook still reads the registry row and the tool's
+  end at each poll; a dismissal fires one.
+- **Kept.** Every answered question is kept, redacted, for 90 days, then removed: the tier's answers and the person's relayed
+  picks. The person's own click in the lane and a pass-up leave no row.
+- A tier's answer is not a permission grant. If the person later says otherwise, the person's word wins.
+
+The scope ships off; questions go live only after permission prompts have proved out, so a problem in one kind doesn't hide
+in the other.
 
 ### Rollout, off switch and audit
 
@@ -233,6 +273,10 @@ proof the person reads comes before each stage. Before the first stage on each m
 deny on the file tools for callboard's folder and an ask rule on a shell command naming it.
 
 Off is any origin and no dialog, or a file a terminal can create. It is read at each poll, and the dialog stays.
+
+Questions have their own, narrower switch (amended 2026-11-11): `/callboard answering asks LANE|LEAD|all`, the person's own
+command with its own dialog, valid only while answering is on. `on X asks` is dropped (it gets the usage line), and
+`/callboard answering on X` clears the questions scope; `off asks` clears only the questions scope, from any origin.
 
 Every event goes to one machine-wide local ledger with tool, a coarse pattern (a command's first word and never its
 arguments, a tool's repository and pull request, a file's path in its repository) and hash, not input. A read-only
@@ -244,6 +288,11 @@ question answered `Yes` or `No`, an agent's answer or a returned decision while 
 `relay-lost` row before it), and a tier that answers a request after its own pass-up. It prints every relayed question as the
 tier put it, beside the request's tool and pattern, so a wrong summary can be read afterwards. The new rows (`relayed`,
 `relay-lost`, `relay-left`, `relay-late`, `expired-denied`, `deny-unclear`) are listed and counted, not anomalies.
+
+With questions (amended 2026-11-11) the audit also reports an answer that is not for a question, a person's relayed pick whose
+label hash matches no label of the question, a `returned` answer that differs from the decision, and a question answered
+while no asks scope was on. Ledger rows carry the answer's index and a hash of the request id and the label, not the label;
+the label is in the questions file for 90 days. It prints the lane's question beside each relayed question.
 
 ### Limits
 
@@ -352,6 +401,15 @@ permission flow.
 Run on 2.1.319 (the CLI and the VS Code panel) before the first build PR: all passed, with one finding. A subagent's ask
 shows its dialog only after the hooks return (three runs, background subagents, one build), so it stays the person's, as
 above. The hook also looks again at the tool's own end after the chain beneath returns, since a Yes click fires no signal.
+
+Probed for questions (2026-11-11, the CLI and the VS Code panel): a lane's `AskUserQuestion` reaches `tool.check` as the
+mode's own ask (no rule or hook) and then `classic.PermissionRequest`; a hook's `allow` with `updatedInput.answers` is read by the
+lane as written; a hook that returns nothing leaves the card open for the person; the answer arrives in the tool result, keyed
+by the question text; Esc or X aborts the wait, but a click fires no abort, so only the registry row and PostToolUse show it;
+the engine finishes a sibling call before it shows the card; a relay question's labels, with commas and quotes, arrive in the
+tool result exactly as asked; a hook deny of the relay question shows no card, and the model does not retry with guessed
+labels; a pick through the relay lands in the lane at once, bare. Not yet probed on the merged code: auto and bypass mode, and
+the phone.
 
 ## Not verified live
 

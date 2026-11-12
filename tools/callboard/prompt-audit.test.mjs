@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, readdirSync, lstatSync, readFileSync, utimesSync, truncateSync, rmSync, chmodSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { audit, render, eachLine, floorShape, percentile, LEDGER_MAX_BYTES } from './prompt-audit.mjs'
@@ -43,11 +44,11 @@ const rules = (rep) => rep.anomalies.map((a) => a.code).sort()
 
 // A transcript with one tool_use and its result line carrying the decision, in the shape Claude Code writes it.
 // `permReq` writes the attachment line the engine adds for a PermissionRequest hook's decision (before or after the result line).
-function transcript(fx, name, { at, source = 'hook', decision = 'accept', tool = 'mcp__github__add_issue_comment', nested = false, useId = 'toolu_01', permReq = source === 'hook', attAfter = false, attEvent = 'PermissionRequest', reasonCode }) {
+function transcript(fx, name, { at, source = 'hook', decision = 'accept', tool = 'mcp__github__add_issue_comment', nested = false, useId = 'toolu_01', permReq = source === 'hook', attAfter = false, attEvent = 'PermissionRequest', reasonCode, pdExtra = {} }) {
   const dir = join(fx.projects, '-Users-x-api')
   mkdirSync(dir, { recursive: true })
   const use = { type: 'assistant', sessionId: SID, timestamp: iso(at - 1000), message: { content: [{ type: 'tool_use', id: useId, name: tool, input: {} }] } }
-  const pd = { decision, source, reasonType: 'hook', ...(reasonCode ? { reasonCode } : {}) }
+  const pd = { decision, source, reasonType: 'hook', ...(reasonCode ? { reasonCode } : {}), ...pdExtra }
   const res = nested
     ? { type: 'user', sessionId: SID, timestamp: iso(at), message: { content: [{ type: 'tool_result', tool_use_id: useId }] }, toolUseResult: { permissionDecision: pd } }
     : { type: 'user', sessionId: SID, timestamp: iso(at), message: { content: [{ type: 'tool_result', tool_use_id: useId }] }, permissionDecision: pd }
@@ -107,7 +108,7 @@ test('a: an answered row with no requested row, and one later than the return, a
 
 test('a: dropped rows with a forgery code are anomalies, the ordinary codes are not', () => {
   const fx = fixture()
-  const bad = ['no-answered-row', 'id', 'hash', 'nonce', 'by-sid']
+  const bad = ['no-answered-row', 'id', 'hash', 'nonce', 'by-sid', 'kind', 'answer']
   const fine = ['expired', 'ledger-unreadable', 'file', 'shape', 'floor']
   const rows = [ON()]
   bad.forEach((code, i) => rows.push(R('requested', BASE + i, { ...T, id: uid(10 + i), nonce: uid(110 + i), tier: 'lead' }), R('dropped', BASE + 1000 + i, { ...T, id: uid(10 + i), code }), R('abandoned', BASE + 2000 + i, { id: uid(10 + i), code: 'swept' })))
@@ -661,10 +662,10 @@ test('review: a transcript folder that cannot be listed is a problem', () => {
 // ---- live test A fixes ----
 const LEAD = 'bbbbbbbb-0000-4000-8000-123456789abc'
 // The lead's own transcript: one assistant line per prompt_answer call, as Claude Code writes a tool_use block.
-function leadTranscript(fx, sid, calls, name = 'mcp__callboard__prompt_answer') {
+function leadTranscript(fx, sid, calls, name = 'mcp__callboard__prompt_answer', decision = 'allow') {
   const dir = join(fx.projects, '-Users-x-lead')
   mkdirSync(dir, { recursive: true })
-  writeFileSync(join(dir, `${sid}.jsonl`), lines(calls.map((id, i) => ({ type: 'assistant', sessionId: sid, timestamp: iso(BASE + 30_000 + i), message: { content: [{ type: 'tool_use', id: `toolu_${i}`, name, input: { id, decision: 'allow', why: 'reads only' } }] } }))))
+  writeFileSync(join(dir, `${sid}.jsonl`), lines(calls.map((id, i) => ({ type: 'assistant', sessionId: sid, timestamp: iso(BASE + 30_000 + i), message: { content: [{ type: 'tool_use', id: `toolu_${i}`, name, input: { id, decision, why: 'reads only' } }] } }))))
 }
 test('finding 3: an answered row by a lead needs a prompt_answer call for its id in that lead\'s transcript', () => {
   const fx = fixture()
@@ -883,4 +884,273 @@ test('tiers: the relayed questions are listed with the request\'s tool and patte
   assert.match(text, /RELAYED QUESTIONS/)
   assert.match(text, /Allow it\? -> Yes/)
   assert.match(text, /mcp__github__add_issue_comment/)
+})
+
+// ---- questions (PR 4) ----
+const lhOf = (id, label) => createHash('sha256').update(`${id}\n${label}`).digest('hex').slice(0, 16)
+const QT = { lane: 'api', repo: '/Users/x/api', tool: 'AskUserQuestion', pattern: 'AskUserQuestion', hash: H('q') }
+// The `answering-on` row of `/callboard answering asks <scope>`; it comes after the plain ON() row so that it is the one in force.
+const ASKS = (at = BASE - 50_000) => R('answering-on', at, { code: 'asks', hash: H('8') })
+// A tier's answer to a question: requested, answered, returned (code answer, with opt and the salted label hash).
+function qClean({ id = uid(1), at = BASE, nonce = uid(101), label = 'Green', by, tuid, tier = 'lead' } = {}) {
+  const f = { ...QT, id, tier, code: 'answer', opt: '1', lh: lhOf(id, label), why: 'settled by the brief', ...(by ? { by } : {}) }
+  return [R('requested', at, { ...QT, id, nonce, tier }), R('answered', at + 40_000, { ...f, nonce }), R('returned', at + 45_000, { ...f, ...(tuid ? { tuid } : {}) })]
+}
+// The person's pick through a tier's relay: requested, relayed, answered and returned via person.
+function qPerson({ id = uid(1), at = BASE, label = 'Green', lh = lhOf(id, label.trim()), by = MGR } = {}) {
+  const short = id.slice(0, 8)
+  const f = { ...QT, id, tier: 'manager', code: 'answer', opt: '1', lh, why: 'the person picked option 2', by, via: 'person', short }
+  return [
+    R('requested', at, { ...QT, id, nonce: uid(101), tier: 'lead' }),
+    R('relayed', at + 20_000, { ...QT, id, nonce: uid(101), code: 'manager', short, by }),
+    R('answered', at + 40_000, { ...f, nonce: uid(101) }),
+    R('returned', at + 45_000, f),
+  ]
+}
+const qrow = (extra = {}) => ({ t: iso(BASE), id: uid(1), lane: 'api', repo: '/Users/x/api', tier: 'lead', by: LEAD, header: 'Color', question: 'Which color?', options: ['Red', 'Green'], label: 'Green', ...extra })
+const qfile = (fx, rows, ms = BASE) => writeFileSync(join(fx.root, `questions-${month(ms)}.jsonl`), lines(rows))
+
+test('questions: a person\'s pick of a 150-character label is found in the relaying tier\'s transcript (structured and text form)', () => {
+  const fx = fixture()
+  const label = 'x'.repeat(150)
+  ledger(fx, [ON(), ASKS(), ...qPerson({ label })])
+  relayTranscript(fx, MGR, { answer: label })
+  assert.deepEqual(run(fx).anomalies, [])
+  relayTranscript(fx, MGR, { answer: label, viaText: true })
+  const rep = run(fx)
+  assert.deepEqual(rep.anomalies, [])
+  assert.deepEqual(rep.notes.filter((n) => /unverifiable/.test(n)), [])
+  // A label of 256 characters is read whole; the old cut of 100 would have missed it.
+  const long = 'y'.repeat(256)
+  ledger(fx, [ON(), ASKS(), ...qPerson({ label: long })])
+  relayTranscript(fx, MGR, { answer: long })
+  assert.deepEqual(run(fx).anomalies, [])
+})
+test('questions: a wrong or missing lh is an anomaly, also when the answer is read from the result text', () => {
+  const fx = fixture()
+  relayTranscript(fx, MGR, { answer: 'Green' })
+  ledger(fx, [ON(), ASKS(), ...qPerson({ lh: lhOf(uid(1), 'Blue') })])
+  assert.deepEqual(rules(run(fx)), ['person-answer-without-relay-question'])
+  relayTranscript(fx, MGR, { answer: 'Green', viaText: true })
+  assert.deepEqual(rules(run(fx)), ['person-answer-without-relay-question'])
+  // The hash is salted with the request id: the hash of the bare label does not match.
+  ledger(fx, [ON(), ASKS(), ...qPerson({ lh: createHash('sha256').update('Green').digest('hex').slice(0, 16) })])
+  assert.deepEqual(rules(run(fx)), ['person-answer-without-relay-question'])
+  ledger(fx, [ON(), ASKS(), ...qPerson().map((r) => (r.lh === undefined ? r : { ...r, lh: undefined }))])
+  assert.deepEqual(rules(run(fx)), ['person-answer-without-relay-question'])
+  ledger(fx, [ON(), ASKS(), ...qPerson()])
+  assert.deepEqual(run(fx).anomalies, [])
+})
+test('questions: an answer with surrounding spaces matches the lh of its trimmed label', () => {
+  const fx = fixture()
+  ledger(fx, [ON(), ASKS(), ...qPerson({ label: 'Green' })])
+  relayTranscript(fx, MGR, { answer: '  Green \t' })
+  assert.deepEqual(run(fx).anomalies, [])
+  // An lh over the untrimmed text is the mod's contract broken: it does not match.
+  ledger(fx, [ON(), ASKS(), ...qPerson({ lh: lhOf(uid(1), '  Green \t') })])
+  assert.deepEqual(rules(run(fx)), ['person-answer-without-relay-question'])
+})
+test('questions: a label holding < is hashed raw by the mod, and found whether the tier copied it raw or in the listed \\u003c form', () => {
+  const fx = fixture()
+  const label = 'List<String>'
+  ledger(fx, [ON(), ASKS(), ...qPerson({ label })])
+  relayTranscript(fx, MGR, { answer: label })
+  assert.deepEqual(run(fx).anomalies, [])
+  relayTranscript(fx, MGR, { answer: 'List\\u003cString>' })
+  assert.deepEqual(run(fx).anomalies, [])
+})
+test('questions: a label holding an invisible character is hashed raw by the mod, and found when the tier copied it in the listed \\uXXXX form', () => {
+  const fx = fixture()
+  const label = 'Ship \u2764\ufe0f now'
+  ledger(fx, [ON(), ASKS(), ...qPerson({ label })])
+  relayTranscript(fx, MGR, { answer: 'Ship \u2764\\ufe0f now' })
+  assert.deepEqual(run(fx).anomalies, [])
+})
+test('questions: a label holding a quote with no structured answers is a note, not an anomaly; with the structured answers it is checked', () => {
+  const fx = fixture()
+  const label = 'Say "hi"'
+  ledger(fx, [ON(), ASKS(), ...qPerson({ label })])
+  relayTranscript(fx, MGR, { answer: label, viaText: true })
+  let rep = run(fx)
+  assert.deepEqual(rep.anomalies, [])
+  assert.ok(rep.notes.some((n) => /^question-label-unverifiable: request /.test(n) && n.includes(uid(1))), rep.notes.join('|'))
+  assert.match(render(rep), /not readable from the result text/)
+  relayTranscript(fx, MGR, { answer: label })
+  rep = run(fx)
+  assert.deepEqual(rep.anomalies, [])
+  assert.deepEqual(rep.notes.filter((n) => /unverifiable/.test(n)), [])
+  // The structured form says another label: an anomaly, whatever the quote.
+  relayTranscript(fx, MGR, { answer: 'Plain' })
+  assert.deepEqual(rules(run(fx)), ['person-answer-without-relay-question'])
+  // A plain wrong label in the text form is no note either: only a cut that stops at a quote which does not close the pair is unreadable.
+  ledger(fx, [ON(), ASKS(), ...qPerson({ label: 'Green' })])
+  relayTranscript(fx, MGR, { answer: 'Blue', viaText: true })
+  assert.deepEqual(rules(run(fx)), ['person-answer-without-relay-question'])
+})
+test('questions: one call with a Yes/No relay and a question relay: each answer is read by its own rule', () => {
+  const fx = fixture()
+  const ID2 = '10000000-0000-4000-8000-000000000002'
+  const S2 = ID2.slice(0, 8)
+  const pairs = [{ short: SHORT, question: `[${SHORT}] Allow A?`, answer: 'Yes' }, { short: S2, question: `[${S2}] Lane api asks: which color?`, answer: 'Green' }]
+  ledger(fx, [ON(), ASKS(), ...personRows(), ...qPerson({ id: ID2, at: BASE + 1000, label: 'Green' })])
+  relayTranscript2(fx, MGR, pairs)
+  const rep = run(fx)
+  assert.deepEqual(rep.anomalies, [])
+  assert.deepEqual(rep.problems, [])
+  // The question's pick forged as another label: only that request is flagged.
+  ledger(fx, [ON(), ASKS(), ...personRows(), ...qPerson({ id: ID2, at: BASE + 1000, label: 'Blue' })])
+  const bad = run(fx)
+  assert.deepEqual(rules(bad), ['person-answer-without-relay-question'])
+  assert.equal(bad.anomalies[0].id, ID2)
+  // The Yes/No relay's allow does not accept the question's label, and the question does not accept a Yes.
+  relayTranscript2(fx, MGR, [{ ...pairs[0], answer: 'Green' }, { ...pairs[1], answer: 'Yes' }])
+  ledger(fx, [ON(), ASKS(), ...personRows(), ...qPerson({ id: ID2, at: BASE + 1000, label: 'Green' })])
+  assert.deepEqual(rules(run(fx)), ['person-answer-without-relay-question', 'person-answer-without-relay-question'])
+})
+test('questions: a code answer row backs a hook allow of an AskUserQuestion, by tuid and in the no-tuid window; the lead\'s prompt_answer call is still needed (rule c2)', () => {
+  const fx = fixture()
+  // A transcript shaped like what the probe captured: the hook's answer has source hook, reasonCode unknown and a hook_permission_decision attachment.
+  for (const tuid of ['toolu_01', undefined]) {
+    ledger(fx, [ON(), ASKS(), ...qClean({ by: LEAD, tuid })])
+    leadTranscript(fx, LEAD, [uid(1)], undefined, 'answer')
+    transcript(fx, SID, { at: BASE + 45_000, tool: 'AskUserQuestion', reasonCode: 'unknown' })
+    const rep = run(fx)
+    assert.deepEqual(rep.anomalies, [], String(tuid))
+    assert.deepEqual(rep.problems, [], String(tuid))
+    assert.equal(rep.notAnomalies.hookDecisionsBacked, 1, String(tuid))
+    assert.deepEqual(rep.notes.filter((n) => /no hook decision/.test(n)), [], String(tuid))
+  }
+  leadTranscript(fx, LEAD, [uid(2)], undefined, 'answer')
+  assert.deepEqual(rules(run(fx)), ['answered-without-prompt-answer'])
+})
+test('questions: a code answer row is not backed by another tool\'s allow in the no-tuid window, and not for a request that is not a question', () => {
+  const fx = fixture()
+  // The row is an answer to a question, the transcript's allow is a Bash call in the window: it stays unbacked.
+  ledger(fx, [ON(), ASKS(), ...qClean()])
+  transcript(fx, SID, { at: BASE + 45_000, tool: 'Bash', reasonCode: 'unknown' })
+  assert.deepEqual(rules(run(fx)), ['hook-decision-unmatched'])
+  // The row is an answer on a Bash request: it backs nothing, and it is an anomaly of its own.
+  const bash = clean(uid(1), BASE, uid(101), { tool: 'Bash', pattern: 'Bash git', hash: H('b') }).map((r) => (r.kind === 'requested' ? r : { ...r, code: 'answer', opt: '0', lh: lhOf(uid(1), 'Green') }))
+  ledger(fx, [ON(), ASKS(), ...bash])
+  transcript(fx, SID, { at: BASE + 45_000, tool: 'Bash', reasonCode: 'unknown' })
+  const rep = run(fx)
+  assert.deepEqual(rules(rep), ['hook-decision-unmatched', 'q-answer-not-question', 'q-answer-not-question'])
+  assert.equal(rep.notAnomalies.hookDecisionsBacked, 0)
+  // A returned allow still backs a Bash allow as before.
+  ledger(fx, [ON(), ...clean(uid(1), BASE, uid(101), { tool: 'Bash', pattern: 'Bash git', hash: H('b') })])
+  assert.deepEqual(run(fx).anomalies, [])
+})
+test('questions: a click on the card is a lost race with a note, not an anomaly', () => {
+  const fx = fixture()
+  ledger(fx, [ON(), ASKS(), ...qClean({ tuid: 'toolu_01' })])
+  transcript(fx, SID, { at: BASE + 50_000, source: 'user_temporary', tool: 'AskUserQuestion', pdExtra: { grantScope: 'once' } })
+  const rep = run(fx)
+  assert.deepEqual(rep.anomalies, [])
+  assert.equal(rep.notAnomalies.lostRaces.length, 1)
+  assert.ok(rep.notes.some((n) => /1 returned question answer\(s\) have a tool_use id with no hook decision/.test(n)), rep.notes.join('|'))
+})
+test('questions: q-no-asks-on: an asks row in force is needed; a later plain on, any off, or none at all is an anomaly', () => {
+  const fx = fixture()
+  const q = qClean()
+  // `asks LANE`, then `on Y` (clears the questions scope), then a question request.
+  ledger(fx, [ON(BASE - 120_000), ASKS(BASE - 90_000), ON(BASE - 60_000), ...q])
+  const rep = run(fx)
+  assert.deepEqual(rules(rep), ['q-no-asks-on'])
+  assert.equal(rep.anomalies[0].id, uid(1))
+  assert.equal(rep.anomalies[0].rule, 'q')
+  ledger(fx, [ON(BASE - 120_000), ASKS(BASE - 90_000), R('answering-off', BASE - 60_000, { code: 'asks' }), ...q])
+  assert.deepEqual(rules(run(fx)), ['q-no-asks-on'])
+  ledger(fx, [ON(BASE - 120_000), ...q])
+  assert.deepEqual(rules(run(fx)), ['q-no-asks-on'])
+  // asks on, then asks widened, then the question: in force. An `on Y` after the question changes nothing.
+  ledger(fx, [ON(BASE - 120_000), ASKS(BASE - 90_000), ASKS(BASE - 60_000), ...q, ON(BASE + 60_000)])
+  assert.deepEqual(run(fx).anomalies, [])
+  // Permission requests need no asks row.
+  ledger(fx, [ON(), ...clean()])
+  assert.deepEqual(run(fx).anomalies, [])
+})
+test('questions: q-answer-not-question and q-decided-question', () => {
+  const fx = fixture()
+  const bash = clean(uid(2), BASE, uid(102)).map((r) => (r.kind === 'requested' ? r : { ...r, code: 'answer', opt: '0', lh: lhOf(uid(2), 'Green') }))
+  ledger(fx, [ON(), ASKS(), ...bash])
+  let rep = run(fx)
+  assert.deepEqual(rules(rep), ['q-answer-not-question', 'q-answer-not-question'])
+  assert.equal(rep.anomalies[0].id, uid(2))
+  // A question decided allow or deny, in an answered row, a returned row or an expired-denied row.
+  const decided = clean(uid(3), BASE, uid(103), { tool: 'AskUserQuestion', pattern: 'AskUserQuestion', hash: H('q') })
+  const expired = [R('requested', BASE + 1000, { ...QT, id: uid(4), nonce: uid(104), tier: 'lead' }), R('expired-denied', BASE + 2000, { ...QT, id: uid(4), code: 'timeout' })]
+  ledger(fx, [ON(), ASKS(), ...decided, ...expired])
+  rep = run(fx)
+  assert.deepEqual(rules(rep), ['q-decided-question', 'q-decided-question', 'q-decided-question'])
+  assert.deepEqual([...new Set(rep.anomalies.map((a) => a.id))].sort(), [uid(3), uid(4)])
+  // A question answered properly, with the same shape, has none of them.
+  ledger(fx, [ON(), ASKS(), ...qClean()])
+  assert.deepEqual(run(fx).anomalies, [])
+})
+test('questions: q-returned-differs: the returned answer must carry the answered row\'s option and label hash', () => {
+  const fx = fixture()
+  const rows = (ret) => {
+    const r = qClean()
+    r[2] = { ...r[2], ...ret }
+    return [ON(), ASKS(), ...r]
+  }
+  ledger(fx, rows({}))
+  assert.deepEqual(run(fx).anomalies, [])
+  ledger(fx, rows({ opt: '0' }))
+  assert.deepEqual(rules(run(fx)), ['q-returned-differs'])
+  ledger(fx, rows({ lh: lhOf(uid(1), 'Red') }))
+  assert.deepEqual(rules(run(fx)), ['q-returned-differs'])
+  ledger(fx, rows({ lh: undefined }))
+  assert.deepEqual(rules(run(fx)), ['q-returned-differs'])
+})
+test('questions: the opt and lh fields are read, and a non-string one drops the row like any other', () => {
+  const fx = fixture()
+  const r = qClean()
+  ledger(fx, [ON(), ASKS(), ...r, JSON.stringify({ ...r[2], opt: 1 })])
+  const rep = run(fx)
+  assert.deepEqual(rep.anomalies, [])
+  assert.match(rep.notes.join('\n'), /1 ledger line\(s\) were not valid rows/)
+})
+test('questions: the notes: no questions row, a row past 90 days, not-judgeable counts, and the QUESTIONS table', () => {
+  const fx = fixture()
+  ledger(fx, [ON(), ASKS(), ...qClean(), R('not-judgeable', BASE + 100, { ...QT, code: 'question-scope' }), R('not-judgeable', BASE + 200, { ...QT, code: 'question-scope' }), R('not-judgeable', BASE + 300, { ...QT, code: 'question-multi' }), R('not-judgeable', BASE + 400, { ...T, code: 'no-check' })])
+  let rep = run(fx)
+  assert.deepEqual(rep.anomalies, [])
+  assert.ok(rep.notes.includes('1 returned question answer(s) have no questions row (a failed write, or the row was pruned)'), rep.notes.join('|'))
+  assert.ok(rep.notes.includes('not-judgeable question rows by code: question-multi 1, question-scope 2'), rep.notes.join('|'))
+  assert.equal(rep.notes.some((n) => /older than 90 days/.test(n)), false)
+  const old = BASE - 100 * 86400_000
+  qfile(fx, [qrow({ t: iso(BASE) }), qrow({ t: iso(old), id: uid(9), question: 'An old one?' }), qrow({ t: iso(BASE), id: uid(8), tier: 'manager', via: 'person', question: 'q'.repeat(300), header: 'Name', label: 'Beta' }), 'junk'])
+  rep = run(fx)
+  assert.equal(rep.notes.some((n) => /no questions row/.test(n)), false)
+  assert.ok(rep.notes.includes('1 questions row(s) are older than 90 days (the prune is behind)'), rep.notes.join('|'))
+  assert.equal(rep.questions.count, 4)
+  assert.equal(rep.questions.list.length, 3)
+  assert.equal(rep.questions.unreadable, 1)
+  const text = render(rep)
+  assert.match(text, /QUESTIONS: 4 row\(s\) in 1 file\(s\)/)
+  assert.match(text, /time\s+lane\s+tier\s+header\s+question\s+label/)
+  assert.match(text, /api\s+lead\s+Color\s+Which color\?\s+Green/)
+  assert.match(text, /api\s+person via manager\s+Name\s+q{150,}~?\s+Beta/)
+  assert.doesNotMatch(text, /q{201}/)
+  assert.match(text, /1 row\(s\) were not valid JSON objects/)
+  // --since keeps the old row out of the listing, but the note still counts it.
+  rep = run(fx, { since: BASE - 3600_000 })
+  assert.equal(rep.questions.list.length, 2)
+  assert.ok(rep.notes.some((n) => /1 questions row\(s\) are older than 90 days/.test(n)))
+})
+test('questions: a relayed question is listed with the lane\'s own question, found by id with no cap on the file', () => {
+  const fx = fixture()
+  ledger(fx, [ON(), ASKS(), ...qPerson({ label: 'Green' })])
+  relayTranscript(fx, MGR, { answer: 'Green' })
+  // 250 earlier rows: the listing keeps 200, the join finds the row at the end all the same.
+  const filler = Array.from({ length: 250 }, (_, i) => qrow({ t: iso(BASE - 1000 + i), id: `20000000-0000-4000-8000-${String(i).padStart(12, '0')}`, question: `Filler ${i}?` }))
+  qfile(fx, [...filler, qrow({ tier: 'manager', via: 'person', question: 'Which color should the page use?', header: 'Color' })])
+  const rep = run(fx)
+  assert.equal(rep.questions.count, 251)
+  assert.equal(rep.questions.list.length, 200)
+  assert.deepEqual(rep.anomalies, [])
+  assert.equal(rep.notes.some((n) => /no questions row/.test(n)), false)
+  assert.equal(rep.notAnomalies.relayedQuestions[0].laneQuestion.question, 'Which color should the page use?')
+  assert.match(render(rep), /the lane asked: \[Color\] Which color should the page use\? \(options: Red \| Green\)/)
 })
