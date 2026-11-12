@@ -1,4 +1,4 @@
-# 6. Callboard's module layout: one hooks module, split into files by area
+# 5. Callboard's module layout: one hooks module, split into files by area
 
 **Status:** proposed
 **Date:** 2026-11-12
