@@ -513,6 +513,402 @@ function waitStats(values) {
 }
 
 // ---- the audit ----
+// What the rules share: the grouped rows and the lists they add to. Built once in audit().
+// (ctx: { rows, groups, byId, qById, inRange, flag, notes, problems, now, onOff, table, waits, lostRaces, abandoned, dropsFine })
+
+// The relayed row of g before ms that the request was still with the person after (no relay-lost row between it and ms), or undefined.
+const withPerson = (g, ms) => {
+  const rel = g.relayed.find((x) => x.ms < ms)
+  return rel && !g.relayLost.some((l) => l.ms > rel.ms && l.ms <= ms) ? rel : undefined
+}
+
+// The row that names the request: its requested row, else its last answered row, its returned row or its first row.
+const metaOf = (g) => g.requested[0] ?? g.answered[g.answered.length - 1] ?? g.returned[0] ?? g.rows[0]
+
+// One request's line of the table, and its wait.
+function tableRow(g, { table, waits }) {
+  const req = g.requested[0]
+  const ret = g.returned[0]
+  const ans = g.answered[g.answered.length - 1]
+  const esc = g.escalated[g.escalated.length - 1]
+  const first = g.rows[0]
+  const meta = metaOf(g)
+  const end = ret ?? g.ends.find((r) => r.kind !== 'abandoned') ?? g.ends[g.ends.length - 1]
+  const outcome = end ? (end.kind === 'abandoned' ? `abandoned ${end.code ?? ''}`.trim() : end.kind) : 'open'
+  const decision = ret ? (ret.code ?? '-') : ans ? `answered:${ans.code ?? '-'}` : esc ? 'escalated' : '-'
+  const age = ret && req ? (ret.ms - req.ms) / 1000 : undefined
+  table.push({
+    t: (req ?? first).t,
+    id: g.id,
+    lane: meta.lane ?? '',
+    tool: meta.tool ?? '',
+    pattern: meta.pattern ?? '',
+    hash8: (meta.hash ?? '').slice(0, 8),
+    tier: ret?.tier ?? ans?.tier ?? req?.tier ?? esc?.tier ?? '',
+    decision,
+    why: ret?.why ?? ans?.why ?? esc?.why ?? '',
+    age,
+    outcome,
+  })
+  if (age !== undefined && age >= 0) waits.push({ tier: ret.tier ?? req.tier ?? '', tool: meta.tool ?? '', age })
+}
+
+// a. a decision with no log row, and decisions the hook refused as forged.
+function ruleDecisions(g, { flag }) {
+  const req = g.requested[0]
+  const ret = g.returned[0]
+  if (g.requested.length > 1 && new Set(g.requested.map((r) => r.nonce)).size > 1) flag('a', 'requested-twice', `request ${g.id} has ${g.requested.length} requested rows with different nonces`, { id: g.id })
+  if (ret && g.answered.length === 0) flag('a', 'returned-without-answered', `request ${g.id} was returned (${ret.code ?? '?'}) with no answered row`, { id: g.id, t: ret.t })
+  if (ret && g.answered.length > 0 && g.answered[0].ms > ret.ms) flag('a', 'answered-after-returned', `request ${g.id}: the answered row (${g.answered[0].t}) is later than the returned row (${ret.t})`, { id: g.id, t: ret.t })
+  // What the hook returned must be what the tier answered: the same decision, by the same lead (each checked only when both rows carry it).
+  if (ret && g.answered.length > 0) {
+    const before = g.answered.filter((r) => r.ms <= ret.ms)
+    const pool = before.length > 0 ? before : g.answered
+    const ref = pool[pool.length - 1]
+    if (ret.code !== undefined && ref.code !== undefined && ret.code !== ref.code) flag('a', 'returned-differs-from-answered', `request ${g.id}: returned ${ret.code} but the answered row says ${ref.code}`, { id: g.id, t: ret.t })
+    else if (ret.by !== undefined && ref.by !== undefined && ret.by !== ref.by) flag('a', 'returned-differs-from-answered', `request ${g.id}: the returned row's author differs from the answered row's`, { id: g.id, t: ret.t })
+    // A returned question answer must carry the option and label hash of the answer (both rows carry both).
+    if (ret.code === 'answer' && ref.code === 'answer' && (ret.opt !== ref.opt || ret.lh !== ref.lh)) flag('q', 'q-returned-differs', `request ${g.id}: the returned answer's option or label hash differs from the answered row's`, { id: g.id, t: ret.t })
+  }
+  for (const a of g.answered) {
+    if (!req) flag('a', 'answered-without-requested', `request ${g.id} has an answered row and no requested row`, { id: g.id, t: a.t })
+    else if (a.nonce !== req.nonce) flag('a', 'answered-nonce-mismatch', `request ${g.id}: the answered row's nonce differs from the requested row's`, { id: g.id, t: a.t })
+  }
+  for (const d of g.dropped) {
+    if (DROP_ANOMALY.has(d.code)) flag('a', `dropped-${d.code}`, `request ${g.id}: the hook refused a decision (${d.code})`, { id: g.id, t: d.t })
+  }
+}
+
+function ruleQuestions(g, { flag, onOff }) {
+  const req = g.requested[0]
+  // Questions. The tool is the request's own (the first row that names one when the requested row is missing); `answer` belongs to an AskUserQuestion only, and a question is never decided allow or deny.
+  const qTool = req?.tool ?? g.rows.find((r) => r.tool !== undefined)?.tool
+  for (const r of g.rows) {
+    const decided = r.kind === 'answered' || r.kind === 'returned'
+    if (decided && r.code === 'answer' && qTool !== QUESTION_TOOL) flag('q', 'q-answer-not-question', `request ${g.id} (${qTool ?? 'tool unknown'}): the ${r.kind} row (${r.t}) is an answer, but the request is not an ${QUESTION_TOOL}`, { id: g.id, t: r.t })
+    if (qTool === QUESTION_TOOL && ((decided && (r.code === 'allow' || r.code === 'deny')) || r.kind === 'expired-denied')) flag('q', 'q-decided-question', `request ${g.id}: an ${r.kind} row (${r.t}${r.code ? `, ${r.code}` : ''}) decides a question with allow or deny; a question is only ever answered`, { id: g.id, t: r.t })
+  }
+  // A question's request needs an `answering-on` row with code asks still in force: a later plain `answering-on` (a value written without the questions scope) or any `answering-off` ends it; `/callboard escalation` writes the plain row and then the asks row.
+  if (req && qTool === QUESTION_TOOL) {
+    let asksOn = false
+    for (const r of onOff) {
+      if (r.ms > req.ms) break
+      asksOn = r.kind === 'answering-on' && r.code === 'asks'
+    }
+    if (!asksOn) flag('q', 'q-no-asks-on', `request ${g.id} (a question) was asked with no answering-on row (code asks) still in force`, { id: g.id, t: req.t })
+  }
+}
+
+function ruleTiers(g, { flag }) {
+  // Tiers. A tier that passed the request up (an `escalated` row, code = its level) does not answer it afterwards; a request taken to the person (`relayed`) is decided by the person, and
+  // an agent's answer after it counts only if a relay-lost row came first (the relay never reached the person, so the tiers had it again).
+  for (const a of g.answered) {
+    if (a.via === 'person') continue
+    const passed = g.escalated.find((e) => e.code !== undefined && e.code === a.tier && e.ms < a.ms)
+    if (passed) flag('a', 'answered-after-own-pass-up', `request ${g.id}: tier ${a.tier} answered at ${a.t} after it had passed the request up at ${passed.t}`, { id: g.id, t: a.t })
+    const rel = withPerson(g, a.ms)
+    if (rel) flag('a', 'answered-while-relayed', `request ${g.id}: an agent answered at ${a.t} while the request was with the person (relayed at ${rel.t}, no relay-lost row)`, { id: g.id, t: a.t })
+  }
+  for (const r of g.ends.filter((x) => x.kind === 'returned')) {
+    if (r.via === 'person') continue
+    const rel = withPerson(g, r.ms)
+    if (rel) flag('a', 'returned-while-relayed', `request ${g.id}: a decision not the person's was returned at ${r.t} while the request was with the person (relayed at ${rel.t}, no relay-lost row)`, { id: g.id, t: r.t })
+  }
+}
+
+// b. a request nothing ended, older than 24 h.
+function ruleUnended(g, { flag, now }) {
+  const req = g.requested[0]
+  if (req && g.ends.length === 0 && now - req.ms > DAY_MS) flag('b', 'request-unended', `request ${g.id} (${req.tool ?? '?'}) has no ending row after ${Math.floor((now - req.ms) / 3600000)} h`, { id: g.id, t: req.t })
+}
+
+// The two benign shapes, and the ordinary `dropped` rows.
+function noteBenign(g, { abandoned, lostRaces, dropsFine }) {
+  const ret = g.returned[0]
+  const meta = metaOf(g)
+  for (const r of g.ends.filter((x) => x.kind === 'abandoned')) abandoned.push({ id: g.id, t: r.t, code: r.code ?? '', tool: meta.tool ?? '' })
+  if (ret && g.ends.some((r) => r.kind === 'superseded')) lostRaces.push({ id: g.id, t: ret.t, via: 'ledger', detail: 'a returned row and a superseded row for one request' })
+  for (const d of g.dropped) if (!DROP_ANOMALY.has(d.code)) dropsFine.push({ id: g.id, t: d.t, code: d.code ?? '' })
+}
+
+// d. the floor.
+function ruleFloor({ rows, groups, flag, notes }) {
+  let floorCtxUnknown = 0
+  const floorRows = rows.filter((r) => r.kind === 'floor' && r.hash !== undefined && r.tool !== undefined)
+  for (const g of groups) {
+    const probe = g.rows.find((r) => (r.kind === 'requested' || r.kind === 'answered' || r.kind === 'returned') && r.tool !== undefined)
+    if (!probe) continue
+    const touched = g.requested.length > 0 || g.answered.length > 0
+    if (!touched) continue
+    const hit = probe.hash !== undefined ? floorRows.find((f) => f.tool === probe.tool && f.hash === probe.hash && Math.abs(f.ms - probe.ms) <= DAY_MS) : undefined
+    // The floor reads the branch, the push config and the folder as well as the input: the same input is floored under one and asked under another. Both rows
+    // record a hash of that context; the same input in the same context is the anomaly. A row without one (written before it was recorded) is only a note.
+    if (hit && hit.ctx !== undefined && probe.ctx !== undefined) {
+      if (hit.ctx === probe.ctx) flag('d', 'floor-row-then-asked', `request ${g.id} (${probe.tool}) shares its tool, input hash and floor context with a floor row (${hit.code ?? '?'}) within 24 h`, { id: g.id, t: probe.t })
+    } else if (hit) floorCtxUnknown++
+    const shape = floorShape(probe.tool, probe.pattern ?? '')
+    if (shape) flag('d', 'floor-shape-asked', `request ${g.id} was asked of an agent but looks like a floor item (${shape})`, { id: g.id, t: probe.t })
+  }
+
+  if (floorCtxUnknown > 0) notes.push(`${floorCtxUnknown} request(s) share a tool and input hash with a floor row that recorded no floor context; not counted as anomalies (the branch or config may differ)`)
+}
+
+// e. a request must be raised while answering is on: the latest answering-on or answering-off row at its time says on (not the first answering-on row ever written, which a later off outlives).
+// An answering-off with code asks only turned the questions off (an earlier mod wrote it); permission answering stayed on.
+// The hook reads the switch once at its start and writes the requested row after slower steps, so an off typed in between reads on, off, requested, and the waiting hook then
+// closes the request with an `off` row. That is no defect: the request was raised under on. It is not flagged when the off row is at most OFF_RACE_MS before the requested row and
+// the request's own last row is an `off` row.
+function ruleAnsweringOn({ groups, onOff, flag }) {
+  const OFF_RACE_MS = 120_000
+  const offRace = (g, req, off) => req.ms - off.ms <= OFF_RACE_MS && g.rows[g.rows.length - 1]?.kind === 'off'
+  const permOnOff = onOff.filter((r) => !(r.kind === 'answering-off' && r.code === 'asks'))
+  for (const g of groups) {
+    const req = g.requested[0]
+    if (!req) continue
+    let state
+    for (const r of permOnOff) {
+      // Rows are in (ms, seq) order: a row written in the same millisecond but after the request's does not count for it.
+      if (r.ms > req.ms || (r.ms === req.ms && r.seq > req.seq)) break
+      state = r
+    }
+    if (!state) flag('e', 'requested-before-answering-on', `request ${g.id} was asked with no answering-on row before it`, { id: g.id, t: req.t })
+    else if (state.kind === 'answering-off' && !offRace(g, req, state)) flag('e', 'requested-while-answering-off', `request ${g.id} was asked while answering was off (the latest answering row before it is an answering-off at ${state.t})`, { id: g.id, t: req.t })
+  }
+}
+
+// f. request files older than 24 h, by age only (the live-session test is not applied here).
+function ruleStaleRequestFiles({ flag, now }, rootReal, entries) {
+  let requestFiles = 0
+  const requestIds = new Set()
+  let sessionDirs = 0
+  let unlisted = 0
+  for (const d of entries) {
+    if (!d.isDirectory() || !ID_RE.test(d.name)) continue
+    sessionDirs++
+    let inner
+    try {
+      inner = list(join(rootReal, d.name))
+    } catch {
+      unlisted++
+      continue
+    }
+    for (const f of inner) {
+      if (!f.isFile() || !/^[0-9a-f-]{36}\.request\.json$/.test(f.name)) continue
+      let st
+      try {
+        st = lstatSync(join(rootReal, d.name, f.name))
+      } catch {
+        continue
+      }
+      requestFiles++
+      requestIds.add(f.name.slice(0, 36))
+      if (st.isFile() && now - st.mtimeMs > DAY_MS) flag('f', 'stale-request-file', `${d.name}/${f.name} is ${Math.floor((now - st.mtimeMs) / 3600000)} h old`, { id: f.name.slice(0, 36) })
+    }
+  }
+  return { requestFiles, requestIds, sessionDirs, unlisted }
+}
+
+// b2. a request with no ending row whose request file is gone: the hook (or a sweep) removed the files without a closing row. The mod writes the row first and keeps the
+// files until it has, so this is a fault. Only judged when the folder holds session folders at all: a copy of the ledger alone shows no files, and absence says nothing there.
+// A folder that could not be listed hides its request files: the check is not run then, and the run says so.
+function ruleClosedWithoutRow({ groups, flag, table, problems, now }, { requestIds, sessionDirs, unlisted }) {
+  if (unlisted > 0) problems.push(`${unlisted} session folder(s) under the prompts folder could not be listed; requests closed without a row were not checked`)
+  if (sessionDirs > 0 && unlisted === 0) {
+    for (const g of groups) {
+      const req = g.requested[0]
+      if (req && g.ends.length === 0 && !requestIds.has(g.id) && now - req.ms > CLOSE_GRACE_MS && now - req.ms <= DAY_MS) {
+        flag('b', 'request-closed-without-row', `request ${g.id} (${req.tool ?? '?'}) has no ending row and no request file ${Math.floor((now - req.ms) / 60000)} min on`, { id: g.id, t: req.t })
+        const row = table.find((t) => t.id === g.id)
+        if (row && row.outcome === 'open') row.outcome = 'closed-no-row'
+      }
+    }
+  }
+}
+
+// Reads the transcripts (rule c's input), once, in time order.
+function loadTranscripts({ projects, projectsExplicit, since, notes, problems, transcriptBudget, transcriptLineMax }) {
+  let tx = { decisions: [], scanned: 0, filesFound: 0, answerCalls: new Map(), relayAsks: new Map(), relayQs: [], relayUnreadable: new Set(), sessions: new Set() }
+  let txRan = false
+  if (projects !== undefined) {
+    try {
+      // The folder may itself be a link (a dotfiles setup): its real path is what is checked and read, as for the prompts root.
+      const projectsReal = realpathSync(projects)
+      if (!lstatSync(projectsReal).isDirectory()) throw new Error('not a directory')
+      tx = scanTranscripts(projectsReal, since, notes, problems, transcriptBudget, transcriptLineMax)
+      txRan = true
+    } catch {
+      // A folder named with --projects that cannot be read is a problem (rule c did not run); the default folder may simply not exist.
+      if (projectsExplicit) problems.push(`--projects ${projects}: not a readable folder; rule c was not checked`)
+      else notes.push(`transcripts: ${projects} is not a readable folder; rule c was not checked`)
+    }
+  }
+  tx.decisions.sort((x, y) => x.ms - y.ms || (x.file < y.file ? -1 : x.file > y.file ? 1 : 0) || x.line - y.line)
+  return { tx, txRan }
+}
+
+// c. hook-sourced decisions in lane transcripts. Matching is one to one and decision-aware: a transcript allow is backed only by a
+// `returned allow` row (a deny only by a `returned deny`), and each `returned` row backs at most one hook decision.
+//  - A returned row with `tuid` backs the decision whose tool_use_id equals it exactly (no time window).
+//  - A returned row without `tuid` (an older ledger) backs the nearest decision within 10 minutes with the same tool (the tool named by
+//    the tool_use block of the same tool_use_id in the same file; when that block is not seen, any tool). The ledger holds no session id.
+// Decisions are taken in time order, so the result does not depend on file order.
+function ruleHookDecisions({ rows, byId, flag, lostRaces }, tx) {
+  const returnedRows = rows.filter((r) => r.kind === 'returned')
+  const used = new Set()
+  const backing = (d, want, consume) => {
+    // A question's `returned answer` row backs a hook allow, but only when the request's tool is AskUserQuestion: the 10-minute fallback must not pair it with another tool's allow.
+    const questionAnswer = (r) => r.code === 'answer' && (byId.get(r.id)?.requested[0]?.tool ?? r.tool) === QUESTION_TOOL
+    const codeOk = (r) => want === undefined || r.code === want || (want === 'allow' && questionAnswer(r))
+    let hit
+    if (d.toolUseId !== undefined) hit = returnedRows.find((r) => r.tuid === d.toolUseId && !used.has(r) && codeOk(r))
+    if (!hit) {
+      let best
+      for (const r of returnedRows) {
+        if (r.tuid !== undefined || used.has(r) || !codeOk(r) || Math.abs(r.ms - d.ms) > WINDOW_MS || (d.tool !== undefined && r.tool !== d.tool)) continue
+        if (!best || Math.abs(r.ms - d.ms) < Math.abs(best.ms - d.ms)) best = r
+      }
+      hit = best
+    }
+    if (hit && consume) used.add(hit)
+    return hit
+  }
+  let hookBacked = 0
+  let hookAllowOther = 0
+  const hookDenies = []
+  for (const d of tx.decisions) {
+    const allow = d.decision === 'accept' || d.decision === 'allow'
+    if (d.source === 'hook') {
+      // Only a PermissionRequest hook can be callboard's: the engine writes an attachment line (hookEvent PermissionRequest) with the
+      // same tool_use id for it, and a reasonCode naming PermissionRequest on its denies. A hook allow with neither came from another
+      // hook event (in practice a PreToolUse guard) and is counted, not flagged.
+      const permReq = d.permissionRequest === true || /PermissionRequest/.test(d.reasonCode)
+      if (allow && !permReq) {
+        hookAllowOther++
+        continue
+      }
+      const b = backing(d, allow ? 'allow' : 'deny', true)
+      if (b) hookBacked++
+      else if (allow) flag('c', 'hook-decision-unmatched', `transcript ${d.file}:${d.line} (${d.tool ?? 'tool unknown'}${d.toolUseId ? `, ${d.toolUseId}` : ''}) holds a hook-sourced ${d.decision} at ${new Date(d.ms).toISOString()} with no unused returned allow row (by tool_use_id, or by tool within 10 minutes)`, { t: new Date(d.ms).toISOString(), file: d.file, line: d.line })
+      else hookDenies.push({ file: d.file, line: d.line, t: new Date(d.ms).toISOString(), tool: d.tool ?? '' })
+    } else if (d.source.startsWith('user')) {
+      // A lost race: the person's click won while the ledger returned a decision. It consumes nothing, since no hook decision stands in the transcript.
+      const b = backing(d, undefined, false)
+      if (b && d.source === 'user_temporary') lostRaces.push({ id: b.id ?? '', t: new Date(d.ms).toISOString(), via: 'transcript', detail: `${d.file}:${d.line}: ${d.source} while the ledger returned a decision at ${b.t}` })
+    }
+  }
+  return { hookBacked, hookAllowOther, hookDenies }
+}
+
+// c2. a lead's answer must be a real call: for each answered row, the answering lead's own transcript holds a prompt_answer call for that request id. This is what shows a
+// decision file and an answered row written by hand. Its bound: someone who also writes that call into the lead's transcript passes, as does one who
+// writes both with the lead's own tool; it is a check against a forged row, not against a forger who can rewrite files the lead's session owns.
+function ruleLeadCalls({ groups, flag, notes, problems }, tx, txRan) {
+  if (txRan) {
+    const missingLead = new Set()
+    for (const g of groups) {
+      for (const a of g.answered) {
+        if (a.by === undefined || a.id === undefined) continue
+        if (!tx.sessions.has(a.by)) {
+          missingLead.add(a.by)
+          continue
+        }
+        // The person's own answer (via person) is not a prompt_answer call: the relaying tier's transcript must hold the `Relay <short>` question, answered Yes (allow) or No (deny),
+        // or, for a question (code answer), answered with a label whose salted hash is the row's `lh`.
+        if (a.via === 'person') {
+          // The short id is the request's own (its first eight characters), never the row's say-so.
+          const short = a.id.slice(0, 8)
+          if (a.short !== undefined && a.short !== short) flag('c', 'person-answer-short-mismatch', `request ${g.id}: the answered row (${a.t}) carries the short id ${a.short}, not the request's ${short}`, { id: g.id, t: a.t })
+          const rel = g.relayed.find((x) => x.ms <= a.ms && x.by === a.by && (x.short ?? short) === short)
+          if (!rel) flag('c', 'person-answer-without-relayed-row', `request ${g.id}: the answered row (${a.t}) is the person's, but no relayed row of tier session ${a.by} with that short id came before it`, { id: g.id, t: a.t })
+          const labels = tx.relayAsks.get(a.by)?.get(short)
+          if (a.code === 'answer') {
+            // Each answer read from the transcript is trimmed and hashed as it is: the tier copied the label from prompt_list, already redacted; a `<` or an invisible character in it is listed as an escape (\\u003c, \\ufe0f, \\u{e0001}), so the unescaped form is tried too.
+            if (a.lh !== undefined && labels?.some((l) => labelHash(g.id, l.trim()) === a.lh || labelHash(g.id, unescape(l.trim())) === a.lh)) continue
+            if (a.lh !== undefined && tx.relayUnreadable.has(`${a.by}\n${short}`)) notes.push(`question-label-unverifiable: request ${g.id}: the person's pick through tier session ${a.by} could not be read from the result text (a quote in the label, and no structured answers), so its label hash was not checked`)
+            else flag('c', 'person-answer-without-relay-question', `request ${g.id}: the answered row (${a.t}) is the person's pick through tier session ${a.by}, whose transcript holds no "Relay ${short}" question answered with a label that matches the row's label hash`, { id: g.id, t: a.t })
+            continue
+          }
+          const want = a.code === 'allow' ? 'Yes' : a.code === 'deny' ? 'No' : undefined
+          if (!labels || want === undefined || !labels.includes(want)) flag('c', 'person-answer-without-relay-question', `request ${g.id}: the answered row (${a.t}) is the person's ${a.code ?? '?'} through tier session ${a.by}, whose transcript holds no "Relay ${short}" question answered ${want ?? '?'}`, { id: g.id, t: a.t })
+          continue
+        }
+        if (!tx.answerCalls.get(a.by)?.has(a.id)) flag('c', 'answered-without-prompt-answer', `request ${g.id}: the answered row (${a.t}) names lead session ${a.by}, whose transcript holds no prompt_answer call for it`, { id: g.id, t: a.t })
+      }
+    }
+    for (const sidMissing of missingLead) problems.push(`transcripts: the transcript of lead session ${sidMissing} was not found, so its answered rows were not checked against a prompt_answer call`)
+  }
+}
+
+// Question notes (not anomalies).
+function noteQuestions({ groups, rows, notes, inRange, qById }, questions, tx, txRan) {
+  const noQuestionRow = groups.filter((g) => g.returned[0]?.code === 'answer' && !qById.has(g.id)).length
+  if (noQuestionRow > 0) notes.push(`${noQuestionRow} returned question answer(s) have no questions row (a failed write, or the row was pruned)`)
+  if (questions.old > 0) notes.push(`${questions.old} questions row(s) are older than ${QUESTION_DAYS} days (the prune is behind)`)
+  const notJudged = {}
+  for (const r of rows) if (r.kind === 'not-judgeable' && /^question(-|$)/.test(r.code ?? '') && inRange(r.ms)) notJudged[r.code] = (notJudged[r.code] ?? 0) + 1
+  if (Object.keys(notJudged).length > 0) notes.push(`not-judgeable question rows by code: ${Object.entries(notJudged).sort().map(([c, n]) => `${c} ${n}`).join(', ')}`)
+  if (txRan) {
+    const hooked = new Set(tx.decisions.filter((d) => d.source === 'hook' && d.toolUseId !== undefined).map((d) => d.toolUseId))
+    const noHook = groups.filter((g) => g.returned[0]?.code === 'answer' && g.returned[0].tuid !== undefined && !hooked.has(g.returned[0].tuid)).length
+    if (noHook > 0) notes.push(`${noHook} returned question answer(s) have a tool_use id with no hook decision in the transcripts read (the card closed first: a lost race)`)
+  }
+}
+
+function buildCounts({ rows, inRange, table, waits }) {
+  // Counts.
+  const group = (key) => {
+    const m = new Map()
+    for (const t of table) {
+      const k = t[key] || '(none)'
+      if (!m.has(k)) m.set(k, { requests: 0, outcomes: {} })
+      const e = m.get(k)
+      e.requests++
+      const o = t.outcome.split(' ')[0]
+      e.outcomes[o] = (e.outcomes[o] ?? 0) + 1
+    }
+    const out = {}
+    for (const [k, e] of [...m.entries()].sort()) {
+      const w = waits.filter((x) => (x[key] || '(none)') === k).map((x) => x.age)
+      out[k] = { ...e, wait: waitStats(w) }
+    }
+    return out
+  }
+  const kinds = {}
+  for (const r of rows) if (inRange(r.ms)) kinds[r.kind] = (kinds[r.kind] ?? 0) + 1
+  return { byTier: group('tier'), byTool: group('tool'), rowsByKind: kinds, wait: waitStats(waits.map((w) => w.age)) }
+}
+
+function buildRelay({ rows, groups, inRange, qById }, tx) {
+  // The tier rows that are not anomalies, counted by kind (and by code where one is recorded): what happened to the requests that went to the person, and the cleaner-command denies.
+  const relayCounts = {}
+  for (const k of ['relayed', 'relay-lost', 'relay-left', 'relay-late', 'expired-denied', 'deny-unclear']) {
+    const mine = rows.filter((r) => r.kind === k && inRange(r.ms))
+    const codes = {}
+    // A relay-left row names the tier that asked in `tier` (it carries no code); the other kinds keep their code.
+    for (const r of mine) {
+      const key = (k === 'relay-left' ? r.tier : r.code) ?? '(none)'
+      codes[key] = (codes[key] ?? 0) + 1
+    }
+    relayCounts[k] = { n: mine.length, codes }
+  }
+  // Each relayed request with the question as the tier put it to the person, from the tier's own transcript, beside the request's tool and pattern: the one place a tier's
+  // wrong summary can be seen after the fact. Needs the tier's transcript (rule c); without it the question reads "(transcript not read)".
+  const relayedList = []
+  for (const g of groups) {
+    for (const r of g.relayed) {
+      if (!inRange(r.ms) || relayedList.length >= LIST_MAX) continue
+      const short = g.id.slice(0, 8)
+      const qs = tx.relayQs.filter((x) => x.sid === r.by && x.short === short)
+      const req = g.requested[0] ?? g.rows[0]
+      const lq = qById.get(g.id)
+      relayedList.push({ id: g.id, t: r.t, tier: r.code ?? '', tool: req.tool ?? '', pattern: req.pattern ?? '', laneQuestion: lq ? { header: lq.header, question: lq.question.slice(0, 400), options: lq.options } : undefined, questions: qs.length > 0 ? qs.map((x) => ({ question: x.question.slice(0, 400), answer: x.label ?? '(none)' })) : [{ question: '(transcript not read)', answer: '' }] })
+    }
+  }
+  const personAnswers = rows.filter((r) => r.kind === 'answered' && r.via === 'person' && inRange(r.ms)).length
+  relayCounts.personAnswers = { n: personAnswers, codes: {} }
+  return { relayCounts, relayedList }
+}
+
 export function audit({ root, projects, since, now = Date.now(), projectsExplicit = false, transcriptBudget = TRANSCRIPT_TOTAL_MAX_BYTES, transcriptLineMax = TRANSCRIPT_LINE_MAX }) {
   const problems = []
   const notes = []
@@ -560,351 +956,35 @@ export function audit({ root, projects, since, now = Date.now(), projectsExplici
   const waits = []
 
   const onOff = rows.filter((r) => r.kind === 'answering-on' || r.kind === 'answering-off')
+  const ctx = { rows, groups, byId, qById, inRange, flag, notes, problems, now, onOff, table, waits, lostRaces, abandoned, dropsFine }
   for (const g of groups) {
-    const req = g.requested[0]
-    const ret = g.returned[0]
-    const ans = g.answered[g.answered.length - 1]
-    const esc = g.escalated[g.escalated.length - 1]
-    const first = g.rows[0]
-    const meta = req ?? ans ?? ret ?? first
-    const end = ret ?? g.ends.find((r) => r.kind !== 'abandoned') ?? g.ends[g.ends.length - 1]
-    const outcome = end ? (end.kind === 'abandoned' ? `abandoned ${end.code ?? ''}`.trim() : end.kind) : 'open'
-    const decision = ret ? (ret.code ?? '-') : ans ? `answered:${ans.code ?? '-'}` : esc ? 'escalated' : '-'
-    const age = ret && req ? (ret.ms - req.ms) / 1000 : undefined
-    table.push({
-      t: (req ?? first).t,
-      id: g.id,
-      lane: meta.lane ?? '',
-      tool: meta.tool ?? '',
-      pattern: meta.pattern ?? '',
-      hash8: (meta.hash ?? '').slice(0, 8),
-      tier: ret?.tier ?? ans?.tier ?? req?.tier ?? esc?.tier ?? '',
-      decision,
-      why: ret?.why ?? ans?.why ?? esc?.why ?? '',
-      age,
-      outcome,
-    })
-    if (age !== undefined && age >= 0) waits.push({ tier: ret.tier ?? req.tier ?? '', tool: meta.tool ?? '', age })
-
-    // a. a decision with no log row, and decisions the hook refused as forged.
-    if (g.requested.length > 1 && new Set(g.requested.map((r) => r.nonce)).size > 1) flag('a', 'requested-twice', `request ${g.id} has ${g.requested.length} requested rows with different nonces`, { id: g.id })
-    if (ret && g.answered.length === 0) flag('a', 'returned-without-answered', `request ${g.id} was returned (${ret.code ?? '?'}) with no answered row`, { id: g.id, t: ret.t })
-    if (ret && g.answered.length > 0 && g.answered[0].ms > ret.ms) flag('a', 'answered-after-returned', `request ${g.id}: the answered row (${g.answered[0].t}) is later than the returned row (${ret.t})`, { id: g.id, t: ret.t })
-    // What the hook returned must be what the tier answered: the same decision, by the same lead (each checked only when both rows carry it).
-    if (ret && g.answered.length > 0) {
-      const before = g.answered.filter((r) => r.ms <= ret.ms)
-      const pool = before.length > 0 ? before : g.answered
-      const ref = pool[pool.length - 1]
-      if (ret.code !== undefined && ref.code !== undefined && ret.code !== ref.code) flag('a', 'returned-differs-from-answered', `request ${g.id}: returned ${ret.code} but the answered row says ${ref.code}`, { id: g.id, t: ret.t })
-      else if (ret.by !== undefined && ref.by !== undefined && ret.by !== ref.by) flag('a', 'returned-differs-from-answered', `request ${g.id}: the returned row's author differs from the answered row's`, { id: g.id, t: ret.t })
-      // A returned question answer must carry the option and label hash of the answer (both rows carry both).
-      if (ret.code === 'answer' && ref.code === 'answer' && (ret.opt !== ref.opt || ret.lh !== ref.lh)) flag('q', 'q-returned-differs', `request ${g.id}: the returned answer's option or label hash differs from the answered row's`, { id: g.id, t: ret.t })
-    }
-    for (const a of g.answered) {
-      if (!req) flag('a', 'answered-without-requested', `request ${g.id} has an answered row and no requested row`, { id: g.id, t: a.t })
-      else if (a.nonce !== req.nonce) flag('a', 'answered-nonce-mismatch', `request ${g.id}: the answered row's nonce differs from the requested row's`, { id: g.id, t: a.t })
-    }
-    for (const d of g.dropped) {
-      if (DROP_ANOMALY.has(d.code)) flag('a', `dropped-${d.code}`, `request ${g.id}: the hook refused a decision (${d.code})`, { id: g.id, t: d.t })
-    }
-    // Questions. The tool is the request's own (the first row that names one when the requested row is missing); `answer` belongs to an AskUserQuestion only, and a question is never decided allow or deny.
-    const qTool = req?.tool ?? g.rows.find((r) => r.tool !== undefined)?.tool
-    for (const r of g.rows) {
-      const decided = r.kind === 'answered' || r.kind === 'returned'
-      if (decided && r.code === 'answer' && qTool !== QUESTION_TOOL) flag('q', 'q-answer-not-question', `request ${g.id} (${qTool ?? 'tool unknown'}): the ${r.kind} row (${r.t}) is an answer, but the request is not an ${QUESTION_TOOL}`, { id: g.id, t: r.t })
-      if (qTool === QUESTION_TOOL && ((decided && (r.code === 'allow' || r.code === 'deny')) || r.kind === 'expired-denied')) flag('q', 'q-decided-question', `request ${g.id}: an ${r.kind} row (${r.t}${r.code ? `, ${r.code}` : ''}) decides a question with allow or deny; a question is only ever answered`, { id: g.id, t: r.t })
-    }
-    // A question's request needs an `answering-on` row with code asks still in force: a later plain `answering-on` (a value written without the questions scope) or any `answering-off` ends it; `/callboard escalation` writes the plain row and then the asks row.
-    if (req && qTool === QUESTION_TOOL) {
-      let asksOn = false
-      for (const r of onOff) {
-        if (r.ms > req.ms) break
-        asksOn = r.kind === 'answering-on' && r.code === 'asks'
-      }
-      if (!asksOn) flag('q', 'q-no-asks-on', `request ${g.id} (a question) was asked with no answering-on row (code asks) still in force`, { id: g.id, t: req.t })
-    }
-    // Tiers. A tier that passed the request up (an `escalated` row, code = its level) does not answer it afterwards; a request taken to the person (`relayed`) is decided by the person, and
-    // an agent's answer after it counts only if a relay-lost row came first (the relay never reached the person, so the tiers had it again).
-    for (const a of g.answered) {
-      if (a.via === 'person') continue
-      const passed = g.escalated.find((e) => e.code !== undefined && e.code === a.tier && e.ms < a.ms)
-      if (passed) flag('a', 'answered-after-own-pass-up', `request ${g.id}: tier ${a.tier} answered at ${a.t} after it had passed the request up at ${passed.t}`, { id: g.id, t: a.t })
-      const rel = g.relayed.find((r) => r.ms < a.ms)
-      if (rel && !g.relayLost.some((l) => l.ms > rel.ms && l.ms <= a.ms)) flag('a', 'answered-while-relayed', `request ${g.id}: an agent answered at ${a.t} while the request was with the person (relayed at ${rel.t}, no relay-lost row)`, { id: g.id, t: a.t })
-    }
-    for (const r of g.ends.filter((x) => x.kind === 'returned')) {
-      if (r.via === 'person') continue
-      const rel = g.relayed.find((x) => x.ms < r.ms)
-      if (rel && !g.relayLost.some((l) => l.ms > rel.ms && l.ms <= r.ms)) flag('a', 'returned-while-relayed', `request ${g.id}: a decision not the person's was returned at ${r.t} while the request was with the person (relayed at ${rel.t}, no relay-lost row)`, { id: g.id, t: r.t })
-    }
-    // b. a request nothing ended, older than 24 h. Restarts and failed hooks write `abandoned`, which ends it.
-    if (req && g.ends.length === 0 && now - req.ms > DAY_MS) flag('b', 'request-unended', `request ${g.id} (${req.tool ?? '?'}) has no ending row after ${Math.floor((now - req.ms) / 3600000)} h`, { id: g.id, t: req.t })
-    // The two benign shapes.
-    for (const r of g.ends.filter((x) => x.kind === 'abandoned')) abandoned.push({ id: g.id, t: r.t, code: r.code ?? '', tool: meta.tool ?? '' })
-    if (ret && g.ends.some((r) => r.kind === 'superseded')) lostRaces.push({ id: g.id, t: ret.t, via: 'ledger', detail: 'a returned row and a superseded row for one request' })
-    for (const d of g.dropped) if (!DROP_ANOMALY.has(d.code)) dropsFine.push({ id: g.id, t: d.t, code: d.code ?? '' })
+    tableRow(g, ctx)
+    ruleDecisions(g, ctx)
+    ruleQuestions(g, ctx)
+    ruleTiers(g, ctx)
+    ruleUnended(g, ctx)
+    noteBenign(g, ctx)
   }
   // `abandoned` rows that carry no id (a hook that failed before it had one) are counted, not listed per request.
   const abandonedNoId = rows.filter((r) => r.kind === 'abandoned' && r.id === undefined && inRange(r.ms))
   for (const r of abandonedNoId) abandoned.push({ id: '', t: r.t, code: r.code ?? '', tool: r.tool ?? '' })
 
-  // d. the floor.
-  let floorCtxUnknown = 0
-  const floorRows = rows.filter((r) => r.kind === 'floor' && r.hash !== undefined && r.tool !== undefined)
-  for (const g of groups) {
-    const probe = g.rows.find((r) => (r.kind === 'requested' || r.kind === 'answered' || r.kind === 'returned') && r.tool !== undefined)
-    if (!probe) continue
-    const touched = g.requested.length > 0 || g.answered.length > 0
-    if (!touched) continue
-    const hit = probe.hash !== undefined ? floorRows.find((f) => f.tool === probe.tool && f.hash === probe.hash && Math.abs(f.ms - probe.ms) <= DAY_MS) : undefined
-    // The floor reads the branch, the push config and the folder as well as the input: the same input is floored under one and asked under another. Both rows
-    // record a hash of that context; the same input in the same context is the anomaly. A row without one (written before it was recorded) is only a note.
-    if (hit && hit.ctx !== undefined && probe.ctx !== undefined) {
-      if (hit.ctx === probe.ctx) flag('d', 'floor-row-then-asked', `request ${g.id} (${probe.tool}) shares its tool, input hash and floor context with a floor row (${hit.code ?? '?'}) within 24 h`, { id: g.id, t: probe.t })
-    } else if (hit) floorCtxUnknown++
-    const shape = floorShape(probe.tool, probe.pattern ?? '')
-    if (shape) flag('d', 'floor-shape-asked', `request ${g.id} was asked of an agent but looks like a floor item (${shape})`, { id: g.id, t: probe.t })
-  }
-
-  if (floorCtxUnknown > 0) notes.push(`${floorCtxUnknown} request(s) share a tool and input hash with a floor row that recorded no floor context; not counted as anomalies (the branch or config may differ)`)
-
-  // e. a request must be raised while answering is on: the latest answering-on or answering-off row at its time says on (not the first answering-on row ever written, which a later off outlives).
-  // An answering-off with code asks only turned the questions off (an earlier mod wrote it); permission answering stayed on.
-  // The hook reads the switch once at its start and writes the requested row after slower steps, so an off typed in between reads on, off, requested, and the waiting hook then
-  // closes the request with an `off` row. That is no defect: the request was raised under on. It is not flagged when the off row is at most OFF_RACE_MS before the requested row and
-  // the request's own last row is an `off` row.
-  const OFF_RACE_MS = 120_000
-  const offRace = (g, req, off) => req.ms - off.ms <= OFF_RACE_MS && g.rows[g.rows.length - 1]?.kind === 'off'
-  const permOnOff = onOff.filter((r) => !(r.kind === 'answering-off' && r.code === 'asks'))
-  for (const g of groups) {
-    const req = g.requested[0]
-    if (!req) continue
-    let state
-    for (const r of permOnOff) {
-      // Rows are in (ms, seq) order: a row written in the same millisecond but after the request's does not count for it.
-      if (r.ms > req.ms || (r.ms === req.ms && r.seq > req.seq)) break
-      state = r
-    }
-    if (!state) flag('e', 'requested-before-answering-on', `request ${g.id} was asked with no answering-on row before it`, { id: g.id, t: req.t })
-    else if (state.kind === 'answering-off' && !offRace(g, req, state)) flag('e', 'requested-while-answering-off', `request ${g.id} was asked while answering was off (the latest answering row before it is an answering-off at ${state.t})`, { id: g.id, t: req.t })
-  }
-
-  // f. request files older than 24 h, by age only (the live-session test is not applied here).
-  let requestFiles = 0
-  const requestIds = new Set()
-  let sessionDirs = 0
-  let unlisted = 0
-  for (const d of entries) {
-    if (!d.isDirectory() || !ID_RE.test(d.name)) continue
-    sessionDirs++
-    let inner
-    try {
-      inner = list(join(rootReal, d.name))
-    } catch {
-      unlisted++
-      continue
-    }
-    for (const f of inner) {
-      if (!f.isFile() || !/^[0-9a-f-]{36}\.request\.json$/.test(f.name)) continue
-      let st
-      try {
-        st = lstatSync(join(rootReal, d.name, f.name))
-      } catch {
-        continue
-      }
-      requestFiles++
-      requestIds.add(f.name.slice(0, 36))
-      if (st.isFile() && now - st.mtimeMs > DAY_MS) flag('f', 'stale-request-file', `${d.name}/${f.name} is ${Math.floor((now - st.mtimeMs) / 3600000)} h old`, { id: f.name.slice(0, 36) })
-    }
-  }
-
-  // b2. a request with no ending row whose request file is gone: the hook (or a sweep) removed the files without a closing row. The mod writes the row first and keeps the
-  // files until it has, so this is a fault. Only judged when the folder holds session folders at all: a copy of the ledger alone shows no files, and absence says nothing there.
-  // A folder that could not be listed hides its request files: the check is not run then, and the run says so.
-  if (unlisted > 0) problems.push(`${unlisted} session folder(s) under the prompts folder could not be listed; requests closed without a row were not checked`)
-  if (sessionDirs > 0 && unlisted === 0) {
-    for (const g of groups) {
-      const req = g.requested[0]
-      if (req && g.ends.length === 0 && !requestIds.has(g.id) && now - req.ms > CLOSE_GRACE_MS && now - req.ms <= DAY_MS) {
-        flag('b', 'request-closed-without-row', `request ${g.id} (${req.tool ?? '?'}) has no ending row and no request file ${Math.floor((now - req.ms) / 60000)} min on`, { id: g.id, t: req.t })
-        const row = table.find((t) => t.id === g.id)
-        if (row && row.outcome === 'open') row.outcome = 'closed-no-row'
-      }
-    }
-  }
-
-  // c. hook-sourced decisions in lane transcripts. Matching is one to one and decision-aware: a transcript allow is backed only by a
-  // `returned allow` row (a deny only by a `returned deny`), and each `returned` row backs at most one hook decision.
-  //  - A returned row with `tuid` backs the decision whose tool_use_id equals it exactly (no time window).
-  //  - A returned row without `tuid` (an older ledger) backs the nearest decision within 10 minutes with the same tool (the tool named by
-  //    the tool_use block of the same tool_use_id in the same file; when that block is not seen, any tool). The ledger holds no session id.
-  // Decisions are taken in time order, so the result does not depend on file order.
-  let tx = { decisions: [], scanned: 0, filesFound: 0, answerCalls: new Map(), relayAsks: new Map(), relayQs: [], relayUnreadable: new Set(), sessions: new Set() }
-  let txRan = false
-  if (projects !== undefined) {
-    try {
-      // The folder may itself be a link (a dotfiles setup): its real path is what is checked and read, as for the prompts root.
-      const projectsReal = realpathSync(projects)
-      if (!lstatSync(projectsReal).isDirectory()) throw new Error('not a directory')
-      tx = scanTranscripts(projectsReal, since, notes, problems, transcriptBudget, transcriptLineMax)
-      txRan = true
-    } catch {
-      // A folder named with --projects that cannot be read is a problem (rule c did not run); the default folder may simply not exist.
-      if (projectsExplicit) problems.push(`--projects ${projects}: not a readable folder; rule c was not checked`)
-      else notes.push(`transcripts: ${projects} is not a readable folder; rule c was not checked`)
-    }
-  }
-  tx.decisions.sort((x, y) => x.ms - y.ms || (x.file < y.file ? -1 : x.file > y.file ? 1 : 0) || x.line - y.line)
-  const returnedRows = rows.filter((r) => r.kind === 'returned')
-  const used = new Set()
-  const backing = (d, want, consume) => {
-    // A question's `returned answer` row backs a hook allow, but only when the request's tool is AskUserQuestion: the 10-minute fallback must not pair it with another tool's allow.
-    const questionAnswer = (r) => r.code === 'answer' && (byId.get(r.id)?.requested[0]?.tool ?? r.tool) === QUESTION_TOOL
-    const codeOk = (r) => want === undefined || r.code === want || (want === 'allow' && questionAnswer(r))
-    let hit
-    if (d.toolUseId !== undefined) hit = returnedRows.find((r) => r.tuid === d.toolUseId && !used.has(r) && codeOk(r))
-    if (!hit) {
-      let best
-      for (const r of returnedRows) {
-        if (r.tuid !== undefined || used.has(r) || !codeOk(r) || Math.abs(r.ms - d.ms) > WINDOW_MS || (d.tool !== undefined && r.tool !== d.tool)) continue
-        if (!best || Math.abs(r.ms - d.ms) < Math.abs(best.ms - d.ms)) best = r
-      }
-      hit = best
-    }
-    if (hit && consume) used.add(hit)
-    return hit
-  }
-  let hookBacked = 0
-  let hookAllowOther = 0
-  const hookDenies = []
-  for (const d of tx.decisions) {
-    const allow = d.decision === 'accept' || d.decision === 'allow'
-    if (d.source === 'hook') {
-      // Only a PermissionRequest hook can be callboard's: the engine writes an attachment line (hookEvent PermissionRequest) with the
-      // same tool_use id for it, and a reasonCode naming PermissionRequest on its denies. A hook allow with neither came from another
-      // hook event (in practice a PreToolUse guard) and is counted, not flagged.
-      const permReq = d.permissionRequest === true || /PermissionRequest/.test(d.reasonCode)
-      if (allow && !permReq) {
-        hookAllowOther++
-        continue
-      }
-      const b = backing(d, allow ? 'allow' : 'deny', true)
-      if (b) hookBacked++
-      else if (allow) flag('c', 'hook-decision-unmatched', `transcript ${d.file}:${d.line} (${d.tool ?? 'tool unknown'}${d.toolUseId ? `, ${d.toolUseId}` : ''}) holds a hook-sourced ${d.decision} at ${new Date(d.ms).toISOString()} with no unused returned allow row (by tool_use_id, or by tool within 10 minutes)`, { t: new Date(d.ms).toISOString(), file: d.file, line: d.line })
-      else hookDenies.push({ file: d.file, line: d.line, t: new Date(d.ms).toISOString(), tool: d.tool ?? '' })
-    } else if (d.source.startsWith('user')) {
-      // A lost race: the person's click won while the ledger returned a decision. It consumes nothing, since no hook decision stands in the transcript.
-      const b = backing(d, undefined, false)
-      if (b && d.source === 'user_temporary') lostRaces.push({ id: b.id ?? '', t: new Date(d.ms).toISOString(), via: 'transcript', detail: `${d.file}:${d.line}: ${d.source} while the ledger returned a decision at ${b.t}` })
-    }
-  }
-
-  // c2. a lead's answer must be a real call: for each answered row, the answering lead's own transcript holds a prompt_answer call for that request id. This is what shows a
-  // decision file and an answered row written by hand. Its bound: someone who also writes that call into the lead's transcript passes, as does one who
-  // writes both with the lead's own tool; it is a check against a forged row, not against a forger who can rewrite files the lead's session owns.
-  if (txRan) {
-    const missingLead = new Set()
-    for (const g of groups) {
-      for (const a of g.answered) {
-        if (a.by === undefined || a.id === undefined) continue
-        if (!tx.sessions.has(a.by)) {
-          missingLead.add(a.by)
-          continue
-        }
-        // The person's own answer (via person) is not a prompt_answer call: the relaying tier's transcript must hold the `Relay <short>` question, answered Yes (allow) or No (deny),
-        // or, for a question (code answer), answered with a label whose salted hash is the row's `lh`.
-        if (a.via === 'person') {
-          // The short id is the request's own (its first eight characters), never the row's say-so.
-          const short = a.id.slice(0, 8)
-          if (a.short !== undefined && a.short !== short) flag('c', 'person-answer-short-mismatch', `request ${g.id}: the answered row (${a.t}) carries the short id ${a.short}, not the request's ${short}`, { id: g.id, t: a.t })
-          const rel = g.relayed.find((x) => x.ms <= a.ms && x.by === a.by && (x.short ?? short) === short)
-          if (!rel) flag('c', 'person-answer-without-relayed-row', `request ${g.id}: the answered row (${a.t}) is the person's, but no relayed row of tier session ${a.by} with that short id came before it`, { id: g.id, t: a.t })
-          const labels = tx.relayAsks.get(a.by)?.get(short)
-          if (a.code === 'answer') {
-            // Each answer read from the transcript is trimmed and hashed as it is: the tier copied the label from prompt_list, already redacted; a `<` or an invisible character in it is listed as an escape (\\u003c, \\ufe0f, \\u{e0001}), so the unescaped form is tried too.
-            if (a.lh !== undefined && labels?.some((l) => labelHash(g.id, l.trim()) === a.lh || labelHash(g.id, unescape(l.trim())) === a.lh)) continue
-            if (a.lh !== undefined && tx.relayUnreadable.has(`${a.by}\n${short}`)) notes.push(`question-label-unverifiable: request ${g.id}: the person's pick through tier session ${a.by} could not be read from the result text (a quote in the label, and no structured answers), so its label hash was not checked`)
-            else flag('c', 'person-answer-without-relay-question', `request ${g.id}: the answered row (${a.t}) is the person's pick through tier session ${a.by}, whose transcript holds no "Relay ${short}" question answered with a label that matches the row's label hash`, { id: g.id, t: a.t })
-            continue
-          }
-          const want = a.code === 'allow' ? 'Yes' : a.code === 'deny' ? 'No' : undefined
-          if (!labels || want === undefined || !labels.includes(want)) flag('c', 'person-answer-without-relay-question', `request ${g.id}: the answered row (${a.t}) is the person's ${a.code ?? '?'} through tier session ${a.by}, whose transcript holds no "Relay ${short}" question answered ${want ?? '?'}`, { id: g.id, t: a.t })
-          continue
-        }
-        if (!tx.answerCalls.get(a.by)?.has(a.id)) flag('c', 'answered-without-prompt-answer', `request ${g.id}: the answered row (${a.t}) names lead session ${a.by}, whose transcript holds no prompt_answer call for it`, { id: g.id, t: a.t })
-      }
-    }
-    for (const sidMissing of missingLead) problems.push(`transcripts: the transcript of lead session ${sidMissing} was not found, so its answered rows were not checked against a prompt_answer call`)
-  }
-
-  // Question notes (not anomalies).
-  const noQuestionRow = groups.filter((g) => g.returned[0]?.code === 'answer' && !qById.has(g.id)).length
-  if (noQuestionRow > 0) notes.push(`${noQuestionRow} returned question answer(s) have no questions row (a failed write, or the row was pruned)`)
-  if (questions.old > 0) notes.push(`${questions.old} questions row(s) are older than ${QUESTION_DAYS} days (the prune is behind)`)
-  const notJudged = {}
-  for (const r of rows) if (r.kind === 'not-judgeable' && /^question(-|$)/.test(r.code ?? '') && inRange(r.ms)) notJudged[r.code] = (notJudged[r.code] ?? 0) + 1
-  if (Object.keys(notJudged).length > 0) notes.push(`not-judgeable question rows by code: ${Object.entries(notJudged).sort().map(([c, n]) => `${c} ${n}`).join(', ')}`)
-  if (txRan) {
-    const hooked = new Set(tx.decisions.filter((d) => d.source === 'hook' && d.toolUseId !== undefined).map((d) => d.toolUseId))
-    const noHook = groups.filter((g) => g.returned[0]?.code === 'answer' && g.returned[0].tuid !== undefined && !hooked.has(g.returned[0].tuid)).length
-    if (noHook > 0) notes.push(`${noHook} returned question answer(s) have a tool_use id with no hook decision in the transcripts read (the card closed first: a lost race)`)
-  }
-
+  ruleFloor(ctx)
+  ruleAnsweringOn(ctx)
+  const files = ruleStaleRequestFiles(ctx, rootReal, entries)
+  ruleClosedWithoutRow(ctx, files)
+  const { tx, txRan } = loadTranscripts({ projects, projectsExplicit, since, notes, problems, transcriptBudget, transcriptLineMax })
+  const { hookBacked, hookAllowOther, hookDenies } = ruleHookDecisions(ctx, tx)
+  ruleLeadCalls(ctx, tx, txRan)
+  noteQuestions(ctx, questions, tx, txRan)
   anomalies.sort((x, y) => (x.rule < y.rule ? -1 : x.rule > y.rule ? 1 : 0))
 
-  // Counts.
-  const group = (key) => {
-    const m = new Map()
-    for (const t of table) {
-      const k = t[key] || '(none)'
-      if (!m.has(k)) m.set(k, { requests: 0, outcomes: {} })
-      const e = m.get(k)
-      e.requests++
-      const o = t.outcome.split(' ')[0]
-      e.outcomes[o] = (e.outcomes[o] ?? 0) + 1
-    }
-    const out = {}
-    for (const [k, e] of [...m.entries()].sort()) {
-      const w = waits.filter((x) => (x[key] || '(none)') === k).map((x) => x.age)
-      out[k] = { ...e, wait: waitStats(w) }
-    }
-    return out
-  }
-  const kinds = {}
-  for (const r of rows) if (inRange(r.ms)) kinds[r.kind] = (kinds[r.kind] ?? 0) + 1
-
-  // The tier rows that are not anomalies, counted by kind (and by code where one is recorded): what happened to the requests that went to the person, and the cleaner-command denies.
-  const relayCounts = {}
-  for (const k of ['relayed', 'relay-lost', 'relay-left', 'relay-late', 'expired-denied', 'deny-unclear']) {
-    const mine = rows.filter((r) => r.kind === k && inRange(r.ms))
-    const codes = {}
-    // A relay-left row names the tier that asked in `tier` (it carries no code); the other kinds keep their code.
-    for (const r of mine) {
-      const key = (k === 'relay-left' ? r.tier : r.code) ?? '(none)'
-      codes[key] = (codes[key] ?? 0) + 1
-    }
-    relayCounts[k] = { n: mine.length, codes }
-  }
-  // Each relayed request with the question as the tier put it to the person, from the tier's own transcript, beside the request's tool and pattern: the one place a tier's
-  // wrong summary can be seen after the fact. Needs the tier's transcript (rule c); without it the question reads "(transcript not read)".
-  const relayedList = []
-  for (const g of groups) {
-    for (const r of g.relayed) {
-      if (!inRange(r.ms) || relayedList.length >= LIST_MAX) continue
-      const short = g.id.slice(0, 8)
-      const qs = tx.relayQs.filter((x) => x.sid === r.by && x.short === short)
-      const req = g.requested[0] ?? g.rows[0]
-      const lq = qById.get(g.id)
-      relayedList.push({ id: g.id, t: r.t, tier: r.code ?? '', tool: req.tool ?? '', pattern: req.pattern ?? '', laneQuestion: lq ? { header: lq.header, question: lq.question.slice(0, 400), options: lq.options } : undefined, questions: qs.length > 0 ? qs.map((x) => ({ question: x.question.slice(0, 400), answer: x.label ?? '(none)' })) : [{ question: '(transcript not read)', answer: '' }] })
-    }
-  }
-  const personAnswers = rows.filter((r) => r.kind === 'answered' && r.via === 'person' && inRange(r.ms)).length
-  relayCounts.personAnswers = { n: personAnswers, codes: {} }
+  const { relayCounts, relayedList } = buildRelay(ctx, tx)
 
   return {
     root: rootReal,
     since: since === undefined ? null : new Date(since).toISOString(),
-    scanned: { ledgerFiles, rows: rows.length, requests: table.length, transcriptFiles: tx.scanned, transcriptDecisions: tx.decisions.length, requestFiles },
+    scanned: { ledgerFiles, rows: rows.length, requests: table.length, transcriptFiles: tx.scanned, transcriptDecisions: tx.decisions.length, requestFiles: files.requestFiles },
     table,
     anomalies,
     notAnomalies: {
@@ -917,7 +997,7 @@ export function audit({ root, projects, since, now = Date.now(), projectsExplici
       hookDecisionsBacked: hookBacked,
       hookAllowsOtherEvent: hookAllowOther,
     },
-    counts: { byTier: group('tier'), byTool: group('tool'), rowsByKind: kinds, wait: waitStats(waits.map((w) => w.age)) },
+    counts: buildCounts(ctx),
     questions: { files: questions.files, count: questions.count, rows: questions.rows, list: questions.list, unreadable: questions.unreadable },
     problems,
     notes,
