@@ -8,7 +8,7 @@ export const allEvents = (stdins: string[]) => stdins.filter((x) => x.startsWith
 export const events = (stdins: string[]) => allEvents(stdins).filter((e) => e.event !== 'restored' && e.event !== 'command')
 
 export const PERSON = { kind: 'composer' } as const
-// v13.6: the usage line, which /callboard on now gets too.
+// The usage line, which /callboard on now gets too.
 export const USAGE = 'Use /callboard help, lanes, status, lead, lane [NAME], escalation [off], prompts, manager or off. Run /callboard help for the full list.'
 export const lane = (args: string, origin: unknown = PERSON) => ({ command: 'callboard', args, origin }) as any
 export const statusText = async ($: any) => (await $.command.run(lane('status'))).text as string
@@ -44,7 +44,7 @@ export const waitFor = async (cond: () => boolean) => {
   expect(cond()).toBe(true)
 }
 
-// The mocked engine answers each dialog with `askAnswer` (`restoreAnswer` for the Restore question). v13.5: /callboard on is retired, so a session starts
+// The mocked engine answers each dialog with `askAnswer` (`restoreAnswer` for the Restore question). A session starts
 // as a plain one; `bound` makes it lane LABLANE the way the person does it: a lane hint (merged into one the seed wrote), Restore at /callboard lane.
 export async function started($: any, on: any, stdins: string[], opts: { bound?: boolean; seed?: () => void; argv?: string[][]; clock?: boolean; trace?: Trace; interactive?: boolean } = {}) {
   engine(on, opts.argv ?? [], stdins, opts.clock, opts.trace)
@@ -184,7 +184,7 @@ export const unanswered = async (p: Promise<any>) => {
   return p
 }
 
-// ---- v11 PR two: /callboard lane (an existing session becomes a lane of the lead in its repo) ----
+// ---- /callboard lane (an existing session becomes a lane of the lead in its repo) ----
 export const LEADSID = '5a1b2c3d-0000-4000-8000-123456789abc'
 export const LEADPS = 'Tue Oct 27 20:37:50 2026'
 export const SVC = `${PIN}/svc`
@@ -268,7 +268,7 @@ export const OWNER_LIVE = ownerText(4242, 'live-nonce-0001')
 // ---- PR two, fix round 1 ----
 export const ATTLANE = (over: Record<string, unknown> = {}) => attRec(LEADSID, 'svc-api', over)
 
-// ---- F8: registry files left by a process that died ----
+// ---- registry files left by a process that died ----
 export const TWIN = '3a1b2c3d-0000-4000-8000-123456789abc'
 
 export const laneTarget = async ($: any, on: any, stdins: string[], trace?: Trace) => {
@@ -286,7 +286,7 @@ export const LANE_COMPOSE = { ...COMPOSE, tools: ['Bash', TOOL] } as any
 export const laneSections = (r: any) => (r.sections as { id: string; text: string; scope: string }[]).filter((x) => x.id === 'callboard:lane')
 
 // Two leads hold the repo: the rename cue names the lead that sent it, and only a live lead of the repo is taken from it.
-// storeLane (levels S2): the lane is a store record with these extra fields instead of the plain seeded one.
+// storeLane: the lane is a store record with these extra fields instead of the plain seeded one.
 export async function bornWithTwoLeads($: any, on: any, cueText: string, storeLane?: Record<string, unknown>) {
   const FOLDER = `${PIN}/lab`
   laneSeed.text = storeLane ? undefined : JSON.stringify({ lanes: [{ name: 'LABLANE', folder: FOLDER, brief: `${FOLDER}/BRIEF.md`, repo: PIN }] })
@@ -314,7 +314,7 @@ export const lateLane = () => {
   return { trace, release: () => release() }
 }
 
-// ---- v12: the compaction nudge (Item 1a): the lead's lane_compact with no request, and a person's session past its context level ----
+// ---- the compaction nudge: the lead's lane_compact with no request, and a person's session past its context level ----
 export const nudges = () => submitted.filter((t) => t.startsWith('[callboard] Your '))
 // The person's own claude process, so the shell check finds the session in the process table (the auto registry entry has pid 4999).
 export const SELF_PS = `${PS_TABLE} 4999     1 /x/native-binary/claude\n`
@@ -325,21 +325,21 @@ export async function person($: any, on: any, stdins: string[] = [], trace?: Tra
   h.psTable = SELF_PS
 }
 
-// ---- v16: the nudge in the middle of a turn: a PostToolUse (or failure) hook returns the text as additionalContext ----
+// ---- the nudge in the middle of a turn: a PostToolUse (or failure) hook returns the text as additionalContext ----
 const MID_TOOL = { tool_name: 'Bash', tool_input: { command: 'ls' }, tool_use_id: 'tu-mid', tool_response: {} }
 // The kit answers nothing beneath the plugins: the engine's own result of a tool call is an empty one.
 export const postBeneath = (on: any) => { for (const ev of ['classic.PostToolUse', 'classic.PostToolUseFailure'] as const) on(ev, () => ({})) }
 export const midCtx = async ($: any, ev: 'PostToolUse' | 'PostToolUseFailure' = 'PostToolUse', extra: object = {}): Promise<string[]> =>
   ((await $.classic[ev]({ ...MID_TOOL, ...extra } as any)) as { additionalContext?: string[] } | undefined)?.additionalContext ?? []
 
-// ---- v12: the nudge grant (Item 1b): a nudged session that is not bound or on may make one `now` request of its own within 15 minutes ----
+// ---- the nudge grant: a nudged session that is not bound or on may make one `now` request of its own within 15 minutes ----
 export const NOW = { ...GOOD, mode: 'now' }
 export const NOT_ENABLED = "request_compact is not enabled for this session: mode on-cue needs a lane, mode now a person's session."
 
 // ---- the lane model: a lead-made record with a model is switched with /model at its start ----
 export const MFOLDER = `${PIN}/lab`
 
-// ---- v13: a store record names its session (sid sync, the clears, the lead's watch) ----
+// ---- a store record names its session (sid sync, the clears, the lead's watch) ----
 export const STORE_LANE = (extra: Record<string, unknown> = {}) => ({ name: 'LABLANE', folder: MFOLDER, brief: `${MFOLDER}/BRIEF.md`, createdAt: 1, ...extra })
 export const recOf = (name = 'LABLANE') => (storeJson().lanes as any[]).find((l) => l.name === name)
 // A lane the lead made (a store record), born through a rename cue on the first tick; the second tick runs the sid sync.
@@ -358,7 +358,7 @@ export async function bornStore($: any, on: any, stdins: string[], opts: { trace
   await cue(42, 'rename LABLANE\n')
 }
 
-// ---- v13: lane_park ----
+// ---- lane_park ----
 export const parkSess = (extra: Record<string, unknown> = {}) => ({ ...leadSelfReg(), ...cueSession(OTHER, 'API', `${PIN}/api`, { pid: 4500, ...extra }) })
 export async function parker($: any, on: any, stdins: string[] = [], argv: string[][] = [], rec: Record<string, unknown> = { sid: OTHER }) {
   await leadAt($, on, stdins, { sess: parkSess(), argv })
@@ -372,7 +372,7 @@ export const drive = async (p: Promise<any>, n = 40) => {
   return p
 }
 
-// ---- v13: a store lane rebinds itself when its session starts again ----
+// ---- a store lane rebinds itself when its session starts again ----
 // A session whose store record names its id, at start. Its dialogs answer yes, the Restore question waits on restoreHang when a test sets it.
 export const rebindAsks: string[] = []
 export async function rebinder($: any, on: any, stdins: string[], opts: { rec?: Record<string, unknown>; sess?: Record<string, string>; hint?: unknown; argv?: string[][]; trace?: Trace; cwd?: string; interactive?: boolean } = {}) {
@@ -399,14 +399,14 @@ export async function rebinder($: any, on: any, stdins: string[], opts: { rec?: 
 export const rebinds = (stdins: string[]) => logged(stdins).filter((x) => x.startsWith('rebound:') || x.startsWith('rebind-rejected:'))
 export const LANE_HINT = (lane: Record<string, unknown> = {}, counters: Record<string, unknown> = {}) => ({ lane: { name: 'LABLANE', at: 1, turns: -1, ...lane }, counters, savedAt: T0 })
 
-// ---- v13: the lead grant survives a restart ----
+// ---- the lead grant survives a restart ----
 export const LEADKEY = `lead:${SID}`
 
-// ---- v13.2: the keepalive ping (K1) and /callboard config (K2) ----
+// ---- the keepalive ping and /callboard config ----
 export const pings = () => submitted.filter((t) => t === KEEPALIVE_TEXT)
-// v13.4: the text turn.start carries for a turn the mod's own submit started (probe, engine 2.1.316).
+// The text turn.start carries for a turn the mod's own submit started (probe, engine 2.1.316).
 export const framed = (text: string) => `The callboard plugin sent a message:\n${text}\n\nThis is how Claude Code surfaces a prompt a plugin submits between turns — it starts this turn in the user's place. Address the message above.`
-// v13.4: the engine runs turn.start (with the framed text) and turn.complete for the mod's own submit, but not the mod's own prompt.submit hook; the kit
+// The engine runs turn.start (with the framed text) and turn.complete for the mod's own submit, but not the mod's own prompt.submit hook; the kit
 // runs neither, so the turn is played here.
 export async function ownTurn($: any, text: string) {
   await $.turn.start({ turnId: 'own', text: framed(text) } as any)
@@ -426,16 +426,16 @@ export async function sleepFor(ms: number) {
   await quiet()
 }
 
-// ---- levels S2: lanes name their lead (the key is the lead's registry name, never a file) ----
+// ---- lanes name their lead (the key is the lead's registry name, never a file) ----
 export const selfAs = (name: string, over: Record<string, unknown> = {}) => leadSelfReg({ name, nameSource: 'user', ...over })
 export const regAs = (sid: string, pid: number, name: string) => ({ [`${pid}.json`]: leadReg({ sessionId: sid, pid, name, nameSource: 'user' })['4242.json'] })
 export const bareList = async ($: any) => noNote(await listed($))
 
-// ---- levels S2b: two leads in one repo, a second /callboard lead, and the Join dialog's lead picker ----
+// ---- two leads in one repo, a second /callboard lead, and the Join dialog's lead picker ----
 export const OTHERPATH = `${ROOT}/leads/${OTHERLEAD}.json`
 export const madeLane = (name: string, leadName?: string) => ({ name, folder: SVC, brief: `${SVC}/B.md`, createdAt: 1, ...(leadName ? { leadName } : {}) })
 
-// ---- v13.3: the own-row lookups follow CLAUDE_CONFIG_DIR ----
+// ---- the own-row lookups follow CLAUDE_CONFIG_DIR ----
 // The person's own row, as the engine writes it (kind interactive); in the config-root registry or the default one, by what a test assigns it to.
 // A person's session that runs under CLAUDE_CONFIG_DIR=env (unset: undefined), its own row in the config-root registry (rows), none in the default one.
 export async function configRoot($: any, on: any, stdins: string[], env: string | undefined, rows: Record<string, string>, argv: string[][] = [], opts: { bound?: boolean; interactive?: boolean; before?: () => void } = {}) {
@@ -461,7 +461,7 @@ export const turnEnds = async ($: any) => {
 }
 export const touched = (argv: string[][], needle: string) => argv.some((a) => a.some((x) => x.includes(needle)))
 
-// ---- v13.6 (live 2026-11-03): lead check-ins, /callboard checkin, the waiting column ----
+// ---- lead check-ins, /callboard checkin, the waiting column ----
 const CK_TAIL = 'Call lane_list and look at each. Submitted by the callboard mod, not by the user; it carries no approval, go or answer; never record it as one.'
 export const ckText = (parts: string) => `[callboard] Check-in: some lanes may need you. ${parts}. ${CK_TAIL}`
 export const QUIET = '`API` (quiet for 30 min, report not signed done)'
@@ -505,7 +505,7 @@ export async function advanceQuiet(ms: number) {
   await h.clock!.advance(tail)
 }
 
-// ---- v14 (live 2026-11-03/04): the manager level, its five tools, the compact cue to leads, manager check-ins, soft/hard nudges ----
+// ---- the manager level, its five tools, the compact cue to leads, manager check-ins, soft/hard nudges ----
 export const APISID = '00000000-0000-4000-8000-000000000001'
 export const OTHERMGR = `${ROOT}/leads/${OTHERLEAD}.json`
 // The manager (SID, pid 4400) and two lanes in two repos: LABLANE from the store of /data/x/work (session OTHER, pid 4600), API from the store of PIN (APISID).
@@ -525,15 +525,15 @@ export const mgrFile = (name = 'MANAGER') => leadFiles.set(OTHERMGR, { text: JSO
 export const mgrRow = (name = 'MANAGER') => regAs(OTHERLEAD, 4243, name)
 export const mgrCall = (verb: string, laneName: string) => ({ tool: `mcp__callboard__lane_${verb}`, lane: laneName }) as any
 
-// ---- v15.3 (2026-11-06): lane_retire and lane_terminate of a lane no live session carries remove its record (lane_remove is gone) ----
+// ---- lane_retire and lane_terminate of a lane no live session carries remove its record ----
 // The manager (cwd /) and LABLANE (store of /data/x/work, live); API, the store lane of PIN (another repo), has no live session.
-// v14.1 (2026-11-04, audit, L2): the home folder the mod finds from its paths (ROOT less /.claude/callboard).
+// The home folder the mod finds from its paths (ROOT less /.claude/callboard).
 export const HOME = ROOT.slice(0, -'/.claude/callboard'.length)
 export const MGR_NOAPI = (over: Record<string, unknown> = {}) => ({ ...leadSelfReg(over), ...cueSession(OTHER, 'LABLANE', '/data/x/work/lab', { pid: 4600 }) })
 export const storeNames = () => (JSON.parse(storeFiles.get(STOREFILE)!).lanes as { name: string }[]).map((l) => l.name)
 export const noArchiveRm = (argv: string[][]) => !argv.some((a) => a[0] === '/bin/rm' && a.some((x) => x.includes('/.archive/')))
 
-// ---- v15 (2026-11-05): the conductor level (PR 2 of the levels plan) ----
+// ---- the conductor level ----
 // The conductor repo COND sits beside PIN (../app) and APP2 (../app2); FAR is a repo elsewhere (an absolute entry). The session's own row is in COND.
 export const COND = '/Users/x/code/cond'
 export const CONDFILE = `${COND}/.claude/callboard-conductor.json`
@@ -582,14 +582,14 @@ export async function condOn($: any, on: any, stdins: string[] = [], opts: { clo
 export const condPresenceOf = (sid: string, pid: number, name: string, repos: string[], over: Record<string, unknown> = {}) =>
   leadFiles.set(`${ROOT}/leads/${sid}.json`, { text: JSON.stringify({ sid, pid, procStart: LEADPS, level: 'conductor', name, repos, home: COND, ...over }) })
 
-// v15.4 (2026-11-06): lane_retire and lane_park answered "failed closed" on a lane that was not yet idle for 30 s. A hook has 10 s of its own time per dispatch;
-// $.clock.sleep counts against it and a $ call (process.run) does not. The idle wait (up to 40 s) and the stop poll (10 s) slept with $.clock.sleep, so the engine
-// cut the hook off, its .catch answered, and the code went on unseen. The test engine does not enforce the budget, so these tests hold the cause itself: a wait
+// lane_retire and lane_park wait for a lane that is not yet idle for 30 s. A hook has 10 s of its own time per dispatch;
+// $.clock.sleep counts against it and a $ call (process.run) does not. The idle wait (up to 40 s) and the stop poll (10 s) therefore wait through /bin/sleep, not
+// $.clock.sleep, since the engine cuts a hook off at the budget. The test engine does not enforce the budget, so these tests hold the cause itself: a wait
 // inside a tool call costs no $.clock.sleep time worth the budget, and goes through /bin/sleep.
 export const HOOK_BUDGET_MS = 10_000
 export const sleeps = (argv: string[][]) => argv.filter((a) => a[0] === '/bin/sleep')
 
-// ---- stuck lanes (2026-11-08): an attached lane no live session carries can be removed; a lead's rename carries the lanes its session joined; /callboard claim ----
+// ---- stuck lanes: an attached lane no live session carries can be removed; a lead's rename carries the lanes its session joined; /callboard claim ----
 // A lane a session joined whose session is gone (a lead's records of lanes it was joined to) could not be retired or terminated: only /callboard lane off in the gone session
 // detached it. A lead that was renamed lost the lanes naming its old name.
 export const GONE_ATT = (name = 'ATT', extra: Record<string, unknown> = {}) => attRec(SID, name, { leadName: 'LEAD', ...extra })

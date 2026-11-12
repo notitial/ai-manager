@@ -242,7 +242,7 @@ test('a restore question that times out stays pending: the next /callboard lane 
     await started($, on, [], { clock: true, seed: () => { laneSeed.text = LANES; h.store.set(`sess:${SID}`, hint) } })
     h.restoreHang = new Promise<string>(() => undefined)
     const before = h.askCount
-    // v13.5 review: a question nobody answered ends /callboard lane; it does not go on to Join.
+    // A question nobody answered ends /callboard lane; it does not go on to Join.
     expect((await unanswered($.command.run(lane('lane')))).text).toBe('Nothing changed: the question timed out.')
     expect(h.askCount).toBe(before + 1)
     expect(toasts).toContain('Question timed out. Lane not restored.')
@@ -355,7 +355,7 @@ const restoreDuring = async ($: any, change: () => void | Promise<void>) => {
   h.store.set(`sess:${SID}`, { lane: { name: 'svc-api', at: 1, turns: -1, adopted: true, lead: LEADSID }, counters: { startDone: true }, savedAt: T0 })
   let release: (a: string) => void = () => undefined
   h.restoreHang = new Promise<string>((r) => (release = r))
-  // A restore refused here goes on to the Join question (v13.5): Cancel keeps it to the restore.
+  // A restore refused here goes on to the Join question: Cancel keeps it to the restore.
   h.askAnswer = NO
   const p = $.command.run(lane('lane'))
   await waitFor(() => h.lastQuestion?.startsWith('Restore this session') === true)
@@ -706,7 +706,7 @@ test('a rename cue for a parked lane is refused parked-lane by the session and b
   expect(renames).toEqual([])
 })
 
-// ---- v13: lane_unpark ----
+// ---- lane_unpark ----
 const UNPARK = (extra: Record<string, unknown> = {}) => PARK_API({ name: 'LABLANE', sid: OTHER, parked: T0 - 60_000, ...extra })
 const REOPENPATH = `${ROOT}/open/LABLANE.reopen`
 async function unparker($: any, on: any, stdins: string[] = [], argv: string[][] = [], rec: Record<string, unknown> = {}, sess: Record<string, string> = leadSelfReg()) {
@@ -1105,7 +1105,7 @@ test('/callboard off whose session id clear fails still cancels a pending rebind
   expect(logged(stdins)).toContain('sid-uncleared:')
 })
 
-// ---- v13 review cycle 2 ----
+// ---- /callboard off during a rebind, and /callboard lane with a hint ----
 
 test('/callboard off while a rebind is past its lanes read: no binding is written, and the sid stays cleared', async ($, on) => {
   const stdins: string[] = []

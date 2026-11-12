@@ -789,7 +789,7 @@ test('prompts tools: a conductor and the manager have the three prompt tools, an
   expect(defs).not.toContain('"lane_resume"')
 })
 
-// ---- PR 3: notices to every tier, and the three tiers' briefings ----
+// ---- notices to every tier, and the three tiers' briefings ----
 test('prompts notice: a lead is told at once even with a manager above it; a request with a relay is told to nobody, and told again if the relay is lost', async ($, on) => {
   await tier($, on, [], { clock: true })
   tierFixtures('mgr')

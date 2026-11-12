@@ -210,7 +210,7 @@ test('lane needs exactly one live lead for the session folder: none, two, a stal
 test('a conductor or manager presence file is not a lead: attach finds no lead with one alone, and still exactly one next to a lead file', async ($, on) => {
   await attacher($, on, [], { lead: false })
   const none = async () => expect((await doLane($, 'lane svc-api')).text).toBe(refusalText('no-lead'))
-  // v15 (36): a valid conductor file (with home) is not a lead either.
+  // A valid conductor file (with home) is not a lead either.
   for (const over of [{ level: 'conductor', repo: undefined, repos: [PIN], home: '/Users/x/code/cond' }, { level: 'conductor', repo: undefined, repos: [PIN] }, { level: 'manager', repo: undefined }, { level: 'boss' }, { level: 'lead', repos: [PIN] }]) {
     leadFiles.set(LEADPATH, { text: leadFileText(over) })
     await none()

@@ -235,7 +235,7 @@ test('lane_retire does nothing unless the session is idle and has signed its rep
   const stdins: string[] = []
   await lead($, on, stdins, { argv })
   h.askAnswer = 'Cancel'
-  // v15.3: a busy or waiting session is waited for up to 40 s (virtual here) before the refusal.
+  // A busy or waiting session is waited for up to 40 s (virtual here) before the refusal.
   h.fastSleep = () => undefined
   const retire = async () => JSON.stringify(await $.tool.call(leadCall('retire')))
   const refused: [string, () => void][] = [
@@ -249,7 +249,7 @@ test('lane_retire does nothing unless the session is idle and has signed its rep
     ['not-idle', () => { h.sessions = cueSession(OTHER, 'LABLANE', '/data/x/work/lab', { waitingFor: 'input' }) }],
     ['not-idle', () => { h.sessions = cueSession(OTHER, 'LABLANE', '/data/x/work/lab', { status: 'waiting' }) }],
     ['pid-changed', () => { h.sessions = cueSession(OTHER, 'LABLANE'); h.psOut = 'Wed Oct 28 01:00:00 2026\n' }],
-    // v15.3: a lane no live session carries is no refusal any more (its record is removed): the sessionless tests below cover it.
+    // A lane no live session carries is no refusal any more (its record is removed): the sessionless tests below cover it.
     ['not-claude', () => { h.psOut = 'Tue Oct 27 20:37:50 2026\n'; h.sessions = cueSession(OTHER, 'LABLANE'); h.psArgsOut = '/usr/bin/vim /tmp/notes\n' }],
   ]
   for (const [why, setup] of refused) {
@@ -406,7 +406,7 @@ test('lane_retire: a session that went idle less than 30 seconds ago at the re-c
   expect(killed(argv).length).toBe(0)
 })
 
-// ---- v15.3 (2026-11-06): lane_retire and lane_park wait for the lane's idle time themselves ----
+// ---- lane_retire and lane_park wait for the lane's idle time themselves ----
 test('lane_retire waits for the 30 s idle time itself: a lane idle for 5 s is retired once the time is up, with no refusal', async ($, on) => {
   const argv: string[][] = []
   await lead($, on, [], { argv })
@@ -866,7 +866,7 @@ test('retire and terminate of a joined lane keep its record and clear the stoppe
   expect(recOf('ATT')).toEqual(rec)
 })
 
-// ---- v15.3 (2026-11-06): lane_retire and lane_terminate end the lane for good: its record goes with its session ----
+// ---- lane_retire and lane_terminate end the lane for good: its record goes with its session ----
 // A lead's tool result, less the note that the lanes changed (the test wrote the store itself).
 const stopText = (r: any) => (r.result as string).replace(` ${LANES_CHANGED_NOTE}`, '')
 const liveApi = () => ({ ...leadSelfReg(), ...cueSession(OTHER, 'API', `${PIN}/api`, { pid: 4500 }) })

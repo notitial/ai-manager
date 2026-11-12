@@ -915,7 +915,7 @@ test('prompts: a wait whose request file disappears ends without a second closin
   expect(noFiles()).toBe(true)
 })
 
-// ---- PR 2 in the lane's own hook: a passed-up request ends the wait, and the comment cap is read at apply ----
+// ---- the lane's own hook: a passed-up request ends the wait, and the comment cap is read at apply ----
 const GUARD_ASK = { decision: 'ask', hook: 'PreToolUse', reason: 'github-mcp-guard: ask for the lab' }
 const COMMENT_CALL = callOf('mcp__github__add_issue_comment', PCOMMENT)
 
@@ -957,7 +957,7 @@ test('prompts hook: a call with no @claude body never reads the cap', async ($, 
   expect(hookRows().filter((x) => x.kind === 'returned')[0].target).toBeUndefined()
 })
 
-// ---- PR 2: a push with no branch is judged by where git sends it ----
+// ---- a push with no branch is judged by where git sends it ----
 test('prompts floor: a push with no branch is judged by its configured push target, read with a read-only git call', async ($, on) => {
   const argv: string[][] = []
   await answerer($, on, [], { argv })

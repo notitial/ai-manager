@@ -176,7 +176,7 @@ test('two leads in one repo, two lanes each: lane_list, lane_resume, lane_unpark
     expect(await bareList($)).toBe(mdTable([[me, 'app', mine.map(row)], ['Any lead', 'app', [row('OLD')]]], `**Lead ${me}** · live`))
     for (const n of theirs) for (const verb of ['resume', 'unpark', 'park', 'retire']) expect(JSON.stringify(await $.tool.call(leadCall(verb, { lane: n }))), `${me} ${verb} ${n}`).toContain(`lane_${verb} refused: other-lead`)
     expect((await $.tool.call(leadCall('resume', { lane: mine[0] }))).result).toContain('cue resume acted')
-    // v15.3: a retire of a lane no live session carries removes its record, so it is not in this list.
+    // A retire of a lane no live session carries removes its record, so it is not in this list.
     for (const [verb, why] of [['unpark', 'no-saved-session'], ['park', 'no-live-session']]) expect(JSON.stringify(await $.tool.call(leadCall(verb, { lane: mine[1] }))), `${me} ${verb}`).toContain(why)
     h.sessions = { ...selfAs(me), ...regAs(OTHERLEAD, 4243, other), ...cueSession(OTHER, 'OLD', SVC, { pid: 4500 }) }
     expect((await $.tool.call(leadCall('resume', { lane: 'OLD' }))).result).toContain('cue resume acted')

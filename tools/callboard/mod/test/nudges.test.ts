@@ -280,7 +280,7 @@ test('a lead nudge recorded for the tick is left to the tick', async ($, on) => 
   expect(nudges()).toEqual([nudgeText('lead')])
 })
 
-// The fallback (2026-11-08): the engine may drop the context, or the model may read it and not act. A turn that carried a mid-turn nudge and ends with no request_compact
+// The fallback: the engine may drop the context, or the model may read it and not act. A turn that carried a mid-turn nudge and ends with no request_compact
 // gets the same nudge once as the idle turn, without waiting for the 30-minute gap.
 test('a mid-turn nudge in a turn that ends with no request_compact is sent once more as the idle turn, inside the 30-minute gap, and only once', async ($, on) => {
   postBeneath(on)
@@ -361,7 +361,7 @@ longTest('a declined nudge is not repeated within 30 minutes; after that the nex
 test('no self nudge for a subagent turn, a turn that did not end in an answer, or a non-interactive session', async ($, on) => {
   const stdins: string[] = []
   await person($, on, stdins)
-  h.tokensNow = 310_000 // v14: under the working level, so the soft text
+  h.tokensNow = 310_000 // Under the working level, so the soft text
   await $.turn.complete({ ...TURN, agentId: 'a1' } as any)
   await $.turn.complete({ ...TURN, isAborted: true, reason: 'aborted' } as any)
   await ticks(2)
@@ -799,7 +799,7 @@ test('a claude --bg worker (its own row is kind background) gets no threshold nu
   const stdins: string[] = []
   await person($, on, stdins)
   h.sessions = OWN_ROW({ kind: 'background' })
-  h.tokensNow = 310_000 // v14: under the working level, so the soft text
+  h.tokensNow = 310_000 // Under the working level, so the soft text
   await $.turn.complete(TURN as any)
   await ticks(3)
   expect(logged(stdins).some((x) => x.startsWith('nudge-due'))).toBe(false)
@@ -823,7 +823,7 @@ test('a lane_compact nudge to a lane whose own row is kind background is refused
 
 test('nudge: an idle session at or past the working level gets the hard text, under it the soft one', async ($, on) => {
   await person($, on)
-  // Review c1 (S7): one token under the working level, the soft text.
+  // One token under the working level, the soft text.
   h.tokensNow = 399_999
   await $.turn.complete(TURN as any)
   await ticks(1)

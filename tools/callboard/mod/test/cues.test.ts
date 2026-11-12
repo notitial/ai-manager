@@ -128,7 +128,7 @@ test('creating a lane under a name that sits hidden in two stores does not write
   expect(names).toEqual(['API'])
 })
 
-// ---- v11: the target answers every cue, the lead reads the answer to its own cue ----
+// ---- the target answers every cue, the lead reads the answer to its own cue ----
 
 test('the target answers a cue with its outcome and the inode of the cue file it claimed', async ($, on) => {
   const stdins: string[] = []

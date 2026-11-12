@@ -34,10 +34,10 @@ const releaseSleeps = () => {
   for (const w of sleepWaits.splice(0)) if (w.due <= h.nowMs) w.go()
     else sleepWaits.push(w)
 }
-// kind interactive (v13.2): the engine writes it for a panel or a terminal; the nudge needs it on the session's own row.
+// kind interactive: the engine writes it for a panel or a terminal; the nudge needs it on the session's own row.
 export const AUTO_OWN = JSON.stringify({ sessionId: '0a1b2c3d-0000-4000-8000-123456789abc', cwd: '/data/x/work/lab', status: 'idle', pid: 4999, procStart: 'Tue Oct 27 20:37:50 2026', kind: 'interactive' })
 export const regFiles = (): Record<string, string> => (!h.ownEntryAuto || Object.values(h.sessions).some((t) => t.includes('"sessionId":"0a1b2c3d-0000-4000-8000-123456789abc"')) ? h.sessions : { ...h.sessions, '4999.json': AUTO_OWN })
-// v15.2: what the live checkout's .git/HEAD holds when the mod reads it at session start (undefined: the read fails). Default: on main, which warns nothing.
+// What the live checkout's .git/HEAD holds when the mod reads it at session start (undefined: the read fails). Default: on main, which warns nothing.
 const MAIN_HEAD = 'ref: refs/heads/main\n'
 export const LANESDIR = '/Users/x/.claude/callboard/lanes'
 export const storeFiles = new Map<string, string>()
@@ -73,14 +73,14 @@ export const extraStat = new Map<string, string>()
 // Lane briefs lane_create wrote (<folder>/.archive/<NAME>/BRIEF.md), by path: the text renamed into place. mkdir -p of a .archive/<NAME> folder makes both
 // folders in extraStat (as archiveMade) unless one is already there; briefMvFails fails the rename.
 export const briefFiles = new Map<string, string>()
-// v15: conductor list files (<repo>/.claude/callboard-conductor.json) by path, the stat a test puts in place of the plain file's, and a hook run when the writer
+// Conductor list files (<repo>/.claude/callboard-conductor.json) by path, the stat a test puts in place of the plain file's, and a hook run when the writer
 // fills its temp file (between its first read and its second).
 export const condFiles = new Map<string, string>()
 export const condStat = new Map<string, string>()
 export const realMap = new Map<string, string>()
 export const headArgs: string[] = []
 export const SESSIONS = '/Users/x/.claude/sessions'
-// v13.3: the registry of a session that runs under CLAUDE_CONFIG_DIR (its own row lives there), the environment the mod reads, and the stat the folder answers.
+// The registry of a session that runs under CLAUDE_CONFIG_DIR (its own row lives there), the environment the mod reads, and the stat the folder answers.
 export const CONFIG_ROOT = '/Users/x/.claude-conductor/config'
 export const OWNDIR = `${CONFIG_ROOT}/sessions`
 // The registry folder a path sits in, with the file name: the default registry or the config-root one.
@@ -180,7 +180,7 @@ export const ROOT = '/Users/x/.claude/callboard'
 export const resultFiles = new Map<string, string>()
 export const OPEN_RESULT = '/Users/x/.claude/callboard/open/LABLANE.result'
 export const PS_TABLE = '    1     0 /sbin/launchd\n 4300     1 /x/native-binary/claude --resume LABLANE\n 4310  4300 node /x/mcp-server.js\n 4311  4300 /usr/bin/caffeinate -i -t 300\n'
-// v15.3: a pid that got a SIGTERM that exited 0 is gone from `ps -p` unless a test sets survivesKill (the record is removed only once the process ended).
+// A pid that got a SIGTERM that exited 0 is gone from `ps -p` unless a test sets survivesKill (the record is removed only once the process ended).
 export const killedPids = new Set<string>()
 export const psCalls: string[] = []
 export const psStartsGone = new Set<string>()
@@ -219,20 +219,20 @@ export const h = {
   askAnswer: YES,
   lastQuestion: undefined,
   askedOptions: [] as string[][],
-  // v14: the header of the last question shown.
+  // The header of the last question shown.
   lastHeader: undefined,
   askCount: 0,
   askHang: undefined,
-  // S2b: answers each non-restore question by its text and options (the lead picker, then the Join question); unset: askAnswer as before.
+  // Answers each non-restore question by its text and options (the lead picker, then the Join question); unset: askAnswer as before.
   askScript: undefined,
   restoreHang: undefined,
   restoreAnswer: YES,
   sessions: {} as Record<string, string>,
   // A process always has a registry entry of its own (the lock owner is named from it); a test that has none gets this one, unless it turns it off.
   ownEntryAuto: true,
-  // v15.3: when set, the test engine's clock.sleep (without the mock clock) returns at once and moves nowMs by the time asked, then runs this hook (what a retire or park waits on).
+  // When set, the test engine's clock.sleep (without the mock clock) returns at once and moves nowMs by the time asked, then runs this hook (what a retire or park waits on).
   fastSleep: undefined,
-  // v15.4: what a hook has used of its 10 s of own time on $.clock.sleep (a $ call, such as /bin/sleep through process.run, costs it nothing), and a switch that makes /bin/sleep fail.
+  // What a hook has used of its 10 s of own time on $.clock.sleep (a $ call, such as /bin/sleep through process.run, costs it nothing), and a switch that makes /bin/sleep fail.
   clockSlept: 0,
   sleepFails: false,
   // One read of the clock throws, as a failing engine call would.
@@ -252,7 +252,7 @@ export const h = {
   appendDeny: false,
   // The lead presence folder: a hook awaited when it is listed, and a stat of it that rejects.
   leadsListHook: undefined,
-  // v13.6: awaited when the lane store folder is listed (a slow lane read).
+  // Awaited when the lane store folder is listed (a slow lane read).
   lanesListHook: undefined,
   leadsStatRejects: false,
   composeCalls: 0,
@@ -281,9 +281,9 @@ export const h = {
   // A shasum whose input (the request id, a newline and a label) the test makes fail: the label hash of a question's answer.
   shaFailsFor: undefined,
   nowMs: T0,
-  // set (v13): the mock clock jumps to a time without running every tick on the way.
+  // set: the mock clock jumps to a time without running every tick on the way.
   clock: undefined,
-  // v13.4: while set, the mock clock's timer asks for no next period (no tick runs): the Mac asleep. See sleepFor.
+  // While set, the mock clock's timer asks for no next period (no tick runs): the Mac asleep. See sleepFor.
   timerHeld: undefined,
   turnsNow: 0,
   turnsAddedByRename: 1,
@@ -321,12 +321,12 @@ export const h = {
   psStartsFails: undefined,
   psEnv: undefined,
   psArgsOut: '/x/native-binary/claude --output-format stream-json\n',
-  // v13 harness: the report path the mock serves (a store lane's report sits in its repo), a one-shot hook on a lane-record hash, and a store write that hangs.
+  // The report path the mock serves (a store lane's report sits in its repo), a one-shot hook on a lane-record hash, and a store write that hangs.
   reportAt: REPORT,
   // Called at the first record hash of LABLANE; a promise it returns holds that hash until it settles.
   shaHook: undefined,
   storeHang: undefined,
-  // v15 review c1: a hook on the mod's store.set of a conductor: key (before it lands), and one on a realpath call (its promise holds the answer).
+  // A hook on the mod's store.set of a conductor: key (before it lands), and one on a realpath call (its promise holds the answer).
   condSetHook: undefined,
   realHook: undefined,
   // The reads (head) of a conductor list file so far.
@@ -351,7 +351,7 @@ export const h = {
   psConfirmFails: undefined,
   psConfirmOut: undefined,
   renameMode: 'ok' as 'ok' | 'throw' | 'hang',
-  // v14 review c1 (S8): run once, before the answer, at the next `ps -o args=` (a process check), then cleared.
+  // Run once, before the answer, at the next `ps -o args=` (a process check), then cleared.
   psArgsHook: undefined,
   modelMode: 'ok' as 'ok' | 'stay' | 'throw' | 'hang',
   modelNow: 'claude-sonnet-5-5',
@@ -359,7 +359,7 @@ export const h = {
   agentListThrows: false,
   renameGate: undefined,
   registerGate: undefined,
-  // v13 harness: the next n session.root() calls throw; registering a lane_* tool waits on this.
+  // The next n session.root() calls throw; registering a lane_* tool waits on this.
   cwdThrows: 0,
   // A failed root() read makes the cwd() read that follows it fail too, so cwdThrows stays one failed folder read. rootMissing: an engine without root().
   cwdFailNext: false,
@@ -381,7 +381,7 @@ export const h = {
   compactHangs: false,
   compactThrows: false,
   submitHangs: false,
-  // v13.2 review c1: run once inside the next prompt submit, before it succeeds or fails (the engine runs the prompt hooks there); a store call that throws at once.
+  // Run once inside the next prompt submit, before it succeeds or fails (the engine runs the prompt hooks there); a store call that throws at once.
   submitHook: undefined,
   storeThrowSync: undefined,
   lockOwnerAfterMove: undefined,
@@ -392,7 +392,7 @@ export const h = {
   // working through its chain of reads and processes has finished when an advance returns. The kit's own wait for the mod to settle gives up after 500 ms of
   // wall time, which a slow runner can reach in the middle of a tick.
   hostCalls: 0,
-  // PR 3: registry rows of the tiers a test adds (addCondT, addMgrT).
+  // Registry rows of the tiers a test adds (addCondT, addMgrT).
   extraRows: {} as Record<string, string>,
   // The hooks beneath the plugins are registered before the first $ call; a test changes what they answer through these.
   prVerdict: undefined,
@@ -714,7 +714,7 @@ export function engine(on0: any, argvSeen: string[][], stdins: string[] = [], cl
       if (h.modelMode === 'hang') return new Promise(() => undefined)
       if (h.modelMode === 'ok') h.modelNow = `claude-${e.args}-5-5`
     } else if (e.command === 'color') {
-      // v14: the manager's /color, run from a timer.
+      // The manager's /color, run from a timer.
       colorRuns.push(e.args)
     } else {
       if (h.compactThrows) throw new Error('refused')
@@ -819,7 +819,7 @@ export function engine(on0: any, argvSeen: string[][], stdins: string[] = [], cl
     if (a[0] === '/bin/mv' && h.mvHook) h.mvHook(a[a.length - 1])
     const ok = (stdout: string, exitCode = 0, stderr = '') => ({ value: { exitCode, stdout, stderr: exitCode !== 0 && a[0] === '/usr/bin/stat' && stderr === '' ? `stat: ${a[a.length - 1]}: No such file or directory` : stderr, isStdoutTruncated: false, isStderrTruncated: false } })
     if (a[0] === '/usr/bin/id') return ok(a[1] === '-u' ? '501\n' : 'x\n')
-    // v15.4: a wait through a process: the test clock moves by the time asked, then the test's hook runs, as with the short polls of clock.sleep.
+    // A wait through a process: the test clock moves by the time asked, then the test's hook runs, as with the short polls of clock.sleep.
     if (a[0] === '/bin/sleep') {
       if (h.sleepFails) return ok('', 1, 'sleep: failed')
       // With the mock clock a sleep process takes the clock's time: it ends when the test advances past it, as a held clock.sleep does.
@@ -848,7 +848,7 @@ export function engine(on0: any, argvSeen: string[][], stdins: string[] = [], cl
       return ok('')
     }
     if (a[0] === '/usr/bin/stat' && h.briefTmpStat !== undefined && /\/\.BRIEF\.md\.\d+\.\d+\.tmp$/.test(last)) return ok(h.briefTmpStat)
-    // v15: the conductor list file and its .claude folder.
+    // The conductor list file and its .claude folder.
     if (a[0] === '/bin/mkdir' && a[1] === '-m' && last.endsWith('/.claude')) {
       if (!extraStat.has(last)) extraStat.set(last, '501 755 2 Directory 8 64 1700000000\n')
       return ok('')
@@ -865,7 +865,7 @@ export function engine(on0: any, argvSeen: string[][], stdins: string[] = [], cl
       return ok('')
     }
     if (a[0] === '/usr/bin/stat' && condFiles.has(last)) return ok(condStat.get(last) ?? `501 644 1 Regular File 19 ${condFiles.get(last)!.length} 1700000000\n`)
-    // v15.2: the live checkout's HEAD, read with a bound at session start.
+    // The live checkout's HEAD, read with a bound at session start.
     if (a[0] === '/usr/bin/head' && a[1] === '-c' && a[2] === '257' && a[3] === '--' && /\/\.git\/HEAD$/.test(last)) {
       h.liveHeadReads++
       h.liveHeadAsked = { path: last, bytes: a[2] }
@@ -998,7 +998,7 @@ export function engine(on0: any, argvSeen: string[][], stdins: string[] = [], cl
       const f = leadFiles.get(last)!
       if (a[0] === '/usr/bin/stat') return ok(`${f.uid ?? 501} ${f.mode ?? '600'} ${f.nlink ?? 1} ${f.kind ?? 'Regular File'} 31 ${f.size ?? f.text.length} ${f.mtimeSec ?? Math.floor(h.nowMs / 1000)}\n`)
       if (a[0] === '/usr/bin/head') {
-        // Review c2 (CR2): a read that fails, failHead times.
+        // A read that fails, failHead times.
         if ((f.failHead ?? 0) > 0) {
           f.failHead!--
           return ok('', 1)

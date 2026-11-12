@@ -3,12 +3,12 @@ import { LEAD_MANAGER_TEXT, MANAGER_RESTORE_QUESTION, MANAGER_RESTORED_TOAST, MA
 import { h, GOOD, LANESDIR, NO, PS_TABLE, ROOT, SID, T0, YES, colorRuns, extraStat, laneSeed, leadFiles, lockLog, longTest, psCalls, psDead, psFail, renames, seen, statErr, storeFiles, toasts, toolDefs } from './harness'
 import { APISID, COMPOSE, HOME, LEADPATH, LEADPS, LEADSID, MGR_NOAPI, MGR_SESS, MIN, NEWSID, OTHER, OTHERLEAD, OTHERMGR, PIN, QUIET, REPORT_OK, SELFPATH, STATUS_NONE, TURN, attacher, checkins, ckLane, ckLead, ckText, cue, cueSession, dirStat, doLane, grantAt, idleFor, killed, lane, leadAt, leadFileText, leadReg, leadSelfReg, listCall, logged, madeLane, mgrAt, mgrCall, mgrFile, mgrRow, newTrace, noArchiveRm, noteRows, nudges, ownReg, putStore, regAs, started, statusText, storeNames, ticks, unanswered, waitFor } from './fixtures'
 
-// v15.3 (2026-11-06): lane_remove is gone again (retire and terminate remove the record): five.
+// lane_remove does not exist (retire and terminate remove the record): five.
 const MGR_TOOLS = ['lane_list', 'lane_resume', 'lane_compact', 'lane_terminate', 'lane_retire']
 
 test('manager: one dialog (header Manager, buttons Manager and Cancel); a yes writes the manager file with no repo, appends the briefing, declares five tools, and sets the name and colour from the timer', async ($, on) => {
   const stdins: string[] = []
-  // toolDefs is kept across tests (review c1): only the definitions this test's grant registered.
+  // toolDefs is kept across tests: only the definitions this test's grant registered.
   const defs0 = toolDefs.length
   const r = await mgrAt($, on, stdins, { clock: true, seed: () => h.store.set('reserved', { names: ['HARBOR'] }) })
   expect(r.text).toBe(MANAGER_ON_TEXT)
@@ -21,7 +21,7 @@ test('manager: one dialog (header Manager, buttons Manager and Cancel); a yes wr
   expect(rows[0].text).toBe(managerBriefingNote('MANAGER'))
   expect(rows[0].text).toContain(MANAGER_H2)
   expect(rows[0].text).toContain('every time; never unattended')
-  // v15 (2026-11-05): the role is docs/manager/README.md.
+  // The role is docs/manager/README.md.
   expect(rows[0].text).toContain('`docs/manager/README.md` in the ai-manager checkout')
   const names = toolDefs.slice(defs0).map((d) => JSON.parse(d).name).filter((n: string) => n.startsWith('lane_'))
   expect([...new Set(names)].sort()).toEqual([...MGR_TOOLS].sort())
@@ -37,7 +37,7 @@ test('manager: one dialog (header Manager, buttons Manager and Cancel); a yes wr
   expect(logged(stdins)).toContain('renamed:manager')
   expect(logged(stdins).some((x) => x.startsWith('manager-color'))).toBe(true)
   expect((await $.command.run(lane('manager'))).text).toBe(MANAGER_ALREADY)
-  // Review c1 (S10): another NAME changes nothing, and the answer names the one that stays.
+  // Another NAME changes nothing, and the answer names the one that stays.
   expect((await $.command.run(lane('manager HARBOR'))).text).toBe('Manager is already on in this session; the name stays MANAGER.')
   expect((await $.command.run(lane('manager MANAGER'))).text).toBe(MANAGER_ALREADY)
   expect(JSON.parse(leadFiles.get(SELFPATH)!.text).name).toBe('MANAGER')
@@ -181,7 +181,7 @@ test('manager lane_terminate: the dialog names the repo; a second stop while it 
   expect(h.lastQuestion).toContain("Force stop lane LABLANE's session in work (")
   expect(h.lastQuestion).toContain(" It ends at once, even mid-task. The lane's record is then removed.")
   expect(JSON.stringify(await $.tool.call(mgrCall('terminate', 'API')))).toContain('lane_terminate refused: busy')
-  // Review c1 (W4): a retire that passes its early checks (signed report) reaches its own dialog and is refused busy there.
+  // A retire that passes its early checks (signed report) reaches its own dialog and is refused busy there.
   h.reportFile = REPORT_OK()
   expect(JSON.stringify(await $.tool.call(mgrCall('retire', 'LABLANE')))).toContain('lane_retire refused: busy')
   release(YES)
@@ -196,9 +196,9 @@ test('manager lane_terminate: the dialog names the repo; a second stop while it 
 test('manager lane_terminate: nothing is sent when the grant ends while the dialog is open (the re-check refuses off)', async ($, on) => {
   const argv: string[][] = []
   await mgrAt($, on, [], { argv })
-  // Review c1 (W5): this guards "the grant still held": with no grant the re-check's leadPrep (leadCore) refuses off before the level is compared.
-  // Review c2 (CR5): the level clause of the re-check (grant-changed) is a backstop no command path reaches: a session that was the manager is refused
-  // /callboard lead (lead-after-manager, W3) and one that was a lead is refused /callboard manager (manager-after-lead). S8's test covers the check before kill.
+  // This guards "the grant still held": with no grant the re-check's leadPrep (leadCore) refuses off before the level is compared.
+  // The level clause of the re-check (grant-changed) is a backstop no command path reaches: a session that was the manager is refused
+  // /callboard lead (lead-after-manager) and one that was a lead is refused /callboard manager (manager-after-lead). The test of the check before the kill covers that one.
   h.askScript = async () => {
     await $.command.run(lane('off'))
     return YES
@@ -241,7 +241,7 @@ test('manager lane_terminate of a lane no live session carries: the Remove quest
   h.askAnswer = NO
   expect(JSON.stringify(await $.tool.call(mgrCall('terminate', 'API')))).toContain('lane_terminate refused: the person did not confirm. Nothing was removed.')
   expect(h.lastQuestion).toBe(removeQuestion('API', PIN, false, HOME))
-  // v14.1 (2026-11-04, audit, L2): the repo by its home-relative path.
+  // The repo by its home-relative path.
   expect(h.lastQuestion).toBe('Remove lane API in ~/code/app? It has no live session.')
   expect(h.lastHeader).toBe('Stop Lane')
   expect(h.askedOptions[h.askedOptions.length - 1]).toEqual(['Remove', 'Cancel'])
@@ -467,7 +467,7 @@ test('an armed on-cue request the lead did not make through request_compact is n
   expect(JSON.stringify(await $.tool.call(GOOD as any))).toContain('request_compact is not enabled for this session')
 })
 
-// ---- v14 review c1 (2026-11-04): the fixes of review cycle 1 ----
+// ---- the manager's resume of an attached lane, the re-check before a kill, and the stop gates ----
 test('an attached lane whose lead is gone takes the manager\'s resume while a trusted manager is live; start, and every cue with no such manager, stay refused no-lead', async ($, on) => {
   await attacher($, on, [], { clock: true })
   await doLane($, 'lane svc-api')
@@ -476,7 +476,7 @@ test('an attached lane whose lead is gone takes the manager\'s resume while a tr
   mgrFile()
   h.sessions = { ...ownReg(), ...mgrRow() }
   expect(await cue(72, 'resume\n')).toBe('resume ok - 72\n')
-  // Review c2 (CR table): retire and compact are taken too (past no-lead, to the verb's own checks).
+  // Retire and compact are taken too (past no-lead, to the verb's own checks).
   expect(await cue(76, 'retire\n')).toBe('retire refused report-missing 76\n')
   expect(await cue(77, 'compact\n')).toBe('compact held nudged 77\n')
   // start is no manager verb.
@@ -524,7 +524,7 @@ test('a grant dropped during the last process check before the signal sends noth
   }
   expect(JSON.stringify(await $.tool.call(mgrCall('terminate', 'LABLANE')))).toContain("lane_terminate refused: grant-changed: this session's grant changed while the question was open. No signal was sent.")
   expect(killed(argv)).toEqual([])
-  // Review c2 (CR4): the re-check passed (it logs terminating only after it), and the refusal came after that line: the check right before kill refused.
+  // The re-check passed (it logs terminating only after it), and the refusal came after that line: the check right before kill refused.
   const lines = logged(stdins)
   expect(lines.indexOf('terminating:LABLANE')).toBeGreaterThan(-1)
   expect(lines.indexOf('refused:lead-grant-changed')).toBeGreaterThan(lines.indexOf('terminating:LABLANE'))
@@ -617,7 +617,7 @@ test('a lead gets the on-cue section only while its tick last saw a trusted mana
   expect(await sect()).toEqual([])
 })
 
-// ---- v14 review c2 (2026-11-04): the fixes of review cycle 2 ----
+// ---- a lead's manager look that hangs, a leads folder that fails, and the lead verdict the manager keeps ----
 longTest('a lead\'s manager look that hangs times out: no section meanwhile, read again the next minute; after off and a new grant the old answer is not served', async ($, on) => {
   await leadAt($, on, [], { clock: true, sess: { ...leadSelfReg(), ...mgrRow() }, seed: () => mgrFile() })
   const sect = async () => ((await $.prompt.compose(COMPOSE)).sections as { id: string }[]).filter((x) => x.id === 'callboard:lead-manager').length
@@ -695,7 +695,7 @@ test('a manager file whose read fails once is read again and judged on that read
 
 longTest('the manager keeps a repo\'s lead verdict for the next check-in evaluation, re-read every second one; a lead whose check errors counts as live (no notice)', async ($, on) => {
   const argv: string[][] = []
-  // As W2: the only lane seen live is API, whose lead is live.
+  // The only lane seen live is API, whose lead is live.
   await mgrAt($, on, [], { argv, clock: true, sess: { ...leadSelfReg({ name: 'MANAGER' }), ...cueSession(APISID, 'API', `${PIN}/api`, { pid: 4500 }), ...leadReg() }, seed: () => leadFiles.set(LEADPATH, { text: leadFileText() }) })
   h.psTable = `${PS_TABLE} 4400     1 /x/native-binary/claude\n`
   // No keepalive ping: its submit would restart the 20-minute idle gate, and the filter would not run.
@@ -703,7 +703,7 @@ longTest('the manager keeps a repo\'s lead verdict for the next check-in evaluat
   await $.turn.complete(TURN as any)
   await idleFor(32 * MIN)
   expect(checkins()).toEqual([])
-  // API stays owed and its lead stays live: each minute's evaluation runs the filter and sends nothing. v14.1 (review c3, PR review): the verdict is
+  // API stays owed and its lead stays live: each minute's evaluation runs the filter and sends nothing. The verdict is
   // reused at the next evaluation (60-62 s apart) and read again at the one after, so six evaluations read the lead's file three times (60 s: six; 130 s: two).
   const reads = () => argv.filter((a) => a[0] === '/usr/bin/head' && a[a.length - 1] === LEADPATH).length
   const before = reads()
@@ -732,7 +732,7 @@ test('a session that was the manager is refused /callboard lane before the dialo
   expect((await $.command.run(lane('status'))).text).toBe(STATUS_NONE)
 })
 
-// ---- v15.3 (2026-11-06): the manager restore dialog ----
+// ---- the manager restore dialog ----
 const MGRKEY = `manager:${SID}`
 const mgrLogs = (stdins: string[]) => logged(stdins).filter((x) => x.startsWith('manager-'))
 // A session that starts with a saved manager grant. Its row carries the name MANAGER, so the grant needs no rename.

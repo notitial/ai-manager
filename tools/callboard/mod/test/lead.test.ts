@@ -363,7 +363,7 @@ test('a lead pinned at a parent repo does not answer for a lane of a nested repo
   expect(await cue(86, 'resume\n')).toBe('resume ok - 86\n')
 })
 
-// ---- F6: the presence pid, one git-root rule, a failed check is not a no (L-8, L-4) ----
+// ---- the presence pid, one git-root rule, a failed check is not a no ----
 const GITFILE = '501 644 1 Regular File 9 40 1700000000\n'
 const GITLINK = '501 755 1 Symbolic Link 9 12 1700000000\n'
 const notGit: [string, () => void][] = [
@@ -468,7 +468,7 @@ test('a pin that is gone is a no at once, not retried', async ($, on) => {
   expect(logged(stdins)).not.toContain('error:presence-check')
 })
 
-// ---- F7: one session is a lane or a lead, never both ----
+// ---- one session is a lane or a lead, never both ----
 const LANE_HOLDER = 'Lead stays off: this session is a lane, so it cannot be a lead. Run /callboard lane off first.'
 
 test('a bound lane that runs /callboard lead is refused before any dialog, and gets no presence file', async ($, on) => {
@@ -885,7 +885,7 @@ test('the lead restore reads the start folder', async ($, on) => {
   expect(await statusText($)).toContain('Lead: ON')
 })
 
-// ---- v13 review fixes ----
+// ---- /callboard off while a lead restore waits on its tool registration, and the saved grant ----
 test('/callboard off while a lead restore waits on its tool registration: no lead, and no saved grant', async ($, on) => {
   const stdins: string[] = []
   let release!: () => void
@@ -1018,7 +1018,7 @@ test('an engine without session.root() reads the live folder instead: the lane r
   expect(rebinds(stdins)[0]).toStartWith('rebound:')
 })
 
-// ---- v13.5: /callboard on is retired (2026-11-03); what it left is cleared at start ----
+// ---- /callboard on is retired; what it left is cleared at start ----
 const ONKEY = `on:${SID}`
 
 test('an enabled state and a saved on left from before are cleared at start with no toast; the session is not eligible, so a compact cue refuses', async ($, on) => {

@@ -5,7 +5,7 @@
 // Checked, each as a multiset, so the order of tests across files does not matter:
 //   1. the number of test( and longTest( declarations;
 //   2. every line that holds expect( (the assertions);
-//   3. every line inside a test body.
+//   3. every line of code inside a test body (comment lines, and a comment at the end of a line, are left out: they are not code).
 // A line is compared after the state prefix is dropped (`h.sessions` reads as `sessions`) and the quiet-stretch helper reads as the
 // clock advance it stands for (`advanceQuiet(` as `clock!.advance(`). Exit 0 when all three are equal, 1 with the differing lines
 // otherwise, 2 on a bad argument. It is a one-off proof for that move, kept so the claim can be rerun; it is not part of test.sh.
@@ -34,7 +34,7 @@ if (objStart < 0 || objEnd < 0) {
 }
 const keys = [...harness.slice(objStart, objEnd).matchAll(/^ {2}(\w+):/gm)].map((m) => m[1])
 const stateRe = new RegExp(`\\bh\\.(${keys.join('|')})\\b`, 'g')
-const norm = (line) => line.trim().replace(stateRe, '$1').replace(/\badvanceQuiet\(/g, 'clock!.advance(').replace(/\bclock!\.advance\(/g, 'ADVANCE(').replace(/\blongTest\(/g, 'test(')
+const norm = (line) => line.replace(/^([^'"`]*?\S)\s+\/\/\s.*$/, '$1').trim().replace(stateRe, '$1').replace(/\badvanceQuiet\(/g, 'clock!.advance(').replace(/\bclock!\.advance\(/g, 'ADVANCE(').replace(/\blongTest\(/g, 'test(')
 
 const declRe = /^(\s*)(?:long)?[tT]est\(/
 function scan(text) {
@@ -50,6 +50,7 @@ function scan(text) {
     while (j < lines.length && lines[j] !== close) j++
     if (j === lines.length) throw new Error(`no end for the test at line ${i + 1}`)
     for (let k = i + 1; k < j; k++) {
+      if (lines[k].trim().startsWith('//')) continue
       const n = norm(lines[k])
       out.bodies.push(n)
       if (/\bexpect\(/.test(lines[k])) out.asserts.push(n)

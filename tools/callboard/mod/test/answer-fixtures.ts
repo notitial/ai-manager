@@ -2,7 +2,7 @@ import * as prm from '../hooks/prompts'
 import { h, PROMPTS_DIR, ROOT, SID, T0, extraStat, leadFiles, pdirs, pfs } from './harness'
 import { APISID, APP2, COND, LEADPATH, LEADPS, LEADSID, PIN, SVC, attacher, condOn, condPresenceOf, dirStat, doLane, lead, leadAt, leadFileText, leadReg, leadSelfReg, ownReg, putCond, regAs } from './fixtures'
 
-// ---- ADR 0004 prompt answering, PR 1: the hook, the floor, the files and the switch ----
+// ---- ADR 0004 prompt answering: the hook, the floor, the files and the switch ----
 // A lane under a live lead (the attach helpers), the switch on for all, an ask rule beneath, and the engine's PermissionRequest chain beneath returning {}.
 export const PRQ = { command: 'ssh host uptime' }
 export const PDIR = `${PROMPTS_DIR}/${SID}`
@@ -36,7 +36,7 @@ export async function answerer($: any, on: any, stdins: string[], opts: Ans = {}
 // A question's own ask is judged like any other once the lane is set up; the setup dialogs above must still pass.
 export const askCheck = ($: any, over: Record<string, unknown> = {}) => $.tool.check({ tool: 'Bash', input: PRQ, tool_use_id: 'tu1', approver: 'person', ...over } as any)
 export const startReq = ($: any, over: Record<string, unknown> = {}) => $.classic.PermissionRequest({ tool_name: 'Bash', tool_input: PRQ, ...over } as any)
-// A decision made by hand, the only kind PR 1 has: its answered row (appended to the ledger) and its file.
+// A decision made by hand, the only kind the lane's own hook has: its answered row (appended to the ledger) and its file.
 export function handDecision(req: any, over: Record<string, unknown> = {}, row: boolean | Record<string, unknown> = true) {
   const d = { id: req.id, inputHash: req.inputHash, decision: 'allow', why: 'ok', by: { level: 'lead', sid: LEADSID, name: 'LEAD' }, at: h.nowMs, nonce: req.nonce, ...over }
   if (row) {
@@ -77,7 +77,7 @@ export const callOf = (tool: string, input: unknown) => ({ check: { tool, input 
 // ---- the sweep ----
 export const GONE = '7a1b2c3d-0000-4000-8000-123456789abc'
 
-// ---- ADR 0004 prompt answering, PR 2: the lead tier (prompt_list, prompt_answer, prompt_escalate), the notice and the cap ----
+// ---- ADR 0004 prompt answering: the lead tier (prompt_list, prompt_answer, prompt_escalate), the notice and the cap ----
 // The current session is a lead pinned at PIN (leadAt); the lane is another session in SVC, whose request files are made by hand (the hook is the lane's own).
 export const LANESID = '6a1b2c3d-0000-4000-8000-123456789abc'
 export const TID = '7a1b2c3d-0000-4000-8000-123456789abc'
@@ -121,7 +121,7 @@ export const putRelay = (req: any, over: Record<string, unknown> = {}) => pfs.se
 
 export const LEAD2 = '4b1b2c3d-0000-4000-8000-123456789abc'
 
-// ---- ADR 0004 prompt answering, PR 3: the conductor and manager tiers, the pass-up chain, the person relay ----
+// ---- ADR 0004 prompt answering: the conductor and manager tiers, the pass-up chain, the person relay ----
 export const MGRT = '9b1b2c3d-0000-4000-8000-123456789abc'
 export const CNDT = '9c1b2c3d-0000-4000-8000-123456789abc'
 const MGRTPATH = `${ROOT}/leads/${MGRT}.json`
@@ -142,7 +142,7 @@ export const byMgr = { level: 'manager', sid: MGRT, name: 'MANAGER' }
 export const putFileAt = (name: string, text = '{}') => pfs.set(`${PDIR}/${name}`, { text, mtimeSec: h.nowMs / 1000 })
 export const decideBy = (by: Record<string, unknown>, over: Record<string, unknown> = {}) => handDecision(readReq(), { by, ...over }, { by: by.sid, ...(over.via ? { via: over.via } : {}) })
 
-// ---- PR 3: the tools of each tier (a lead with tiers above it; a conductor and the manager as callers) ----
+// ---- the tools of each tier (a lead with tiers above it; a conductor and the manager as callers) ----
 export const SHORT = TID.slice(0, 8)
 export const putRelayT = (by: Record<string, unknown> = { level: 'lead', sid: SID, name: 'LEAD' }, id = TID) => putFile(`${id}.relay.json`, JSON.stringify({ id, short: id.slice(0, 8), by, at: T0, nonce: 'n-1' }))
 
@@ -168,7 +168,7 @@ export const beneathHooks = (on: any) => {
 }
 export const decOf = (id = TID) => JSON.parse(decFile(id)!.text)
 
-// ---- ADR 0004 prompt answering, PR 4: a lane's single-choice question, answered by a tier, and the question relay ----
+// ---- ADR 0004 prompt answering: a lane's single-choice question, answered by a tier, and the question relay ----
 export const QTEXT = 'Which port do I use?'
 export const QIN = { questions: [{ question: QTEXT, header: 'Port', options: [{ label: '3000', description: 'dev' }, { label: ' 8080 ', description: 'alt' }], multiSelect: false }] }
 export const QASK = { decision: 'ask' }

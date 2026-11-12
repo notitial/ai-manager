@@ -245,7 +245,7 @@ test('a bad list file, a bad conductor folder and an unknown form get their own 
   expect(h.askCount).toBe(0)
 })
 
-// ---- v15 S6b: the conductor grant, its restore, its tools ----
+// ---- the conductor grant, its restore, its tools ----
 const CONDKEY = `conductor:${SID}`
 const condSections = (r: any) => (r.sections as { id: string; text: string }[]).filter((x) => x.id === 'callboard:conductor')
 // A session that starts with a saved conductor grant (approved: repos) and the list file `file`.
@@ -362,7 +362,7 @@ test('a restore whose file names a repo outside the approved list asks first, na
   await h.clock!.advance(2000)
   await waitFor(() => condLogs(stdins).includes('conductor-restored:widened 1'))
   expect(h.lastQuestion).toBe(conductorRestoreQuestion(COND, [PIN, APP2], [APP2], CHOME))
-  // v15 security review (F2): the new repos first, a fixed closing sentence.
+  // The new repos first, a fixed closing sentence.
   expect(h.lastQuestion).toBe("cond's conductor list changed since you approved it. New: ../app2. Restore this session as a conductor for these repos? ../app, ../app2. Cancel removes the saved conductor grant.")
   expect(h.lastHeader).toBe('Conductor')
   expect(await statusText($)).toBe('Lane: NONE. Conductor: ON (2 repos).')
@@ -438,7 +438,7 @@ test('in a running conductor an entry written into the file by hand is not reach
   expect(h.askCount).toBe(1)
   expect((await condRun($, '')).text).toBe(CONDUCTOR_ON_TEXT)
   expect(h.askCount).toBe(2)
-  // v15 security review (F2): the repo not yet approved is named first.
+  // The repo not yet approved is named first.
   expect(h.lastQuestion).toBe(conductorQuestion(COND, [PIN, APP2], CHOME, [APP2]))
   expect(h.lastQuestion.startsWith('New since you approved: ../app2. Make this session a conductor')).toBe(true)
   expect(await statusText($)).toBe('Lane: NONE. Conductor: ON (2 repos).')
@@ -673,7 +673,7 @@ test('a repo removed while the stop dialog is open sends nothing', async ($, on)
   expect(JSON.stringify(await $.tool.call(mgrCall('terminate', 'API')))).toContain('other-repo')
   expect(killed(argv)).toEqual([])
 })
-// v15 review c1 (W4): the off half on its own grant, so its dialog opens (the remove above ratchets ../app out of the approved list).
+// The off half on its own grant, so its dialog opens (the remove above ratchets ../app out of the approved list).
 test('an off while the conductor\'s stop dialog is open sends nothing', async ($, on) => {
   const argv: string[][] = []
   await condOn($, on, [], { argv })
@@ -797,7 +797,7 @@ test('the off question asked from another origin in a conductor session names th
   expect(await statusText($)).toBe('Lane: NONE. Conductor: ON (2 repos).')
 })
 
-// ---- v15 S6c: the Conductor box in the manager's list ----
+// ---- the Conductor box in the manager's list ----
 const COND2 = '7a1b2c3d-0000-4000-8000-123456789abc'
 
 test('the manager\'s list nests a live conductor\'s repos in a Conductor box inside the Manager box and keeps other repos at the Manager level', async ($, on) => {
@@ -914,7 +914,7 @@ test('laneless leads: a lead\'s own list does not show the other leads of its re
   expect(await listed($)).toBe('no lanes in this repo')
 })
 
-// ---- v15 S7: a lead takes a compact cue from its conductor ----
+// ---- a lead takes a compact cue from its conductor ----
 // A lead in PIN; another session (OTHERLEAD, pid 4243, CONDX) is a conductor in COND listing ../app, with its saved grant and its list file.
 const trustSeed = (over: Record<string, unknown> = {}) => () => {
   extraStat.set(`${COND}/.git`, dirStat)
@@ -986,7 +986,7 @@ test('an adopted lane with no live lead refuses a conductor\'s cue (no-lead) and
   expect(await cue(83, 'resume\n')).toBe('resume ok - 83\n')
 })
 
-// ---- v15 S7b: a lead's briefing names its conductor ----
+// ---- a lead's briefing names its conductor ----
 const leadCondSect = async ($: any) => ((await $.prompt.compose(COMPOSE)).sections as { id: string; text: string; scope: string }[]).filter((x) => x.id === 'callboard:lead-conductor')
 const condSettle = async ($: any, n: number, tries = 400) => {
   for (let i = 0; i < tries && (await leadCondSect($)).length !== n; i++) await new Promise((r) => setTimeout(r, 5))
@@ -1029,7 +1029,7 @@ test('every lead briefing says other leads of its repo may message it to align w
   expect(leadBriefing(PIN)).toContain('Other leads of this repo (one lead per ticket) may message you to align work')
 })
 
-// ---- v15 review c1 (2026-11-05): the code reviewer's fixes ----
+// ---- the conductor's grant and list: an off during a restore, an add during a read, a repo named twice, the same repos in another order ----
 // The list file as a hand edit leaves it: entries in the order given (putCond writes through the sorting writer).
 const putCondRaw = (repos: string[]) => {
   putCond([])
@@ -1106,7 +1106,7 @@ test('the same repos in another order after the restore dialog are no change', a
   expect(await statusText($)).toContain(conductorStatus(2))
 })
 
-// ---- v15 security review (2026-11-05): the security auditor's fixes ----
+// ---- the conductor's list file and its writer: an unsafe folder, a swapped temp file, an add outside a conductor, an unreadable list ----
 test('a .claude folder group or other may write is unsafe: add is refused and the list is not read', async ($, on) => {
   await condAt($, on)
   putCond(['../app'])

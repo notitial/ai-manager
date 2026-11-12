@@ -118,7 +118,7 @@ test('prompts tools: an answer that lands while a relay is written is taken back
   expect(decFile()).toBeUndefined()
 })
 
-// ---- PR 3: the light link (the person's answer to a relay question) and the asked mark ----
+// ---- the light link (the person's answer to a relay question) and the asked mark ----
 const TID3 = '1a1b2c3d-6666-4000-8000-123456789abc'
 const relayFixture = async ($: any, on: any, ids: string[] = [TID]) => {
   beneathHooks(on)

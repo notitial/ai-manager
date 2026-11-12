@@ -30,7 +30,7 @@ test('each dialog offers its own exact button pair', async ($, on) => {
     await $.command.run(lane('lane'))
     expect(h.askedOptions).toEqual([[RESTORE_YES, RESTORE_NO]])
     h.askedOptions = []
-    // The session is now a lane (restored): the lead question is not asked at all (F7); its buttons are checked in the F7 tests.
+    // The session is now a lane (restored): the lead question is not asked at all; its buttons are checked in the tests of that section.
     await $.command.run(lane('lead'))
     expect(h.askedOptions).toEqual([])
     h.askedOptions = []
@@ -113,7 +113,7 @@ test('a log past 1 MB stops taking refusals and errors, but the stop line before
   expect(events(stdins).some((e) => e.event === 'refused')).toBe(true)
 })
 // A person's own registry row as the engine writes it for a panel or a terminal (kind interactive), as the auto row now is.
-// A person's session (v13.5: a plain one, no lane, no lead), whose real turn has just ended (at T0).
+// A person's session (a plain one, no lane, no lead), whose real turn has just ended (at T0).
 async function warm($: any, on: any, stdins: string[] = [], trace?: Trace) {
   await person($, on, stdins, trace)
   h.sessions = OWN_ROW()
@@ -410,13 +410,13 @@ longTest('keepalive: pings stop 3 hours after the last real turn, logged once; a
   const trace = newTrace()
   await warm($, on, stdins, trace)
   const realEnd = stv(trace, 'realEndAt')
-  // v13.4: below the cache nudge's level, so the third slot is a ping too.
+  // Below the cache nudge's level, so the third slot is a ping too.
   h.tokensNow = 120_000
   for (let i = 1; i <= 3; i++) {
     await h.clock!.advance(50 * MIN)
     expect(sent(stdins)).toBe(i)
     await h.clock!.advance(2000)
-    // v13.4: the ping's turn as the engine runs it (no prompt hook of the mod's own): it moves no stop clock.
+    // The ping's turn as the engine runs it (no prompt hook of the mod's own): it moves no stop clock.
     await ownTurn($, KEEPALIVE_TEXT)
     expect(stv(trace, 'realEndAt')).toBe(realEnd)
   }
@@ -433,7 +433,7 @@ longTest('keepalive: pings stop 3 hours after the last real turn, logged once; a
 
 for (const [what, arrange] of [
   ['a recorded nudge', (trace: Trace) => trace.st!.set('nudgeDue', { value: { kind: 'lead', at: h.nowMs }, version: 90 })],
-  // v13.5: the session is not a lane, so its own request carries viaNudge (self), as one it made itself would.
+  // The session is not a lane, so its own request carries viaNudge (self), as one it made itself would.
   ['a compaction resume', (trace: Trace) => trace.st!.set('request', { value: { id: 'r2', phase: 'compacted', mode: 'now', focus: 'f', continuation: 'next', sha256: 'a'.repeat(64), requestedMs: h.nowMs, compactingMs: h.nowMs, compactedMs: h.nowMs, viaNudge: true }, version: 90 })],
 ] as const) {
   test(`keepalive: ${what} due in the same tick as a ping goes out alone: one submit per tick (F2a)`, async ($, on) => {
@@ -505,7 +505,7 @@ longTest('keepalive: a nudge recorded in place of a ping that is then dropped is
   expect(pings()).toEqual([])
 })
 
-// v13.4: at 200k, past the cache nudge's level and below the idle one, too.
+// At 200k, past the cache nudge's level and below the idle one, too.
 for (const tokens of [400_000, 200_000]) {
   test(`keepalive: a lane signed done gets neither the ping nor a nudge at ping time (D5), at ${tokens / 1000}k`, async ($, on) => {
     const stdins: string[] = []
@@ -683,7 +683,7 @@ test('config: a lead is nudged from the idle level with the soft text and at the
   expect(nudges()).toEqual([nudgeText('idle', { idleK: 300, workingK: 450 }), nudgeText('working', { idleK: 300, workingK: 450 })])
 })
 
-// ---- v13.2 review c1 (code review PASS WITH FIXES, security audit GO WITH FIXES) ----
+// ---- a ping whose submit fails or hangs, and a store call that throws ----
 for (const [what, tokens] of [['the ping', 150_000], ['the nudge in its place', 310_000]] as const) {
   test(`a draft typed while the ping step reads stops ${what}: the gap is missed, logged once`, async ($, on) => {
     const stdins: string[] = []
@@ -731,7 +731,7 @@ test('a store call that throws is answered: not read, or not saved', async ($, o
   expect(h.store.has('config')).toBe(false)
 })
 
-// ---- v13.2 review c2 ----
+// ---- a ping that hangs after its prompt hook, a prompt sent while the ping step reads, and the stop clock ----
 test('a ping whose submit hangs past the timeout after its prompt hook ran keeps its mark: its turn is still a ping turn', async ($, on) => {
   const stdins: string[] = []
   const trace = newTrace()
@@ -771,7 +771,7 @@ test('a prompt the person sends while the ping step reads (the box already empty
   expect(kaLog(stdins)).toEqual(['keepalive-skipped:late'])
 })
 
-// ---- v13.4: keepalive fixes (2026-11-03): own submits the mod's prompt hook never sees, no ping while the Mac sleeps, the cache nudge ----
+// ---- keepalive: own submits the mod's prompt hook never sees, no ping while the Mac sleeps, the cache nudge ----
 test('keepalive: a person\'s turn and a wake turn (no own text) restart the stop clock', async ($, on) => {
   const trace = newTrace()
   await warm($, on, [], trace)

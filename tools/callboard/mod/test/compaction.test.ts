@@ -25,7 +25,7 @@ test('a valid request is queued and logged with fixed fields only', async ($, on
   expect(stdins.join('')).not.toContain('keep the plan')
 })
 
-// v15.2 (ADR 0003): the live checkout's HEAD is read once at session start. Main says nothing; any other branch or a detached commit warns with one toast
+// The live checkout's HEAD is read once at session start. Main says nothing; any other branch or a detached commit warns with one toast
 // and `warn live-checkout-not-main`; an unreadable or odd HEAD logs `warn live-checkout-unknown` and shows nothing. Nothing is ever refused.
 const warns = (stdins: string[]) => allEvents(stdins).filter((e) => e.event === 'warn').map((e) => e.reason)
 const liveToasts = () => toasts.filter((t) => t.startsWith('Callboard loads from '))
@@ -514,7 +514,7 @@ test('the deadline of an order: a newer order of the lane restarts the 15 minute
   expect(orderNotices().length).toBe(1)
 })
 
-// ---- v13.1: a compaction cut off by a restart ----
+// ---- a compaction cut off by a restart ----
 const CMPKEY = `cmp:${SID}`
 const cutNotes = () => h.appendRows.filter((m) => m.content?.[0]?.text === COMPACT_CUT_NOTE)
 

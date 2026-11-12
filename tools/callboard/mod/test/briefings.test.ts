@@ -74,7 +74,7 @@ test('the lead briefing is one session-scope section while lead is on, names the
   expect(b[0].text).toContain("Never write a lane's done line yourself; only the lane signs its report.")
   expect(b[0].text).toContain('A refusal reads `lane_<verb> refused: <reason>`, usually starting with a code. Retry only when the text says so; otherwise tell the person the reason and do not repeat the call.')
   expect(b[0].text).not.toContain('<folder name>')
-  // v15 (2026-11-05) S7b: the align line is the last one now.
+  // The align line is the last one now.
   expect(b[0].text).toContain("Retire and terminate close a lane fully: once its session has stopped they delete the lane's record too")
   expect(b[0].text).toContain('`lane_retire` needs no signed report then, and `lane_terminate` asks the person. `lane_park` is the only way to keep a lane; retire is final.\n- Other leads of this repo')
   expect(b[0].text).not.toContain('lane_remove')
@@ -368,7 +368,7 @@ test('a lead whose lane list has not changed does not read its store again', asy
 test('no lane notice goes out while a compaction of the lead waits for its resume text, and the resume goes first', async ($, on) => {
   const trace = newTrace()
   await leadAt($, on, [], { clock: true, trace })
-  // v13.5: a lead is not a lane, so its own request is a self one (viaNudge).
+  // A lead is not a lane, so its own request is a self one (viaNudge).
   trace.st!.set('request', { value: { id: '1', mode: 'now', focus: 'f', continuation: 'next', sha256: 'a'.repeat(64), requestedMs: h.nowMs, phase: 'compacted', compactedMs: h.nowMs, viaNudge: true }, version: 1 })
   storeFiles.set(STOREFILE, storeText(1))
   await h.clock!.advance(2000)
