@@ -5302,48 +5302,34 @@ async function promptPut($: any, path: string, text: string): Promise<boolean> {
   }
 }
 
-// One ledger row, appended whole (one tee call, under pr.LEDGER_ROW_MAX bytes). false: the row could not be written.
-async function ledgerAdd($: any, row: Omit<pr.LedgerRow, 't'>): Promise<boolean> {
+// One row appended whole (one tee call) to this month's file in the prompts folder, created 0600 and used only if it is a private file of ours.
+// fileOf names the month's file from the clock; lineOf builds the line from the time. false: the row could not be written.
+async function appendMonthly($: any, fileOf: (now: number) => string, lineOf: (t: string) => string): Promise<boolean> {
   try {
     const p = await where($)
     if (!p) return false
     const dir = await promptDir($, p)
     if (!dir) return false
     const now = await $.clock.now()
-    const file = `${dir}/${pr.ledgerFile(now)}`
+    const file = `${dir}/${fileOf(now)}`
     let f = await facts($, file)
     if (!f) {
       await run($, [INSTALL, '-m', '600', '/dev/null', file])
       f = await facts($, file)
     }
     if (!f || c.cueFileOk(f, p.uid)) return false
-    return (await run($, [TEE, '-a', '--', file], pr.ledgerLine({ t: new Date(now).toISOString(), ...row }))).exitCode === 0
+    return (await run($, [TEE, '-a', '--', file], lineOf(new Date(now).toISOString()))).exitCode === 0
   } catch {
     return false
   }
 }
 
+// One ledger row, appended whole (under pr.LEDGER_ROW_MAX bytes). false: the row could not be written.
+const ledgerAdd = ($: any, row: Omit<pr.LedgerRow, 't'>): Promise<boolean> => appendMonthly($, pr.ledgerFile, (t) => pr.ledgerLine({ t, ...row }))
+
 // The questions file: one redacted row per answered question, appended to this month's file as the ledger is. A failed write never stops the answer: the
 // `returned` row is the record, and the audit notes the gap.
-async function questionsAdd($: any, row: Omit<pr.QuestionsRow, 't'>): Promise<boolean> {
-  try {
-    const p = await where($)
-    if (!p) return false
-    const dir = await promptDir($, p)
-    if (!dir) return false
-    const now = await $.clock.now()
-    const file = `${dir}/${pr.questionsFile(now)}`
-    let f = await facts($, file)
-    if (!f) {
-      await run($, [INSTALL, '-m', '600', '/dev/null', file])
-      f = await facts($, file)
-    }
-    if (!f || c.cueFileOk(f, p.uid)) return false
-    return (await run($, [TEE, '-a', '--', file], pr.questionsLine({ t: new Date(now).toISOString(), ...row }))).exitCode === 0
-  } catch {
-    return false
-  }
-}
+const questionsAdd = ($: any, row: Omit<pr.QuestionsRow, 't'>): Promise<boolean> => appendMonthly($, pr.questionsFile, (t) => pr.questionsLine({ t, ...row }))
 // The salted hash of a chosen label, as the ledger holds it: no text, and a dictionary of short labels is of no use without the request id.
 async function labelHash($: any, id: string, label: string): Promise<string> {
   return (await sha($, `${id}\n${label}`)).slice(0, 16)
