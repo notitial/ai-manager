@@ -482,7 +482,8 @@ async function readSmall($: any, path: string, uid: number, max: number): Promis
 
 // undefined means the registry could not be trusted or found, which is not the same as "no live sessions": callers that
 // treat an empty list as permission (name-in-use, duplicate-open guards) must refuse on it.
-async function registryEntries($: any): Promise<{ pid: string; j: any }[] | undefined> {
+type RegRow = { pid: string; j: any }
+async function registryEntries($: any): Promise<RegRow[] | undefined> {
   return (await registryEntriesWhy($)).rows
 }
 
@@ -490,12 +491,12 @@ async function registryEntries($: any): Promise<{ pid: string; j: any }[] | unde
 // table lacks was confirmed gone or absent; 'ps-confirm' when that confirmation failed or was cut (every row kept).
 // dir: the folder to read, `sessions` unless the caller asks for the own registry (ownRegistryEntries). One call reads one folder; rows of two registries
 // are never put in one list.
-async function registryEntriesWhy($: any, dirArg?: string): Promise<{ rows: { pid: string; j: any }[] | undefined; why?: string }> {
+async function registryEntriesWhy($: any, dirArg?: string): Promise<{ rows: RegRow[] | undefined; why?: string }> {
   const p = await where($)
   if (!p) return { rows: undefined }
   const dir = dirArg ?? p.sessions
   if (!(await dirOk($, dir, p.uid))) return { rows: undefined }
-  const out: { pid: string; j: any }[] = []
+  const out: RegRow[] = []
   const names = ((await $.fs.list(dir).catch(() => [])) as { name: string }[]).map((f) => f.name).filter((n) => /^[A-Za-z0-9-]{1,64}\.json$/.test(n))
   // A registry longer than the cap cannot be looked at whole, and a name could hide past the cap: no answer, not a cut one.
   if (names.length > c.REGISTRY_FILES_MAX) {
@@ -569,24 +570,22 @@ async function psStarts($: any): Promise<Map<number, string> | undefined> {
 }
 
 // One cue or one tool call reads the registry once: a memo that its steps share.
-type Reg = () => Promise<{ pid: string; j: any }[] | undefined>
-const regOnce = ($: any): Reg => {
+type Reg = () => Promise<RegRow[] | undefined>
+// own: the registry that holds the session's own row (ownRegistryEntries below).
+const regOnce = ($: any, own = false): Reg => {
   let p: ReturnType<Reg> | undefined
-  return () => (p ??= registryEntries($))
+  return () => (p ??= own ? ownRegistryEntries($) : registryEntries($))
 }
 
 // The registry that holds this session's OWN row: `sessions` unless CLAUDE_CONFIG_DIR names a good folder, none (no row, fails closed) when it names a bad
 // one. Used only where the session looks at itself (a person's row, idle, its shells, the nudge and the ping); everything that looks at other sessions or at
 // a cue (names, lanes, leads, the lock owner, a cue's idle check) reads `sessions` alone through registryEntries.
-async function ownRegistryEntries($: any): Promise<{ pid: string; j: any }[] | undefined> {
+async function ownRegistryEntries($: any): Promise<RegRow[] | undefined> {
   const p = await where($)
   if (p && p.own === undefined) await configDirRejected($)
   return p?.own === undefined ? undefined : (await registryEntriesWhy($, p.own)).rows
 }
-const ownRegOnce = ($: any): Reg => {
-  let p: ReturnType<Reg> | undefined
-  return () => (p ??= ownRegistryEntries($))
-}
+const ownRegOnce = ($: any): Reg => regOnce($, true)
 const ownReg = ($: any): Reg => () => ownRegistryEntries($)
 
 async function liveNames($: any, reg: Reg = () => registryEntries($)): Promise<string[]> {
@@ -1197,24 +1196,29 @@ async function cmpCutTick($: any, sid: string, tries: number) {
   toast($, c.COMPACT_CUT_TOAST)
 }
 
+// One briefing note, once per `key` in `marks`: the mark is set before the append, a refused or failed append unmarks it (if it is still this one) and logs errCode.
+// `text` is a function so it is built inside the try, where a throw while building it is the same failed briefing.
+async function briefOnce($: any, sid: string, marks: Map<string, string>, key: string, text: () => string, errCode: string) {
+  if (marks.get(sid) === key) return
+  marks.set(sid, key)
+  try {
+    const r = await $.session.append({ message: { type: 'user', content: [{ type: 'text', text: text() }] } })
+    if (r?.deny !== undefined) throw new Error('refused')
+  } catch {
+    if (marks.get(sid) === key) marks.delete(sid)
+    await logq($, sid, 'error', errCode)
+  }
+}
+
 // The briefing as one user-role note (c.leadBriefingNote), once per grant and pin. A refused or failed append is logged and changes nothing else: lead stays on, and the
 // session is not marked briefed, so the next /callboard lead tries again. The mark is set before the await, so a second grant during the append adds no second note
 // and a /callboard off during it leaves no mark behind.
 // The manager's note, keyed `manager:<name>` in the same map (a pin is an absolute path, so the two never meet).
 async function briefLead($: any, sid: string, pin: string, manager?: string) {
   const key = manager === undefined ? pin : `manager:${manager}`
-  if (briefed.get(sid) === key) return
-  briefed.set(sid, key)
-  try {
-    const r = await $.session.append({ message: { type: 'user', content: [{ type: 'text', text: manager === undefined ? c.leadBriefingNote(pin) : c.managerBriefingNote(manager) }] } })
-    if (r?.deny !== undefined) throw new Error('refused')
-  } catch {
-    if (briefed.get(sid) === key) briefed.delete(sid)
-    await logq($, sid, 'error', manager === undefined ? 'lead-briefing' : 'manager-briefing')
-  }
+  await briefOnce($, sid, briefed, key, () => (manager === undefined ? c.leadBriefingNote(pin) : c.managerBriefingNote(manager)), manager === undefined ? 'lead-briefing' : 'manager-briefing')
 }
 
-type RegRow = { pid: string; j: any }
 const regEntry = (r: RegRow): c.RegEntry => ({ sessionId: r.j.sessionId as string, name: r.j.name, cwd: r.j.cwd, pid: String(r.j.pid) === r.pid ? r.j.pid : undefined, procStart: r.j.procStart, startedAt: r.j.startedAt, status: r.j.status, statusUpdatedAt: r.j.statusUpdatedAt, waitingFor: r.j.waitingFor })
 
 // One presence file, every check: a plain 0600 file of ours, at most c.LEAD_FILE_MAX (4096) bytes, written in the last 30 s, naming its own file name as the sid; the registry has the
@@ -1445,15 +1449,8 @@ async function keepLaneFacts($: any, sid: string, l: c.Lane, attached: boolean, 
 async function briefLane($: any, sid: string) {
   const kept = laneBrief.get(sid)
   const note = kept && c.laneBriefingNote(kept)
-  if (!kept || !note || laneBriefed.get(sid) === kept.name) return
-  laneBriefed.set(sid, kept.name)
-  try {
-    const r = await $.session.append({ message: { type: 'user', content: [{ type: 'text', text: note }] } })
-    if (r?.deny !== undefined) throw new Error('refused')
-  } catch {
-    if (laneBriefed.get(sid) === kept.name) laneBriefed.delete(sid)
-    await logq($, sid, 'error', 'lane-briefing')
-  }
+  if (!kept || !note) return
+  await briefOnce($, sid, laneBriefed, kept.name, () => note, 'lane-briefing')
 }
 
 // An attached lane works with whichever lead holds a valid grant for its repo (consent given under one lead carries to the next one the person allows there);
@@ -1524,9 +1521,7 @@ async function ownWrite<T>($: any, sid: string, fn: () => Promise<T>): Promise<T
     return await fn()
   } finally {
     await watchOwn($, sid).catch(() => undefined)
-    const n = (ownWriting.get(sid) ?? 1) - 1
-    if (n > 0) ownWriting.set(sid, n)
-    else ownWriting.delete(sid)
+    countDown(ownWriting, sid)
   }
 }
 async function watchTick($: any, sid: string) {
@@ -2036,9 +2031,7 @@ async function cueExchange($: any, sid: string, laneName: string, toSid: string,
   } finally {
     if (got) got()
     else void locked.then((r) => r())
-    const n = (cueInFlight.get(key) ?? 1) - 1
-    if (n > 0) cueInFlight.set(key, n)
-    else cueInFlight.delete(key)
+    countDown(cueInFlight, key)
   }
 }
 
@@ -2957,18 +2950,19 @@ async function withTimeout<T>($: any, p: Promise<T>, ms: number): Promise<T | 't
 
 // A binding write that timed out may still land. Once it does, it is undone while it is still that binding (same name and time), so a bind that was answered as
 // failed leaves none behind. Best effort, logged.
-function undoLate($: any, sid: string, setting: Promise<any>, b: Bound) {
+function undoLateWrite($: any, sid: string, setting: Promise<any>, b: Bound, undo: (cur: Bound) => Promise<unknown>, undoneCode: string, failCode: string) {
   void setting
     .then(async (w) => {
       if (w?.isSet === false) return
       const cur = (await $.state.get(lane)).value as Bound | null | undefined
       if (cur && cur.name === b.name && cur.at === b.at) {
-        await detach($, sid, cur)
-        await log($, sid, 'error', 'late-bind-undone')
+        await undo(cur)
+        await log($, sid, 'error', undoneCode)
       }
     })
-    .catch(logFail($, sid, 'late-bind'))
+    .catch(logFail($, sid, failCode))
 }
+const undoLate = ($: any, sid: string, setting: Promise<any>, b: Bound) => undoLateWrite($, sid, setting, b, (cur) => detach($, sid, cur), 'late-bind-undone', 'late-bind')
 
 // Claim <sid>.cue by renaming it to a name only this tick uses, then judge the file that was
 // moved, not the one first seen: a cue replaced between the two is the one read, checked and
@@ -3124,37 +3118,24 @@ async function sidSync($: any, sid: string, b: Bound & { name: string }) {
 // name another live session carries are tried again; any other refusal ends it at once. The bind is the restore's: turns -1, restored, startDone, the record's
 // hash, the briefing note and the hint's counters. Where it does not happen, /callboard lane still offers the Restore question.
 const REBIND_TRIES = 15
-const rebindPending = new Map<string, number>()
+// Per session: the tries so far, and the record's name once it is known (for the toast when the rebind ends refused). One entry, so ending it ends both.
+const rebindPending = new Map<string, { tries: number; name?: string }>()
 // Sessions this process rebound: a Restore question already open when the bind lands ends with no "things changed" toast.
 const rebound = new Set<string>()
-// The record's name while a rebind is pending, for the toast when it ends refused.
-const rebindName = new Map<string, string>()
 // A rebind write that timed out and lands late is only taken back: the binding goes while it is still this one; the record, its sid and the hint stay,
 // so a later start or the Restore question can still bind it. Not detach, which would clear the sid and the hint for good.
-function rebindUndoLate($: any, sid: string, setting: Promise<any>, b: Bound) {
-  void setting
-    .then(async (w) => {
-      if (w?.isSet === false) return
-      const cur = (await $.state.get(lane)).value as Bound | null | undefined
-      if (cur && cur.name === b.name && cur.at === b.at) {
-        await $.state.set(lane, null)
-        await log($, sid, 'error', 'late-rebind-undone')
-      }
-    })
-    .catch(logFail($, sid, 'late-rebind'))
-}
+const rebindUndoLate = ($: any, sid: string, setting: Promise<any>, b: Bound) => undoLateWrite($, sid, setting, b, () => $.state.set(lane, null), 'late-rebind-undone', 'late-rebind')
 // A try still running after the tick's time limit: the next tick does not start another beside it.
 const rebindBusy = new Set<string>()
 async function rebindTick($: any, sid: string) {
-  const tries = rebindPending.get(sid)
-  if (tries === undefined) return
+  const state = rebindPending.get(sid)
+  if (state === undefined) return
   const seq = offSeq.get(sid) ?? 0
-  const n = tries + 1
-  rebindPending.set(sid, n)
+  const n = state.tries + 1
+  rebindPending.set(sid, { ...state, tries: n })
   const end = async (code: string) => {
+    const name = rebindPending.get(sid)?.name
     rebindPending.delete(sid)
-    const name = rebindName.get(sid)
-    rebindName.delete(sid)
     await log($, sid, 'rebind-rejected', code)
     // The lead may have been told the lane comes back by itself (lane_unpark): the person is told it did not. Not for a lead, nor a run with no person.
     if (name !== undefined && code !== 'lead-holder' && code !== 'not-interactive') toast($, c.rebindFailedToast(name))
@@ -3166,7 +3147,8 @@ async function rebindTick($: any, sid: string) {
   if (typeof lanes === 'string') return retry(lanes)
   const named = lanes.filter((l) => l.sid === sid)
   if (named.length === 0) return void rebindPending.delete(sid)
-  if (named.length === 1) rebindName.set(sid, named[0].name)
+  const pending = rebindPending.get(sid)
+  if (named.length === 1 && pending) rebindPending.set(sid, { ...pending, name: named[0].name })
   // A lead restore still pending decides first: a session that becomes lead is refused below as lead-holder.
   if (leadRestorePending.has(sid)) return retry('lead-restore-pending')
   // A conductor restore still pending decides first (it ends on a lane record naming this session).
@@ -3222,6 +3204,15 @@ async function rebindTick($: any, sid: string) {
 // A reload loses both, so the first call after it only records.
 let lastTimerAt: number | undefined
 let wokeAt: number | undefined
+// A once-a-minute step that runs beside the tick, not awaited: its busy flag is set now and cleared when the work itself ends (a work that outlives the
+// timeout keeps it set, so the next tick starts no second one). A timeout logs <label>-timeout and a throw <label>-error; a failing log is swallowed.
+function bgStep($: any, sid: string, busy: Set<string>, label: string, work: () => Promise<unknown>) {
+  busy.add(sid)
+  void withTimeout($, work().finally(() => busy.delete(sid)), ACTION_TIMEOUT_MS)
+    .then((r) => (r === 'timeout' ? log($, sid, 'error', `${label}-timeout`) : undefined), () => log($, sid, 'error', `${label}-error`))
+    .catch(() => undefined)
+}
+
 async function tick($: any) {
   let startedAt: number | undefined
   try {
@@ -3383,19 +3374,9 @@ async function tick($: any) {
       // The lead check-in, after the ping, so the submits guard covers both. Only once a minute, for a lead: no timer is started on the other ticks.
       // Not awaited, so a slow observation never holds the tick (and the cue it claims); its own flag keeps one step at a time.
       const s = sid as string
-      if (await checkinDue($, s).catch(() => false)) {
-        checkinBusy.add(s)
-        void withTimeout($, checkinTick($, s, submitsAtStart).finally(() => checkinBusy.delete(s)), ACTION_TIMEOUT_MS)
-          .then((r) => (r === 'timeout' ? log($, s, 'error', 'checkin-timeout') : undefined), () => log($, s, 'error', 'checkin-error'))
-          .catch(() => undefined)
-      }
+      if (await checkinDue($, s).catch(() => false)) bgStep($, s, checkinBusy, 'checkin', () => checkinTick($, s, submitsAtStart))
       // The deadline of an order, for a lead, a conductor or the manager; once a minute, and only while the session has an order out.
-      if (await orderDue($, s).catch(() => false)) {
-        orderBusy.add(s)
-        void withTimeout($, orderTick($, s, submitsAtStart).finally(() => orderBusy.delete(s)), ACTION_TIMEOUT_MS)
-          .then((r) => (r === 'timeout' ? log($, s, 'error', 'order-timeout') : undefined), () => log($, s, 'error', 'order-error'))
-          .catch(() => undefined)
-      }
+      if (await orderDue($, s).catch(() => false)) bgStep($, s, orderBusy, 'order', () => orderTick($, s, submitsAtStart))
     }
     isTicking = false
   }
@@ -4820,17 +4801,11 @@ async function conductorApply($: any, sid: string, home: string, approved: strin
 
 // The briefing note, once per grant and conductor repo (keyed conductor:<repo> in briefed, as the manager's). A restore that asked nothing appends none.
 async function briefConductor($: any, sid: string, home: string) {
-  const key = `conductor:${home}`
-  if (briefed.get(sid) === key) return
-  briefed.set(sid, key)
-  try {
+  const text = () => {
     const g = grants.get(sid)
-    const r = await $.session.append({ message: { type: 'user', content: [{ type: 'text', text: c.conductorBriefingNote(g?.name ?? '', home, g?.pins ?? []) }] } })
-    if (r?.deny !== undefined) throw new Error('refused')
-  } catch {
-    if (briefed.get(sid) === key) briefed.delete(sid)
-    await logq($, sid, 'error', 'conductor-briefing')
+    return c.conductorBriefingNote(g?.name ?? '', home, g?.pins ?? [])
   }
+  await briefOnce($, sid, briefed, `conductor:${home}`, text, 'conductor-briefing')
 }
 
 // The conductor list as the grant shows it: every check of the conductor repo, then the file read and resolved. ok: the repos in reach, out: the ones that
@@ -7022,8 +6997,7 @@ export const register: Register = (on) => {
       } catch {
         await logq($, me, 'error', 'cmp-read')
       }
-      rebindPending.set(me, 0)
-      rebindName.delete(me)
+      rebindPending.set(me, { tries: 0 })
     }
     ensureTimer($)
     // Once per session start, after the restores and the timer, so a slow read delays none of them; it only warns.
@@ -7034,17 +7008,17 @@ export const register: Register = (on) => {
   on('command.run', { command: 'callboard' }, async ($, e, next) => {
     const sid = await $.session.id()
     ensureTimer($)
+    const code = c.originCode((e as { origin?: unknown }).origin)
     const rawArgs = (e as { args?: unknown }).args
     const line = typeof rawArgs === 'string' ? rawArgs.trim().replace(/[ \t]+/g, ' ') : ''
     // Escalation (ADR 0004): `escalation` and `prompts` are read here, so core's parser keeps its own forms.
     if (line === 'prompts') return promptsCommand($)
     // It only narrows (it stops pings), so any origin may type it, as `escalation off`.
-    if (line === 'rest') return restCommand($, sid, c.originCode((e as { origin?: unknown }).origin))
-    if (line === 'escalation' || line.startsWith('escalation ')) return escalationCommand($, sid, c.originCode((e as { origin?: unknown }).origin), pr.parseEscalationArgs(line.slice(10)))
+    if (line === 'rest') return restCommand($, sid, code)
+    if (line === 'escalation' || line.startsWith('escalation ')) return escalationCommand($, sid, code, pr.parseEscalationArgs(line.slice(10)))
     if (line === '' || line === 'help') return { text: c.helpText() }
     const arg = c.parseCommandArgs(rawArgs)
     if (!arg) return { text: c.HELP_USAGE }
-    const code = c.originCode((e as { origin?: unknown }).origin)
     // Before the verb below, which would take any other object for a lane command.
     if (typeof arg === 'object' && 'config' in arg) return configCommand($, sid, code, arg.config)
     if (typeof arg === 'object' && 'checkin' in arg) return checkinCommand($, sid, code, arg.checkin)
@@ -7102,12 +7076,12 @@ export const register: Register = (on) => {
       wasManager = grants.get(sid)?.level === 'manager'
       wasConductor = grants.get(sid)?.level === 'conductor' || conductorRestorePending.has(sid)
       wasLead = !wasManager && !wasConductor && (grants.has(sid) || leadRestorePending.has(sid))
-      rebindWas = rebindPending.has(sid)
-      rebindLane = rebindName.get(sid)
+      const rebinding = rebindPending.get(sid)
+      rebindWas = rebinding !== undefined
+      rebindLane = rebinding?.name
       // A rebind still waiting is cancelled before any await: a tick that starts after the bump would pass its own check and could bind after
       // off has read the binding.
       rebindPending.delete(sid)
-      rebindName.delete(sid)
       if (!wasLead && !wasManager && !wasConductor) {
         // A read that timed out says nothing about the grant: the reply then leaves it out.
         const got = await withTimeout($, (async () => $.store.get(`${c.LEAD_HINT_PREFIX}${sid}`))(), c.ENGINE_CALL_TIMEOUT_MS).catch(() => undefined)
@@ -7915,13 +7889,14 @@ export const register: Register = (on) => {
     // The gates are decided before next runs, so the trailing catch can never call next a second time.
     const sid = await $.session.id()
     const pin = pinOf(sid)
-    const gated = pin !== undefined && !e.traits.includes('teammate') && Array.isArray(e.tools) && e.tools.includes(c.LEAD_LANE_TOOL)
+    const leadTools = !e.traits.includes('teammate') && Array.isArray(e.tools) && e.tools.includes(c.LEAD_LANE_TOOL)
+    const gated = pin !== undefined && leadTools
     // The manager's section, on the same gates.
     const mg = grants.get(sid)
-    const managerText = mg?.level === 'manager' && !e.traits.includes('teammate') && Array.isArray(e.tools) && e.tools.includes(c.LEAD_LANE_TOOL) ? c.managerBriefing(mg.name) : undefined
+    const managerText = mg?.level === 'manager' && leadTools ? c.managerBriefing(mg.name) : undefined
     // The conductor's section, on the same gates.
     const condHome = conductorHome.get(sid)
-    const conductorText = mg?.level === 'conductor' && condHome !== undefined && !e.traits.includes('teammate') && Array.isArray(e.tools) && e.tools.includes(c.LEAD_LANE_TOOL) ? c.conductorBriefing(mg.name, condHome, mg.pins) : undefined
+    const conductorText = mg?.level === 'conductor' && condHome !== undefined && leadTools ? c.conductorBriefing(mg.name, condHome, mg.pins) : undefined
     let brief: c.LaneFacts | undefined
     if (!e.traits.includes('teammate') && Array.isArray(e.tools) && e.tools.includes(c.LANE_COMPACT_TOOL)) {
       brief = laneBrief.get(sid)
@@ -7940,20 +7915,24 @@ export const register: Register = (on) => {
     const out = await next(e)
     if ((!gated && laneText === undefined && managerText === undefined && conductorText === undefined) || !Array.isArray(out?.sections)) return out
     let sections = out.sections
-    if (gated) sections = [...sections.filter((x) => x.id !== c.LEAD_BRIEFING_ID), { id: c.LEAD_BRIEFING_ID, text: c.leadBriefing(pin), scope: 'session' as const }]
-    if (gated) sections = [...sections.filter((x) => x.id !== c.LEAD_MANAGER_ID), ...(leadManager ? [{ id: c.LEAD_MANAGER_ID, text: c.LEAD_MANAGER_TEXT, scope: 'session' as const }] : [])]
+    // The section with this id, replaced (or left out, with no text), at the end.
+    const setSection = (id: string, text: string | undefined) => {
+      sections = [...sections.filter((x) => x.id !== id), ...(text !== undefined ? [{ id, text, scope: 'session' as const }] : [])]
+    }
+    if (gated) setSection(c.LEAD_BRIEFING_ID, c.leadBriefing(pin))
+    if (gated) setSection(c.LEAD_MANAGER_ID, leadManager ? c.LEAD_MANAGER_TEXT : undefined)
     // ADR 0004: the lead's prompt section, beside the briefing (whose approved text is left alone).
-    if (gated) sections = [...sections.filter((x) => x.id !== pr.LEAD_PROMPTS_ID), ...(grants.get(sid)?.level === 'lead' ? [{ id: pr.LEAD_PROMPTS_ID, text: pr.LEAD_PROMPT_BRIEFING, scope: 'session' as const }] : [])]
-    if (gated) sections = [...sections.filter((x) => x.id !== c.LEAD_CONDUCTOR_ID), ...(seenConductors.length > 0 ? [{ id: c.LEAD_CONDUCTOR_ID, text: c.leadConductorText(seenConductors), scope: 'session' as const }] : [])]
-    if (managerText !== undefined) sections = [...sections.filter((x) => x.id !== c.MANAGER_BRIEFING_ID), { id: c.MANAGER_BRIEFING_ID, text: managerText, scope: 'session' as const }]
-    if (conductorText !== undefined) sections = [...sections.filter((x) => x.id !== c.CONDUCTOR_BRIEFING_ID), { id: c.CONDUCTOR_BRIEFING_ID, text: conductorText, scope: 'session' as const }]
+    if (gated) setSection(pr.LEAD_PROMPTS_ID, grants.get(sid)?.level === 'lead' ? pr.LEAD_PROMPT_BRIEFING : undefined)
+    if (gated) setSection(c.LEAD_CONDUCTOR_ID, seenConductors.length > 0 ? c.leadConductorText(seenConductors) : undefined)
+    if (managerText !== undefined) setSection(c.MANAGER_BRIEFING_ID, managerText)
+    if (conductorText !== undefined) setSection(c.CONDUCTOR_BRIEFING_ID, conductorText)
     // The conductor's and the manager's prompt section (the lead's is above).
     {
       const lvl = grants.get(sid)?.level
       const tierText = lvl === 'conductor' && conductorText !== undefined ? pr.tierPromptBriefing('conductor') : lvl === 'manager' && managerText !== undefined ? pr.tierPromptBriefing('manager') : undefined
-      sections = [...sections.filter((x) => x.id !== pr.TIER_PROMPTS_ID), ...(tierText !== undefined ? [{ id: pr.TIER_PROMPTS_ID, text: tierText, scope: 'session' as const }] : [])]
+      setSection(pr.TIER_PROMPTS_ID, tierText)
     }
-    if (laneText !== undefined) sections = [...sections.filter((x) => x.id !== c.LANE_BRIEFING_ID), { id: c.LANE_BRIEFING_ID, text: laneText, scope: 'session' as const }]
+    if (laneText !== undefined) setSection(c.LANE_BRIEFING_ID, laneText)
     return { ...out, sections }
   }).catch(($, e, next) => next(e))
 
