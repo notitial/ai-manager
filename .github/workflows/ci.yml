@@ -41,7 +41,7 @@ jobs:
           DISABLE_AUTOUPDATER: '1'
           CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1'
         run: |
-          set -- callboard usage-watcher session-peers
+          set -- callboard usage-watcher session-peers rule-text
           bash tools/test-all.sh "$@" | tee "$RUNNER_TEMP/test-all.out"
           passed=$(grep -cE '^[a-z-]+ +pass ' "$RUNNER_TEMP/test-all.out" || true)
           if [ "$passed" != "$#" ]; then
