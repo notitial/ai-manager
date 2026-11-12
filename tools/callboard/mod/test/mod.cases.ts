@@ -1263,7 +1263,7 @@ const events = (stdins: string[]) => allEvents(stdins).filter((e) => e.event !==
 
 const PERSON = { kind: 'composer' } as const
 // v13.6: the usage line, which /callboard on now gets too.
-const USAGE = 'Use /callboard off, lead, lanes, claim, status, config, checkin, rest, conductor, reserve, lane [NAME] or lane off.'
+const USAGE = 'Use /callboard off, lead, lanes, claim, status, config, checkin, rest, conductor, reserve, escalation [off], lane [NAME] or lane off.'
 const lane = (args: string, origin: unknown = PERSON) => ({ command: 'callboard', args, origin }) as any
 
 // The mocked engine answers each dialog with `askAnswer` (`restoreAnswer` for the Restore question). v13.5: /callboard on is retired, so a session starts
