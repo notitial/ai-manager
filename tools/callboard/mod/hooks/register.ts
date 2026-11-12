@@ -1439,13 +1439,11 @@ async function briefLane($: any, sid: string) {
   const note = kept && c.laneBriefingNote(kept)
   if (!kept || !note || laneBriefed.get(sid) === kept.name) return
   laneBriefed.set(sid, kept.name)
-  laneQSeen.add(sid)
   try {
     const r = await $.session.append({ message: { type: 'user', content: [{ type: 'text', text: note }] } })
     if (r?.deny !== undefined) throw new Error('refused')
   } catch {
     if (laneBriefed.get(sid) === kept.name) laneBriefed.delete(sid)
-    laneQSeen.delete(sid)
     await log($, sid, 'error', 'lane-briefing').catch(() => undefined)
   }
 }
@@ -3266,7 +3264,6 @@ async function tick($: any) {
       // a due look runs under a timeout (managerSeenStep).
       if (grants.get(sid)?.level === 'lead') void managerSeenStep($, sid as string).catch(() => undefined)
     }
-    await laneQuestionNoteTick($, sid).catch(() => log($, sid, 'error', 'lane-question-note').catch(() => undefined))
     await unlockRetry($, sid).catch(() => log($, sid, 'error', 'unlock-retry').catch(() => undefined))
     await renameTick($, sid).catch(() => log($, sid, 'error', 'rename').catch(() => undefined))
     if (rebindPending.has(sid) && !rebindBusy.has(sid)) {
@@ -4010,13 +4007,11 @@ async function detach($: any, sid: string, b: Bound): Promise<{ whole: boolean; 
   sidSynced.delete(sid)
   laneBrief.delete(sid)
   laneBriefed.delete(sid)
-  laneQSeen.delete(sid)
   const folder = b.adopted && b.rec === undefined ? ((await sessionRoot($).catch(() => undefined)) as string | undefined) : undefined
   await $.state.set(lane, null)
   // Again after the write: facts kept while it was in flight go too.
   laneBrief.delete(sid)
   laneBriefed.delete(sid)
-  laneQSeen.delete(sid)
   try {
     await $.store.delete(`${c.HINT_PREFIX}${sid}`)
   } catch {
@@ -6187,6 +6182,9 @@ async function promptRelayPost($: any, e: any): Promise<string | undefined> {
     if (!ok) {
       await run($, [RM, '-f', '--', path]).catch(() => undefined)
       late = true
+    } else if (label !== undefined) {
+      // The pick is the lane's own label text, which the tier reads as the person's answer: say what it is, so it is not taken for an instruction.
+      leftLines.push(pr.relayPickLine(relay.short, q.lane ?? ''))
     }
   }
   // The mark is spent: a later question for the same relay needs a fresh one.
@@ -6676,28 +6674,6 @@ async function promptAnswerTool($: any, e: any, answer: boolean): Promise<{ resu
   }
   promptForget(sid, id)
   return { result: isQ ? pr.relayQuestionSteps(short, q.lane ?? '') : pr.relaySteps(short, q.lane ?? '') }
-}
-
-// The one-time lane note (PLAN-PR4 §3.8): the engine keeps a session's first system prompt, so a running lane never sees the `Person`-header bullet added since. When the questions
-// scope first covers a lane that has not rendered the bullet, the tick appends it once, on an idle turn with an empty prompt box. laneQSeen: the lanes that have the bullet
-// (rendered with it, or sent the note); the mark is set before the await, so two ticks cannot both send it.
-const laneQSeen = new Set<string>()
-async function laneQuestionNoteTick($: any, sid: string): Promise<void> {
-  if (laneQSeen.has(sid) || !c.SID_RE.test(sid)) return
-  const b = (await $.state.get(lane)).value as Bound | null | undefined
-  if (!b || typeof b.name !== 'string') return
-  const a = pr.parseAnswering(await $.store.get(ANSWERING_KEY).catch(() => undefined))
-  if (!a || a.asksScope === undefined || (await promptsOff($))) return
-  if (!pr.coversAsks(a, { lane: b.name, lead: laneBrief.get(sid)?.lead?.name })) return
-  if ((await $.prompt.read()).text !== '' || (await idleCheck($, sid)) !== undefined) return
-  laneQSeen.add(sid)
-  try {
-    const r = await $.session.append({ message: { type: 'user', content: [{ type: 'text', text: c.laneQuestionNote() }] } })
-    if (r?.deny !== undefined) throw new Error('refused')
-  } catch {
-    laneQSeen.delete(sid)
-    await log($, sid, 'error', 'lane-question-note').catch(() => undefined)
-  }
 }
 
 // The tick's notice (§6.2): one fixed turn to an idle lead (a busy one gets the text mid-turn, promptMidTurnNotice), covering every open request in reach. A request is told once; a notice over the hourly cap stays owed
@@ -7798,7 +7774,6 @@ export const register: Register = (on) => {
     const sid = await $.session.id()
     laneBrief.delete(sid)
     laneBriefed.delete(sid)
-    laneQSeen.delete(sid)
     midDelivered.delete(sid)
     promptMidSent.delete(sid)
     promptMidRetold.delete(sid)
@@ -7883,17 +7858,6 @@ export const register: Register = (on) => {
       }
     }
     const laneText = brief ? c.laneBriefing(brief) : undefined
-    // The lane's question bullet is in the first system prompt only when this render is the session's first (no turn yet); the engine keeps the first prompt, so a later render
-    // proves nothing and the one-time note stays owed. briefLane's note carries the bullet too (it sets the mark).
-    if (laneText !== undefined && !laneQSeen.has(sid)) {
-      try {
-        // The lane's own baseline: the turns it had when it was bound (a rename adds one in a panel); unknown (-1) proves nothing. Bounded, like the other turns reads.
-        const b = (await $.state.get(lane)).value as Bound | null | undefined
-        const base = typeof b?.turns === 'number' ? b.turns : 0
-        const t = await withTimeout($, $.session.turns().catch(() => NaN), c.ENGINE_CALL_TIMEOUT_MS)
-        if (base >= 0 && t === base) laneQSeen.add(sid)
-      } catch {}
-    }
     // v14 (2026-11-04, review c1): a lead is told of on-cue compaction only while its tick last saw a live manager (no file read here).
     const leadManager = gated && grants.get(sid)?.level === 'lead' && managerSeen.get(sid)?.live === true
     // v15 S7b: and of a trusted conductor over its repo.

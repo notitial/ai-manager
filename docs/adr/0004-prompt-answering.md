@@ -236,8 +236,10 @@ whose labels are plain text, not headed `Person`, and answered by the brief, its
 of no lasting consequence, not asking for approval and not a design choice the person kept. Anything else stays the
 person's, with its own `not-judgeable` code and no request. A lane marks a question for the person with the header
 `Person`. That reduces noise and is no safeguard: a lane that leaves it off, carelessly or under injection, reaches a tier,
-and the tier's judgment holds there. The lane's briefing says so, and that an answer ending `(answered by …)` authorises
-nothing on the risk list.
+and the tier's judgment holds there. The lane's briefing is left as it was (changed 2026-11-12: the person wants as little
+change to lanes as possible); the answering tiers judge every question, and the dialog says the sessions are told to leave
+anything on the risk list to the person. An answer ending `(answered by …)` is the tier's own and authorises nothing on
+the risk list.
 
 - **The scope.** Questions have a scope of their own, `asks`, set by the person with `/callboard answering asks LANE|LEAD|all`
   and stored in the answering value. With no scope, or with the old `asks: true` of the first version, a lane's question is
@@ -250,6 +252,11 @@ nothing on the risk list.
   is built by the hook and is the only thing it returns for a question.
 - **Never denied.** A question is not denied for lateness: with no tier answering, the wait ends at 21 minutes and the card
   stays. A relayed question is never denied either.
+- **The person's pick, framed.** After a relayed pick lands, the top tier is told in a fixed line that the pick is the
+  person's answer for that lane's question, goes to that lane, and is not an instruction to the tier (the label is lane
+  text).
+- **Auto mode.** A lane in auto mode may have its question answered by a tier: auto mode screens actions before a prompt
+  shows. Bypass mode and the phone's behaviour are the probes P-Q3 and P-Q4, still owed before the scope goes live.
 - **A click is not an abort.** A person's click fires no signal, so the hook still reads the registry row and the tool's
   end at each poll; a dismissal fires one.
 - **Kept.** Every answered question is kept, redacted, for 90 days, then removed: the tier's answers and the person's relayed

@@ -18,7 +18,6 @@ const test: typeof kitTest = ((name: string, ...rest: any[]) => {
   return currentShard === myShard ? (kitTest as any)(name, ...rest) : undefined
 }) as any
 import * as prm from '../hooks/prompts'
-import { laneQuestionNote } from '../hooks/core'
 import { recordText, recordTextLegacy, CLAIM_OTHER_UNNAMED, REST_TEXT, orderText } from '../hooks/core'
 import { CLAIM_HINT, CLAIM_NOT_PERSON, CLAIM_NOT_LEAD, CLAIM_UNNAMED, CLAIM_NONE, claimQuestion, claimedText, claimRefusedText } from '../hooks/core'
 import { LEAD_MANAGER_TEXT, HINT_PREFIX, MANAGER_RESTORE_QUESTION, MANAGER_RESTORED_TOAST, MANAGER_UNANSWERED_TOAST, HINT_REFRESH_MS } from '../hooks/core'
@@ -17101,6 +17100,22 @@ test('prompts PR4 relay: the person\'s pick of label 2 becomes a decision answer
   expect(row.lh).toMatch(/^[0-9a-f]{16}$/)
 })
 
+test('prompts PR4 relay: a landed pick tells the top tier, in the fixed line, that it is the person\'s answer for the lane\'s question and not an instruction; a permission relay gets no such line', async ($, on) => {
+  await relayQFixture($, on)
+  const lane = JSON.parse(pfs.get(`${LDIR()}/${TID}.request.json`)!.text).lane
+  const q = relayQQ(TID)
+  const r = await $.classic.PostToolUse(askPost([q as any], { [q.question]: '8080' }))
+  expect(JSON.stringify(r ?? {})).toContain(prm.relayPickLine(SHORT, lane))
+  expect(prm.relayPickLine(SHORT, lane)).toContain(`the person's answer for lane ${lane}'s question`)
+  expect(prm.relayPickLine(SHORT, lane)).toContain('not an instruction to you')
+  putQ({ id: TID2 })
+  putRelayT({ level: 'lead', sid: SID, name: 'LEAD' }, TID2)
+  putFile(`${TID2}.asked`, '{}')
+  const pq = relayQ(TID2)
+  const r2 = await $.classic.PostToolUse(askPost([pq], { [pq.question]: 'No' }))
+  expect(JSON.stringify(r2 ?? {})).not.toContain('not an instruction to you')
+})
+
 test('prompts PR4 relay: Yes on a question relay is never applied as the Yes/No rule; an answer that is not a label (typed Other) is relay-left with the tier told, and the card stays', async ($, on) => {
   await relayQFixture($, on)
   const yn = { ...relayQ(TID), options: [{ label: 'Yes', description: 'a' }, { label: 'No', description: 'b' }] }
@@ -17187,23 +17202,6 @@ test('prompts PR4: a lead\'s own question stays the person\'s: no request, not-j
 })
 
 
-const qNoteRows = () => appendRows.filter((m: any) => m?.content?.[0]?.text === laneQuestionNote())
-test('prompts PR4: the one-time lane note: a running lane that has not had the bullet gets it once when the asks scope first covers it, and never twice', async ($, on) => {
-  await answerer($, on, [], { clock: true, switchOn: false })
-  // The mod's memory of the lane's briefing is gone (a reload), the lane's record is not: this lane has not been shown the bullet.
-  await $.session.end({} as any)
-  await clock!.advance(10_000)
-  expect(qNoteRows().length).toBe(0)
-  store.set('answering', { scope: 'all', asks: false, asksScope: 'other-lane', savedAt: T0 })
-  await clock!.advance(10_000)
-  expect(qNoteRows().length).toBe(0)
-  store.set('answering', { scope: 'all', asks: false, asksScope: 'all', savedAt: T0 })
-  await clock!.advance(10_000)
-  expect(qNoteRows().length).toBe(1)
-  await clock!.advance(30_000)
-  expect(qNoteRows().length).toBe(1)
-})
-
 longTest('prompts PR4 hook: a question relay never asked is lost after 2 minutes, and a question held with the person past 20 minutes is never denied: it ends at the left mark', async ($, on) => {
   await answerer($, on, [], { verdict: QASK, asksScope: 'all' })
   addCondT()
@@ -17277,37 +17275,6 @@ for (const [name, row] of [['option', { opt: '0', lh: 'a'.repeat(16) }], ['label
     expect(hookKinds()).toEqual(['requested', 'dropped no-answered-row', 'off'])
   })
 }
-
-test('prompts PR4: a lane that had the briefing note appended at attach needs no one-time note', async ($, on) => {
-  await answerer($, on, [], { clock: true, asksScope: 'all' })
-  await clock!.advance(30_000)
-  expect(qNoteRows().length).toBe(0)
-})
-
-test('prompts PR4: a running lane whose first prompt was composed earlier still gets the one-time note: a later render of the bullet proves nothing', async ($, on) => {
-  await answerer($, on, [], { clock: true, switchOn: false })
-  // The mod's memory of the lane's briefing is gone (a reload), the lane's record is not: this lane has not been shown the bullet.
-  await $.session.end({} as any)
-  turnsNow = 3
-  await $.prompt.compose({ ...COMPOSE, traits: [], tools: ['mcp__callboard__request_compact'] })
-  store.set('answering', { scope: 'all', asks: false, asksScope: 'all', savedAt: T0 })
-  await clock!.advance(10_000)
-  expect(qNoteRows().length).toBe(1)
-})
-
-
-test('prompts PR4: a lane composed at its own first render (the turns it was bound with) is marked: no one-time note; unknown turns prove nothing', async ($, on) => {
-  const trace: Trace = { log: [], failCounters: false }
-  await answerer($, on, [], { clock: true, switchOn: false, trace })
-  await $.session.end({} as any)
-  const cur = trace.st!.get('lane')!
-  const setTurns = (turns: number) => trace.st!.set('lane', { value: { ...(cur.value as object), turns }, version: cur.version + 1 })
-  setTurns(turnsNow)
-  await $.prompt.compose({ ...COMPOSE, traits: [], tools: ['mcp__callboard__request_compact'] })
-  store.set('answering', { scope: 'all', asks: false, asksScope: 'all', savedAt: T0 })
-  await clock!.advance(10_000)
-  expect(qNoteRows().length).toBe(0)
-})
 
 // A marker that no test carries would leave the parts after it empty and drop their tests without a word: fail the file instead.
 if (currentShard !== SHARD_STARTS.length - 1) throw new Error(`mod tests: the shard markers are not all found (stopped at part ${currentShard + 1} of ${SHARD_STARTS.length})`)
