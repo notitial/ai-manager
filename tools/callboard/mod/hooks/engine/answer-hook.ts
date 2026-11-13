@@ -16,7 +16,6 @@ import { getLane } from '../state.ts'
 // prompt_answer or the person, and the hook applies it under every check of pr.applyCheck.
 const UUIDGEN = '/usr/bin/uuidgen'
 const GREP = '/usr/bin/grep'
-const GIT_BIN = '/usr/bin/git'
 
 export const PROMPT_DIRS_MAX = 512
 export const ANSWERING_KEY = 'answering'
@@ -160,24 +159,6 @@ async function promptObserve($: any, e: any, r: any): Promise<void> {
   while (checks.size > CHECKS_MAX) checks.delete(checks.keys().next().value as string)
 }
 
-// The current branch of a repo, by a read-only git call that reads no hook and no optional lock; undefined (detached, or any failure) leaves the floor holding.
-async function branchOf($: any, dir: string): Promise<string | undefined> {
-  const r = await run($, [GIT_BIN, '--no-optional-locks', '-C', dir, 'symbolic-ref', '--short', '-q', 'HEAD'], undefined, { LC_ALL: 'C' }).catch(() => undefined)
-  const b = r?.exitCode === 0 ? String(r.stdout).trim() : ''
-  return b === '' || /[\u0000-\u001f]/.test(b) ? undefined : b
-}
-
-// Where a push of this branch goes when the call names no branch: the keys git reads for it (branch.<b>.remote, pushRemote, merge, remote.pushDefault, push.default,
-// a remote's push or mirror). No keys is an answer (the defaults apply); anything else that fails leaves it unresolved, and the floor holds.
-const PUSH_KEYS = '^(branch\\..*\\.(remote|pushremote|merge)|remote\\.pushdefault|remote\\..*\\.(push|pushurl|mirror)|url\\..*\\.(insteadof|pushinsteadof)|push\\.default)$'
-async function pushTargetOf($: any, dir: string, branch: string, remote?: string): Promise<NonNullable<pr.FloorOpts['pushTarget']>> {
-  const r = await run($, [GIT_BIN, '--no-optional-locks', '-C', dir, 'config', '--get-regexp', PUSH_KEYS], undefined, { LC_ALL: 'C' }).catch(() => undefined)
-  // A config that cannot be read may rewrite the push: even a named ref is then the floor.
-  if (!r) return { unresolved: true, mapped: true }
-  if (r.exitCode === 1 && String(r.stdout).trim() === '') return pr.pushTargetFrom('', branch, remote)
-  return r.exitCode === 0 && !r.isStdoutTruncated ? pr.pushTargetFrom(String(r.stdout), branch, remote) : { unresolved: true, mapped: true }
-}
-
 // cwdKnown: cwd is the folder the engine said the call ran in. When it said none, the floor reads every relative path as having an unknown base.
 // A lane's own report (a lane signs by writing it), for the floor: the path and its real path, only when everything about it checks out. In the asking session (`sid`)
 // the path is the one its lane record gives, the one lane_retire reads. A prompt_answer in a tier's session has only the request, which carries that path (`path`);
@@ -226,17 +207,6 @@ export async function promptFloorOpts($: any, tool: string, input: any, cwd: str
   } catch {}
   // The folders the hooks and rules under ~/.claude are linked into (the toolkit's live checkout): an edit there is an edit of the guards themselves.
   if (PERSON_HOLDS.has(tool) || tool === 'Bash' || isGit) for (const r of await linkedRoots($, home)) if (!o.roots!.includes(r)) o.roots!.push(r)
-  if (pr.needsBranch(tool, input)) {
-    const dir = pr.gitPathOf(tool, input) ?? (tool === 'Bash' ? cwd : undefined)
-    if (dir) o.branch = await branchOf($, dir)
-  }
-  // Every push is judged by where git sends it: a push naming no branch goes to the configured target of the current one, and a remote may rewrite even a named ref.
-  // An unread branch is '' (the rewrite check needs none); no folder to read is unresolved.
-  if (pr.needsPushTarget(tool, input)) {
-    // The git server acts in the folder the call names; with none it acts in its own, which is not read here.
-    const dir = pr.gitPathOf(tool, input)
-    o.pushTarget = dir === undefined ? { unresolved: true, mapped: true } : await pushTargetOf($, dir, o.branch ?? '', typeof input?.remote === 'string' ? input.remote : undefined)
-  }
   if (PERSON_HOLDS.has(tool) || isGit) {
     const real: string[] = []
     // A git call acts on its `path`, or on the folder the session runs in.

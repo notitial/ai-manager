@@ -70,16 +70,13 @@ const ENDS = new Set(['returned', 'superseded', 'expired-denied', 'off', 'abando
 const DROP_ANOMALY = new Set(['no-answered-row', 'id', 'hash', 'nonce', 'by-sid', 'kind', 'answer'])
 
 // The small built-in floor check of rule d, best effort. A ledger row never holds arguments (patternOf keeps a command's first word,
-// a tool's repository and number, a file's repo-relative path), so only shapes visible in `tool` and `pattern` can be recognised:
-// merge and branch-update tools, an assumed machine-ops server (`mcp__machine-ops__*` or `mcp__machine_ops__*`), and a write tool
+// a tool's repository and number, a file's repo-relative path), so only a shape visible in `tool` and `pattern` can be recognised: a write tool
 // whose path is one the hook's own floor holds (.claude/settings*, .claude/hooks, callboard's folder, .git, .husky, .githooks); a hooks folder or a settings.json of
-// a project is not one. A force push cannot be told from a plain one here.
-const FLOOR_TOOL_RE = /(^|__)(merge_pull_request|update_pull_request_branch)$|^mcp__machine[-_]ops__/
+// a project is not one.
 const FLOOR_PATH_RE = /(^|\/)(\.claude\/(settings[^/]*|hooks(\/|$)|callboard(\/|$))|callboard\/(prompts|cue|leads|open)(\/|$)|\.git(\/|$)|\.husky(\/|$)|\.githooks(\/|$)|\.mcp\.json$|install\.conf$)/
 const WRITE_TOOL_RE = /^(Edit|Write|MultiEdit|NotebookEdit)\b/
 export function floorShape(tool, pattern) {
   if (typeof tool !== 'string') return undefined
-  if (FLOOR_TOOL_RE.test(tool)) return `tool ${tool}`
   if (WRITE_TOOL_RE.test(tool) && typeof pattern === 'string' && FLOOR_PATH_RE.test(pattern.replace(/^\S+\s+/, ''))) return `path in ${pattern}`
   return undefined
 }
@@ -670,7 +667,7 @@ function ruleFloor({ rows, groups, flag, notes }) {
     const touched = g.requested.length > 0 || g.answered.length > 0
     if (!touched) continue
     const hit = probe.hash !== undefined ? floorRows.find((f) => f.tool === probe.tool && f.hash === probe.hash && Math.abs(f.ms - probe.ms) <= DAY_MS) : undefined
-    // The floor reads the branch, the push config and the folder as well as the input: the same input is floored under one and asked under another. Both rows
+    // The floor reads the folder and the real paths as well as the input: the same input is floored under one and asked under another. Both rows
     // record a hash of that context; the same input in the same context is the anomaly. A row without one (written before it was recorded) is only a note.
     if (hit && hit.ctx !== undefined && probe.ctx !== undefined) {
       if (hit.ctx === probe.ctx) flag('d', 'floor-row-then-asked', `request ${g.id} (${probe.tool}) shares its tool, input hash and floor context with a floor row (${hit.code ?? '?'}) within 24 h`, { id: g.id, t: probe.t })
@@ -679,7 +676,7 @@ function ruleFloor({ rows, groups, flag, notes }) {
     if (shape) flag('d', 'floor-shape-asked', `request ${g.id} was asked of an agent but looks like a floor item (${shape})`, { id: g.id, t: probe.t })
   }
 
-  if (floorCtxUnknown > 0) notes.push(`${floorCtxUnknown} request(s) share a tool and input hash with a floor row that recorded no floor context; not counted as anomalies (the branch or config may differ)`)
+  if (floorCtxUnknown > 0) notes.push(`${floorCtxUnknown} request(s) share a tool and input hash with a floor row that recorded no floor context; not counted as anomalies (the folder may differ)`)
 }
 
 // e. a request must be raised while answering is on: the latest answering-on or answering-off row at its time says on (not the first answering-on row ever written, which a later off outlives).

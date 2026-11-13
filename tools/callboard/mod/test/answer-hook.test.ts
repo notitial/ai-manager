@@ -210,34 +210,15 @@ test('prompts: classifier: a request raised by the guard says so in its file', a
 
 // ---- the floor, at the request: no request is written and the dialog stays the person's ----
 const FLOOR_CASES: [string, string, unknown, string][] = [
-  ['merge', 'mcp__github__merge_pull_request', { owner: 'o', repo: 'r', pullNumber: 1 }, 'merge'],
-  ['the optional merge item, off', 'mcp__machine-ops__pr_merge', { owner: 'o', repo: 'r', number: 1 }, 'merge'],
-  ['a force push', 'mcp__git-mcp__git_push', { path: '/r', branch: 'feat/x', force: true }, 'force-push'],
-  ['a push to main', 'mcp__git-mcp__git_push', { path: '/r', branch: 'main' }, 'protected-push'],
-  ['a push to +main', 'mcp__git-mcp__git_push', { path: '/r', branch: '+main' }, 'force-push'],
-  ['a push to refs/heads/main', 'mcp__git-mcp__git_push', { path: '/r', branch: 'refs/heads/main' }, 'protected-push'],
-  ['a push to origin/master', 'mcp__git-mcp__git_push', { path: '/r', branch: 'origin/master' }, 'protected-push'],
-  ['any Bash git push', 'Bash', { command: 'git push origin feat/x' }, 'protected-push'],
-  ['a branch delete push', 'mcp__git-mcp__git_push', { path: '/r', branch: 'feat/x', delete: true }, 'destructive'],
-  ['git_clean', 'mcp__git-mcp__git_clean', { path: '/r' }, 'destructive'],
-  ['git reset hard', 'mcp__git-mcp__git_reset', { path: '/r', mode: 'hard' }, 'destructive'],
-  ['rm -rf', 'Bash', { command: 'rm -rf build' }, 'destructive'],
-  ['SQL DROP', 'mcp__db__query', { sql: 'DROP TABLE users' }, 'destructive'],
   ['an edit of settings.json', 'Write', { file_path: '/Users/x/.claude/settings.json', content: 'x' }, 'settings'],
   ['an edit of callboard\'s folder', 'Edit', { file_path: '/Users/x/.claude/callboard/prompts/ledger-2026-11.jsonl', old_string: 'a', new_string: 'b' }, 'settings'],
   ['a shell command naming the callboard folder', 'Bash', { command: 'echo x >> ~/.claude/callboard/prompts/ledger-2026-11.jsonl' }, 'settings'],
   ['workspace-lock clear', 'Bash', { command: '/x/workspace-lock.sh --id a clear' }, 'settings'],
   ['ExitPlanMode', 'ExitPlanMode', { plan: 'p' }, 'dialog'],
-  ['rm by path', 'Bash', { command: '/bin/rm -rf build' }, 'destructive'],
-  ['git clean after -C', 'Bash', { command: 'git -C /r clean -fdx' }, 'destructive'],
-  ['a Bash merge, whatever the branch', 'Bash', { command: 'git checkout main && git merge feat/x' }, 'merge'],
-  ['gh pr merge with -R before the verb', 'Bash', { command: 'gh -R o/r pr merge 5' }, 'merge'],
-  ['a commit to main through the GitHub server', 'mcp__github__create_or_update_file', { owner: 'o', repo: 'r', path: 'a', content: 'x', message: 'm', branch: 'main' }, 'protected-push'],
-  ['a GitHub commit with no branch (the default one)', 'mcp__github__push_files', { owner: 'o', repo: 'r', files: [], message: 'm' }, 'protected-push'],
-  ['a GitHub file delete', 'mcp__github__delete_file', { owner: 'o', repo: 'r', path: 'a', message: 'm', branch: 'feat/x' }, 'destructive'],
   ['a git config that sets the hooks folder', 'Bash', { command: 'git config core.hooksPath /tmp/h' }, 'settings'],
-  ['a matching push (a lone colon)', 'mcp__git-mcp__git_push', { path: '/r', branch: ':' }, 'protected-push'],
-  ['a push whose ref reads as an option', 'mcp__git-mcp__git_push', { path: '/r', branch: '--mirror' }, 'protected-push'],
+  ['a database client, which can run a shell', 'Bash', { command: 'psql -h h -c "select 1"' }, 'settings'],
+  ['a shell line that cannot be read', 'Bash', { command: 'eval "$X"' }, 'settings'],
+  ['removing ~/.claude', 'Bash', { command: 'rm -rf /Users/x/.claude' }, 'settings'],
 ]
 for (const [name, tool, input, cat] of FLOOR_CASES) {
   test(`prompts: floor at the request: ${name}: no request, a floor ${cat} row, the dialog stays`, async ($, on) => {
@@ -251,31 +232,40 @@ for (const [name, tool, input, cat] of FLOOR_CASES) {
     expect(sleeps(argv).length).toBe(0)
   })
 }
-test('prompts: floor: a push with no branch reads the current branch, and an unreadable one is floor', async ($, on) => {
-  await answerer($, on, [])
-  const c2 = callOf('mcp__git-mcp__git_push', { path: '/r' })
-  h.gitBranch = 'main'
-  expect(await runRequest($, [], c2.over, c2.check)).toEqual({})
-  expect(rowKinds()).toEqual(['floor protected-push'])
-  h.gitBranch = undefined
-  await askCheck($, { ...c2.check, tool_use_id: 'tu2' })
-  expect(await startReq($, c2.over)).toEqual({})
-  expect(rowKinds()).toEqual(['floor protected-push', 'floor protected-push'])
-  expect(reqFiles().length).toBe(0)
-})
-test('prompts: floor: the branch a push without one lands on is read with a read-only git call', async ($, on) => {
-  const argv: string[][] = []
-  await answerer($, on, [], { argv })
-  const c2 = callOf('mcp__git-mcp__git_push', { path: '/r' })
-  await runRequest($, [stop(8000)], c2.over, c2.check)
-  const g = argv.find((a) => a[0] === '/usr/bin/git')!
-  expect(g).toEqual(['/usr/bin/git', '--no-optional-locks', '-C', '/r', 'symbolic-ref', '--short', '-q', 'HEAD'])
-})
+// What left the floor reaches the tiers: a request is written, and the rubric judges it.
+const REACH_CASES: [string, string, unknown][] = [
+  ['a merge', 'mcp__github__merge_pull_request', { owner: 'o', repo: 'r', pullNumber: 1 }],
+  ['a machine-ops merge', 'mcp__machine-ops__pr_merge', { owner: 'o', repo: 'r', number: 1 }],
+  ['a force push', 'mcp__git-mcp__git_push', { path: '/r', branch: 'feat/x', force: true }],
+  ['a push to main', 'mcp__git-mcp__git_push', { path: '/r', branch: 'main' }],
+  ['a push with no branch', 'mcp__git-mcp__git_push', { path: '/r' }],
+  ['any Bash git push', 'Bash', { command: 'git push origin feat/x' }],
+  ['a Bash merge', 'Bash', { command: 'git -C /r checkout main && git -C /r merge feat/x' }],
+  ['gh pr merge', 'Bash', { command: 'gh -R o/r pr merge 5' }],
+  ['git_clean', 'mcp__git-mcp__git_clean', { path: '/r' }],
+  ['git reset hard', 'mcp__git-mcp__git_reset', { path: '/r', mode: 'hard' }],
+  ['rm -rf', 'Bash', { command: 'rm -rf /tmp/build' }],
+  ['SQL in a tool input', 'mcp__db__query', { sql: 'DELETE FROM users' }],
+  ['a commit to main through the GitHub server', 'mcp__github__create_or_update_file', { owner: 'o', repo: 'r', path: 'a', content: 'x', message: 'm', branch: 'main' }],
+  ['a GitHub file delete', 'mcp__github__delete_file', { owner: 'o', repo: 'r', path: 'a', message: 'm', branch: 'feat/x' }],
+]
+for (const [name, tool, input] of REACH_CASES) {
+  test(`prompts: reaches the tiers: ${name}: a request is written and no floor row`, async ($, on) => {
+    await answerer($, on, [])
+    const c2 = callOf(tool, input)
+    await runRequest($, [stop(8000)], c2.over, c2.check)
+    expect(rowKinds()).toEqual(['requested', 'off'])
+  })
+}
 
-test('prompts: floor at apply: a push that was fine at the request and lands on main by the decision is dropped', async ($, on) => {
+test('prompts: floor at apply: a call that was fine at the request and edits a guard folder by the time of the decision is dropped', async ($, on) => {
   await answerer($, on, [])
-  const c2 = callOf('mcp__git-mcp__git_push', { path: '/r' })
-  const r = await runRequest($, [at(4000, () => { handDecision(readReq()); h.gitBranch = 'main' }), stop(40_000)], c2.over, c2.check)
+  const c2 = callOf('Edit', { file_path: '/Users/x/code/toolkit/hooks/a.sh', old_string: 'a', new_string: 'b' })
+  const r = await runRequest($, [at(4000, () => {
+    handDecision(readReq())
+    h.hooksList = ['guard.sh']
+    realMap.set('/Users/x/.claude/hooks/guard.sh', '/Users/x/code/toolkit/hooks/guard.sh')
+  }), stop(40_000)], c2.over, c2.check)
   expect(r).toEqual({})
   expect(rowKinds()).toEqual(['requested', 'answered allow', 'dropped floor', 'off'])
 })
@@ -763,7 +753,7 @@ test('prompts: floor: an edit under the folder that the hooks of ~/.claude link 
   expect(await startReq($, c3.over)).toEqual({})
   expect(rowKinds()).toEqual(['floor settings', 'requested', 'off'])
 })
-// ---- the lane's own report under a live checkout: the one write a tier may answer (ADR 0004, 2026-11-12) ----
+// ---- the lane's own report under a live checkout: the one write a tier may answer ----
 // The lane svc-api's repo is PIN, made a live root here the way the toolkit's is: through a link from ~/.claude/hooks.
 const OWN_REPORT = `${PIN}/.archive/svc-api/REPORT.md`
 const liveRootIsPin = () => {
@@ -867,7 +857,7 @@ test('prompts: sweep: folders past the first 64 are reached on a later tick; an 
   expect(ledgerRows().map((r) => `${r.kind} ${r.code} ${r.id}`)).toEqual([`abandoned session-gone ${RID(8)}`])
 })
 
-test('prompts: floor: a mutating git call on the toolkit checkout (found through the linked hooks) is settings; a read there is judged', async ($, on) => {
+test('prompts: floor: a git call that rewrites the work tree of the toolkit checkout (found through the linked hooks) is settings; a read there is judged', async ($, on) => {
   await answerer($, on, [])
   h.hooksList = ['guard.sh']
   realMap.set('/Users/x/.claude/hooks/guard.sh', '/Users/x/code/toolkit/hooks/guard.sh')
@@ -951,76 +941,6 @@ test('prompts hook: a call with no @claude body never reads the cap', async ($, 
   expect(r).toEqual({ decision: { behavior: 'allow' } })
   expect(hookRows().filter((x) => x.kind === 'returned')[0].cap).toBeUndefined()
   expect(hookRows().filter((x) => x.kind === 'returned')[0].target).toBeUndefined()
-})
-
-// ---- a push with no branch is judged by where git sends it ----
-test('prompts floor: a push with no branch is judged by its configured push target, read with a read-only git call', async ($, on) => {
-  const argv: string[][] = []
-  await answerer($, on, [], { argv })
-  const c2 = callOf('mcp__git-mcp__git_push', { path: '/r' })
-  h.gitBranch = 'feat/x'
-  h.gitPushConfig = 'branch.feat/x.remote origin\nbranch.feat/x.merge refs/heads/main\npush.default upstream\n'
-  expect(await runRequest($, [], c2.over, c2.check)).toEqual({})
-  expect(rowKinds()).toEqual(['floor protected-push'])
-  const g = argv.find((a) => a[0] === '/usr/bin/git' && a.includes('--get-regexp'))!
-  expect(g.slice(0, 6)).toEqual(['/usr/bin/git', '--no-optional-locks', '-C', '/r', 'config', '--get-regexp'])
-  expect(g.join(' ')).toContain('pushremote')
-})
-
-test('prompts floor: a push target that cannot be read is floor; a branch with no keys and a safe name is judged as before', async ($, on) => {
-  await answerer($, on, [])
-  const c2 = callOf('mcp__git-mcp__git_push', { path: '/r' })
-  h.gitBranch = 'feat/x'
-  h.pfsFails = undefined
-  h.gitPushConfig = 'FAIL'
-  expect(await runRequest($, [], c2.over, c2.check)).toEqual({})
-  expect(rowKinds()).toEqual(['floor protected-push'])
-  h.gitPushConfig = undefined
-  await askCheck($, { ...c2.check, tool_use_id: 'tu2' })
-  h.sessions = waitingRow(T0 + 500)
-  driveClock()
-  h.clockHooks.push(stop(8000))
-  await startReq($, c2.over)
-  expect(rowKinds()).toContain('requested')
-})
-
-test('prompts floor: a push that names its branch is floor when the remote rewrites pushes, and judged as named when it does not', async ($, on) => {
-  const argv: string[][] = []
-  await answerer($, on, [], { argv })
-  h.gitBranch = 'feat/x'
-  const named = callOf('mcp__git-mcp__git_push', { path: '/r', branch: 'feat/y' })
-  h.gitPushConfig = 'remote.origin.push refs/heads/*:refs/heads/main\n'
-  expect(await runRequest($, [], named.over, named.check)).toEqual({})
-  expect(rowKinds()).toEqual(['floor protected-push'])
-  expect(argv.some((a) => a[0] === '/usr/bin/git' && a.includes('--get-regexp'))).toBe(true)
-  h.gitPushConfig = 'url.ssh://h/.insteadof https://h/\n'
-  await askCheck($, { ...named.check, tool_use_id: 'tu2' })
-  h.sessions = waitingRow(T0 + 500)
-  driveClock()
-  h.clockHooks.push(stop(8000))
-  expect(await startReq($, named.over)).toEqual({})
-  expect(rowKinds().filter((k) => k === 'floor protected-push').length).toBe(2)
-  h.gitPushConfig = undefined
-  await askCheck($, { ...named.check, tool_use_id: 'tu3' })
-  h.sessions = waitingRow(T0 + 500)
-  driveClock()
-  h.clockHooks.push(stop(8000))
-  await startReq($, named.over)
-  expect(rowKinds()).toContain('requested')
-})
-
-test('prompts floor: a push that names its branch is floor when the push config cannot be read', async ($, on) => {
-  await answerer($, on, [])
-  h.gitBranch = 'feat/x'
-  const named = callOf('mcp__git-mcp__git_push', { path: '/r', branch: 'feat/y' })
-  h.gitPushConfig = 'FAIL'
-  expect(await runRequest($, [], named.over, named.check)).toEqual({})
-  h.gitPushConfig = 'THROW'
-  await askCheck($, { ...named.check, tool_use_id: 'tu2' })
-  h.sessions = waitingRow(T0 + 500)
-  driveClock()
-  expect(await startReq($, named.over)).toEqual({})
-  expect(rowKinds()).toEqual(['floor protected-push', 'floor protected-push'])
 })
 
 test('prompts floor: a relative write with no folder from the engine is floor; with the event\'s folder it is judged', async ($, on) => {

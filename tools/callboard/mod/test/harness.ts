@@ -106,11 +106,6 @@ function promptFs(a: string[], stdin: string | undefined, now: number): any | un
   const last = a[a.length - 1]
   if (a[0] === '/usr/bin/uuidgen' && h.pfsFails?.(a)) return ok('', 1, 'failed')
   if (a[0] === '/usr/bin/uuidgen') return ok(`${(++h.uuidN).toString(16).padStart(8, '0').toUpperCase()}-0000-4000-8000-123456789ABC\n`)
-  if (a[0] === '/usr/bin/git' && a.includes('symbolic-ref')) return h.gitBranch === undefined ? ok('', 1) : ok(`${h.gitBranch}\n`)
-  if (a[0] === '/usr/bin/git' && a.includes('--get-regexp')) {
-    if (h.gitPushConfig === 'THROW') throw new Error('spawn failed')
-    return h.gitPushConfig === undefined ? ok('', 1) : h.gitPushConfig === 'FAIL' ? ok('', 128, 'fatal: bad config') : ok(h.gitPushConfig, 0)
-  }
   if (!a.some(isPromptPath)) return undefined
   if (h.pfsFails?.(a)) return ok('', a[0] === '/usr/bin/grep' ? 2 : 1, 'failed')
   if (a[0] === '/bin/mkdir') {
@@ -274,9 +269,6 @@ export const h = {
   uuidN: 0,
   // The entries of ~/.claude/hooks (links into the toolkit's checkout, by realMap).
   hooksList: [] as string[],
-  gitBranch: 'feat/x' as string | undefined,
-  // What the push-target read answers: undefined is no keys (exit 1), a string is the output of the config read.
-  gitPushConfig: undefined,
   pfsFails: undefined,
   // A shasum whose input (the request id, a newline and a label) the test makes fail: the label hash of a question's answer.
   shaFailsFor: undefined,
@@ -596,8 +588,6 @@ function resetPrompts() {
   pdirs.clear()
   h.hooksList = []
   h.uuidN = 0
-  h.gitBranch = 'feat/x'
-  h.gitPushConfig = undefined
   h.pfsFails = undefined
   h.shaFailsFor = undefined
 }
