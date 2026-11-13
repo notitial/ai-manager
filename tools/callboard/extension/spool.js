@@ -43,7 +43,7 @@ async function readOwned(file, uid, { modeBad, max }) {
   }
 }
 
-// Whether a folder is a git repo root, by the mod's rule (register.ts gitRoot): `.git`, not followed if it is a link, is a folder holding a plain HEAD file,
+// Whether a folder is a git repo root, by the mod's rule (gitRoot in the mod's engine/base.ts): `.git`, not followed if it is a link, is a folder holding a plain HEAD file,
 // or a plain file of this user's, not group or other writable, whose text starts `gitdir: ` (a worktree or submodule). An empty `.git` folder, a
 // symlinked `.git`, anything else or a failed check is not.
 async function gitRoot(dir, uid) {

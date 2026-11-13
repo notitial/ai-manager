@@ -3,7 +3,7 @@
 const fs = require('node:fs')
 const path = require('node:path')
 
-// One registry file, read the way the mod reads it (register.ts registryEntriesWhy). The answer is { state: 'ok', j } with the parsed row, or 'gone' (deleted
+// One registry file, read the way the mod reads it (registryEntriesWhy in the mod's engine/store.ts). The answer is { state: 'ok', j } with the parsed row, or 'gone' (deleted
 // since the listing), 'bad' (never an entry: a folder, a file this user cannot read, or text that does not parse and read the same both times) or 'unsure'.
 // A file that cannot be read or does not parse is read once more after a short pause, since the engine rewrites these files while it runs; only a file still
 // changing, or one that fails both reads, is 'unsure' and makes the whole read untrustworthy.
