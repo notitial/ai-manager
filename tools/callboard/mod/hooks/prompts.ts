@@ -1311,6 +1311,8 @@ function judgeItem(it: Item, cur: B[], j: J): Res {
 // Whether a verb run in a folder inside a protected one may write there without naming the file: not on the read-only list, curl saving under the remote name, wget with no
 // stdout output, httpie downloading, sort with an output file.
 function inRootWrites(v: string, args: Word[]): boolean {
+  // The verbs that write to the paths they name are judged by those paths.
+  if (SH_WRITE.test(v) || SH_RM.test(v)) return false
   const t = args.map((w) => w.t)
   if (v === 'curl') return t.some((x) => /^-[A-Za-z]*[OJ][A-Za-z]*$/.test(x) || /^--(remote-name|remote-name-all|remote-header-name)$/.test(x))
   if (v === 'wget') return !(t.some((x) => /^-[A-Za-z]*O-$/.test(x) || x === '--output-document=-') || (t.some((x) => /^-[A-Za-z]*O$/.test(x) || x === '--output-document') && t.includes('-')))

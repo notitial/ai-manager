@@ -329,6 +329,8 @@ test('shell judge 6: a session inside a protected folder: reads stay open, write
     'git stash', 'git config user.name x', 'git remote add x y', 'git diff --output=f', 'find . -exec ls {} \\;', 'echo $(touch x)', 'for f in a b; do touch $f; done'], o)
   // Any other verb may write where it runs without naming the file (a build, a package manager, an unpacker, a script): from a folder inside a protected one it is the floor too.
   floored(['npm test', 'node --test x.ts', 'make', './build.sh', 'unknownverb', 'sort -o x a', 'uniq a b', 'env FOO=1 ls', 'ls | xargs wc -l', 'echo $(npm test)', 'cd /tmp/clone; npm test'], o)
+  // A verb that names its targets is judged by them: a target outside the protected folders reaches the tiers from inside one too.
+  reaches(['rm -rf /tmp/build', 'mkdir /tmp/x', 'cp /tmp/a /tmp/b', 'touch /tmp/x'], o)
   reaches(['git commit -m x', 'git add .', 'git fetch', 'git branch x', 'git branch -m a b', 'git tag v1', 'git push', 'date -s x', 'cd ../ai-manager && touch x', 'cd "$X" && npm test',
     'git -C . commit -m x', 'git -C ../x commit -m x'], o)
   reaches(['npm test', 'make', 'cd /tmp/clone && npm test'], { ...CLEAN, cwd: '/live/ai-manager/tools' })
