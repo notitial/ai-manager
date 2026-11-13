@@ -268,7 +268,7 @@ async function condRestarter($: any, on: any, stdins: string[], opts: { repos?: 
 }
 const condLogs = (stdins: string[]) => logged(stdins).filter((x) => x.startsWith('conductor-'))
 
-test('/callboard conductor asks once with every repo and the restart sentence; Conductor declares three tools, writes the presence file, saves the shown list and appends the note', async ($, on) => {
+test('/callboard conductor asks once with every repo and the restart sentence; Conductor declares four tools, writes the presence file, saves the shown list and appends the note', async ($, on) => {
   const stdins: string[] = []
   const defs0 = toolDefs.length
   await condAt($, on, stdins)
@@ -277,11 +277,12 @@ test('/callboard conductor asks once with every repo and the restart sentence; C
   const r = await condRun($, '')
   expect(r.text).toBe(`${CONDUCTOR_ON_TEXT} Out of reach: ../gone (not found).`)
   expect(h.lastQuestion).toBe(conductorQuestion(COND, [PIN, APP2, FAR], CHOME))
-  expect(h.lastQuestion).toBe('Make this session a conductor for these repos? ../app, ../app2, ~/data/x/work/elsewhere/far-repo (not next to cond). It can list their lanes, compact their leads, and force stop a lane: every stop asks you. It stays a conductor after a restart until you run /callboard off.')
+  expect(h.lastQuestion).toBe('Make this session a conductor for these repos? ../app, ../app2, ~/data/x/work/elsewhere/far-repo (not next to cond). It can list their lanes, compact their leads, and force stop a lane: every stop asks you. It can also open a panel for a new lead in one of these repos (one per repo, a few tries an hour); you click Lead there yourself. It stays a conductor after a restart until you run /callboard off.')
   expect(h.lastHeader).toBe('Conductor')
   expect(h.askedOptions).toEqual([['Conductor', 'Cancel']])
   const names = toolDefs.slice(defs0).map((d) => JSON.parse(d).name).filter((n: string) => n.startsWith('lane_'))
   expect([...new Set(names)].sort()).toEqual(['lane_compact', 'lane_list', 'lane_terminate'])
+  expect(toolDefs.slice(defs0).some((d) => JSON.parse(d).name === 'lead_open')).toBe(true)
   expect(toolDefs.slice(defs0).find((d) => d.includes('"lane_terminate"'))).toContain('Every stop asks the person')
   const pres = JSON.parse(leadFiles.get(SELFPATH)!.text)
   expect(pres).toMatchObject({ sid: SID, pid: 4400, procStart: LEADPS, level: 'conductor', repos: [PIN, APP2, FAR], home: COND })

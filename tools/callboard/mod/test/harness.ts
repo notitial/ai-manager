@@ -92,7 +92,8 @@ export const pfs = new Map<string, { text: string; mtimeSec: number; mode?: stri
 export const pdirs = new Set<string>()
 // The usage folder (usage.ts) is kept in the same file fake.
 export const USAGE_DIR = '/Users/x/.claude/callboard/usage'
-const isPromptPath = (p: unknown) => typeof p === 'string' && (p === PROMPTS_DIR || p.startsWith(`${PROMPTS_DIR}/`) || p === USAGE_DIR || p.startsWith(`${USAGE_DIR}/`))
+export const OFFERS_DIR = '/Users/x/.claude/callboard/offers'
+const isPromptPath = (p: unknown) => typeof p === 'string' && (p === PROMPTS_DIR || p.startsWith(`${PROMPTS_DIR}/`) || p === USAGE_DIR || p.startsWith(`${USAGE_DIR}/`) || p === OFFERS_DIR || p.startsWith(`${OFFERS_DIR}/`))
 function promptList(path: string) {
   const pre = path.endsWith('/') ? path : `${path}/`
   const names = new Map<string, { kind: string; size: number; mtimeMs: number }>()
@@ -112,17 +113,17 @@ function promptFs(a: string[], stdin: string | undefined, now: number): any | un
     return ok('')
   }
   if (a[0] === '/usr/bin/stat') {
-    if (pdirs.has(last)) return ok(`501 700 2 Directory 21 64 ${now / 1000}\n`)
+    if (pdirs.has(last)) return ok(`501 700 2 Directory 21 64 ${Math.floor(now / 1000)}\n`)
     const f = pfs.get(last)
     return f ? ok(`${f.uid ?? 501} ${f.mode ?? '600'} ${f.nlink ?? 1} Regular File 31 ${f.text.length} ${f.mtimeSec}\n`) : ok('', 1, `stat: ${last}: No such file or directory`)
   }
   if (a[0] === '/usr/bin/install') {
-    if (!pfs.has(last)) pfs.set(last, { text: '', mtimeSec: now / 1000 })
+    if (!pfs.has(last)) pfs.set(last, { text: '', mtimeSec: Math.floor(now / 1000) })
     return ok('')
   }
   if (a[0] === '/usr/bin/tee') {
     const path = a[1] === '-a' ? a[3] : a[2]
-    const cur = pfs.get(path) ?? { text: '', mtimeSec: now / 1000 }
+    const cur = pfs.get(path) ?? { text: '', mtimeSec: Math.floor(now / 1000) }
     pfs.set(path, { ...cur, text: (a[1] === '-a' ? cur.text : '') + (stdin ?? '') })
     return ok('')
   }
@@ -299,6 +300,7 @@ export const h = {
   cueSwapAtMv: undefined,
   cueNext: undefined,
   openResult: undefined,
+  openResultPath: undefined,
   reportFile: undefined,
   reportStatErr: undefined,
   psOut: 'Tue Oct 27 20:37:50 2026\n',
@@ -339,6 +341,7 @@ export const h = {
   submitFails: false,
   gateStatFails: false,
   lockMkdirEnv: undefined,
+  openList: [] as { name: string; kind: string; isLink: boolean; mtimeMs: number; size: number }[],
   cueList: [] as { name: string; kind: string; isLink: boolean; mtimeMs: number; size: number }[],
   claimMvFails: false,
   psConfirmFails: undefined,
@@ -533,7 +536,9 @@ function resetCueFiles() {
   h.headFails = false
   headArgs.length = 0
   h.openResult = undefined
+  h.openResultPath = undefined
   h.cueList = []
+  h.openList = []
   h.claimMvFails = false
   h.takenPlanted = false
   h.cueFile = undefined
@@ -799,7 +804,7 @@ export function engine(on0: any, argvSeen: string[][], stdins: string[] = [], cl
   on('session.model', () => ({ value: h.modelNow }))
   on('fs.read', (_: any, e: any) => {
     if (e.path === h.reportAt && h.reportFile) return { value: h.reportFile.text }
-    if (e.path === OPEN_RESULT && h.openResult !== undefined) return { value: h.openResult }
+    if (e.path === (h.openResultPath ?? OPEN_RESULT) && h.openResult !== undefined) return { value: h.openResult }
     if (e.path.startsWith(`${SESSIONS}/`)) fsReads.push(e.path)
     const own = e.path.startsWith(`${SESSIONS}/`) ? regFiles()[e.path.slice(SESSIONS.length + 1)] : undefined
     return { value: own ?? '' }
@@ -809,7 +814,7 @@ export function engine(on0: any, argvSeen: string[][], stdins: string[] = [], cl
     if (e.path === LANESDIR && h.lanesListHook) await h.lanesListHook()
     return listed_(e)
   })
-  const listed_ = (e: any) => ({ value: e.path === '/Users/x/.claude/hooks' ? h.hooksList.map((name) => ({ name, kind: 'file', size: 1, mtimeMs: 0, isLink: true })) : isPromptPath(e.path) ? promptList(e.path) : e.path === `${ROOT}/leads` ? [...leadFiles.entries()].map(([k, f]) => ({ name: k.slice(ROOT.length + 7), kind: 'file', size: 1, mtimeMs: (f.mtimeSec ?? Math.floor(h.nowMs / 1000)) * 1000, isLink: false })) : e.path === `${ROOT}/result` ? h.resultList : e.path === `${ROOT}/cue` ? h.cueList : e.path === `${ROOT}/log` ? h.logList : e.path === LANESDIR ? [...storeFiles.keys()].map((k) => ({ name: k.slice(LANESDIR.length + 1), kind: 'file', size: 1, mtimeMs: 0, isLink: false })) : e.path === SESSIONS ? Object.keys(regFiles()).map((name) => ({ name, kind: 'file', size: 1, mtimeMs: 0, isLink: false })) : [] })
+  const listed_ = (e: any) => ({ value: e.path === '/Users/x/.claude/hooks' ? h.hooksList.map((name) => ({ name, kind: 'file', size: 1, mtimeMs: 0, isLink: true })) : isPromptPath(e.path) ? promptList(e.path) : e.path === `${ROOT}/leads` ? [...leadFiles.entries()].map(([k, f]) => ({ name: k.slice(ROOT.length + 7), kind: 'file', size: 1, mtimeMs: (f.mtimeSec ?? Math.floor(h.nowMs / 1000)) * 1000, isLink: false })) : e.path === `${ROOT}/result` ? h.resultList : e.path === `${ROOT}/cue` ? h.cueList : e.path === `${ROOT}/open` ? h.openList : e.path === `${ROOT}/log` ? h.logList : e.path === LANESDIR ? [...storeFiles.keys()].map((k) => ({ name: k.slice(LANESDIR.length + 1), kind: 'file', size: 1, mtimeMs: 0, isLink: false })) : e.path === SESSIONS ? Object.keys(regFiles()).map((name) => ({ name, kind: 'file', size: 1, mtimeMs: 0, isLink: false })) : [] })
   on('process.run', function procRun(_: any, e: any): any {
     if (over()) return { value: { exitCode: 1, stdout: '', stderr: 'test over', isStdoutTruncated: false, isStderrTruncated: false } }
     argvSeen.push([...e.argv])
@@ -1088,9 +1093,9 @@ export function engine(on0: any, argvSeen: string[][], stdins: string[] = [], cl
     if (a[0] === '/usr/bin/head' && gitFiles.has(last)) return ok(gitFiles.get(last)!)
     // A `.git` folder (or a link to one: stat follows it below the link) set in extraStat holds a plain HEAD, unless the test says otherwise (gitNoHead) or sets the HEAD itself.
     if (a[0] === '/usr/bin/stat' && last.endsWith('/.git/HEAD') && / (Directory|Symbolic Link) /.test(extraStat.get(last.slice(0, -5)) ?? '') && !gitNoHead.has(last.slice(0, -5))) return ok('501 644 1 Regular File 7 23 1700000000\n')
-    if (h.openResult !== undefined && a[0] === '/usr/bin/stat' && a[a.length - 1] === OPEN_RESULT) return ok(`501 600 1 Regular File 66 ${h.openResult.length} ${T0 / 1000}\n`)
-    if (h.openResult !== undefined && a[0] === '/usr/bin/head' && a[a.length - 1] === OPEN_RESULT) return ok(h.openResult)
-    if (h.openResult !== undefined && a[0] === '/bin/rm' && a[a.length - 1] === OPEN_RESULT) {
+    if (h.openResult !== undefined && a[0] === '/usr/bin/stat' && a[a.length - 1] === (h.openResultPath ?? OPEN_RESULT)) return ok(`501 600 1 Regular File 66 ${h.openResult.length} ${T0 / 1000}\n`)
+    if (h.openResult !== undefined && a[0] === '/usr/bin/head' && a[a.length - 1] === (h.openResultPath ?? OPEN_RESULT)) return ok(h.openResult)
+    if (h.openResult !== undefined && a[0] === '/bin/rm' && a[a.length - 1] === (h.openResultPath ?? OPEN_RESULT)) {
       h.openResult = undefined
       return ok('')
     }

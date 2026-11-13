@@ -557,7 +557,7 @@ async function configCommand($: any, sid: string, code: c.OriginCode, op: c.Conf
   const cur = c.parseConfig(raw).cfg
   let next: c.Config
   if (op === 'reset') next = { ...c.CONFIG_DEFAULTS }
-  else if (op.field === 'keepalive' || op.field === 'checkin') next = { ...cur, [op.field]: op.value }
+  else if (op.field === 'keepalive' || op.field === 'checkin' || op.field === 'conductorLeads') next = { ...cur, [op.field]: op.value }
   else {
     const no = c.configLevelRefusal(op, cur)
     if (no) return { text: no }

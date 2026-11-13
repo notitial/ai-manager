@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.0
+
+- Handles `<NAME>.lead` requests from a conductor's `lead_open`: one line naming the repo, answered on `<NAME>.result` like an open. A window opens a panel only when the repo is its first workspace folder and its own real path; a request for another window's repo is left in place. The same limits as an open apply (a gap per name, 8 live sessions per repo, 6 opens a minute).
+
 ## 1.1.0
 
 - Removes the commands `callboard.open`, `callboard.reopen` and `callboard.close` and the `close` function behind the last one. The mod never called them: it reaches the extension through the request files under `~/.claude/callboard/open/`, which are unchanged. Panels still open, reopen and close as before.

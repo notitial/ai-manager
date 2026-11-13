@@ -11,7 +11,7 @@ const FOLDER = '/work/repo/lab'
 const PARKED = [{ name: 'LAB', folder: FOLDER, repo: '/work/repo', sid: SID }]
 
 // `onLoad` runs while the lane list is read: after the request file was looked at and before it is claimed, the window a competing window or a swap can use.
-function world({ lanes = [{ name: 'LAB', folder: FOLDER }], ws = [FOLDER], openLane, reopenLane, now, closeFails, uid, onLoad } = {}) {
+function world({ lanes = [{ name: 'LAB', folder: FOLDER }], ws = [FOLDER], openLane, reopenLane, now, closeFails, uid, onLoad, liveInRepo, home } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cb-spool-'))
   fs.chmodSync(dir, 0o700)
   const opened = []
@@ -39,6 +39,8 @@ function world({ lanes = [{ name: 'LAB', folder: FOLDER }], ws = [FOLDER], openL
       return s
     }),
     workspaceFolders: () => ws,
+    ...(liveInRepo ? { liveInRepo } : {}),
+    ...(home ? { home } : {}),
     now: now ?? (() => Date.now() + shift),
   })
   const put = (name, text = 'open\n', mode = 0o600) => {
@@ -62,7 +64,13 @@ function world({ lanes = [{ name: 'LAB', folder: FOLDER }], ws = [FOLDER], openL
     fs.chmodSync(f, mode)
     return f
   }
-  return { dir, spool, opened, closed, reopened, put, putClose, putReopen, result, tick: (ms) => { shift += ms } }
+  const putLead = (name, text, mode = 0o600) => {
+    const f = path.join(dir, `${name}.lead`)
+    fs.writeFileSync(f, text, { mode })
+    fs.chmodSync(f, mode)
+    return f
+  }
+  return { dir, spool, opened, closed, reopened, put, putClose, putReopen, putLead, result, setWs: (v) => { ws = v }, tick: (ms) => { shift += ms } }
 }
 
 test('a request for a listed lane in this window opens its folder and answers the session id', async () => {
@@ -680,4 +688,129 @@ test('a request file swapped for another between the first look and the move is 
     assert.equal(w.result('LAB'), k.answers ? 'error bad-request\n' : undefined, k.ext)
     assert.deepEqual(fs.readdirSync(w.dir), [...(k.answers ? ['LAB.result'] : [])], `${k.ext}: the claimed file is dropped`)
   }
+})
+
+// ---- <NAME>.lead: a conductor's lead_open (ADR 0006) ----
+const NONCE = '0123456789abcdef0123456789abcdef'
+const leadText = (repo) => `lead ${NONCE} ${repo}\n`
+// A real folder of the test's own, so the real-path check passes. It sits two levels down: a folder directly in /tmp (the temp folder on Linux) is a broad one.
+const realRepo = () => {
+  const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cb-lead-repo-')), 'work', 'repo')
+  fs.mkdirSync(dir, { recursive: true })
+  return fs.realpathSync(dir)
+}
+const homeOf = () => '/Users/x'
+
+test('a lead request for the first workspace folder opens that repo and answers the session id; nothing is left behind', async () => {
+  const repo = realRepo()
+  const w = world({ lanes: [], ws: [repo], home: homeOf() })
+  w.putLead('LEAD-A', leadText(repo))
+  assert.deepEqual(await w.spool.scan(), [['LEAD-A', 'opened']])
+  assert.deepEqual(w.opened, [repo])
+  assert.equal(w.result('LEAD-A'), `ok ${SID}\n`)
+  assert.deepEqual(fs.readdirSync(w.dir).sort(), ['LEAD-A.result'])
+  assert.deepEqual(await w.spool.scan(), [])
+})
+
+test('a lead request for a repo another window holds stays in place, unanswered, and that window handles it once', async () => {
+  const repo = realRepo()
+  const w = world({ lanes: [], ws: ['/work/other'], home: homeOf() })
+  w.putLead('LEAD-A', leadText(repo))
+  assert.deepEqual(await w.spool.scan(), [['LEAD-A', 'not-mine']])
+  assert.equal(fs.existsSync(path.join(w.dir, 'LEAD-A.lead')), true)
+  assert.equal(w.result('LEAD-A'), undefined)
+  assert.deepEqual(w.opened, [])
+  w.setWs([repo])
+  assert.deepEqual(await w.spool.scan(), [['LEAD-A', 'opened']])
+  assert.deepEqual(w.opened, [repo])
+  assert.deepEqual(await w.spool.scan(), [])
+  assert.deepEqual(w.opened, [repo])
+})
+
+test('a lead request that is not a valid line is dropped and answered bad-request; a bad file, a stale one or a link is dropped and opens nothing', async () => {
+  const repo = realRepo()
+  for (const text of ['open\n', `lead ${NONCE} ${repo}`, `lead ${NONCE.slice(1)} ${repo}\n`, `lead ${NONCE} relative/path\n`, `lead ${NONCE} ${repo}\nextra\n`, `lead ${NONCE} /a b\n`]) {
+    const w = world({ lanes: [], ws: [repo], home: homeOf() })
+    w.putLead('LEAD-A', text)
+    assert.deepEqual(await w.spool.scan(), [['LEAD-A', 'bad-request']], JSON.stringify(text))
+    assert.equal(w.result('LEAD-A'), 'error bad-request\n')
+    assert.equal(fs.existsSync(path.join(w.dir, 'LEAD-A.lead')), false)
+    assert.deepEqual(w.opened, [])
+  }
+  const wide = world({ lanes: [], ws: [repo], home: homeOf() })
+  wide.putLead('LEAD-A', leadText(repo), 0o644)
+  assert.deepEqual(await wide.spool.scan(), [['LEAD-A', 'bad-file']])
+  const big = world({ lanes: [], ws: [repo], home: homeOf() })
+  big.putLead('LEAD-A', `lead ${NONCE} /${'a'.repeat(1100)}\n`)
+  assert.deepEqual(await big.spool.scan(), [['LEAD-A', 'bad-file']])
+  const old = world({ lanes: [], ws: [repo], home: homeOf() })
+  old.putLead('LEAD-A', leadText(repo))
+  old.tick(121_000)
+  assert.deepEqual(await old.spool.scan(), [['LEAD-A', 'stale']])
+  const link = world({ lanes: [], ws: [repo], home: homeOf() })
+  fs.writeFileSync(path.join(link.dir, 'target'), leadText(repo), { mode: 0o600 })
+  fs.symlinkSync(path.join(link.dir, 'target'), path.join(link.dir, 'LEAD-A.lead'))
+  assert.deepEqual(await link.spool.scan(), [['LEAD-A', 'bad-file']])
+  for (const x of [wide, big, old, link]) assert.deepEqual(x.opened, [])
+})
+
+test('a lead request is left alone for a symlinked repo, a broad folder or a reserved name; nothing opens and nothing is answered', async () => {
+  const repo = realRepo()
+  const link = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cb-lead-link-')), 'repo')
+  fs.symlinkSync(repo, link)
+  const a = world({ lanes: [], ws: [link], home: homeOf() })
+  a.putLead('LEAD-A', leadText(link))
+  assert.deepEqual(await a.spool.scan(), [['LEAD-A', 'not-mine']])
+  const b = world({ lanes: [], ws: ['/Users/x/Documents'], home: homeOf() })
+  b.putLead('LEAD-A', leadText('/Users/x/Documents'))
+  assert.deepEqual(await b.spool.scan(), [['LEAD-A', 'not-mine']])
+  const c = world({ lanes: [], ws: [repo], home: homeOf() })
+  c.putLead('MANAGER', leadText(repo))
+  assert.deepEqual(await c.spool.scan(), [['MANAGER', 'not-mine']])
+  for (const x of [a, b, c]) {
+    assert.deepEqual(x.opened, [])
+    assert.deepEqual(fs.readdirSync(x.dir).filter((f) => f.endsWith('.result')), [])
+  }
+})
+
+test('a lead request meets the same limits as an open: eight live sessions, the gap per name, an unnamed panel', async () => {
+  const repo = realRepo()
+  const many = world({ lanes: [], ws: [repo], home: homeOf(), liveInRepo: async () => 8 })
+  many.putLead('LEAD-A', leadText(repo))
+  assert.deepEqual(await many.spool.scan(), [['LEAD-A', 'too-many']])
+  assert.equal(many.result('LEAD-A'), 'error too-many\n')
+  assert.deepEqual(many.opened, [])
+  const gap = world({ lanes: [], ws: [repo], home: homeOf() })
+  gap.putLead('LEAD-A', leadText(repo))
+  assert.deepEqual(await gap.spool.scan(), [['LEAD-A', 'opened']])
+  gap.putLead('LEAD-A', leadText(repo))
+  assert.deepEqual(await gap.spool.scan(), [['LEAD-A', 'too-soon']])
+  assert.deepEqual(gap.opened, [repo])
+  const unnamed = world({ lanes: [], ws: [repo], home: homeOf(), openLane: async () => { throw new Error('unnamed-panel: an unnamed panel already sits in that folder') } })
+  unnamed.putLead('LEAD-A', leadText(repo))
+  assert.deepEqual(await unnamed.spool.scan(), [['LEAD-A', 'unnamed-panel']])
+  assert.equal(unnamed.result('LEAD-A'), 'error unnamed-panel\n')
+})
+
+test('a lead request replaced by another file between the read and the claim is refused, not opened', async () => {
+  const repo = realRepo()
+  const other = realRepo()
+  const w = world({ lanes: [], ws: [repo, other], home: homeOf() })
+  const f = w.putLead('LEAD-A', leadText(repo))
+  let swapped = false
+  const orig = fs.promises.rename
+  fs.promises.rename = async (a, b) => {
+    if (!swapped && a === f) {
+      swapped = true
+      fs.writeFileSync(a, leadText(other), { mode: 0o600 })
+    }
+    return orig.call(fs.promises, a, b)
+  }
+  try {
+    assert.deepEqual(await w.spool.scan(), [['LEAD-A', 'bad-request']])
+  } finally {
+    fs.promises.rename = orig
+  }
+  assert.deepEqual(w.opened, [])
+  assert.equal(w.result('LEAD-A'), 'error bad-request\n')
 })
