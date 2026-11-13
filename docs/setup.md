@@ -40,30 +40,6 @@ and [ADR 0003](adr/0003-symlinked-install.md).
 Callboard has no installer. The mod loads from `<checkout>/tools/callboard/mod`, and the panels extension is a link
 to `<checkout>/tools/callboard/extension`. Nothing needs sudo, and nothing is fetched.
 
-### Switching from the root-owned install
-
-Skip this unless `/usr/local/libexec/callboard` exists: callboard's earlier installer made it. Remove it and the
-extension folder that installer copied:
-
-```
-sudo rm -rf /usr/local/libexec/callboard
-```
-
-```
-rm -rf ~/.vscode/extensions/notitial.callboard-panels-1.0.0
-```
-
-The earlier installer only ever wrote version 1.0.0. If `link-extension.sh` below names another real folder, or a
-copy under the extension's earlier id `local.callboard-panels-*` (it would open every lane twice), remove that one the
-same way.
-
-- In the next steps, the `CLAUDE_CODE_PLUGIN_DIRS` value **replaces** `/usr/local/libexec/callboard/mod`. Never add a
-  second folder: two folders holding a `callboard` mod would both load. Until you replace it, a session that starts
-  finds no mod, so do the whole section in one go and then restart every session.
-- The root-owned `lanes.json` goes with that folder. Lanes now come only from the lane store, where `lane_create`
-  writes them; a lane that was only in the root file has to be made again.
-- The `claude-callboard` terminal wrapper goes too: the `env` line below loads the mod in terminal sessions as well.
-
 ### Link the panels extension (VS Code)
 
 Quit VS Code first (Cmd+Q) and run these in a plain Terminal, not in VS Code's own terminal. VS Code deletes, at each
@@ -114,7 +90,6 @@ Add this line to the `env` block of `~/.claude/settings.json`, with `<checkout>`
   (ADR 0002, Consequences).
 - The callboard README, Default load (every session), has a one-line command that backs the file up, adds the key
   and shows the diff.
-- Restart every session, not only new ones: a session on an older mod can drop fields from the lane store.
 
 **Install check.** In a restarted session, type `/callboard config ping 45` once yourself, and once ask the model to
 run it. First type `/callboard config` and note the ping value. The typed one must apply; the model-run one must be

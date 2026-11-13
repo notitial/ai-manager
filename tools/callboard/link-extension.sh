@@ -7,9 +7,7 @@
 #                                          entries inside the extensions folder and its .obsolete keys
 # The version comes from extension/package.json. A link into this checkout under another version's name (left by a
 # version bump) is removed. A real folder, or a link to anywhere else, under any notitial.callboard-panels-* name is
-# never touched: the script stops and names it, so an old copy can't shadow the link. The same goes for anything under
-# the earlier id local.callboard-panels-*, which would answer lane_open as well.
-# VS Code deletes, at each start, every extension folder that extensions.json doesn't list, so the link alone does not
+# never touched: the script stops and names it, so an old copy can't shadow the link.# VS Code deletes, at each start, every extension folder that extensions.json doesn't list, so the link alone does not
 # survive a restart. The entry carries no metadata, which keeps VS Code from deleting through the link. The files are
 # VS Code's own: the script refuses a linked or malformed one and keeps the first old copy as <name>.callboard.bak. It
 # also clears this id's keys in .obsolete. A change needs VS Code quit (Cmd+Q): with it running, --apply refuses and
@@ -301,8 +299,6 @@ py() { /usr/bin/python3 -I -c "$PYSRC" "$@"; }
 # Case-insensitive, as APFS and VS Code's extension ids are: an old copy in another letter case could shadow the link.
 shopt -s nullglob nocaseglob
 entries=("$EXT_DIR/$ID"-*)
-# The extension's earlier id (before 1.0.0). A copy left under it would answer lane_open too and open a lane twice.
-legacy=("$EXT_DIR/local.callboard-panels"-*)
 shopt -u nullglob nocaseglob
 
 if [ "$REMOVE" = 1 ]; then
@@ -311,7 +307,6 @@ if [ "$REMOVE" = 1 ]; then
   for e in ${entries[@]+"${entries[@]}"}; do
     if ours "$e"; then ours_list+=("$e"); n=$((n + 1)); else foreign+=("$e"); say "left alone (not a link into this checkout): $e"; fi
   done
-  for e in ${legacy[@]+"${legacy[@]}"}; do say "left alone (the extension's earlier id): $e"; done
   # Validate the registry files before anything is removed.
   rc=0
   if [ "$APPLY" = 1 ]; then
@@ -335,9 +330,6 @@ fi
 # Check everything before changing anything, so a refusal leaves the folder and VS Code's files as they were.
 stale=()
 already=0
-for e in ${legacy[@]+"${legacy[@]}"}; do
-  die "$e is a copy under the extension's earlier id and would open every lane twice; remove it yourself, then run this again"
-done
 for e in ${entries[@]+"${entries[@]}"}; do
   if ours "$e"; then
     if [ "$e" = "$TARGET" ]; then already=1; else stale+=("$e"); fi
