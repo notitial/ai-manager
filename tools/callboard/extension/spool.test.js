@@ -693,8 +693,12 @@ test('a request file swapped for another between the first look and the move is 
 // ---- <NAME>.lead: a conductor's lead_open (ADR 0006) ----
 const NONCE = '0123456789abcdef0123456789abcdef'
 const leadText = (repo) => `lead ${NONCE} ${repo}\n`
-// A real folder of the test's own, so the real-path check passes; its name is not a broad folder.
-const realRepo = () => fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cb-lead-repo-')))
+// A real folder of the test's own, so the real-path check passes. It sits two levels down: a folder directly in /tmp (the temp folder on Linux) is a broad one.
+const realRepo = () => {
+  const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cb-lead-repo-')), 'work', 'repo')
+  fs.mkdirSync(dir, { recursive: true })
+  return fs.realpathSync(dir)
+}
 const homeOf = () => '/Users/x'
 
 test('a lead request for the first workspace folder opens that repo and answers the session id; nothing is left behind', async () => {
