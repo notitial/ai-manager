@@ -36,7 +36,7 @@ test('reaches the tiers: git_push in every shape, force pushes and pushes to mai
     { branch: 'feat/x', remoteBranch: 'main' }, { branch: '@' }, {}])
     assert.equal(floor(`${GIT}git_push`, { path: '/r', ...input }, { roots: PROT }), undefined, JSON.stringify(input))
   for (const command of ['git push --force origin feat/x', 'git push --force-with-lease origin feat/x', 'git push -f origin feat/x', 'git push origin +feat/x', 'git push origin main', 'git push origin feat/x', 'cd /r && git push', 'git push origin :feat', 'git push --delete origin feat',
-    'git -c push.default=matching push', 'git push --mirror', 'git \\\npush origin x'])
+    'git push --mirror', 'git \\\npush origin x'])
     assert.equal(floor('Bash', { command }, IN), undefined, command)
 })
 test('reaches the tiers: destructive git on the git server and in Bash', () => {
@@ -117,8 +117,8 @@ test('floor: a cd to a glob that can land in, under or above a protected folder 
   const o = { ...IN, cwd: '/live/ai-manager' }
   for (const command of ['cd tools/callboard/mod/hook? && curl -O https://example.com/x', 'cd tool?/callboard/mod && make', 'cd /live/ai-manager/tools/call* && npm install', 'cd d* && ls', 'cd tools/c*/mod && touch x'])
     assert.equal(floor('Bash', { command }, o), 'settings', command)
-  for (const command of ['cd /tmp/x* && ls', 'cd /tmp/x* && npm test'])
-    assert.equal(floor('Bash', { command }, o), undefined, command)
+  assert.equal(floor('Bash', { command: 'cd /tmp/x* && ls' }, o), undefined)
+  assert.equal(floor('Bash', { command: 'cd /tmp/x* && npm test' }, o), 'settings')
 })
 test('floor: a file-system tool that moves, deletes or writes a protected folder or one above it is the floor; a read, or other folders, are not', () => {
   const o = { ...IN, cwd: '/tmp/clone' }
@@ -154,7 +154,16 @@ test('floor: a git call that rewrites the work tree in, under or above a protect
     assert.equal(floor(`${GIT}${tool}`, { path: '/tmp/clone', target: 'x' }, o), undefined, tool)
     assert.equal(floor(`${GIT}${tool}`, { path: '/live/ai-manager-other', target: 'x' }, o), undefined, tool)
   }
-  for (const tool of ['git_status', 'git_log', 'git_diff', 'git_show', 'git_blame', 'git_fetch', 'git_commit', 'git_add', 'git_push']) assert.equal(floor(`${GIT}${tool}`, { path: '/live/ai-manager/tools/callboard' }, o), undefined, tool)
+  for (const tool of ['git_status', 'git_log', 'git_diff', 'git_show', 'git_blame', 'git_reflog']) assert.equal(floor(`${GIT}${tool}`, { path: '/live/ai-manager/tools/callboard' }, o), undefined, tool)
+  // Every other tool of the server is a change: on a protected folder it is the floor, and so is a change of the server's own working folder or a mode that is not a listing.
+  for (const tool of ['git_fetch', 'git_commit', 'git_add', 'git_push', 'git_tag', 'git_branch', 'git_set_working_dir', 'git_clear_working_dir', 'git_some_new_tool']) {
+    assert.equal(floor(`${GIT}${tool}`, { path: '/live/ai-manager/tools/callboard' }, o), 'settings', tool)
+    assert.equal(floor(`${GIT}${tool}`, { path: '/tmp/clone' }, o), undefined, tool)
+  }
+  assert.equal(floor(`${GIT}git_set_working_dir`, { path: '/live/ai-manager/sub', initializeIfNotPresent: true }, o), 'settings')
+  for (const tool of ['git_checkout', 'git_reset', 'git_merge', 'git_pull', 'git_rebase', 'git_cherry_pick', 'git_clean', 'git_clone', 'git_init', 'git_branch', 'git_tag', 'git_commit'])
+    for (const mode of ['list', 'show', 'status', 'get-url']) assert.equal(floor(`${GIT}${tool}`, { path: '/live/ai-manager', mode }, o), 'settings', `${tool} ${mode}`)
+  for (const tool of ['git_stash', 'git_worktree', 'git_remote']) for (const mode of ['list', 'show', 'get-url']) assert.equal(floor(`${GIT}${tool}`, { path: '/live/ai-manager', mode }, o), undefined, `${tool} ${mode}`)
   // No path: the server's own folder, which is not shown to stay outside, so the floor. A relative path reads against the folder the session runs in.
   assert.equal(p.floorCheck(`${GIT}git_checkout`, { target: 'x' }, o), 'settings')
   assert.equal(floor(`${GIT}git_checkout`, { path: 'sub', target: 'x' }, { ...o, cwd: '/live/ai-manager/tools/callboard' }), 'settings')
@@ -397,6 +406,15 @@ test('shell judge 5: home, relative and cd-moved paths', () => {
     'touch install.conf', 'cd .git && touch config', 'cd /tmp/clone/.git && touch x', 'cd .. && cp a .git/x', 'cd ~/.claude && touch x'], o)
   floored(['cd /live/toolkit && touch x', 'echo a > ../../live/toolkit/x'], o)
   reaches(['cd /other/toolkit && touch x', 'echo a > ../../other/toolkit/x'], o)
+  // find with no start folder starts in the folder it runs in: a delete, a file write or a command run on what it finds floors there when that folder is, lies under or above a
+  // protected folder (or ~/.claude), or is not known; a start folder that is named is judged by its path.
+  const noStart = ['find -name "*.ts" -delete', 'find -L -delete', 'find -s -delete', 'gfind -delete', 'find -name "*.ts" -exec rm {} +', 'find ! -name x -delete', 'find \\( -name a -o -name b \\) -delete', 'find -fprint out', 'find -name x -execdir rm {} \\;', 'find -fls out']
+  for (const cwd of ['/live', '/live/ai-manager/tools', '/Users/x', '/']) floored(noStart, { ...o, cwd })
+  floored(noStart, { home: '/Users/x', roots: ROOTS, cwdUnknown: true })
+  floored(['cd "$D" && find -delete'], o)
+  open(noStart, { ...o, cwd: '/tmp/clone' })
+  open(['find . -name x -delete', 'find /tmp/clone -delete', 'find -H /tmp/x -name a -exec rm {} +', 'find -f /tmp/x -delete', 'find -name x', 'find -L -name x -print'], { ...o, cwd: '/tmp/clone' })
+  floored(['find . -delete', 'find .. -name x -delete'], { ...o, cwd: '/live/ai-manager/tools' })
   // dd writes the path after of= (a leading ~ is home): a relative one from a sibling folder, a home one and an absolute one are read like any written path; its other operands are not.
   const sib = { ...o, cwd: '/live/sibling' }
   floored(['dd if=a of=../ai-manager/tools/callboard/mod/hooks/prompts.ts', 'dd if=a of=/live/ai-manager/x', 'dd of=../toolkit/hooks/x if=a', 'dd if=a of=~/.claude/CLAUDE.md', 'dd if=a of=~/.claude', 'dd if=a of=../../Users/x/.claude/settings.json', 'dd if=a of=.git/config', 'dd if=a of="$X"', 'dd if=a of=~other/x', 'dd if=a of=..'], sib)
@@ -431,12 +449,12 @@ test('shell judge 6: a session inside a protected folder: reads stay open, write
     'curl --trace-ascii=t https://example.com', 'curl -c jar https://example.com', 'curl --cookie-jar jar https://example.com', 'curl --etag-save e https://example.com', 'curl --libcurl l.c https://example.com', 'curl --out x https://example.com', 'touch x', 'mkdir x', 'cp a b', 'mv a b', 'echo hi > f', 'echo hi >> f', 'echo hi | tee f', 'cat a | sh', 'cat a > b', 'sed -i s/a/b/ f', 'git checkout main', 'git pull',
     'git stash', 'git config user.name x', 'git remote add x y', 'git diff --output=f', 'find . -exec ls {} \\;', 'echo $(touch x)', 'for f in a b; do touch $f; done', 'cd ../ai-manager && touch x'], o)
   // Any other verb may write where it runs without naming the file (a build, a package manager, an unpacker, a script): from a folder inside a protected one it is the floor too.
-  floored(['npm test', 'node --test x.ts', 'make', './build.sh', 'unknownverb', 'sort -o x a', 'uniq a b', 'env FOO=1 ls', 'ls | xargs wc -l', 'echo $(npm test)', 'cd /tmp/clone; npm test'], o)
+  floored(['npm test', 'node --test x.ts', 'make', './build.sh', 'unknownverb', 'sort -o x a', 'uniq a b', 'env FOO=1 ls', 'ls | xargs wc -l', 'echo $(npm test)', 'cd /tmp/clone; npm test', 'cd "$X" && npm test'], o)
   // A verb that names its targets is judged by them: a target outside the protected folders reaches the tiers from inside one too.
   reaches(['rm -rf /tmp/build', 'mkdir /tmp/x', 'cp /tmp/a /tmp/b', 'touch /tmp/x', 'git diff --output /tmp/a.txt', 'git diff --output-indicator-new=+', 'git format-patch -o/tmp/out', 'git format-patch -o /tmp/out', 'git archive -o/tmp/a.tar', 'git format-patch --output-directory=/tmp/out', 'git format-patch --output-directory /tmp/out', 'git format-patch -1', 'git stash list', 'git stash show -p', 'rg x', 'rg -n --glob "*.ts" x', 'rg "$X"', 'rg --pretty x', 'find . -name x', 'less a', 'tree -L 2', 'curl -s https://example.com', 'curl --stderr /tmp/e.txt https://example.com'], o)
   // Outside a protected folder none of those is the floor: a git init, a clone, an output file.
   reaches(['git init', 'git clone https://example.com/r.git', 'git diff --output a.txt', 'tree -o f.txt', 'curl --stderr e.txt https://example.com', 'curl -c jar https://example.com'])
-  reaches(['git commit -m x', 'git add .', 'git fetch', 'git branch x', 'git branch -m a b', 'git tag v1', 'git push', 'date -s x', 'cd "$X" && npm test',
+  reaches(['git commit -m x', 'git add .', 'git fetch', 'git branch x', 'git branch -m a b', 'git tag v1', 'git push', 'date -s x',
     'git -C . commit -m x', 'git -C ../x commit -m x'], o)
   reaches(['npm test', 'make', 'cd /tmp/clone && npm test'], { ...CLEAN, cwd: '/live' })
   floored(['npm test', 'make'], { ...CLEAN, cwd: '/live/ai-manager/tools' })
@@ -445,7 +463,10 @@ test('shell judge 6: a session inside a protected folder: reads stay open, write
   open(['npm test', 'touch x'], { home: '/Users/x', cwd: '/live/ai-manager' })
   // The git server's tools that rewrite a work tree: no path means the session's folder, a relative one is under it, anything that names a place under a protected folder is the floor.
   for (const tool of ['git_checkout', 'git_stash']) assert.equal(p.floorCheck(`${GIT}${tool}`, { target: 'x' }, o), 'settings', tool)
-  for (const tool of ['git_commit', 'git_add', 'git_fetch', 'git_tag']) assert.equal(p.floorCheck(`${GIT}${tool}`, { target: 'x' }, o), undefined, tool)
+  for (const tool of ['git_commit', 'git_add', 'git_fetch', 'git_tag']) {
+    assert.equal(p.floorCheck(`${GIT}${tool}`, { path: '/tmp/clone', target: 'x' }, o), undefined, tool)
+    assert.equal(p.floorCheck(`${GIT}${tool}`, { target: 'x' }, o), 'settings', tool)
+  }
   assert.equal(floor(`${GIT}git_clone`, { url: 'https://example.com/r.git', localPath: '/live/toolkit/hooks/x', path: '/tmp/clone' }, CLEAN), 'settings')
   assert.equal(floor(`${GIT}git_clone`, { url: 'https://example.com/r.git', localPath: '../../live/ai-manager/tools/callboard/x', path: '/tmp/clone' }, CLEAN), 'settings')
   assert.equal(floor(`${GIT}git_worktree`, { path: '/tmp/clone', worktreePath: '~/../../live/toolkit/hooks/w' }, CLEAN), 'settings')
@@ -479,7 +500,12 @@ test('review F1: a gh subcommand or option that is built at run time cannot be r
 test('review F2: a session whose folder is not known judges relative paths as after a cd to a variable', () => {
   const unk: p.FloorOpts = { home: '/Users/x', roots: ROOTS, cwdUnknown: true }
   floored(['touch out.txt', 'echo hi > out.txt', 'cp a b', 'cd sub && touch x', 'sed -i s/a/b/ f'], unk)
-  reaches(['npm test', 'git commit -m x', 'touch /tmp/x/out.txt', 'echo hi > /tmp/x/out.txt'], unk)
+  reaches(['git commit -m x', 'touch /tmp/x/out.txt', 'echo hi > /tmp/x/out.txt'], unk)
+  // A verb that may write where it runs, with the folder not known (no folder from the event, a cd to a variable, `cd -`, popd): the floor while protected folders exist.
+  floored(['npm test', 'make', 'npm install', 'curl -O https://example.com/x', 'wget https://example.com/x', 'python3 gen.py', 'bash gen.sh', './build.sh', 'cd "$D" && npm test', 'cd "$D" && curl -O https://example.com/x', 'cd - && curl -O https://example.com/x', 'popd && make', 'cd "$D" && python3 gen.py'], unk)
+  floored(['cd "$D" && make', 'cd "$D" && bash gen.sh', 'cd - && make', 'popd && npm install'], CLEAN)
+  open(['cd /tmp/clone && npm test', 'cd /tmp/x && make', 'touch /tmp/x'], unk)
+  open(['cd /tmp/clone && npm test', 'cd /tmp/clone && make', 'touch /tmp/x'], { ...CLEAN, cwd: '/live/ai-manager' })
   open(['cd /tmp/x && touch out.txt', 'cd /tmp/x && npm test', 'ls', 'cat README.md', 'git status', 'git -C /tmp/clone commit -m x', 'echo hi > /dev/null'], unk)
   // With a folder given, cwdUnknown is not set and nothing changes; with no protected folder a tree rewrite has nothing to guard.
   open(['touch out.txt', 'npm test'], CLEAN)
@@ -488,7 +514,8 @@ test('review F2: a session whose folder is not known judges relative paths as af
   // The git server: no path, or a relative one, acts somewhere unknown.
   assert.equal(p.floorCheck(`${GIT}git_checkout`, { target: 'x' }, unk), 'settings')
   assert.equal(floor(`${GIT}git_checkout`, { path: 'sub', target: 'x' }, unk), 'settings')
-  assert.equal(floor(`${GIT}git_commit`, { path: 'sub', message: 'x' }, unk), undefined)
+  assert.equal(p.floorCheck(`${GIT}git_commit`, { path: 'sub', message: 'x' }, unk), 'settings')
+  assert.equal(floor(`${GIT}git_commit`, { path: '/tmp/clone', message: 'x' }, unk), undefined)
   assert.equal(floor(`${GIT}git_checkout`, { path: '/tmp/clone', target: 'x' }, unk), undefined)
   assert.equal(floor(`${GIT}git_status`, {}, unk), undefined)
   assert.equal(p.floorCheck(`${GIT}git_checkout`, { target: 'x' }, { ...unk, cwd: '/tmp/clone' }), 'settings')
@@ -507,11 +534,9 @@ test('review F3: the CLI state file, XDG git, shell start files, ssh, and a proj
 })
 
 test('git settings that steer a fetch or a remote, and changing a remote', () => {
-  // Settings that run code or point the repository at another place are code-running keys; a key that only steers a push is not one.
-  for (const k of ['remote.o.url', 'branch.x.merge', 'branch.x.remote', 'url.https://h/.insteadOf'])
+  // Settings that run code or point the repository at another place or another push target are code-running keys.
+  for (const k of ['remote.o.url', 'branch.x.merge', 'branch.x.remote', 'url.https://h/.insteadOf', 'remote.o.push', 'remote.o.pushurl', 'remote.o.mirror', 'remote.pushdefault', 'branch.x.pushremote', 'push.default', 'url.https://h/.pushInsteadOf'])
     floored([`git config ${k} v`, `git config --global ${k} v`, `git -c ${k}=v status`, `git -c ${k.toUpperCase()}=v log`, `git --config-env=${k}=V log`])
-  for (const k of ['remote.o.push', 'remote.o.pushurl', 'remote.pushdefault', 'branch.x.pushremote', 'push.default', 'url.https://h/.pushInsteadOf'])
-    reaches([`git config ${k} v`, `git config --global ${k} v`, `git -c ${k}=v status`, `git -c ${k.toUpperCase()}=v log`])
   open(['git config --get remote.origin.url', 'git config branch.main.remote', 'git config --get-regexp "^branch"'])
   // Changing, adding or removing a remote on the command line writes the repository's config.
   floored(['git remote add o https://h/x', 'git remote set-url o https://h/x', 'git remote rename o p', 'git remote set-head o main', 'git remote set-branches o x', 'git "remote" "add" o x', 'git -C /tmp/clone remote add o x', 'git remote set-url --push o x', 'git remote remove o', 'git remote rm o', 'git remote prune o', 'git "remote" rm o'])
@@ -879,9 +904,10 @@ test('escalation args: none is on, off is off, anything else is bad', () => {
 test('a git server call that rewrites a work tree, with no absolute path, is the floor; other calls and reads are not', () => {
   assert.equal(p.floorCheck(`${GIT}git_checkout`, { target: 'evil' }), 'settings')
   assert.equal(p.floorCheck(`${GIT}git_checkout`, { target: 'x', path: 'rel' }), 'settings')
-  assert.equal(p.floorCheck(`${GIT}git_commit`, { message: 'x', path: 'rel' }), undefined)
-  assert.equal(p.floorCheck(`${GIT}git_push`, { remote: 'origin', branch: 'feat/x' }), undefined)
-  assert.equal(p.floorCheck(`${GIT}git_push`, { branch: 'main' }), undefined)
+  assert.equal(p.floorCheck(`${GIT}git_commit`, { message: 'x', path: 'rel' }), 'settings')
+  assert.equal(p.floorCheck(`${GIT}git_commit`, { message: 'x', path: '/w/repo' }), undefined)
+  assert.equal(p.floorCheck(`${GIT}git_push`, { remote: 'origin', branch: 'feat/x' }), 'settings')
+  assert.equal(p.floorCheck(`${GIT}git_push`, { remote: 'origin', branch: 'feat/x', path: '/w/repo' }), undefined)
   assert.equal(p.floorCheck(`${GIT}git_status`, {}), undefined)
   assert.equal(p.floorCheck(`${GIT}git_checkout`, { target: 'x', path: '/w/repo' }), undefined)
 })

@@ -149,7 +149,7 @@ export type FloorOpts = {
   real?: string[]
   // The person's home folder, for ~ and for the callboard and settings folders.
   home?: string
-  // The protected folders: the mod's own code in the live checkout (tools/callboard) and the folders that the hooks and rules under ~/.claude link into. An edit under one is the floor.
+  // The protected folders: the whole live checkout and the toolkit checkout that the hooks and rules under ~/.claude link into. A write under one is the floor.
   roots?: string[]
   // A lane's own report, which the hook sets only after checking it: `path` is `<repo>/.archive/<lane>/REPORT.md` of the session's own lane, `real` is the same
   // path under the repo's real path. A Write, Edit or MultiEdit of exactly this file is not held by `roots` (every other floor rule still is). See ownReportWrite.
@@ -789,9 +789,9 @@ const CODE_KEY = new RegExp(
   '^(core\\.(hookspath|fsmonitor|sshcommand|pager|editor|askpass|gitproxy|attributesfile)' +
     '|diff\\.external|diff\\..+\\.(textconv|command)|merge\\..+\\.driver|filter\\..+\\.(clean|smudge|process)' +
     '|credential\\.(.+\\.)?helper|gpg\\.program|gpg\\..+\\.program|gpg\\.ssh\\.defaultkeycommand|sequence\\.editor|pager\\..+' +
-    '|url\\..+\\.insteadof|alias\\..+|include\\.path|includeif\\..+' +
+    '|url\\..+\\.(pushinsteadof|insteadof)|alias\\..+|include\\.path|includeif\\..+' +
     '|remote\\..+\\.(receivepack|uploadpack|proxy|vcs)|safe\\.directory|https?\\.(.+\\.)?proxy\\w*|uploadpack\\.packobjectshook|protocol\\.(.+\\.)?allow' +
-    '|remote\\..+\\.url|branch\\..+\\.(merge|remote)' +
+    '|remote\\..+\\.(push|pushurl|url|mirror)|remote\\.pushdefault|branch\\..+\\.(merge|pushremote|remote)|push\\.default' +
     '|init\\.templatedir|interactive\\.difffilter|web\\.browser|browser\\..+\\.cmd|man\\..+\\.cmd|(difftool|mergetool)\\..+\\.(cmd|path)|trailer\\..+\\.cmd|submodule\\..+\\.update|lfs\\.customtransfer.*)$',
   'i',
 )
@@ -1223,6 +1223,21 @@ function dispatch(v: string, verb: Word, args: Word[], it: Item, cur: B[], j: J,
         }
       }
     }
+    // With no start folder before the first expression word, find starts in the folder it runs in: one that is, lies under or above a protected folder (or is not known) is the floor.
+    if (writes) {
+      let start = false
+      for (let k = 0; k < args.length; k++) {
+        const x = args[k].t
+        if (x === '-D') k++
+        else if (/^-([HLPEXdsx]+|[DO].+)$/.test(x)) continue
+        else if (x === '-f') {
+          start = true
+          k++
+        } else if (x.startsWith('-') || x === '(' || x === '!') break
+        else start = true
+      }
+      if (!start && gitReach(cur, o)) return SETT
+    }
     // GNU find reads its start folders from a file with -files0-from (- is stdin), and stdin that is piped or redirected may hold them: no word shows where find starts.
     if (writes && (args.some((w) => /^-files0-from/.test(w.t)) || it.before === '|' || it.before === '|&' || it.redirs.some((r) => r.op.startsWith('<')))) return SETT
     if (x >= 0 && !noWrap) {
@@ -1379,7 +1394,8 @@ function judgeItem(it: Item, cur: B[], j: J): Res {
   const res = dispatch(v, verb, ws.slice(k + 1), it, cur, j, false)
   // A verb that may write where it runs (curl or wget saving under the remote name, a package manager, a build, an unpacker) from a folder inside a protected one: only the
   // read-only verbs below, and the ones judged above (git, gh, cd), run there.
-  if (!res.cat && !res.cd && cur.some((b) => b !== null && b !== '' && underRoot(b, j.o)) && inRootWrites(v, ws.slice(k + 1))) return SETT
+  // A folder that is not known (a cd to a variable, `cd -`, no folder from the event) may be one of them while protected folders exist: the same rule.
+  if (!res.cat && !res.cd && cur.some((b) => (b === null ? (j.o.roots?.length ?? 0) > 0 : b !== '' && underRoot(b, j.o))) && inRootWrites(v, ws.slice(k + 1))) return SETT
   return res
 }
 // Whether a verb run in a folder inside a protected one may write there without naming the file: not on the read-only list, curl saving under the remote name, wget with no
@@ -1450,11 +1466,17 @@ function shellFloor(cmd: string, o: FloorOpts): FloorCategory | undefined {
   }
 }
 
-// The git server's tools that rewrite the work tree, change a remote or make a repository: in a folder that holds protected code each can swap the mod's own code or settings.
-const GIT_CHANGES = new Set(['git_checkout', 'git_cherry_pick', 'git_clean', 'git_clone', 'git_init', 'git_merge', 'git_pull', 'git_rebase', 'git_remote', 'git_reset', 'git_stash', 'git_worktree'])
-// A mode that lists or shows (a stash, a worktree, a remote) changes nothing.
-const gitChanges = (tool: string, input: unknown): boolean =>
-  tool.startsWith(GIT) && GIT_CHANGES.has(tool.split('__').pop() ?? tool) && !/^(list|show|status|get-url)$/i.test(typeof obj(input).mode === 'string' ? (obj(input).mode as string).trim() : '')
+// The git server's tools that only read: every other call (a checkout, a pull, a commit, a tag, a push, a change of the server's working folder) can change a folder that holds
+// protected code, or make a repository inside it.
+const GIT_READ = new Set(['git_status', 'git_log', 'git_diff', 'git_show', 'git_blame', 'git_reflog', 'git_changelog_analyze', 'git_wrapup_instructions'])
+// A mode that lists or shows reads, for the three tools that have one (a stash, a worktree, a remote); on any other tool the field is not a mode.
+const gitChanges = (tool: string, input: unknown): boolean => {
+  if (!tool.startsWith(GIT)) return false
+  const name = tool.split('__').pop() ?? tool
+  if (GIT_READ.has(name)) return false
+  const mode = typeof obj(input).mode === 'string' ? (obj(input).mode as string).trim() : ''
+  return !(/^git_(stash|worktree|remote)$/.test(name) && /^(list|show|status|get-url)$/i.test(mode))
+}
 const absPath = (p: string): boolean => p.startsWith('/') || p === '~' || p.startsWith('~/')
 
 // The floor, or undefined when the call is not on it. Pure: the hook runs it before a request is written and again at apply.
