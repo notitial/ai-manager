@@ -3,7 +3,7 @@
 // open and three offers per repo per hour, counted from the ledger; every check runs before the first write, and a write that fails takes back the offer and voids its row.
 import * as c from '../core.ts'
 import { conductorHome } from '../mem.ts'
-import { sha, where, statR, real, log, toast, rmF } from './base.ts'
+import { sha, where, statR, real, logq, toast, rmF } from './base.ts'
 import { writeBrief, resultDirOk } from './store.ts'
 import type { RegRow } from './store.ts'
 import { leadsFor, cfgReadStrict, reservedGet } from './grants.ts'
@@ -97,19 +97,21 @@ async function openLead($: any, e: any, sid: string, base: { live: RegRow[]; lan
     return no('offer-open', c.reasonWhy('offer-open'))
   }
   if (put !== 'ok') return fail('offer-write', c.reasonWhy('offer-write'))
-  // From here the offer is ours: a throw (a host call that times out) takes it back like any other failure.
+  // From here the offer is ours: a throw while the request is out (a host call that times out) takes back the request and the offer like any other failure.
+  let r: Awaited<ReturnType<typeof openExchange>>
   try {
-    const r = await openExchange($, sid, a.name, 'lead', c.leadRequestText(nonce, repo), TIMEOUT_WHY, fail)
-    if ('deny' in r) return r
-    // The panel is open and nothing here grants it: the offer goes, and the hour is not spent (no lead-grant row).
-    await rmF($, offer)
-    await voided('panel-only')
-    // The brief comes last, so a failed open leaves none behind; a panel that opened without one is reported as such.
-    const wb = await writeBrief($, p.uid, c.briefPath(repo, a.name), c.leadBriefHead(a.name), c.leadBriefText(a.name, a.task))
-    await log($, sid, 'lead-opened', a.name)
-    toast($, `Conductor opened a panel for lead ${a.name} in ${c.folderName(repo)}. Type /callboard lead there to make it the lead.`)
-    return { result: c.leadOpenedText(a.name, r.sid, wb || undefined) }
+    r = await openExchange($, sid, a.name, 'lead', c.leadRequestText(nonce, repo), TIMEOUT_WHY, fail)
   } catch {
+    await rmF($, `${p.root}/open/${a.name}.lead`)
     return fail('offer-write', c.reasonWhy('offer-write'))
   }
+  if ('deny' in r) return r
+  // The panel is open and nothing here grants it: the offer goes, and the hour is not spent (no lead-grant row). What follows cannot undo the open, so none of it throws out.
+  await rmF($, offer)
+  await voided('panel-only')
+  // The brief comes last, so a failed open leaves none behind; a panel that opened without one is reported as such.
+  const wb = await writeBrief($, p.uid, c.briefPath(repo, a.name), c.leadBriefHead(a.name), c.leadBriefText(a.name, a.task)).catch(() => 'brief-write')
+  await logq($, sid, 'lead-opened', a.name)
+  toast($, `Conductor opened a panel for lead ${a.name} in ${c.folderName(repo)}. Type /callboard lead there to make it the lead.`)
+  return { result: c.leadOpenedText(a.name, r.sid, wb || undefined) }
 }

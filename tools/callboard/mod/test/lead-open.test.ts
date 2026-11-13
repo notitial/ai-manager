@@ -154,6 +154,20 @@ longTest('a throw while the request is written takes the offer back and voids it
   expect(offers()).toEqual([])
 })
 
+longTest('a throw after the window answered leaves the panel standing: the conductor is told it opened and the brief is missing; one void row only', async ($, on) => {
+  const argv: string[][] = []
+  await conductor($, on, argv)
+  h.mvHook = (path: string) => {
+    if (path.endsWith('/LEAD-N/BRIEF.md')) throw new Error('boom')
+  }
+  const r = await open($, `ok ${NEWSID}\n`)
+  h.mvHook = undefined
+  expect(r).toContain('lead panel opened for LEAD-N')
+  expect(r).toContain('its brief could not be written')
+  expect(ledgerRows().map((x) => `${x.kind}${x.code ? ` ${x.code}` : ''}`)).toEqual(['lead-offer', 'lead-offer-void panel-only'])
+  expect(offers()).toEqual([])
+})
+
 longTest('the window never answering takes the offer back and says a panel may still appear; the conductor can ask again after', async ($, on) => {
   const argv: string[][] = []
   await conductor($, on, argv)
