@@ -907,7 +907,8 @@ export async function leadsInReach($: any, live: RegRow[], g: c.Grant): Promise<
   const out: c.LiveLead[] = []
   for (const lf of await leadsFor($, live, undefined, undefined, undefined, g.level === 'manager' ? undefined : (r) => g.pins.includes(r))) {
     const name = c.leadNameOf(rows, lf.sid)
-    if (name !== undefined) out.push({ name, repo: lf.repo, sid: lf.sid })
+    const row = live.find((r) => r.j.sessionId === lf.sid)
+    if (name !== undefined) out.push({ name, repo: lf.repo, sid: lf.sid, ...(row ? c.leadStateOf(regEntry(row)) : {}) })
   }
   return out
 }

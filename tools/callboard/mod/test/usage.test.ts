@@ -23,7 +23,9 @@ async function laneWithUsage($: any, on: any) {
 }
 const otherText = (over: { pid?: number; at?: number; sid?: string; start?: string; figures?: unknown } = {}) =>
   usageFileText(over.sid ?? OTHER, over.pid ?? 4500, over.start ?? LEADPS, over.at ?? h.nowMs - 2 * MIN, over.figures ?? FIGURES)!
-const apiRow = (cell: string) => mdBox(ANY, [['API', 'api', 'live', '–']]).replace('no reading', cell)
+// The lane list with the figure cells of API's row: Context, 5h, 7d, Cost, Read.
+const NO_READING = ['?', '?', '?', '?', '–']
+const apiRow = (figures: string[]) => mdBox(ANY, [['API', 'api', 'live', '–']]).replace('| ? | ? | ? | ? | – | – |', `| ${figures.join(' | ')} | – |`)
 
 test('a measure writes the usage file with the figures of session.usage, through a private temp file moved into place', async ($, on) => {
   const argv: string[][] = []
@@ -99,11 +101,21 @@ test('no usage file when the registry holds two rows of the session: the pid cou
   expect([...pfs.keys()].filter((k) => k.startsWith(USAGE_DIR))).toEqual([])
 })
 
-test('lane_list shows the reading of a live lane in the Usage column, and no reading when there is no file', async ($, on) => {
+test('lane_list shows the reading of a live lane in its figure columns, and no reading when there is no file', async ($, on) => {
   await laneWithUsage($, on)
-  expect(noNote(await listed($))).toBe(apiRow('no reading'))
+  expect(noNote(await listed($))).toBe(apiRow(NO_READING))
   put(OTHER_FILE, otherText())
-  expect(noNote(await listed($))).toBe(apiRow('ctx 142k · 5h 34% · $3.10 · 2m ago'))
+  expect(noNote(await listed($))).toBe(apiRow(['142k', '34%', '–', '$3.10', '2m']))
+})
+
+test("a lead's own list shows its own reading on its group row, as the manager's list does", async ($, on) => {
+  await leadAt($, on, [], { sess: { ...leadSelfReg(), ...cueSession(OTHER, 'API', `${PIN}/api`, { pid: 4500 }) } })
+  extraStat.set(`${PIN}/api`, dirStat)
+  putStore([{ name: 'API', folder: `${PIN}/api`, brief: `${PIN}/api/BRIEF.md`, createdAt: 1, leadName: 'LEAD' }])
+  pdirs.add(USAGE_DIR)
+  expect(noNote(await listed($))).toContain('| lead | ? | ? | ? | ? | – |')
+  put(FILE, usageFileText(SID, 4400, LEADPS, h.nowMs - 2 * MIN, FIGURES)!)
+  expect(noNote(await listed($))).toContain('| lead | 142k | 34% | – | $3.10 | 2m |')
 })
 
 test('a usage file that fails a check reads as no reading, never as an error: forged sid, pid, start, mode, owner, links, size, future time, a day old, bad JSON', async ($, on) => {
@@ -122,25 +134,25 @@ test('a usage file that fails a check reads as no reading, never as an error: fo
   ]
   for (const [why, text, over] of cases) {
     put(OTHER_FILE, text, over)
-    expect(noNote(await listed($)), why).toBe(apiRow('no reading'))
+    expect(noNote(await listed($)), why).toBe(apiRow(NO_READING))
   }
   // A file of another session's name is not read for this one.
   pfs.delete(OTHER_FILE)
   put(FILE, otherText())
-  expect(noNote(await listed($))).toBe(apiRow('no reading'))
+  expect(noNote(await listed($))).toBe(apiRow(NO_READING))
 })
 
 test('a window whose reset time has passed shows ? and the other figures stay', async ($, on) => {
   await laneWithUsage($, on)
   put(OTHER_FILE, otherText({ figures: { ...FIGURES, rateLimits: [{ kind: 'five_hour', percentUsed: 34, resetsAt: new Date(h.nowMs - 1000).toISOString() }] } }))
-  expect(noNote(await listed($))).toBe(apiRow('ctx 142k · 5h ? · $3.10 · 2m ago'))
+  expect(noNote(await listed($))).toBe(apiRow(['142k', '?', '–', '$3.10', '2m']))
 })
 
 test('the usage folder missing or not private reads as no reading for every row', async ($, on) => {
   await laneWithUsage($, on)
   put(OTHER_FILE, otherText())
   pdirs.delete(USAGE_DIR)
-  expect(noNote(await listed($))).toBe(apiRow('no reading'))
+  expect(noNote(await listed($))).toBe(apiRow(NO_READING))
 })
 
 test('the sweep removes the file of a gone session once a minute old and any file a day old, and keeps a live session\'s and a fresh one', async ($, on) => {

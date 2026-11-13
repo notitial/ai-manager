@@ -2,7 +2,7 @@
 // The hooks that use it are in engine/answer-hook.ts and engine/answer-tiers.ts. Nothing in this file lets an agent decide anything: it recognises what no agent may answer (the floor), what an
 // agent may judge (the classifier), what a request file may hold (redaction, caps), and when a decision file is valid (the apply checks).
 
-import { SID_RE, SUBMITTED_NOTE_NEVER_RECORD, mdPage } from './core.ts'
+import { SID_RE, SUBMITTED_NOTE_NEVER_RECORD } from './core.ts'
 
 const HASH_RE = /^[0-9a-f]{64}$/
 
@@ -1841,7 +1841,6 @@ export const ESCALATION_NO = 'Cancel'
 export const ESCALATION_HEADER = 'Escalation'
 // The fixed text of the one dialog: it names everything that turns on and takes no input.
 export const ESCALATION_QUESTION = `On this Mac, let a lead, conductor or manager answer the permission prompts of EVERY lane and lead, and the single-choice questions of EVERY lane (a lead's own questions stay yours) when the answer is settled or harmless. The dialog stays open and your click always wins; an answer lands no earlier than 30 seconds after a prompt or question opens. Stays yours (best effort on shell text): edits to settings, hooks, rules or callboard, anything from a subagent, and the risk list. Merges, force pushes, pushes to main, master or production, and destructive deletes are on the risk list: the sessions are told to pass them up to you. Questions headed Person and questions with several parts or choices always stay yours; the sessions are told to leave anything on the risk list to you too. A question no session can settle is put to you in the top session, in that session's words, with the lane's own choices, and your pick lands in the lane; typing your own answer there leaves the question in the lane. Answers are kept, redacted, for 90 days. /callboard escalation off turns it off; /callboard off in a lane's session takes that lane out.`
-export const FLOOR_LINE = 'Floor (never answered by an agent): edits to settings, hooks, rules and callboard state and code, and any write whose target cannot be shown to stay outside those. Merges, force pushes, pushes to main, master or production and destructive deletes are not on it: the rubric passes them up.'
 const OFF_FILE_NOTE = 'The OFF file exists, so it is off whatever is stored; delete the file and the stored switch applies again.'
 // The switch and, when it is on, what the questions get.
 const escalationParts = (a: Answering | undefined): { on: string; questions?: string } =>
@@ -1850,12 +1849,6 @@ export function escalationState(a: Answering | undefined, offFile: boolean): str
   const { on, questions } = escalationParts(a)
   return `Escalation: ${on}${questions === undefined ? '' : `; questions: ${questions}`}.${offFile ? ` ${OFF_FILE_NOTE}` : ''}`
 }
-// /callboard prompts: the state as a Setting and State table, then the OFF file note when there is one, then the floor.
-export function escalationText(a: Answering | undefined, offFile: boolean, open: number): string {
-  const { on, questions } = escalationParts(a)
-  return mdPage('**Escalation**', ['Setting', 'State'], [['Escalation', on], ...(questions === undefined ? [] : [['Questions', questions]]), ['Open requests', String(open)]], [...(offFile ? [OFF_FILE_NOTE] : []), FLOOR_LINE])
-}
-
 // ---- the conductor and manager tiers, and the person relay at the top tier (ADR 0004, amended) ----
 export type TierLevel = 'lead' | 'conductor' | 'manager'
 export const TIER_LEVELS: readonly TierLevel[] = ['lead', 'conductor', 'manager']

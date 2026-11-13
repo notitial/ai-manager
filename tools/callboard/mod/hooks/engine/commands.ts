@@ -544,7 +544,11 @@ async function conductorGrant($: any, sid: string, code: c.OriginCode, busy: () 
 // write the key itself, and the field bounds are what limit it. The change is a read-modify-write right before the write (two sessions in the same second: the
 // last write wins), and the two levels are checked against each other as stored.
 async function configCommand($: any, sid: string, code: c.OriginCode, op: c.ConfigOp): Promise<{ text: string }> {
-  if (op === 'show') return { text: c.configText(await cfgGet($, sid, true)) }
+  if (op === 'show') {
+    // Escalation is on when a switch is stored and the OFF file is not there.
+    const on = pr.parseAnswering(await $.store.get(ANSWERING_KEY).catch(() => undefined)) !== undefined && !(await promptsOff($))
+    return { text: c.configText(await cfgGet($, sid, true), on) }
+  }
   if (op === 'bad') return { text: c.CONFIG_USAGE }
   if (!c.originIsPerson(code)) return notPerson($, sid, 'config', code, c.CONFIG_NOT_PERSON)
   // Each store call runs inside an async function, so a call that throws at once is answered like one that rejects.
@@ -686,18 +690,7 @@ async function escalationCommand($: any, sid: string, code: c.OriginCode, op: pr
     if (plainRow && !(await ledgerRestore($, before))) await logq($, sid, 'error', 'escalation-ledger-restore')
     return { text: 'Escalation could not be turned on: the ledger did not answer. Nothing changed.' }
   }
-  return { text: `${pr.escalationState(value, await promptsOff($))} ${pr.FLOOR_LINE}` }
-}
-
-async function promptsCommand($: any): Promise<{ text: string }> {
-  const a = pr.parseAnswering(await $.store.get(ANSWERING_KEY).catch(() => undefined))
-  const p = await where($)
-  let open = 0
-  if (p) {
-    for (const d of ((await $.fs.list(`${p.root}/prompts`).catch(() => [])) as { name: string }[]).filter((x) => c.SID_RE.test(x.name)).slice(0, 512))
-      open += ((await $.fs.list(`${p.root}/prompts/${d.name}`).catch(() => [])) as { name: string }[]).filter((f) => f.name.endsWith('.request.json')).length
-  }
-  return { text: pr.escalationText(a, await promptsOff($), open) }
+  return { text: `${pr.escalationState(value, await promptsOff($))} ${c.FLOOR_LINE}` }
 }
 
 export async function commandRun($: any, e: any) {
@@ -706,8 +699,7 @@ export async function commandRun($: any, e: any) {
   const code = c.originCode((e as { origin?: unknown }).origin)
   const rawArgs = (e as { args?: unknown }).args
   const line = typeof rawArgs === 'string' ? rawArgs.trim().replace(/[ \t]+/g, ' ') : ''
-  // Escalation (ADR 0004): `escalation` and `prompts` are read here, so core's parser keeps its own forms.
-  if (line === 'prompts') return promptsCommand($)
+  // Escalation (ADR 0004): `escalation` is read here, so core's parser keeps its own form.
   // It only narrows (it stops pings), so any origin may type it, as `escalation off`.
   if (line === 'rest') return restCommand($, sid, code)
   if (line === 'escalation' || line.startsWith('escalation ')) return escalationCommand($, sid, code, pr.parseEscalationArgs(line.slice(10)))

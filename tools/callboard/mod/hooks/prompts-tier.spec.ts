@@ -371,12 +371,8 @@ test('coversAsks and requestCovered: a question needs both scopes; a permission 
   // The state line still reads a narrower value an earlier version stored.
   assert.ok(p.escalationState(a, false).includes('questions: answered for LANE1') && p.escalationState({ ...a, asksScope: undefined }, false).includes('questions: yours'))
 })
-test('escalationText is a Setting and State table, then the OFF file note when there is one, then the floor line; the sentence form of the state is unchanged', () => {
-  const head = ['**Escalation**', '', '| Setting | State |', '|---|---|']
+test('escalationState is the sentence form of the switch, with the OFF file note when there is one', () => {
   const all = { scope: 'all', asks: true, asksScope: 'all', savedAt: 1 } as p.Answering
-  assert.equal(p.escalationText(undefined, false, 0), [...head, '| Escalation | off |', '| Open requests | 0 |', '', p.FLOOR_LINE].join('\n'))
-  assert.equal(p.escalationText(all, false, 2), [...head, '| Escalation | on for all lanes and leads |', '| Questions | answered for all lanes |', '| Open requests | 2 |', '', p.FLOOR_LINE].join('\n'))
-  assert.equal(p.escalationText({ ...all, scope: 'LEAD', asksScope: undefined }, true, 1), [...head, '| Escalation | on for LEAD |', '| Questions | yours |', '| Open requests | 1 |', '', 'The OFF file exists, so it is off whatever is stored; delete the file and the stored switch applies again.', '', p.FLOOR_LINE].join('\n'))
   assert.equal(p.escalationState(all, true), 'Escalation: on for all lanes and leads; questions: answered for all lanes. The OFF file exists, so it is off whatever is stored; delete the file and the stored switch applies again.')
   assert.equal(p.escalationState(undefined, false), 'Escalation: off.')
 })
