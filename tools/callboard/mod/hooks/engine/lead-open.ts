@@ -1,6 +1,6 @@
 // lead_open: a conductor opens a panel for a new lead in one of its repos (ADR 0006). The panel is not a lead until the person types /callboard lead in it.
 // Trust rules held here: the repo is in the conductor's reach at the call; at most one live lead per repo and one open in flight per conductor; at most one successful
-// open and three offers per repo per hour, counted from the ledger; every check runs before the first write, and a write that fails takes back what was written.
+// open and three offers per repo per hour, counted from the ledger; every check runs before the first write, and a write that fails takes back the offer and voids its row.
 import * as c from '../core.ts'
 import { conductorHome } from '../mem.ts'
 import { sha, where, statR, real, log, toast, rmF } from './base.ts'
@@ -11,8 +11,9 @@ import { leadTool, leadBase, openExchange } from './lanes.ts'
 import { ledgerAdd, ledgerRowsFor, promptNewId } from './answer-hook.ts'
 import { promptLinkOnce } from './answer-tiers.ts'
 
-// The conductors that have an open running, by session id: held until the offer is gone.
+// The conductors that have an open running, by session id, and the names those opens carry (lower case): held until the offer is gone.
 const opening = new Set<string>()
+const openingNames = new Set<string>()
 
 const TIMEOUT_WHY = 'no window answered in time. A VS Code window with the repo as its first workspace folder must run the callboard panels extension (1.2.0 or later). A panel may still appear in that folder: do not open another.'
 
@@ -24,11 +25,16 @@ export async function leadOpenCall($: any, e: any, next: any) {
     if (base.g.level !== 'conductor') return no('not-conductor', c.reasonWhy('not-conductor'))
     if (!(await cfgGet($, sid, true)).conductorLeads) return no('conductor-leads-off', c.reasonWhy('conductor-leads-off'))
     if (opening.has(sid)) return no('open-in-flight', c.reasonWhy('open-in-flight'))
+    // Another conductor's open of the same name is running: its request file would be replaced by this one's.
+    const nm = typeof e.name === 'string' ? e.name.toLowerCase() : ''
+    if (nm !== '' && openingNames.has(nm)) return no('name-in-open', c.reasonWhy('name-in-open'))
     opening.add(sid)
+    if (nm !== '') openingNames.add(nm)
     try {
       return await openLead($, e, sid, base, no)
     } finally {
       opening.delete(sid)
+      if (nm !== '') openingNames.delete(nm)
     }
   })
 }
@@ -57,10 +63,13 @@ async function openLead($: any, e: any, sid: string, base: { live: RegRow[]; lan
   const key = await sha($, repo)
   if (!(await resultDirOk($, p, 'offers'))) return no('unsafe-offers-dir', c.reasonWhy('unsafe-offers-dir'))
   const offer = `${p.root}/offers/${key}.json`
-  for (const f of [offer, `${p.root}/offers/${key}.claim`]) if ((await statR($, f)) !== 'absent') return no('offer-open', c.reasonWhy('offer-open'))
+  const now = await $.clock.now()
+  // An offer left behind (a crash, a reload) is taken away once it is older than OFFER_STALE_MS; a claim is never ours to remove.
+  const left = await statR($, offer)
+  if (left !== 'absent' && !(left !== 'error' && left.kind === 'file' && now - left.mtimeMs > c.OFFER_STALE_MS && (await rmF($, offer))?.exitCode === 0)) return no('offer-open', c.reasonWhy('offer-open'))
+  if ((await statR($, `${p.root}/offers/${key}.claim`)) !== 'absent') return no('offer-open', c.reasonWhy('offer-open'))
   const rows = await ledgerRowsFor($, p, `"hash":"${key}"`)
   if (rows === 'unreadable') return no('ledger-unreadable', c.reasonWhy('ledger-unreadable'))
-  const now = await $.clock.now()
   if (c.leadOpenRate(rows, key, now) !== 'ok') return no('open-rate', c.reasonWhy('open-rate'))
   const me = base.live.find((r) => r.j.sessionId === sid)?.j
   if (!me || !Number.isInteger(me.pid) || typeof me.procStart !== 'string') return no('registry-unreadable', c.reasonWhy('registry-unreadable'))
@@ -75,7 +84,10 @@ async function openLead($: any, e: any, sid: string, base: { live: RegRow[]; lan
     return no(code, why)
   }
   const text = c.offerText({ v: 1, name: a.name, repo, model: a.model, conductor: { sid, pid: me.pid, start: me.procStart }, at: now, nonce })
-  if (text.length > c.OFFER_MAX) return fail('offer-write', c.reasonWhy('offer-write'))
+  if (text.length > c.OFFER_MAX) {
+    await voided('offer-write')
+    return no('offer-write', c.reasonWhy('offer-write'))
+  }
   const put = await promptLinkOnce($, offer, text)
   // Another offer took the repo between the check and the write: it is not ours to remove.
   if (put === 'exists') {
@@ -83,14 +95,19 @@ async function openLead($: any, e: any, sid: string, base: { live: RegRow[]; lan
     return no('offer-open', c.reasonWhy('offer-open'))
   }
   if (put !== 'ok') return fail('offer-write', c.reasonWhy('offer-write'))
-  const wb = await writeBrief($, p.uid, c.briefPath(repo, a.name), c.leadBriefHead(a.name), c.leadBriefText(a.name, a.task))
-  if (wb) return fail(wb, c.reasonWhy(wb))
-  const r = await openExchange($, sid, a.name, 'lead', c.leadRequestText(nonce, repo), TIMEOUT_WHY, fail)
-  if ('deny' in r) return r
-  // The panel is open and nothing here grants it: the offer goes, and the hour is not spent (no lead-grant row).
-  await rmF($, offer)
-  await voided('c2-only')
-  await log($, sid, 'lead-opened', a.name)
-  toast($, `Conductor opened a panel for lead ${a.name} in ${c.folderName(repo)}. Type /callboard lead there to make it the lead.`)
-  return { result: c.leadOpenedText(a.name, r.sid) }
+  // From here the offer is ours: a throw (a host call that times out) takes it back like any other failure.
+  try {
+    const wb = await writeBrief($, p.uid, c.briefPath(repo, a.name), c.leadBriefHead(a.name), c.leadBriefText(a.name, a.task))
+    if (wb) return await fail(wb, c.reasonWhy(wb))
+    const r = await openExchange($, sid, a.name, 'lead', c.leadRequestText(nonce, repo), TIMEOUT_WHY, fail)
+    if ('deny' in r) return r
+    // The panel is open and nothing here grants it: the offer goes, and the hour is not spent (no lead-grant row).
+    await rmF($, offer)
+    await voided('panel-only')
+    await log($, sid, 'lead-opened', a.name)
+    toast($, `Conductor opened a panel for lead ${a.name} in ${c.folderName(repo)}. Type /callboard lead there to make it the lead.`)
+    return { result: c.leadOpenedText(a.name, r.sid) }
+  } catch {
+    return fail('offer-write', c.reasonWhy('offer-write'))
+  }
 }

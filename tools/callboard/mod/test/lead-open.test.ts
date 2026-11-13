@@ -37,12 +37,12 @@ const wroteNothing = (argv: string[][]) => {
   expect(mvs(argv, '.lead')).toEqual([])
 }
 
-test('lead_open opens a panel: ledger row, offer, brief and request in order; the answer takes the offer back and voids it as c2-only', async ($, on) => {
+test('lead_open opens a panel: ledger row, offer, brief and request in order; the answer takes the offer back and voids it as panel-only', async ($, on) => {
   const argv: string[][] = []
   await conductor($, on, argv)
   const r = await open($, `ok ${NEWSID}\n`)
   expect(r).toContain('lead panel opened for LEAD-N as session 12345678')
-  expect(ledgerRows().map((x) => `${x.kind}${x.code ? ` ${x.code}` : ''}`)).toEqual(['lead-offer', 'lead-offer-void c2-only'])
+  expect(ledgerRows().map((x) => `${x.kind}${x.code ? ` ${x.code}` : ''}`)).toEqual(['lead-offer', 'lead-offer-void panel-only'])
   expect(ledgerRows()[0]).toMatchObject({ hash: KEY, repo: PIN, lane: 'LEAD-N' })
   expect(ledgerRows()[0].nonce).toBe(ledgerRows()[1].nonce)
   expect(offers()).toEqual([])
@@ -134,6 +134,24 @@ test('a write that fails after the ledger row takes the offer back and voids the
   expect(mvs(argv, '.lead')).toEqual([])
   h.pfsFails = undefined
   expect(await open($, `ok ${NEWSID}\n`)).toContain('lead panel opened')
+})
+
+test('a throw while the request is written takes the offer back and voids it; an offer left behind is removed once it is ten minutes old, not before', async ($, on) => {
+  const argv: string[][] = []
+  await conductor($, on, argv)
+  h.mvHook = (path: string) => {
+    if (path.endsWith('/open/LEAD-N.lead')) throw new Error('boom')
+  }
+  expect(await open($)).toContain('lead_open')
+  h.mvHook = undefined
+  expect(ledgerRows().map((x) => `${x.kind}${x.code ? ` ${x.code}` : ''}`)).toEqual(['lead-offer', 'lead-offer-void offer-write'])
+  expect(offers()).toEqual([])
+  pfs.set(`${OFFERS_DIR}/${KEY}.json`, { text: '{}', mtimeSec: T0 / 1000 - 9 * 60 })
+  expect(await open($)).toContain(REASON_TEXT['offer-open'])
+  expect(pfs.has(`${OFFERS_DIR}/${KEY}.json`)).toBe(true)
+  pfs.set(`${OFFERS_DIR}/${KEY}.json`, { text: '{}', mtimeSec: T0 / 1000 - 11 * 60 })
+  expect(await open($, `ok ${NEWSID}\n`)).toContain('lead panel opened')
+  expect(offers()).toEqual([])
 })
 
 test('the window never answering takes the offer back and says a panel may still appear; the conductor can ask again after', async ($, on) => {

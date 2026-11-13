@@ -277,6 +277,8 @@ function createSpool({ dir, uid = process.getuid(), home = os.homedir(), loadLan
     const text = await readOwned(f.file, uid, { modeBad: (mode) => (mode & 0o777) !== 0o600, max: LEAD_MAX })
     const m = text === undefined ? null : LEAD_RE.exec(text)
     if (!m) {
+      // A file that is gone was claimed by another window between the look and the read: that window answers, this one says nothing.
+      if (text === undefined && (await fsp.lstat(f.file).then(() => false, () => true))) return 'gone'
       await drop(f.file)
       await writeResult(name, 'error bad-request\n')
       return 'bad-request'

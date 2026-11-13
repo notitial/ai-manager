@@ -554,7 +554,7 @@ for (const level of LEVELS) {
 const PROMPT = ['prompt_list', 'prompt_answer', 'prompt_escalate']
 const DECLARED = {
   lead: ['lane_rename', 'lane_start', 'lane_resume', 'lane_compact', 'lane_terminate', 'lane_retire', 'lane_park', 'lane_create', 'lane_open', 'lane_unpark', 'lane_list', ...PROMPT],
-  conductor: ['lane_list', 'lane_compact', 'lane_terminate', ...PROMPT],
+  conductor: ['lane_list', 'lane_compact', 'lane_terminate', 'lead_open', ...PROMPT],
   manager: ['lane_list', 'lane_resume', 'lane_compact', 'lane_terminate', 'lane_retire', ...PROMPT],
 }
 const LANE_VERBS = ['lane_list', 'lane_start', 'lane_resume', 'lane_compact', 'lane_park', 'lane_unpark', 'lane_terminate', 'lane_retire', 'lane_create', 'lane_open', 'lane_rename']
