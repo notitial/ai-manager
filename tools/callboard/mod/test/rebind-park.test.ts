@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 import { refusalText, STOPPABLE_BY_NAME, RESTORE_YES, RESTORE_NO, ATTACH_YES, ATTACH_NO, SID_KEPT, reboundToast, restoreChangedToast, OFF_NOTHING } from '../hooks/core'
 import { h, GOOD, LANESDIR, NO, OPEN_RESULT, PS_TABLE, ROOT, SESSIONS, SID, T0, YES, extraStat, laneSeed, longTest, psStartsGone, renames, resultFiles, storeFiles, teeTexts, toasts, toolDefs } from './harness'
 import type { Trace } from './harness'
-import { ATTACHED, ATTSESS, ATT_REC, KEY, LANES, LANE_COMPOSE, LANE_HINT, LEADSID, LEAD_LANES, MFOLDER, NEWSID, OTHER, OTHERLEAD, PARK_API, PIN, REG, REGFILE, RESULT, SELFREG, STATUS_NONE, STOREFILE, STORE_LANE, SVC, TWIN, allEvents, attRec, attacher, bornStore, callCreate, closeWrites, cue, cueSession, doLane, drive, events, fileStat, grantAt, killed, lane, laneSections, lateLane, lead, leadAt, leadCall, leadReg, leadSelfReg, logged, newTrace, notices, ownReg, park, parkSess, parker, pause, putStore, rebindAsks, rebinder, rebinds, recOf, renameThroughTick, sleepMs, started, statusTable, statusText, storeJson, tickTwice, ticks, unanswered, waitFor } from './fixtures'
+import { ATTACHED, ATTSESS, ATT_REC, LANES, LANE_COMPOSE, LANE_HINT, LEADSID, LEAD_LANES, MFOLDER, NEWSID, OTHER, OTHERLEAD, PARK_API, PIN, REG, REGFILE, RESULT, SELFREG, STATUS_NONE, STOREFILE, STORE_LANE, SVC, TWIN, allEvents, attRec, attacher, bornStore, callCreate, closeWrites, cue, cueSession, doLane, drive, events, fileStat, grantAt, killed, lane, laneSections, lateLane, lead, leadAt, leadCall, leadReg, leadSelfReg, logged, newTrace, notices, ownReg, park, parkSess, parker, pause, putStore, rebindAsks, rebinder, rebinds, recOf, renameThroughTick, sleepMs, started, statusTable, statusText, storeJson, tickTwice, ticks, unanswered, waitFor } from './fixtures'
 
 test('a session that is not a lane writes no hint and no saved on; a lane writes a hint for its own session id only', async ($, on) => {
   await started($, on, [])
@@ -836,8 +836,9 @@ test('after a park mark and an unpark clear, /callboard lane off in the attached
   const rec = storeJson().lanes[0]
   putStore([{ ...rec, parked: T0 }])
   putStore([{ ...rec }])
+  const { sid: _sid, ...rest } = storeJson().lanes[0]
   expect((await doLane($, 'lane off')).text).toBe(`This session is no longer lane svc-api.${STOPPABLE_BY_NAME('svc-api')}`)
-  expect(storeJson().lanes.map((l: any) => l.sid)).toEqual([undefined])
+  expect(storeJson().lanes).toEqual([rest])
 })
 
 test('a session whose store record names its id rebinds from the tick as a restore binds: one note, a toast, and no Restore question later', async ($, on) => {
@@ -915,10 +916,11 @@ test('an attached record rebinds with the attached facts in the binding, and its
   const trace = newTrace()
   await rebinder($, on, stdins, { trace, rec: { adopted: true, lead: LEADSID } })
   await tickTwice()
-  expect(trace.st!.get('lane')!.value).toMatchObject({ name: 'LABLANE', turns: -1, restored: true, adopted: true, lead: LEADSID, key: KEY })
+  expect(trace.st!.get('lane')!.value).toMatchObject({ name: 'LABLANE', turns: -1, restored: true, adopted: true, lead: LEADSID })
   expect(rebinds(stdins)).toEqual(['rebound:LABLANE'])
+  const { sid: _sid, ...rest } = storeJson().lanes[0]
   await $.command.run(lane('lane off'))
-  expect(storeJson().lanes.map((l: any) => l.sid)).toEqual([undefined])
+  expect(storeJson().lanes).toEqual([rest])
 })
 
 test('a live row of this same session id carrying the lane name (the old process) does not block the rebind', async ($, on) => {

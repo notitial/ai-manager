@@ -361,6 +361,8 @@ export const h = {
   // A failed root() read makes the cwd() read that follows it fail too, so cwdThrows stays one failed folder read. rootMissing: an engine without root().
   cwdFailNext: false,
   rootMissing: false,
+  // session.root() does not answer while this is set (a folder read that times out).
+  rootHang: undefined as Promise<{ value: unknown }> | undefined,
   laneRegisterHang: undefined,
   // A write of a lead:<sid> key waits on this while it is set (the save of a grant in flight).
   leadSetHang: undefined,
@@ -435,6 +437,7 @@ function resetSession() {
   h.renameGate = undefined
   h.registerGate = undefined
   h.cwdThrows = 0
+  h.rootHang = undefined
   h.cwdFailNext = false
   h.laneRegisterHang = undefined
   h.draftNow = ''
@@ -789,6 +792,7 @@ export function engine(on0: any, argvSeen: string[][], stdins: string[] = [], cl
   })
   if (!h.rootMissing)
     on('session.root', () => {
+      if (h.rootHang) return h.rootHang
       if (h.cwdThrows > 0) {
         h.cwdThrows--
         h.cwdFailNext = true

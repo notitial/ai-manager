@@ -52,7 +52,7 @@ test('the stop dialog names the process: short session id and pid; one click sen
   await lead($, on, stdins, { argv })
   expect(await terminateDuring($, () => undefined)).toContain('SIGTERM sent to process 4242')
   expect(h.lastQuestion).toBe(`Force stop lane LABLANE's session (${OTHER.slice(0, 8)}, pid 4242)? It ends at once, even mid-task. The lane's record is then removed.`)
-  expect(h.lastQuestion).toBe(terminateQuestion('LABLANE', OTHER, 4242, undefined, true))
+  expect(h.lastQuestion).toBe(terminateQuestion('LABLANE', OTHER, 4242))
   expect(killed(argv)).toEqual([['/bin/kill', '-TERM', '4242']])
   expect(logged(stdins)).toContain('terminating:LABLANE')
 })
@@ -854,7 +854,7 @@ test('retire and terminate of a joined lane remove its record once the process h
   h.killFails = false
   const out = (await $.tool.call(leadCall('terminate', { lane: 'ATT' }))).result as string
   expect(out).toBe('lane ATT terminated and removed: SIGTERM sent to process 4500. Its .archive/ATT/ folder and report stay.')
-  expect(h.lastQuestion).toBe(terminateQuestion('ATT', OTHER, 4500, undefined, true))
+  expect(h.lastQuestion).toBe(terminateQuestion('ATT', OTHER, 4500))
   expect(h.lastQuestion).toContain("The lane's record is then removed.")
   expect(storeJson().lanes).toEqual([])
   expect(logged(stdins)).toContain('lane-removed:ATT')
@@ -894,7 +894,7 @@ test('lane_terminate of a live lane removes its record too; its dialog says so',
   putStore([PARK_API({ sid: OTHER, parked: 3 }), OLD_REC])
   h.askAnswer = YES
   expect(stopText(await $.tool.call(leadCall('terminate', { lane: 'API' })))).toBe('lane API terminated and removed: SIGTERM sent to process 4500. Its .archive/API/ folder and report stay.')
-  expect(h.lastQuestion).toBe(terminateQuestion('API', OTHER, 4500, undefined, true))
+  expect(h.lastQuestion).toBe(terminateQuestion('API', OTHER, 4500))
   expect(h.lastQuestion!.endsWith(" The lane's record is then removed.")).toBe(true)
   expect(killed(argv)).toEqual([['/bin/kill', '-TERM', '4500']])
   expect(storeJson().lanes).toEqual([OLD_REC])

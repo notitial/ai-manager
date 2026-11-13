@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import { HINT_PREFIX, conductorFileText, conductorAddQuestion, conductorRefusalText, conductorAddedText, CONDUCTOR_NOT_PERSON, CONDUCTOR_USAGE, conductorQuestion, conductorRestoreQuestion, conductorBriefing, conductorBriefingNote, conductorRestoredToast, conductorUnansweredToast, conductorFileBadToast, conductorNoReposToast, CONDUCTOR_ON_TEXT, CONDUCTOR_OFF_QUESTION, conductorStatus, leadBriefing, LANES_CHANGED_TEXT, reboundToast, REASON_TEXT, managerRefusalText, terminateQuestion, leadConductorText } from '../hooks/core'
-import { h, GOOD, LANESDIR, NO, PS_TABLE, ROOT, SID, T0, YES, condFiles, condStat, extraStat, laneSeed, leadFiles, longTest, realFails, realMap, seen, storeFiles, submitted, toasts, toolDefs } from './harness'
+import { h, GOOD, LANESDIR, NO, PS_TABLE, ROOT, SID, T0, YES, condFiles, condStat, extraStat, laneSeed, leadFiles, longTest, psDead, realFails, realMap, seen, storeFiles, submitted, toasts, toolDefs } from './harness'
 import type { Trace } from './harness'
 import { APISID, APP2, COMPOSE, COND, CONDFILE, CSESS, FAR, LANE_HINT, LEADKEY, LEADPATH, LEADPS, LEADSID, MGR_SESS, MIN, NO_LANES, NO_LANES_COND, OTHER, OTHERLEAD, OTHERPATH, PIN, SELFPATH, STATUS_NONE, TURN, allEvents, attacher, briefings, ckLane, condAt, condOn, condPresenceOf, condRun, condSelf, cue, dirStat, doLane, grantAt, idleFor, killed, lane, leadAt, leadFileText, leadReg, leadSelfReg, listCall, listed, logged, madeLane, mgrAt, mgrCall, mgrFile, mgrRow, newTrace, noteRows, nudges, ownReg, putCond, putStore, regAs, renameThroughTick, selfAs, started, statusTable, statusText, ticks, unanswered, waitFor } from './fixtures'
 
@@ -654,7 +654,7 @@ test('the conductor\'s lane_terminate names the repo, refuses a second stop whil
   const n = h.askCount
   const first = $.tool.call(mgrCall('terminate', 'API'))
   await waitFor(() => h.askCount > n)
-  expect(h.lastQuestion).toBe(terminateQuestion('API', APISID, 4500, PIN, true))
+  expect(h.lastQuestion).toBe(terminateQuestion('API', APISID, 4500, PIN))
   expect(JSON.stringify(await $.tool.call(mgrCall('terminate', 'API')))).toContain('lane_terminate refused: busy')
   release(YES)
   expect((await first).result).toBe('lane API terminated and removed: SIGTERM sent to process 4500. Its .archive/API/ folder and report stay.')
@@ -1035,6 +1035,18 @@ test('a made lane with no live lead takes resume, compact and retire from a trus
   for (const v of ['compact', 'retire']) expect(await cue(121, `${v}\n`)).not.toContain('no-lead')
   expect(await cue(122, 'park\n')).toBe(REFUSED('park', 122))
   expect(await cue(123, 'start\n')).toBe(REFUSED('start', 123))
+})
+
+test('a made lane with no live lead refuses every cue from an untrusted manager (a name that is not reserved, or a process that is gone): no-lead', async ($, on) => {
+  await bornLane($, on, () => {
+    mgrFile()
+    h.sessions = { ...h.sessions, ...mgrRow('LEAD2') }
+  })
+  const refused = { resume: REFUSED('resume', 100), compact: REFUSED('compact', 101), retire: REFUSED('retire', 102), park: REFUSED('park', 103), start: REFUSED('start', 104) }
+  expect(await bornCues(['resume', 'compact', 'retire', 'park', 'start'])).toEqual(refused)
+  h.sessions = { ...h.sessions, ...mgrRow() }
+  psDead.add('4243')
+  expect(await bornCues(['resume', 'compact', 'retire', 'park', 'start'])).toEqual(refused)
 })
 
 test('a made lane with no live lead takes compact from a trusted conductor of its repo, and no other cue', async ($, on) => {

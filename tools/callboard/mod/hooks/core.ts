@@ -922,12 +922,12 @@ export const TERMINATE_YES = 'Force stop'
 export const TERMINATE_NO = 'Cancel'
 // The question names the process too (short session id, pid), so the person can tell which one a click ends. At manager reach it names the
 // lane's repo folder as well (repo).
-// removes: the stop also deletes the lane's record once the session has stopped, and the question says so.
+// The stop also deletes the lane's record once the session has stopped, and the question says so.
 const RECORD_REMOVED_SENTENCE = " The lane's record is then removed."
-export const terminateQuestion = (lane: string, sid: string, pid: number, repo?: string, removes = false) =>
-  `Force stop lane ${lane}'s session${repo === undefined ? '' : ` in ${folderName(repo)}`} (${sid.slice(0, 8)}, pid ${pid})? It ends at once, even mid-task.${removes ? RECORD_REMOVED_SENTENCE : ''}`
+export const terminateQuestion = (lane: string, sid: string, pid: number, repo?: string) =>
+  `Force stop lane ${lane}'s session${repo === undefined ? '' : ` in ${folderName(repo)}`} (${sid.slice(0, 8)}, pid ${pid})? It ends at once, even mid-task.${RECORD_REMOVED_SENTENCE}`
 // lane_retire at manager reach asks once before the normal confirmed retire.
-export const retireQuestion = (lane: string, repo: string, removes = false) => `Retire lane ${lane} in ${folderName(repo)}?${removes ? RECORD_REMOVED_SENTENCE : ''}`
+export const retireQuestion = (lane: string, repo: string) => `Retire lane ${lane} in ${folderName(repo)}?${RECORD_REMOVED_SENTENCE}`
 export const RETIRE_YES = 'Retire'
 export const RETIRE_NO = 'Cancel'
 // The remove question names the repo by its path with the home folder as ~ (the full path without a home), so two repos of

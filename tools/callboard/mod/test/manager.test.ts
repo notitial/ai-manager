@@ -177,7 +177,7 @@ test('manager lane_terminate: the dialog names the repo; a second stop while it 
   const n = h.askCount
   const first = $.tool.call(mgrCall('terminate', 'LABLANE'))
   await waitFor(() => h.askCount !== n)
-  expect(h.lastQuestion).toBe(terminateQuestion('LABLANE', OTHER, 4600, '/data/x/work', true))
+  expect(h.lastQuestion).toBe(terminateQuestion('LABLANE', OTHER, 4600, '/data/x/work'))
   expect(h.lastQuestion).toContain("Force stop lane LABLANE's session in work (")
   expect(h.lastQuestion).toContain(" It ends at once, even mid-task. The lane's record is then removed.")
   expect(JSON.stringify(await $.tool.call(mgrCall('terminate', 'API')))).toContain('lane_terminate refused: busy')
@@ -214,7 +214,7 @@ test('manager lane_retire: asks once naming the repo; Cancel sends no cue; Retir
   h.reportFile = REPORT_OK()
   h.askAnswer = NO
   expect(JSON.stringify(await $.tool.call(mgrCall('retire', 'LABLANE')))).toContain('did not confirm')
-  expect(h.lastQuestion).toBe(retireQuestion('LABLANE', '/data/x/work', true))
+  expect(h.lastQuestion).toBe(retireQuestion('LABLANE', '/data/x/work'))
   expect(h.lastQuestion).toBe("Retire lane LABLANE in work? The lane's record is then removed.")
   expect(stdins).not.toContain('retire\n')
   expect(argv.some((a) => a[0] === '/bin/mv' && a[a.length - 1].startsWith(`${ROOT}/cue/`))).toBe(false)
@@ -1087,6 +1087,30 @@ test('manager silent restore: a session folder that cannot be read asks', async 
   await asksInstead(stdins)
 })
 
+test('manager silent restore: a session folder read that does not answer in time asks, and the grant it saves names no folder', async ($, on) => {
+  const stdins: string[] = []
+  await silentRestarter($, on, stdins, silentHint(MIN))
+  h.rootHang = new Promise(() => undefined)
+  await ticks(3)
+  await h.clock!.advance(31_000)
+  await asksInstead(stdins)
+  expect(h.store.get(MGRKEY)).toEqual({ name: 'MANAGER', savedAt: expect.any(Number) })
+})
+test('manager silent restore: an off typed while the folder is being read, before any grant, leaves nothing granted and the saved grant removed', async ($, on) => {
+  const stdins: string[] = []
+  await silentRestarter($, on, stdins, silentHint(MIN))
+  let release!: () => void
+  h.rootHang = new Promise((r) => (release = () => r({ value: MGRCWD })))
+  await ticks(2)
+  expect((await $.command.run(lane('off'))).text).toContain('Its saved manager grant was removed.')
+  release()
+  await ticks(4)
+  expect(await statusText($)).toBe(STATUS_NONE)
+  expect(h.askCount).toBe(0)
+  expect(h.store.has(MGRKEY)).toBe(false)
+  expect(mgrLogs(stdins).some((x) => x.startsWith('manager-restored'))).toBe(false)
+})
+
 // Every other check still runs, and a refusal stays a refusal: no silent grant.
 test('manager silent restore: another live manager on the Mac refuses (manager-exists): no grant, no dialog, the key stays', async ($, on) => {
   const stdins: string[] = []
@@ -1107,7 +1131,7 @@ test('manager silent restore: a name no longer reserved refuses (manager-name)',
   expect(mgrLogs(stdins)).toContain('manager-restore-rejected:manager-name')
   expect(await statusText($)).toBe(STATUS_NONE)
 })
-test('manager silent restore: a lane (bound) refuses (lane-holder), and a lead refuses (lead-holder)', async ($, on) => {
+test('manager silent restore: a lane (bound) refuses (lane-holder)', async ($, on) => {
   const stdins: string[] = []
   await silentRestarter($, on, stdins, silentHint(MIN), { bound: true })
   await ticks(3)

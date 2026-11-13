@@ -237,6 +237,28 @@ for (const level of LEVELS) {
   })
 }
 
+// The stale write's delete takes the new grant's key with it, so the new grant's saved time is cleared and the next tick writes the key again.
+for (const level of LEVELS) {
+  const L = LV[level]
+  test(`save: the ${level} key lost to an older write is written again by the next refresh tick`, async ($, on) => {
+    await world($, on, [])
+    let release!: () => void
+    let held = false
+    h.storeSetHook = (k) => (k === L.key && !held ? ((held = true), new Promise<void>((r) => (release = r))) : undefined)
+    const first = grant($, level)
+    await waitFor(() => held)
+    await off($)
+    await grant($, level)
+    release()
+    await first
+    h.storeSetHook = undefined
+    expect(h.store.has(L.key)).toBe(false)
+    await ticks(3)
+    await waitFor(() => h.store.has(L.key))
+    expect({ ...(h.store.get(L.key) as object), savedAt: T0 }).toEqual({ ...L.saved, savedAt: T0 })
+  })
+}
+
 // ---- 3. prune of old saved grants, and restore at session start ----
 const sidN = (n: number) => `${n}a1b2c3d-0000-4000-8000-123456789abc`
 for (const level of LEVELS) {
@@ -285,7 +307,7 @@ for (const level of ['conductor', 'manager'] as const) {
   })
 }
 
-// The saved manager grant names no folder: it asks wherever the session starts. The lead's and the conductor's are for their own folder (elsewhere the key is deleted).
+// A saved manager grant of the older shape (no folder in it) asks wherever the session starts. The lead's and the conductor's are for their own folder (elsewhere the key is deleted).
 test('restore: a saved manager grant is offered in any folder', async ($, on) => {
   const stdins: string[] = []
   await world($, on, stdins, { sess: condSelf({ cwd: '/elsewhere', name: 'MANAGER' }), seed: () => ((h.callerCwd = '/elsewhere'), h.store.set(LV.manager.key, LV.manager.hint(T0 - 60_000))) })
@@ -406,6 +428,25 @@ for (const level of LEVELS) {
     }
   })
 }
+// /callboard off while the lead's tools are being registered: the grant is refused as at the dialog, and nothing is saved.
+test('dialog: /callboard off while the lead tools are being registered, then they register: nothing is granted (refused off-meanwhile), no saved key', async ($, on) => {
+  const stdins: string[] = []
+  await world($, on, stdins)
+  let release!: () => void
+  h.laneRegisterHang = new Promise<void>((r) => (release = r))
+  const p = grant($, 'lead')
+  await waitFor(() => h.askCount === 1)
+  await sleepMs(30)
+  await off($)
+  release()
+  const text = (await p).text as string
+  h.laneRegisterHang = undefined
+  expect(text).toBe('Nothing changed: callboard was turned off meanwhile.')
+  expect(logged(stdins)).toContain('refused:off-meanwhile')
+  expect(logged(stdins)).not.toContain(LV.lead.onLog)
+  expect(await isOn($)).toBe(false)
+  expect(h.store.has(LV.lead.key)).toBe(false)
+})
 test('presence: a manager that appears while the manager file is being written makes this one step back (manager-exists); its own file goes', async ($, on) => {
   const stdins: string[] = []
   await world($, on, stdins)

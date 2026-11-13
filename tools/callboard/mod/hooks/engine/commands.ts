@@ -236,7 +236,7 @@ async function laneCommand($: any, sid: string, code: c.OriginCode, arg: c.Comma
       await log($, sid, 'refused', 'off-meanwhile')
       return { text: 'Nothing changed: callboard was turned off meanwhile.' }
     }
-    const binding = { name: plan.name, at: now, turns: -1, rec: recHash, adopted: true, lead: plan.lead, key: plan.key }
+    const binding = { name: plan.name, at: now, turns: -1, rec: recHash, adopted: true, lead: plan.lead }
     let written = false
     // Each engine call held inside the mark has a time limit (the command itself has none): a call that times out takes the failure path below.
     const limited = async <T,>(p: Promise<T>, what: string): Promise<T> => {
@@ -291,6 +291,8 @@ async function laneCommand($: any, sid: string, code: c.OriginCode, arg: c.Comma
 // check runs as after a yes).
 // After the grant the presence file must be written (one per machine rests on it), and a second manager that won the same moment makes both step back.
 export async function managerCommand($: any, sid: string, code: c.OriginCode, want: string | undefined, busy: () => Promise<{ text: string }>, restore = false, alive: () => boolean = () => true, saved?: c.ManagerHint): Promise<{ text: string }> {
+  // The off counter before any await: for a restore with no question, an off typed during the checks below counts as one meanwhile.
+  const seq = offSeq.get(sid) ?? 0
   await reservedGet($, sid, true)
   // With no NAME, a session whose registry name (one row) is already reserved keeps it; otherwise MANAGER. An unreadable registry
   // gives MANAGER here and is refused by the check below.
@@ -317,13 +319,14 @@ export async function managerCommand($: any, sid: string, code: c.OriginCode, wa
   // A restore whose pending entry went while these checks ran (an /callboard off, a manager grant by hand) asks nothing.
   if (restore && !alive()) return { text: '' }
   // The folder the session started in: saved with the grant, and for a restore the folder the saved grant must name for it to come back with no question. A folder
-  // that cannot be read is none (the grant is saved without one, and a restore asks).
+  // that cannot be read (an error, no answer in time, an empty answer) is none (the grant is saved without one, and a restore asks).
   const root = await withTimeout($, sessionRoot($), c.ENGINE_CALL_TIMEOUT_MS).catch(() => undefined)
-  const here = typeof root === 'string' && root !== '' ? root : undefined
+  const here = typeof root === 'string' && root !== '' && root !== 'timeout' ? root : undefined
   const silent = restore && saved !== undefined && c.managerSilentOk(saved, here, await $.clock.now(), MANAGER.silentGraceMs)
   let live: Awaited<ReturnType<typeof registryEntries>>
   return grantDialog($, sid, MANAGER, {
     silent,
+    seq: silent ? seq : undefined,
     question: restore ? c.MANAGER_RESTORE_QUESTION : c.askedFrom(c.MANAGER_QUESTION, code),
     yes: c.MANAGER_YES,
     no: c.MANAGER_NO,
@@ -370,6 +373,7 @@ export async function managerCommand($: any, sid: string, code: c.OriginCode, wa
       else managerCwd.delete(sid)
       // A grant the person made while a restore question was still pending stands; the pending restore ends here.
       managerRestorePending.delete(sid)
+      return epochOf(sid)
     },
     afterPresence: async (wrote, grantEpoch) => {
       const stepBack = async (why: string) => {
@@ -524,7 +528,9 @@ async function conductorGrant($: any, sid: string, code: c.OriginCode, busy: () 
       // The list resolved now must be the list the dialog showed.
       // The same repos in another order (a writer sorts the file) are no change.
       if (fresh.home !== home || [...fresh.ok].sort().join('\n') !== [...first.ok].sort().join('\n')) return refuse('conductor-changed', home)
-      const a = await conductorApply($, sid, home, first.ok, first.ok, epochOf(sid))
+      // conductorApply sets the grant only while the epoch is still this one, so it is the grant's epoch.
+      const epoch = epochOf(sid)
+      const a = await conductorApply($, sid, home, first.ok, first.ok, epoch)
       if (a !== 'ok') {
         await logq($, sid, 'error', `conductor-register-${a}`)
         return { text: c.CONDUCTOR_FAILED }
@@ -532,6 +538,7 @@ async function conductorGrant($: any, sid: string, code: c.OriginCode, busy: () 
       // A grant the person made while a restore question was still pending stands, as the lead's does; the pending restore ends here,
       // so a later Cancel on its question cannot delete this grant's saved key.
       conductorRestorePending.delete(sid)
+      return epoch
     },
     onLog: ['conductor-on', code],
     briefArg: home,
@@ -837,7 +844,7 @@ export async function commandRun($: any, e: any) {
         const namedNow = await withTimeout($, secondLeadNo($, sid, pinned), c.ENGINE_CALL_TIMEOUT_MS)
         if (namedNow !== undefined) return nameNo(namedNow === 'timeout' ? 'lead-check-slow' : namedNow)
       },
-      apply: async () => {
+      apply: async (offNow) => {
         let set: unknown
         try {
           set = await withTimeout($, leadToolsOnce($, sid), c.ENGINE_CALL_TIMEOUT_MS)
@@ -849,6 +856,10 @@ export async function commandRun($: any, e: any) {
           await logq($, sid, 'error', 'lead-register-timeout')
           return { text: 'Lead could not be set up.' }
         }
+        if (offNow()) {
+          await log($, sid, 'refused', 'off-meanwhile')
+          return { text: 'Nothing changed: callboard was turned off meanwhile.' }
+        }
         // A re-grant with a new folder is a new reach: work in flight for the old one (a check-in) sees the epoch move and stops.
         const oldPin = pinOf(sid)
         if (oldPin !== undefined && oldPin !== pinned) {
@@ -857,6 +868,7 @@ export async function commandRun($: any, e: any) {
           attnTold.delete(sid)
         }
         grants.set(sid, c.leadGrant(pinned))
+        return epochOf(sid)
       },
       afterPresence: async () => {
         await watchInit($, sid).catch(logFail($, sid, 'lane-watch'))
@@ -904,7 +916,7 @@ export async function commandRun($: any, e: any) {
       }
     }
     // A bound session is unbound too: off no longer leaves a lane that a lead can still cue.
-    const d = bound ? await detach($, sid, bound) : { whole: true, sidKept: false }
+    const d = bound ? await detach($, sid, bound) : { sidKept: false }
     const loose = bound ? undefined : await sidClearAll($, sid).catch(() => ({ ok: false, name: undefined }))
     await log($, sid, 'disabled')
     // The answer says what off did; it never stops the keepalive or the nudges, which every session gets.
@@ -916,6 +928,6 @@ export async function commandRun($: any, e: any) {
       loose?.ok && loose.name !== undefined ? `Lane ${loose.name} no longer names this session.` : '',
       reqDone === 'dropped' ? 'Its compaction request was dropped.' : reqDone === 'no-resume' ? 'The compaction under way will not resume the work.' : '',
     ].filter((x) => x !== '').join(' ')
-    return { text: `${did || c.OFF_NOTHING}${bound ? c.STOPPABLE_BY_NAME(bound.name) : ''}${bound && d.sidKept ? c.SID_KEPT(bound.name) : ''}${loose && !loose.ok && loose.name ? c.SID_KEPT(loose.name) : ''}${leadKept ? ([CONDUCTOR, MANAGER].find((d) => d === was || saved.includes(d)) ?? LEAD).kept : ''}` }
+    return { text: `${did || c.OFF_NOTHING}${bound ? c.STOPPABLE_BY_NAME(bound.name) : ''}${bound && d.sidKept ? c.SID_KEPT(bound.name) : ''}${loose && !loose.ok && loose.name ? c.SID_KEPT(loose.name) : ''}${leadKept ? ([CONDUCTOR, MANAGER].find((l) => l === was || saved.includes(l)) ?? LEAD).kept : ''}` }
   }
 }

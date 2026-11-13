@@ -15,12 +15,11 @@ export const epochOf = (sid: string) => leadEpoch.get(sid) ?? 0
 export type LevelDesc = {
   level: c.Level
   // The saved grant: <hint><sid> in $.store, its fields (saved, read before the clock; undefined when the session holds no grant of this level) and savedAt;
-  // held says the grant is still there. A write that ends after a drop is deleted again; saveEpochCheck: a new grant meanwhile counts as a drop too.
+  // held says the grant is still there. A write that ends after a drop, or after a drop and a new grant, is deleted again.
   hint: string
   savedAt: Map<string, number>
-  saveEpochCheck: boolean
   // How often the saved grant is rewritten while the grant is on (its savedAt is the last time it was known live), and how long after that savedAt a restore asks no
-  // question (0: never; only the manager's saved grant is restored that way, managerRestoreTry).
+  // question (0: never; only the manager's saved grant is restored that way, in managerTick).
   refreshMs: number
   silentGraceMs: number
   unsaved: string
@@ -41,11 +40,9 @@ export type LevelDesc = {
   note(sid: string, arg: string): string
   noteErr: string
   // The grant dialog (grantDialog in grants.ts). notYes: what a click that is not yes does to the grant, and its saved key: 'person-or-no' ends it on any no and on
-  // any non-yes the person's own origin gets (a dismissal, a timeout), 'person-no' only on the person's own no, 'none' never. offCancelsDialog: a /callboard off
-  // while it is open cancels the grant (refused off-meanwhile). presenceFirst: the presence file is written before the saved grant and must succeed (the manager);
+  // any non-yes the person's own origin gets (a dismissal, a timeout), 'person-no' only on the person's own no, 'none' never. presenceFirst: the presence file is written before the saved grant and must succeed (the manager);
   // otherwise it follows the save and a failed write is only logged. offToast: the toast of a timeout that ended the grant.
   notYes: 'person-or-no' | 'person-no' | 'none'
-  offCancelsDialog: boolean
   presenceFirst: boolean
   offToast?: string
   presence?: { err: string; fields(g: c.Grant, home?: string): object; key?(g: c.Grant, home?: string): string }
@@ -64,6 +61,8 @@ export type GrantDialog = {
   person: boolean
   on: () => boolean
   pin?: string
+  // The off counter as it was when the command began, when the command's own awaits before the grant count too (the silent restore).
+  seq?: number
   // silent: no question is asked (the manager's restore inside its grace period); every check after the click runs as after a yes. An open dialog of the
   // session makes it busy, as a second question would be.
   silent?: boolean
@@ -73,7 +72,8 @@ export type GrantDialog = {
   postClick: () => Promise<{ text: string }> | undefined
   // Checks inside the mark, then the tools and the grant (offNow: an off came since the question).
   recheck: () => Promise<Refusal>
-  apply: (offNow: () => boolean) => Promise<Refusal>
+  // It returns the grant's epoch, read right after the grant was set (no await between), or the refusal.
+  apply: (offNow: () => boolean) => Promise<{ text: string } | number>
   // Once the presence file is written (presenceFirst: with its result, and a refusal ends the grant), or after the saved grant when presence follows it.
   afterPresence?: (wrote: unknown, epoch: number) => Promise<Refusal>
   onLog: [string, string]
@@ -121,8 +121,12 @@ export async function levelSave($: any, sid: string, d: LevelDesc, pin?: string)
   } catch {
     await logq($, sid, d.unsaved)
   }
-  // A drop while the write was in flight: the key it wrote goes again.
-  if ((d.saveEpochCheck && epochOf(sid) !== epoch) || !d.held(sid, pin)) await Promise.resolve($.store.delete(key)).catch(logFail($, sid, d.hintDelete))
+  // A drop while the write was in flight (a new grant meanwhile too): the key it wrote goes again.
+  if (epochOf(sid) !== epoch || !d.held(sid, pin)) {
+    await Promise.resolve($.store.delete(key)).catch(logFail($, sid, d.hintDelete))
+    // A new grant's own key may have gone with it: its savedAt is cleared, so the next tick writes it again.
+    if (d.held(sid, pin)) d.savedAt.delete(sid)
+  }
 }
 
 // One briefing note, once per `key` in `marks`: the mark is set before the append, a refused or failed append unmarks it (if it is still this one) and logs errCode.

@@ -217,7 +217,6 @@ test('v14.1 (2026-11-04, audit, L2) homePath: the home folder as ~, the full pat
 })
 
 test('the stop question names the lane and the process: short session id and pid', () => {
-  assert.equal(c.terminateQuestion('LABA', '0a1b2c3d-0000-4000-8000-123456789abc', 4242), "Force stop lane LABA's session (0a1b2c3d, pid 4242)? It ends at once, even mid-task.")
   assert.doesNotMatch(c.terminateQuestion('LABA', '0a1b2c3d-0000-4000-8000-123456789abc', 4242), /4000|123456789abc/)
   assert.equal(c.TERMINATE_YES, 'Force stop')
   assert.equal(c.TERMINATE_NO, 'Cancel')
@@ -2048,18 +2047,14 @@ test('v14 the manager texts: the question, the buttons and header, the stop ques
   assert.equal(c.MANAGER_QUESTION, 'Let this session manage every lane on this machine? It can resume, compact, stop, retire and remove lanes in any repo. Every stop and remove asks you.')
   assert.deepEqual([c.MANAGER_YES, c.MANAGER_NO, c.HEADER.manager], ['Manager', 'Cancel', 'Manager'])
   assert.ok(c.HEADER.manager.length <= 12)
-  assert.equal(c.terminateQuestion('API', LEAD, 4242), `Force stop lane API's session (${LEAD.slice(0, 8)}, pid 4242)? It ends at once, even mid-task.`)
-  assert.equal(c.terminateQuestion('API', LEAD, 4242, '/Users/x/code/app'), `Force stop lane API's session in app (${LEAD.slice(0, 8)}, pid 4242)? It ends at once, even mid-task.`)
-  assert.equal(c.retireQuestion('API', '/Users/x/code/app'), 'Retire lane API in app?')
   // v15.3 (2026-11-06): the remove question of a lane_terminate on a lane no live session carries (one lane), with the parked sentence for a parked lane.
   const H = '/Users/x'
   assert.equal(c.removeQuestion('API', '/Users/x/code/app', false, H), 'Remove lane API in ~/code/app? It has no live session.')
   assert.equal(c.removeQuestion('API', '/Users/x/code/app', true, H), 'Remove lane API in ~/code/app? It has no live session. It is parked: its saved conversation is no longer reachable from callboard.')
   assert.equal(c.removeQuestion('API', '/Users/x/code/app', false), 'Remove lane API in /Users/x/code/app? It has no live session.')
-  // The stop questions say the record is removed, unless the lane is one a session joined.
-  assert.equal(c.terminateQuestion('API', LEAD, 4242, '/Users/x/code/app', true), `Force stop lane API's session in app (${LEAD.slice(0, 8)}, pid 4242)? It ends at once, even mid-task. The lane's record is then removed.`)
-  assert.equal(c.retireQuestion('API', '/Users/x/code/app', true), "Retire lane API in app? The lane's record is then removed.")
-  assert.equal(c.retireQuestion('API', '/Users/x/code/app', false), 'Retire lane API in app?')
+  // The stop questions say the lane's record is removed.
+  assert.equal(c.terminateQuestion('API', LEAD, 4242, '/Users/x/code/app'), `Force stop lane API's session in app (${LEAD.slice(0, 8)}, pid 4242)? It ends at once, even mid-task. The lane's record is then removed.`)
+  assert.equal(c.retireQuestion('API', '/Users/x/code/app'), "Retire lane API in app? The lane's record is then removed.")
   assert.equal(c.hasText('removed-elsewhere'), false)
   assert.equal(c.hasText('no-session-report'), false)
   for (const code of ['remove-args', 'mixed-repos', 'lanes-manager-only']) assert.equal(c.hasText(code), false, code)

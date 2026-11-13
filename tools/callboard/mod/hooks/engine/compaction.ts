@@ -603,7 +603,7 @@ export async function restoreFromHint($: any, sid: string, now: number, stale: (
         if (!rebound.has(sid)) toast($, c.restoreChangedToast(hint.lane.name))
         return void (await log($, sid, 'refused', 'restore-already-bound'))
       }
-      const b = { name: rec.name, at: now, turns: -1, restored: true, rec: await sha($, c.recordText(rec)), ...(rec.adopted ? { adopted: true as const, lead: rec.lead, key: rec.src } : {}) }
+      const b = { name: rec.name, at: now, turns: -1, restored: true, rec: await sha($, c.recordText(rec)), ...(rec.adopted ? { adopted: true as const, lead: rec.lead } : {}) }
       const setting = $.state.set(lane, b)
       const w = await withTimeout($, setting, c.ENGINE_CALL_TIMEOUT_MS)
       if (w === 'timeout') {

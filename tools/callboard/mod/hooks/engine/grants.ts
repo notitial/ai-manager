@@ -121,17 +121,16 @@ export const leadBusy = (sid: string) => grants.has(sid) || leadGranting.has(sid
 // The three levels as one record each, read by levels.ts. lead:<sid> = { pin, savedAt }, manager:<sid> = { name, cwd?, savedAt } and conductor:<sid> = { home, repos:
 // approved, savedAt }: written at the grant, and for the conductor at each add or remove in this session and after a ratchet, and again every refreshMs (a day; the
 // manager's, which is what a silent restore reads as the last time it was live, 5 minutes). A write that ends
-// after a drop deletes its key again, even when a new grant came meanwhile (saveEpochCheck), for all three levels.
+// after a drop deletes its key again, even when a new grant came meanwhile.
 export const LEAD: LevelDesc = {
   level: 'lead',
   hint: c.LEAD_HINT_PREFIX,
   savedAt: leadSavedAt,
-  saveEpochCheck: true,
   refreshMs: c.HINT_REFRESH_MS,
   silentGraceMs: 0,
   unsaved: 'lead-unsaved',
   hintDelete: 'lead-hint-delete',
-  saved: (_sid, pin) => ({ pin }),
+  saved: (_sid, pin) => ({ pin: pin! }),
   held: (sid, pin) => pinOf(sid) === pin,
   pending: leadRestorePending,
   isOn: (sid) => grants.has(sid) || leadRestorePending.has(sid),
@@ -141,7 +140,6 @@ export const LEAD: LevelDesc = {
   note: (_sid, pin) => c.leadBriefingNote(pin),
   noteErr: 'lead-briefing',
   notYes: 'person-or-no',
-  offCancelsDialog: true,
   presenceFirst: false,
   offToast: c.TIMED_OUT_LEAD_OFF_TOAST,
 }
@@ -149,7 +147,6 @@ export const MANAGER: LevelDesc = {
   level: 'manager',
   hint: c.MANAGER_HINT_PREFIX,
   savedAt: managerSavedAt,
-  saveEpochCheck: true,
   refreshMs: c.MANAGER_REFRESH_MS,
   silentGraceMs: c.MANAGER_SILENT_GRACE_MS,
   unsaved: 'manager-unsaved',
@@ -168,7 +165,6 @@ export const MANAGER: LevelDesc = {
   note: (_sid, name) => c.managerBriefingNote(name),
   noteErr: 'manager-briefing',
   notYes: 'none',
-  offCancelsDialog: true,
   presenceFirst: true,
   presence: { err: 'presence', fields: (g) => ({ level: 'manager', name: g.name }) },
 }
@@ -176,7 +172,6 @@ export const CONDUCTOR: LevelDesc = {
   level: 'conductor',
   hint: c.CONDUCTOR_HINT_PREFIX,
   savedAt: conductorSavedAt,
-  saveEpochCheck: true,
   refreshMs: c.HINT_REFRESH_MS,
   silentGraceMs: 0,
   unsaved: 'conductor-unsaved',
@@ -198,7 +193,6 @@ export const CONDUCTOR: LevelDesc = {
   },
   noteErr: 'conductor-briefing',
   notYes: 'person-no',
-  offCancelsDialog: true,
   presenceFirst: false,
   presence: { err: 'conductor-presence', fields: (g, home) => ({ level: 'conductor', name: g.name, repos: g.pins, home }), key: (g, home) => `${home}\n${g.name}\n${g.pins.join('\n')}` },
 }
@@ -366,7 +360,7 @@ export function leadDrop($: any, sid: string): Promise<boolean> {
 // The grant dialog of the three levels, in one order: ask once, a click that is not yes, the checks again after a yes, the tools and the grant, the epoch, the saved
 // grant and the presence file (the manager's first), the briefing. The command's own checks before the question stay with the command.
 export async function grantDialog($: any, sid: string, d: LevelDesc, g: GrantDialog): Promise<{ text: string }> {
-  const seq = offSeq.get(sid) ?? 0
+  const seq = g.seq ?? offSeq.get(sid) ?? 0
   const offNow = () => (offSeq.get(sid) ?? 0) !== seq
   const label = d.level.charAt(0).toUpperCase() + d.level.slice(1)
   const r = g.silent ? (dialogOpen.has(sid) ? 'busy' : 'yes') : await askOnce($, sid, g.question, g.yes, g.no, g.header)
@@ -392,13 +386,13 @@ export async function grantDialog($: any, sid: string, d: LevelDesc, g: GrantDia
   try {
     const bad = await g.recheck()
     if (bad) return bad
-    if (d.offCancelsDialog && offNow()) {
+    if (offNow()) {
       await log($, sid, 'refused', 'off-meanwhile')
       return { text: 'Nothing changed: callboard was turned off meanwhile.' }
     }
-    const failed = await g.apply(offNow)
-    if (failed) return failed
-    grantEpoch = epochOf(sid)
+    const granted = await g.apply(offNow)
+    if (typeof granted === 'object') return granted
+    grantEpoch = granted
   } finally {
     leadGranting.delete(sid)
   }
@@ -1593,7 +1587,7 @@ async function conductorRestoreTry($: any, me: string, box: { hint: c.ConductorH
     await log($, me, 'conductor-ratchet', String(hint.repos.length - approved.length))
     box.hint = { ...hint, repos: approved, savedAt: now }
     await Promise.resolve($.store.set(key, box.hint)).catch(() => logq($, me, 'conductor-unsaved'))
-    // An off that landed during the write deleted the key first; delete it again, as conductorSave does.
+    // An off that landed during the write deleted the key first; delete it again, as levelSave does.
     if (dropped()) return void (await Promise.resolve($.store.delete(key)).catch(logFail($, me, 'conductor-hint-delete')))
   }
   const added = r.ok.filter((x) => !approved.includes(x))

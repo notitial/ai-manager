@@ -48,8 +48,9 @@ test('an attached record carries the lead name and its briefing names that lead;
   expect(await cue(93, 'resume\n')).toBe('resume ok - 93\n')
   h.sessions = { ...h.sessions, ...regAs(LEADSID, 4242, 'LEADC') }
   expect(await cue(94, 'resume\n')).toBe('resume refused no-lead 94\n')
+  const { sid: _sid, ...rest } = storeJson().lanes[0]
   await doLane($, 'lane off')
-  expect(storeJson().lanes.map((l: any) => l.sid)).toEqual([undefined])
+  expect(storeJson().lanes).toEqual([rest])
 })
 
 test('a legacy attached record (lead session id only) answers any lead of its repo and still detaches', async ($, on) => {
@@ -61,8 +62,9 @@ test('a legacy attached record (lead session id only) answers any lead of its re
   leadFiles.set(`${ROOT}/leads/${OTHERLEAD}.json`, { text: leadFileText({ sid: OTHERLEAD, pid: 4243 }) })
   h.sessions = { ...regAs(OTHERLEAD, 4243, 'LEADB'), ...ownReg() }
   expect(await cue(95, 'resume\n')).toBe('resume ok - 95\n')
+  const { sid: _sid, ...rest } = storeJson().lanes[0]
   await doLane($, 'lane off')
-  expect(storeJson().lanes.map((l: any) => l.sid)).toEqual([undefined])
+  expect(storeJson().lanes).toEqual([rest])
 })
 
 test('with two leads in the repo, a born store lane naming its lead gets that lead in its briefing, whatever lead the rename cue names', async ($, on) => {

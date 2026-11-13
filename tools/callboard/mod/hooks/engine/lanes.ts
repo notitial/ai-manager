@@ -848,7 +848,7 @@ export async function rebindTick($: any, sid: string) {
     // As the restore: inside the mark, and a read that does not answer counts as a binding. A session that is bound already is left as it is.
     const held = await withTimeout($, $.state.get(lane), c.ENGINE_CALL_TIMEOUT_MS)
     if (held === 'timeout' || held?.value != null) return void rebindPending.delete(sid)
-    const b = { name: l.name, at: now, turns: -1, restored: true, rec: await sha($, c.recordText(l)), ...(l.adopted ? { adopted: true as const, lead: l.lead, key: l.src } : {}) }
+    const b = { name: l.name, at: now, turns: -1, restored: true, rec: await sha($, c.recordText(l)), ...(l.adopted ? { adopted: true as const, lead: l.lead } : {}) }
     // A /callboard off since this tick began cancelled the rebind and cleared the record's sid: no binding is written after it.
     if (!rebindPending.has(sid) || (offSeq.get(sid) ?? 0) !== seq) return
     const setting = $.state.set(lane, b)
@@ -998,7 +998,7 @@ export async function attachPlan($: any, sid: string, want: string | undefined, 
   return { name, rename: name !== me.name, repo: found.lead.repo, lead: found.lead.sid, cwd, key, ...(leadName !== undefined ? { leadName } : {}), ...(pick !== undefined ? { pick } : {}) }
 }
 
-export type Bound = { name: string; at?: number; turns?: number; restored?: boolean; adopted?: boolean; lead?: string; key?: string; rec?: string }
+export type Bound = { name: string; at?: number; turns?: number; restored?: boolean; adopted?: boolean; lead?: string; rec?: string }
 
 // The record a Join just wrote, removed under the store lock when the Join fails: the undo of the act of making. The record must be the very one the Join wrote
 // (name, attached, and the hash of its text, which covers the folder). true: it is gone, or was never there (an absent store is done). false: an attached
@@ -1470,8 +1470,8 @@ export async function stopVerbCall($: any, e: any, next: any, verb: (typeof c.ST
         if (early) return early
         // At manager reach the question names the repo and is the one dialog of the session (askOnce): a second stop while it is open is refused busy.
         const r = level !== 'lead'
-          ? await askOnce($, sid, c.terminateQuestion(prep.lane.name, target.sessionId, target.pid as number, prep.lane.repo, true), c.TERMINATE_YES, c.TERMINATE_NO, c.HEADER.stop)
-          : await ask($, c.terminateQuestion(prep.lane.name, target.sessionId, target.pid as number, undefined, true), c.TERMINATE_YES, c.TERMINATE_NO, c.HEADER.stop)
+          ? await askOnce($, sid, c.terminateQuestion(prep.lane.name, target.sessionId, target.pid as number, prep.lane.repo), c.TERMINATE_YES, c.TERMINATE_NO, c.HEADER.stop)
+          : await ask($, c.terminateQuestion(prep.lane.name, target.sessionId, target.pid as number), c.TERMINATE_YES, c.TERMINATE_NO, c.HEADER.stop)
         if (r === 'busy') return no('busy', c.reasonWhy('busy'))
         if (r === 'timed-out') return { deny: leadReason(verb, `${await timedOut($, sid)}.`) }
         if (r !== 'yes') return no('not-confirmed', 'the person did not confirm.')
@@ -1495,7 +1495,7 @@ export async function stopVerbCall($: any, e: any, next: any, verb: (typeof c.ST
         if (early) return early
         // A retire at manager reach asks the person once before the cue; anything but Retire sends nothing.
         if (verb === 'retire' && level === 'manager') {
-          const r = await askOnce($, sid, c.retireQuestion(prep.lane.name, prep.lane.repo!, true), c.RETIRE_YES, c.RETIRE_NO, c.HEADER.stop)
+          const r = await askOnce($, sid, c.retireQuestion(prep.lane.name, prep.lane.repo!), c.RETIRE_YES, c.RETIRE_NO, c.HEADER.stop)
           if (r === 'busy') return no('busy', c.reasonWhy('busy'))
           if (r === 'timed-out') return { deny: leadReason(verb, `${await timedOut($, sid)}.`) }
           if (r !== 'yes') return no('not-confirmed', 'the person did not confirm.')
