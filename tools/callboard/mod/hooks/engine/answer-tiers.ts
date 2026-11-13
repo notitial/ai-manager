@@ -114,12 +114,11 @@ export async function promptStand($: any, p: { uid: number; root: string }, live
   const tiers = await promptReachTiers($, live, a, q, q.noLead === true)
   const passed: Partial<Record<pr.TierLevel, number>> = {}
   for (const l of pr.TIER_LEVELS) {
-    for (const n of l === 'lead' ? ['escalate-lead.json', 'escalate.json'] : [`escalate-${l}.json`]) {
-      if (!names.has(`${q.id}.${n}`)) continue
-      const r = await readSmallR($, `${dir}/${q.id}.${n}`, p.uid, pr.DECISION_MAX)
-      const at = r.state === 'ok' ? pr.parseEscalate(r.text)?.at : undefined
-      passed[l] = Math.min(passed[l] ?? Infinity, typeof at === 'number' ? at : q.at)
-    }
+    const n = `escalate-${l}.json`
+    if (!names.has(`${q.id}.${n}`)) continue
+    const r = await readSmallR($, `${dir}/${q.id}.${n}`, p.uid, pr.DECISION_MAX)
+    const at = r.state === 'ok' ? pr.parseEscalate(r.text)?.at : undefined
+    passed[l] = typeof at === 'number' ? at : q.at
   }
   let relay: pr.Relay | undefined
   if (names.has(`${q.id}.relay.json`)) {

@@ -158,8 +158,6 @@ export type FloorOpts = {
   cwd?: string
   // The event carried no folder: the base for relative paths is unknown, as after a cd to a variable (the hook sets this instead of guessing a cwd).
   cwdUnknown?: boolean
-  // The optional items: a caller that sets one lifts that tool from the floor; none is set, so both are on the floor.
-  optional?: { merges?: boolean; forcePushes?: boolean }
   // A file tool's real path could not be resolved: the floor holds (fail closed).
   unresolved?: boolean
   // Where a git_push goes (the hook reads it with needsPushTarget and pushTargetFrom, for every git_push). Undefined: not read, the named refs and the local branch alone are
@@ -1571,10 +1569,10 @@ function floorCore(tool: string, input0: unknown, o: FloorOpts = {}): FloorCateg
   const name = tool.split('__').pop() ?? tool
   // Dialogs of other kinds.
   if (tool === 'ExitPlanMode') return 'dialog'
-  // Merges: any server's merge_pull_request, a branch update, and merging while on a protected branch. The one optional item lifts by its own tool name only.
+  // Merges: any server's merge_pull_request, a branch update, and merging while on a protected branch.
   if (/^mcp__.+__merge_pull_request$/.test(tool) || /^mcp__.+__update_pull_request_branch$/.test(tool)) return 'merge'
-  if (tool === 'mcp__machine-ops__pr_merge') return o.optional?.merges === true ? undefined : 'merge'
-  if (tool === 'mcp__machine-ops__force_push') return o.optional?.forcePushes === true ? undefined : 'force-push'
+  if (tool === 'mcp__machine-ops__pr_merge') return 'merge'
+  if (tool === 'mcp__machine-ops__force_push') return 'force-push'
   // A mutating git call on a live checkout (by its path, its real path, or the folder the session runs in when no path is given) changes the install itself.
   if (tool.startsWith(GIT) && !GIT_READ.has(name)) {
     if (o.unresolved) return 'settings'
@@ -2420,7 +2418,7 @@ export function parseRequest(text: string): Request | undefined {
   return { id: o.id, sid: o.sid, pid: o.pid as number, procStart: o.procStart, level: o.level, lane: o.lane as string | undefined, leadName: o.leadName as string | undefined, ...(o.noLead === true ? { noLead: true } : {}), repo: o.repo, tool: o.tool, agentType: o.agentType as string | undefined, cwd: o.cwd as string | undefined, ...(typeof o.ownReport === 'string' ? { ownReport: o.ownReport } : {}), inputHash: o.inputHash, raisedBy: o.raisedBy, at: o.at, expiresAt: o.expiresAt, nonce: o.nonce, input: o.input, truncated: o.truncated }
 }
 // prompt_escalate by position: a tier that is not the top passes the request up, and its right to answer ends. The file is `<id>.escalate-<level>.json`
-// (level: the tier that passed it; sid: that tier's session). An old `<id>.escalate.json` (tier 'person', no level) still parses: it ended the lead's right.
+// (level: the tier that passed it; sid: that tier's session).
 type Escalate = { id: string; tier: string; why: string; at: number; level?: TierLevel; sid?: string }
 export const escalateText = (e: Escalate): string => JSON.stringify(e)
 export function parseEscalate(text: string): Escalate | undefined {

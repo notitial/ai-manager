@@ -220,6 +220,8 @@ on any machine until a later decision builds it.
 
 *2026-11-12: the choice is not built either. There is no `/callboard floor set` command, and the floor reads an optional-item field that nothing sets, so both stay on the floor. What the floor blocks has not changed.*
 
+*2026-11-13: the optional-item field is removed from the floor's options: `mcp__machine-ops__pr_merge` and `mcp__machine-ops__force_push` are always floor. A choice would need new code and a new decision.*
+
 Both are blocked before any PermissionRequest hook: merges by a deny rule, the guard's tool list and the server's own
 `--tools`; force pushes by ai-toolkit's git guard and destructive-command hook. A mod could lift those, and must not.
 So allowing either takes two independent keys:
@@ -341,6 +343,8 @@ rubric then lets the lead deny it but never allow it. A truncated input is never
 allowed). New files per request: `<id>.relay.json` (who asked the person), `<id>.asked` (the question was seen; each question spends it),
 `<id>.left`, and per session `prompts/asking/<sid>`; a tier's pass-up is `<id>.escalate-<level>.json`. A tier's prompt
 notice reaches it when its own window opens, and a request with a relay is told to no tier.
+
+*2026-11-13: the first version's `<id>.escalate.json`, which ended the lead's right, is no longer read or removed. Only the per-level files count; a request left open by the old marker alone shows as open again.*
 
 ## Consequences
 

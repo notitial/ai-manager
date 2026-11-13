@@ -336,9 +336,9 @@ async function promptCleanup($: any, dir: string | undefined, id: string | undef
   await promptRemoveFiles($, dir, id)
 }
 
-// Every file a request can have beside its request file: the decision, the pass-up of each tier (the old `escalate.json` is the lead's), the relay with its asked and
+// Every file a request can have beside its request file: the decision, the pass-up of each tier, the relay with its asked and
 // left marks, and the closed marker.
-const PROMPT_SUFFIXES = ['request.json', 'decision.json', 'escalate.json', 'escalate-lead.json', 'escalate-conductor.json', 'escalate-manager.json', 'relay.json', 'asked', 'left', 'done']
+const PROMPT_SUFFIXES = ['request.json', 'decision.json', 'escalate-lead.json', 'escalate-conductor.json', 'escalate-manager.json', 'relay.json', 'asked', 'left', 'done']
 async function promptRemoveFiles($: any, dir: string, id: string): Promise<void> {
   await rmF($, PROMPT_SUFFIXES.map((x) => `${dir}/${id}.${x}`))
 }

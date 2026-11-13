@@ -66,12 +66,10 @@ test('prompts: prompt_list leaves out what is not the lead\'s: an uncovered lane
   await tier($, on, [], { scope: 'svc-api' })
   const A = '3a1b2c3d-0000-4000-8000-123456789abc'
   const B = '4a1b2c3d-0000-4000-8000-123456789abc'
-  const C = '5a1b2c3d-0000-4000-8000-123456789abc'
   putQ({ id: TID2, lane: 'other-lane' })
-  for (const id of [A, B, C]) putQ({ id })
+  for (const id of [A, B]) putQ({ id })
   putFile(`${A}.done`)
   putFile(`${B}.decision.json`, '{}')
-  putFile(`${C}.escalate.json`, '{}')
   putQ({ id: '1a1b2c3d-1111-4000-8000-123456789abc', sid: SID, lane: 'LEAD' })
   putQ({ id: '1a1b2c3d-2222-4000-8000-123456789abc', sid: '9a1b2c3d-0000-4000-8000-123456789abc', pid: 4301 })
   expect(said(await $.tool.call(pcall('prompt_list')))).toBe(prm.promptListText([], { on: true }))
@@ -151,9 +149,6 @@ test('prompts: prompt_answer refuses its own prompt, an unknown id, a request ou
   putFile(`${TID}.done`)
   expect(said(await $.tool.call(answerCall()))).toContain(refusal('closed'))
   pfs.delete(`${LDIR()}/${TID}.done`)
-  putFile(`${TID}.escalate.json`, '{}')
-  expect(said(await $.tool.call(answerCall()))).toContain(refusal('escalated'))
-  pfs.delete(`${LDIR()}/${TID}.escalate.json`)
   tierSessions({}, null)
   putQ()
   expect(said(await $.tool.call(answerCall()))).toContain(refusal('unknown-request'))
