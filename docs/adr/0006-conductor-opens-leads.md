@@ -141,7 +141,7 @@ the ledger says it made with the offers it remembers writing, and shows the pers
   can still pass beside it, as two person-made leads can (ADR 0002, several leads in a repo).
 - **Accepted residual: accounts.** The new lead runs on whatever account its window is signed in to, and spends
   that account's limits.
-- Nothing here changes the floor, the rubric, the person-only commands, or what a conductor may do to lanes; a
+- Nothing here changes the rubric, the person-only commands, or what a conductor may do to lanes; a
   conductor still cannot stop a lead.
 
 ## Probes

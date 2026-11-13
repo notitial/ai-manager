@@ -28,7 +28,7 @@ that one prompt. Flag any other path by which text the person did not type becom
 ## Trust paths
 
 A PR that touches a trust path gets a security pass as well as the ordinary review: the finding names the property that
-could break. The trust paths are the callboard mod's answering of prompts and its floor (`tools/callboard/mod/hooks/prompts.ts`,
+could break. The trust paths are the callboard mod's answering of prompts and its dialog rule (`tools/callboard/mod/hooks/prompts.ts`,
 `engine/answer-hook.ts`, `engine/answer-tiers.ts`), its grants, lane store and rename carry (`core.ts`, `engine/grants.ts`,
 `engine/store.ts`), the files it reads and writes under `~/.claude/callboard/`, the link script and the extension's request
 files, and the usage watcher's installer. A change there is held to the rules under Approvals and to the person's own checkout

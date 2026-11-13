@@ -4,7 +4,7 @@
 **Date:** 2026-11-06
 **Accepted:** 2026-11-12
 
-Scope: callboard's prompt answering, its floor, and its audit. It amends [ADR 0001](0001-manager-role.md) (H1 and H5)
+Scope: callboard's prompt answering, the floor it once held, and its audit. It amends [ADR 0001](0001-manager-role.md) (H1 and H5)
 when the manager tier ships, and adds to [ADR 0002](0002-callboard.md).
 
 ## Context
@@ -173,6 +173,34 @@ The prefix can be imitated by another hook running as the person. That gains not
 `allow` with no agent involved. The tool list exists to stop an honest mistake.
 
 ### The floor
+
+*Amended 2026-11-13: the floor is removed.* The mod no longer judges any call by path, tool shape or shell text. The
+person's decision: callboard's floor, a best-effort reading of a shell string, is dropped, and the protection of the
+checkouts moves to a hard-deny hook of ai-toolkit (its ADR 0017, `hooks/protected-paths-guard.sh`). The hook denies a
+write to the ai-manager and ai-toolkit live checkouts, to `~/.claude/settings*.json` and to callboard's state folder
+(`~/.claude/callboard`). It never asks, so no prompt is left for a tier to answer; it is generic and names no repo,
+which opts in through an untracked `.protected-checkout` marker at its root; and it stands in front of every session,
+the person's own included. `docs/setup.md` installs it and the markers. Three things follow:
+
+- **One rule stays in the mod: a dialog of another kind is never answered.** `ExitPlanMode` gets a `dialog` row and no
+  request, `prompt_answer` refuses it, and the hook checks again at apply. It has no judge. The ledger kind `floor` and
+  the drop code `floor` are renamed `dialog`, and a request no longer records the folder the call ran in or the
+  lane's own report.
+- **The own-report exception is moot.** A lane's `.archive/<LANE>/REPORT.md` is under the hook's `.archive/` exception
+  (the folder is gitignored and holds no code), and no mod rule holds it.
+- **The comment cap counts what spends a run.** The review workflow starts a run only on a newly created pull-request
+  comment whose body starts with `@claude review`, so only a `mcp__github__add_issue_comment` call with such a body
+  counts, `--comments` when it starts `@claude review --comments`, else a full review. A mention elsewhere in a body,
+  a title, a review or a reply in a thread starts no run and is not counted.
+
+The self-protection now relies on the hook being installed and the marker present. Without either, the rubric and
+auto mode's classifier are the only layers over an edit of those places, and the setup says so. The hook reads file
+tools, the git server's tools and a shell line that names a protected path in a redirect or a write verb; it does not
+read a script, an interpreter's program, `eval`, `bash -c`, a path built at run time, a `cd` to a variable or a hard
+link (its header lists them). Rollback of this change is a revert of the commit that removed the floor.
+
+What follows is the floor as it stood, kept as the record of what was decided and why. Nothing below it in this
+section is in the code.
 
 No agent can answer these, whatever it judges. The hook checks at the request and again at apply:
 
@@ -367,7 +395,7 @@ shell, but not where the prompt was the only gate on a connected tool.
 
 What remains as the guard:
 
-- the floor, at request and at apply: the mod's own protection, firm on paths and tool shapes, best effort on shell text;
+- the protected-paths hook of ai-toolkit in front of the checkouts, the settings and callboard's state (the floor the mod once held is removed, see The floor); it must be installed with its markers;
 - the input hash: one exact call, not a class of calls;
 - expiry and nonce;
 - a live tier in reach, by the presence checks, which filter rather than prove;
@@ -398,7 +426,7 @@ rollout, after the two hand-added lines.
 - **Cost.** Each notice is a full-context cache read on that tier.
 - **Forged requests** buy at most 30 wasted turns an hour per tier. A forged escalation or "with the person" flag only
   keeps a dialog open, or opens a tier early.
-- **Other plugins** may answer the floor dialog (ADR 0002's residual).
+- **Other plugins** may answer a dialog the mod leaves to the person (ADR 0002's residual).
 - **Merges, force pushes, pushes to main, master or production and destructive deletes are judgment, not floor** (2026-11-13).
   A tier can allow one the person wouldn't have, and a forged decision file can buy one. Rule 4 of the rubric sends them
   up, and ai-toolkit's deny rules and guards still stand in front of them.

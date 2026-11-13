@@ -10,7 +10,7 @@ trust rule of [ADR 0002](0002-callboard.md) or [ADR 0004](0004-prompt-answering.
 
 `register.ts` held every engine call of the mod in one file of about 8,000 lines. A reviewer of a trust rule (a grant
 check, a stop, the answering hook) had to find its pieces across the whole file, and a change anywhere meant reading
-around everything. `core.ts` (pure logic) and `prompts.ts` (pure logic and the floor) already follow a rule worth
+around everything. `core.ts` (pure logic) and `prompts.ts` (pure logic and the answering rules) already follow a rule worth
 keeping: a file is pure or it takes `$`, never both.
 
 What the mod validator (`claude plugin validate`, engine 2.1.322) allows bounds the split. It reads the hooks module's
