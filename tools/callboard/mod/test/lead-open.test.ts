@@ -1,6 +1,6 @@
-import { expect, test } from 'claude-code/testing'
+import { expect } from 'claude-code/testing'
 import { REASON_TEXT } from '../hooks/core'
-import { h, OFFERS_DIR, PROMPTS_DIR, ROOT, T0, extraStat, leadFiles, pfs } from './harness'
+import { h, OFFERS_DIR, longTest, PROMPTS_DIR, ROOT, T0, extraStat, leadFiles, pfs } from './harness'
 import { ledgerRows } from './answer-fixtures'
 import { CSESS, LEADPS, OTHERLEAD, PIN, condOn, leadAt, regAs } from './fixtures'
 
@@ -37,7 +37,7 @@ const wroteNothing = (argv: string[][]) => {
   expect(mvs(argv, '.lead')).toEqual([])
 }
 
-test('lead_open opens a panel: ledger row, offer, brief and request in order; the answer takes the offer back and voids it as panel-only', async ($, on) => {
+longTest('lead_open opens a panel: ledger row, offer, brief and request in order; the answer takes the offer back and voids it as panel-only', async ($, on) => {
   const argv: string[][] = []
   await conductor($, on, argv)
   const r = await open($, `ok ${NEWSID}\n`)
@@ -51,7 +51,7 @@ test('lead_open opens a panel: ledger row, offer, brief and request in order; th
   expect(ledgerRows().some((x) => x.kind === 'lead-grant')).toBe(false)
 })
 
-test('lead_open refuses before any write: repo, name, task and model that fail their checks, and a repo outside the conductor\'s reach', async ($, on) => {
+longTest('lead_open refuses before any write: repo, name, task and model that fail their checks, and a repo outside the conductor\'s reach', async ($, on) => {
   const argv: string[][] = []
   await conductor($, on, argv)
   const refused = async (over: Record<string, unknown>, code: string) => {
@@ -67,7 +67,7 @@ test('lead_open refuses before any write: repo, name, task and model that fail t
   await refused({ repo: '/Users/x/code/cond' }, 'not-in-reach')
 })
 
-test('lead_open refuses a name a lane or a live session carries, in any letter case, and a request already waiting for that name', async ($, on) => {
+longTest('lead_open refuses a name a lane or a live session carries, in any letter case, and a request already waiting for that name', async ($, on) => {
   const argv: string[][] = []
   await conductor($, on, argv)
   await open($, undefined, { name: 'api' }).then((r) => expect(r).toContain(REASON_TEXT['name-in-use']))
@@ -82,7 +82,7 @@ test('lead_open refuses a name a lane or a live session carries, in any letter c
   expect(await open($, `ok ${NEWSID}\n`)).toContain('lead panel opened')
 })
 
-test('lead_open refuses when the repo has a live lead (whoever made it), an offer or a claim is in place, or the hour is spent; each writes nothing', async ($, on) => {
+longTest('lead_open refuses when the repo has a live lead (whoever made it), an offer or a claim is in place, or the hour is spent; each writes nothing', async ($, on) => {
   const argv: string[][] = []
   await conductor($, on, argv, {
     sess: { ...CSESS(), ...regAs(OTHERLEAD, 4243, 'LEAD-A') },
@@ -105,7 +105,7 @@ test('lead_open refuses when the repo has a live lead (whoever made it), an offe
   expect(offers()).toEqual([])
 })
 
-test('lead_open: three offers in an hour use the repo up, a failing open included; an offer older than the hour does not count', async ($, on) => {
+longTest('lead_open: three offers in an hour use the repo up, a failing open included; an offer older than the hour does not count', async ($, on) => {
   const argv: string[][] = []
   await conductor($, on, argv)
   seedRows({ kind: 'lead-offer', t: iso(61 * 60_000) }, { kind: 'lead-offer', t: iso(62 * 60_000) }, { kind: 'lead-offer', t: iso(63 * 60_000) })
@@ -124,7 +124,7 @@ test('lead_open: three offers in an hour use the repo up, a failing open include
   expect(mvs(argv, '.lead').length).toBe(3)
 })
 
-test('a write that fails after the ledger row takes the offer back and voids the row with its code; nothing is left to block the next try', async ($, on) => {
+longTest('a write that fails after the ledger row takes the offer back and voids the row with its code; nothing is left to block the next try', async ($, on) => {
   const argv: string[][] = []
   await conductor($, on, argv)
   h.pfsFails = (a: string[]) => a[0] === '/bin/ln' && a.some((x) => x.startsWith(OFFERS_DIR))
@@ -136,7 +136,7 @@ test('a write that fails after the ledger row takes the offer back and voids the
   expect(await open($, `ok ${NEWSID}\n`)).toContain('lead panel opened')
 })
 
-test('a throw while the request is written takes the offer back and voids it; an offer left behind is removed once it is ten minutes old, not before', async ($, on) => {
+longTest('a throw while the request is written takes the offer back and voids it; an offer left behind is removed once it is ten minutes old, not before', async ($, on) => {
   const argv: string[][] = []
   await conductor($, on, argv)
   h.mvHook = (path: string) => {
@@ -154,7 +154,7 @@ test('a throw while the request is written takes the offer back and voids it; an
   expect(offers()).toEqual([])
 })
 
-test('the window never answering takes the offer back and says a panel may still appear; the conductor can ask again after', async ($, on) => {
+longTest('the window never answering takes the offer back and says a panel may still appear; the conductor can ask again after', async ($, on) => {
   const argv: string[][] = []
   await conductor($, on, argv)
   const p = $.tool.call(call())
@@ -168,7 +168,7 @@ test('the window never answering takes the offer back and says a panel may still
   expect(await open($, `ok ${NEWSID}\n`)).toContain('lead panel opened')
 })
 
-test('one open at a time per conductor: a second call while the first waits is refused, and the first still finishes', async ($, on) => {
+longTest('one open at a time per conductor: a second call while the first waits is refused, and the first still finishes', async ($, on) => {
   const argv: string[][] = []
   await conductor($, on, argv)
   const first = $.tool.call(call())
@@ -180,7 +180,7 @@ test('one open at a time per conductor: a second call while the first waits is r
   expect(mvs(argv, '.lead').length).toBe(1)
 })
 
-test('config conductor-leads off makes the tool refuse and writes nothing; on lets it through again', async ($, on) => {
+longTest('config conductor-leads off makes the tool refuse and writes nothing; on lets it through again', async ($, on) => {
   const argv: string[][] = []
   await conductor($, on, argv)
   h.store.set('config', { conductorLeads: false, savedAt: h.nowMs })
@@ -190,7 +190,7 @@ test('config conductor-leads off makes the tool refuse and writes nothing; on le
   expect(await open($, `ok ${NEWSID}\n`)).toContain('lead panel opened')
 })
 
-test('a settings read that fails makes lead_open refuse and write nothing, the switch not being checkable', async ($, on) => {
+longTest('a settings read that fails makes lead_open refuse and write nothing, the switch not being checkable', async ($, on) => {
   const argv: string[][] = []
   await conductor($, on, argv)
   h.storeThrowSync = 'get'
@@ -200,7 +200,7 @@ test('a settings read that fails makes lead_open refuse and write nothing, the s
   wroteNothing(argv)
 })
 
-test('only a conductor has lead_open: a lead that calls it is refused, and nothing is written', async ($, on) => {
+longTest('only a conductor has lead_open: a lead that calls it is refused, and nothing is written', async ($, on) => {
   const argv: string[][] = []
   await leadAt($, on, [], { argv, clock: true })
   extraStat.set(ROOT, '501 700 2 Directory 8 64 1700000000\n')
