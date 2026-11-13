@@ -176,9 +176,11 @@ The prefix can be imitated by another hook running as the person. That gains not
 
 No agent can answer these, whatever it judges. The hook checks at the request and again at apply:
 
-- edits to settings files, hooks and rules (the folders that `~/.claude/hooks` and `~/.claude/rules` link into included),
-  `.claude`, git hooks and git config, `.mcp.json`, `install.conf` and callboard's own state folder;
-- callboard's own code in the live checkout (`tools/callboard`), and the mod's dialogs (`ExitPlanMode`);
+- edits to settings files, hooks and rules (the folders that `~/.claude/hooks` and `~/.claude/rules` link into included,
+  with the agents, skills and tools folders beside them), `.claude`, git hooks and git config, `.mcp.json`,
+  `install.conf` and callboard's own state folder;
+- what steers sessions in the live checkout (`tools/callboard`, `CLAUDE.md`, `docs/manager` and `rules`), and the mod's
+  dialogs (`ExitPlanMode`);
 - any write whose target cannot be shown to stay outside those: a shell line that cannot be read (`eval`, `bash -c`, an
   interpreter's `-c`, a verb built at run time, text that does not parse), a database client or interpreter that can run
   a shell, a git call that rewrites a work tree in, under or above a protected folder or from an unknown one, and
