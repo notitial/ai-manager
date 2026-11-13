@@ -1148,15 +1148,15 @@ test('noticeAllowed takes its own cap; the old default stays 3', () => {
   assert.equal(c.LANES_NOTICES_PER_HOUR, 12)
 })
 
-test('helpText is a header and a two-column table with one row per subcommand, markdown-escaped, then the floor line; HELP_USAGE names the full list', () => {
+test('helpText is a header and a two-column table with one row per subcommand, markdown-escaped; HELP_USAGE names the full list', () => {
   const lines = c.helpText().split('\n')
   assert.deepEqual(lines.slice(0, 4), ['**Callboard commands**', '', '| Command | What it does |', '|---|---|'])
-  const rows = lines.slice(4, -2)
+  const rows = lines.slice(4)
   const words = rows.map((l) => /^\| ([^ \\|]+)/.exec(l)![1])
   assert.deepEqual(words, ['lanes', 'status', 'lead', 'lane', 'escalation', 'conductor', 'manager', 'config', 'reserve', 'checkin', 'rest', 'off', 'help'])
   assert.ok(lines.includes('| lane \\[NAME\\] | Make this session a lane, named NAME if given; lane off takes it out of its lane. |'))
   for (const l of rows) assert.equal(l.replace(/\\\|/g, '').split('|').length, 4, l)
-  assert.deepEqual(lines.slice(-2), ['', c.FLOOR_LINE])
+  assert.ok(!c.helpText().includes('Floor'))
   assert.ok(!c.FLOOR_LINE.includes('optional'))
   assert.match(c.HELP_USAGE, /manager/)
   assert.doesNotMatch(c.HELP_USAGE, /prompts/)
@@ -1438,10 +1438,10 @@ test('v13.2 parseCommandArgs: config forms; out of range, unknown and trailing j
 test('v13.2 config texts: no Default column while every setting is at its default, else a check mark or the default value; the level cross-check', () => {
   const D = c.parseConfig(undefined).cfg
   const head = ['**Callboard settings**', '', '| Setting | Value |', '|---|---|']
-  assert.equal(c.configText(D), [...head, '| Keepalive | ON |', '| Ping after | 50 min |', '| Stop after | 3 h |', '| Idle level | 300k |', '| Working level | 400k |', '| Check-ins | ON |', '| Escalation | OFF |'].join('\n'))
+  assert.equal(c.configText(D), [...head, '| Keepalive | ON |', '| Ping after | 50 min |', '| Stop after | 3 h |', '| Idle level | 300k |', '| Working level | 400k |', '| Check-ins | ON |', '| Escalation | ON |'].join('\n'))
   const withDefault = ['**Callboard settings**', '', '| Setting | Value | Default |', '|---|---|---|']
-  assert.equal(c.configText({ ...D, keepalive: false, pingAfterMin: 45, workingK: 450, checkin: false }, true), [...withDefault, '| Keepalive | OFF | ON |', '| Ping after | 45 min | 50 min |', '| Stop after | 3 h | ✓ |', '| Idle level | 300k | ✓ |', '| Working level | 450k | 400k |', '| Check-ins | OFF | ON |', '| Escalation | ON | OFF |'].join('\n'))
-  assert.equal(c.configText(D, true), [...withDefault, '| Keepalive | ON | ✓ |', '| Ping after | 50 min | ✓ |', '| Stop after | 3 h | ✓ |', '| Idle level | 300k | ✓ |', '| Working level | 400k | ✓ |', '| Check-ins | ON | ✓ |', '| Escalation | ON | OFF |'].join('\n'))
+  assert.equal(c.configText({ ...D, keepalive: false, pingAfterMin: 45, workingK: 450, checkin: false }, true), [...withDefault, '| Keepalive | OFF | ON |', '| Ping after | 45 min | 50 min |', '| Stop after | 3 h | ✓ |', '| Idle level | 300k | ✓ |', '| Working level | 450k | 400k |', '| Check-ins | OFF | ON |', '| Escalation | ON | ✓ |'].join('\n'))
+  assert.equal(c.configText(D, false), [...withDefault, '| Keepalive | ON | ✓ |', '| Ping after | 50 min | ✓ |', '| Stop after | 3 h | ✓ |', '| Idle level | 300k | ✓ |', '| Working level | 400k | ✓ |', '| Check-ins | ON | ✓ |', '| Escalation | OFF | ON |'].join('\n'))
   assert.equal(c.configSetText('pingAfterMin', { ...D, pingAfterMin: 45 }), 'Callboard setting changed: ping after 45 min. It applies to every session on this Mac within a minute.')
   assert.equal(c.CONFIG_USAGE, 'Use /callboard config [keepalive on|off, ping 30-55, stop 1-8, idle 150-800, working IDLE-900, checkin on|off, reset].')
   assert.equal(c.CONFIG_NOT_PERSON, 'Only you can change callboard settings: type /callboard config yourself.')

@@ -498,8 +498,9 @@ const CONFIG_VALUE: Record<ConfigField, (c: Config) => string> = {
 }
 // The sentence that confirms a change keeps the lower-case words.
 const CONFIG_LABEL = (f: ConfigField, c: Config): string => `${CONFIG_NAME[f]} ${CONFIG_VALUE[f](c)}`.toLowerCase()
-// Escalation is not in the stored settings: the person's own command switches it on, and with nothing stored it is off.
-export const ESCALATION_DEFAULT = false
+// Escalation is not in the stored settings: the person's own command switches it on, and with nothing stored it is off. The table's default for it is on, so a Mac with
+// escalation off shows the Default column.
+export const ESCALATION_DEFAULT = true
 // /callboard config: one row per setting. The Default column appears only while some setting differs from its default: it holds a check mark on a row at its default and
 // the default value on a changed row.
 export function configText(cfg: Config, escalation: boolean = ESCALATION_DEFAULT): string {
@@ -629,7 +630,7 @@ const mdEscape = (s: string): string => s.replace(/[\\|*_`><[\]]/g, '\\$&')
 const mdTable = (head: string[], rows: string[][]): string[] => [`| ${head.join(' | ')} |`, `|${head.map(() => '---').join('|')}|`, ...rows.map((r) => `| ${r.join(' | ')} |`)]
 export const mdPage = (header: string, head: string[], rows: string[][], notes: string[] = []): string => [header, '', ...mdTable(head, rows), ...notes.flatMap((n) => ['', n])].join('\n')
 
-// /callboard with no argument and /callboard help: one row per subcommand the handler accepts, in the shared table style (mdPage), then the floor line.
+// /callboard with no argument and /callboard help: one row per subcommand the handler accepts, in the shared table style (mdPage).
 const HELP_ROWS: [string, string][] = [
   ['lanes', 'List the lanes in reach and their sessions.'],
   ['status', 'Show what callboard does in this session.'],
@@ -645,9 +646,9 @@ const HELP_ROWS: [string, string][] = [
   ['off', 'Turn lead, conductor, manager and lane off for this session.'],
   ['help', 'Show this table.'],
 ]
-// What escalation never hands to an agent: the one wording of it, under the help table and after /callboard escalation.
+// What escalation never hands to an agent: the one wording of it, appended to the answer of /callboard escalation.
 export const FLOOR_LINE = 'Floor (never answered by an agent): merges, force pushes, pushes to main, master or production, destructive deletes, edits to settings, hooks and callboard state.'
-export const helpText = (): string => mdPage('**Callboard commands**', ['Command', 'What it does'], HELP_ROWS.map((r) => r.map(mdEscape)), [FLOOR_LINE])
+export const helpText = (): string => mdPage('**Callboard commands**', ['Command', 'What it does'], HELP_ROWS.map((r) => r.map(mdEscape)))
 // A word the handler does not know: the short list, then the way to the full one.
 export const HELP_USAGE = 'Use /callboard help, lanes, status, lead, lane [NAME], escalation [off], manager or off. Run /callboard help for the full list.'
 // /callboard lanes where there is no list to show: a lane is told who lists, any other session what it lacks.

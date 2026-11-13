@@ -108,6 +108,16 @@ test('lane_list shows the reading of a live lane in its figure columns, and no r
   expect(noNote(await listed($))).toBe(apiRow(['142k', '34%', '–', '$3.10', '2m']))
 })
 
+test("a lead's own list shows its own reading on its group row, as the manager's list does", async ($, on) => {
+  await leadAt($, on, [], { sess: { ...leadSelfReg(), ...cueSession(OTHER, 'API', `${PIN}/api`, { pid: 4500 }) } })
+  extraStat.set(`${PIN}/api`, dirStat)
+  putStore([{ name: 'API', folder: `${PIN}/api`, brief: `${PIN}/api/BRIEF.md`, createdAt: 1, leadName: 'LEAD' }])
+  pdirs.add(USAGE_DIR)
+  expect(noNote(await listed($))).toContain('| lead | ? | ? | ? | ? | – |')
+  put(FILE, usageFileText(SID, 4400, LEADPS, h.nowMs - 2 * MIN, FIGURES)!)
+  expect(noNote(await listed($))).toContain('| lead | 142k | 34% | – | $3.10 | 2m |')
+})
+
 test('a usage file that fails a check reads as no reading, never as an error: forged sid, pid, start, mode, owner, links, size, future time, a day old, bad JSON', async ($, on) => {
   await laneWithUsage($, on)
   const cases: [string, string, { mode?: string; nlink?: number; uid?: number }?][] = [
