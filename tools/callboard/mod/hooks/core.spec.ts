@@ -2250,6 +2250,30 @@ test('v15 S6c (49): a live conductor adds a Conductor column to the manager tabl
   ])
 })
 
+test('laneListText: a live lead\'s state is written beside its name, in every row group it heads; idle has no minutes, waiting has them', () => {
+  const a = { name: 'LANE-A', folder: '/w/app', brief: '/w/app/B.md', repo: '/w/app', leadName: 'LEAD-A' }
+  const rows = [{ sessionId: S3_SID, name: 'LEAD-A' }]
+  const at = (lead: c.LiveLead) => c.laneListText([a], rows, 600_000, { level: 'manager', name: 'M', leads: [lead] }).split('\n')[4]
+  assert.equal(at({ name: 'LEAD-A', repo: '/w/app', state: 'busy' }), '| LEAD-A (busy) | app | LANE-A | none | – | – |')
+  assert.equal(at({ name: 'LEAD-A', repo: '/w/app', state: 'idle' }), '| LEAD-A (idle) | app | LANE-A | none | – | – |')
+  assert.equal(at({ name: 'LEAD-A', repo: '/w/app', state: 'waiting', since: 360_000 }), '| LEAD-A (waiting 4m) | app | LANE-A | none | – | – |')
+  assert.equal(at({ name: 'LEAD-A', repo: '/w/app', state: 'waiting' }), '| LEAD-A (waiting) | app | LANE-A | none | – | – |')
+  assert.equal(at({ name: 'LEAD-A', repo: '/w/app', state: 'waiting', since: 700_000 }), '| LEAD-A (waiting) | app | LANE-A | none | – | – |')
+  assert.equal(at({ name: 'LEAD-A', repo: '/w/app', state: 'unknown' }), '| LEAD-A | app | LANE-A | none | – | – |')
+  assert.equal(at({ name: 'LEAD-A', repo: '/w/other', state: 'busy' }), '| LEAD-A | app | LANE-A | none | – | – |')
+  assert.equal(c.laneListText([a], rows, 0, { level: 'lead', name: 'LEAD-A', leads: [{ name: 'LEAD-A', repo: '/w/app', state: 'busy' }] }), c.laneListText([a], rows, 0, { level: 'lead', name: 'LEAD-A' }))
+})
+
+test('leadStateOf: waiting needs a reason, idle needs none, a status the registry does not name is unknown', () => {
+  assert.deepEqual(c.leadStateOf({ sessionId: S3_SID, status: 'waiting', waitingFor: 'input', statusUpdatedAt: 5 }), { state: 'waiting', since: 5 })
+  assert.deepEqual(c.leadStateOf({ sessionId: S3_SID, status: 'waiting', waitingFor: 'input' }), { state: 'waiting' })
+  assert.deepEqual(c.leadStateOf({ sessionId: S3_SID, status: 'waiting' }), { state: 'unknown' })
+  assert.deepEqual(c.leadStateOf({ sessionId: S3_SID, status: 'idle', statusUpdatedAt: 5 }), { state: 'idle' })
+  assert.deepEqual(c.leadStateOf({ sessionId: S3_SID, status: 'idle', waitingFor: 'x' }), { state: 'unknown' })
+  assert.deepEqual(c.leadStateOf({ sessionId: S3_SID, status: 'busy' }), { state: 'busy' })
+  assert.deepEqual(c.leadStateOf({ sessionId: S3_SID }), { state: 'unknown' })
+})
+
 test('laneListText: a live lead with no lanes is one row with dashes in the lane cells; one a lane row already names, and a lead\'s own view, add nothing', () => {
   const a = { name: 'LANE-A', folder: '/w/app', brief: '/w/app/B.md', repo: '/w/app', leadName: 'LEAD-A' }
   const leads = [{ name: 'LEAD-A', repo: '/w/app' }, { name: 'LEAD-C', repo: '/w/app' }, { name: 'LEAD-B', repo: '/w/other' }, { name: 'LEAD-C', repo: '/w/app' }]
