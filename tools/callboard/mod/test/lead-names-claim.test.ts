@@ -70,6 +70,11 @@ test('with two leads in the repo, a born store lane naming its lead gets that le
   expect(r.first).toContain(`Your lead is \`LEAD2\` (session \`${OTHERLEAD}\`)`)
 })
 
+test('a born store lane whose lead session id is no longer live falls back to the lead the rename cue names', async ($, on) => {
+  const r = await bornWithTwoLeads($, on, `rename LABLANE ${LEADSID}\n`, { leadSid: '7a1b2c3d-0000-4000-8000-123456789abc' })
+  expect(r.first).toContain(`Your lead is \`LEAD\` (session \`${LEADSID}\`)`)
+})
+
 test('a born store lane naming a lead that is not live gets the generic wording, not the lead the rename cue names', async ($, on) => {
   const r = await bornWithTwoLeads($, on, `rename LABLANE ${OTHERLEAD}\n`, { leadName: 'GONE' })
   expect(r.first).toContain('Your lead is the lead session of this repo.')

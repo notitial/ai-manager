@@ -292,12 +292,12 @@ async function promptLeadOf($: any, level: 'lane' | 'lead', sid: string, cwd: st
   if (!live) return undefined
   const leads = (await leadsFor($, live, cwd).catch(() => [] as c.LeadFile[])).filter((l) => l.sid !== sid)
   // Record first, as the briefing does: a lane record that names its lead is reached by the live lead of that registry name and no other (none live: nobody).
-  // Else the lead that made the lane or the lead the lane is bound to, if it is live; with neither, the one live lead of the repo. Two leads and no binding: nobody can be asked.
+  // Else the lead that made the lane (while it is live) or the lead the lane is bound to, if it is live; with neither, the one live lead of the repo. Two leads and no binding: nobody can be asked.
   // A bound lane whose record cannot be read, or that has none, reaches no lead: the prompt stays the person's.
   const rec = await reportLaneOf($, sid).catch(() => undefined)
   if (!rec) return undefined
   const rows = live.map((r) => r.j)
-  const ownSid = rec.leadSid ?? bound
+  const ownSid = rec.leadSid !== undefined && leads.some((l) => l.sid === rec.leadSid) ? rec.leadSid : bound
   const lead = rec.leadName !== undefined ? leads.find((l) => c.leadNameOf(rows, l.sid) === rec.leadName) : ownSid !== undefined ? leads.find((l) => l.sid === ownSid) : leads.length === 1 ? leads[0] : undefined
   if (!lead) return undefined
   return { sid: lead.sid, name: c.leadNameOf(rows, lead.sid) ?? undefined }
@@ -558,8 +558,8 @@ async function promptHook($: any, e: any, nextOnce: (x: any) => Promise<any>, si
       await ledgerAdd($, { ...base, ...(ctx ? { ctx } : {}), kind: 'floor', code: floor })
       return beneath
     }
-    // 7. A live tier: the lead of a lane, or a conductor or the manager (a lead's own prompt starts at the conductor). Nobody in reach, or an asker that the plain
-    // session list does not show (a session under another config folder): no row for a judge, the dialog stays the person's.
+    // 7. A live tier: the lead of a lane, or a conductor or the manager (a lead's own prompt starts at the conductor). Nobody in reach, or an asker that the
+    // session list does not show: no row for a judge, the dialog stays the person's.
     if (!leadRead) lead = await promptLeadOf($, cov.level, sid, cwd, cov.lead)
     const leadName = lead?.name
     const own = await registryOf($, sid)

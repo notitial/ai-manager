@@ -113,8 +113,8 @@ const stopCallKey = (sid: string, verb: string, lane: unknown) => `${sid}\n${ver
 // ---- the lane's briefing (c.laneBriefing) ----
 // The facts of a binding just written, kept at once without a lead; then the lead. Only a lead with a valid presence file for the lane's own repo counts (never
 // one of a parent repo, nor any lead of a lane with no repo): for a record naming its lead, the live lead with that registry name and no other; else the
-// lead session id the record holds (`leadSid` of a made one, then the one the caller passes: an attached record's `lead` or the rename cue's), else the one
-// lead of that repo. It is named only as c.laneLeadOf allows. The lead is added only to the entry
+// lead session id the record holds (`leadSid` of a made one while that lead is live, else the one the caller passes: an attached record's `lead` or the rename
+// cue's), else the one lead of that repo. It is named only as c.laneLeadOf allows. The lead is added only to the entry
 // this call kept, so a detach meanwhile leaves nothing behind. A failure keeps the generic lead wording and is logged as lane-lead; c.laneBriefing checks
 // every field again.
 export async function keepLaneFacts($: any, sid: string, l: c.Lane, attached: boolean, leadSid: string | undefined, reg: Reg = () => registryEntries($)) {
@@ -126,7 +126,7 @@ export async function keepLaneFacts($: any, sid: string, l: c.Lane, attached: bo
     if (!live) return
     const leads = await leadsFor($, live, l.folder, l.repo)
     const rows = live.map((r) => r.j)
-    const ownSid = l.leadSid ?? leadSid
+    const ownSid = l.leadSid !== undefined && leads.some((x) => x.sid === l.leadSid) ? l.leadSid : leadSid
     const lead = l.leadName !== undefined ? leads.find((x) => c.leadNameOf(rows, x.sid) === l.leadName) : ownSid !== undefined ? leads.find((x) => x.sid === ownSid) : leads.length === 1 ? leads[0] : undefined
     const known = lead ? c.laneLeadOf(rows, lead.sid) : undefined
     if (known && laneBrief.get(sid) === base) laneBrief.set(sid, { ...base, lead: known })
