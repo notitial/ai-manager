@@ -290,7 +290,7 @@ const DROPS: [string, (req: any) => void, string][] = [
   ['an answered row that says something else', (r) => handDecision(r, {}, { kind: 'dropped', code: undefined }), 'no-answered-row'],
   ['an author that is the asker', (r) => handDecision(r, { by: { level: 'lead', sid: SID, name: 'svc-api' } }), 'by-sid'],
   ['an author that is no live lead', (r) => handDecision(r, { by: { level: 'lead', sid: OTHER, name: 'X' } }), 'by-sid'],
-  ['an author that claims a tier PR 1 does not have', (r) => handDecision(r, { by: { level: 'manager', sid: LEADSID, name: 'LEAD' } }), 'by-sid'],
+  ['an author that claims a tier the lane\'s own hook does not have', (r) => handDecision(r, { by: { level: 'manager', sid: LEADSID, name: 'LEAD' } }), 'by-sid'],
 ]
 for (const [name, make, code] of DROPS) {
   test(`prompts: apply: ${name}: dropped ${code}, not applied, the wait goes on`, async ($, on) => {

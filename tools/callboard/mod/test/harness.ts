@@ -223,7 +223,7 @@ export const h = {
   lastHeader: undefined,
   askCount: 0,
   askHang: undefined,
-  // Answers each non-restore question by its text and options (the lead picker, then the Join question); unset: askAnswer as before.
+  // Answers each non-restore question by its text and options (the lead picker, then the Join question); unset: askAnswer.
   askScript: undefined,
   restoreHang: undefined,
   restoreAnswer: YES,

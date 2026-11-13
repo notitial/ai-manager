@@ -1018,7 +1018,7 @@ test('an engine without session.root() reads the live folder instead: the lane r
   expect(rebinds(stdins)[0]).toStartWith('rebound:')
 })
 
-// ---- /callboard on is retired; what it left is cleared at start ----
+// ---- /callboard on does not exist; what an earlier one left is cleared at start ----
 const ONKEY = `on:${SID}`
 
 test('an enabled state and a saved on left from before are cleared at start with no toast; the session is not eligible, so a compact cue refuses', async ($, on) => {

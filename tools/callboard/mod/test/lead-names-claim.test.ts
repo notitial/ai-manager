@@ -539,7 +539,7 @@ test('stuck lanes: claim in a session that holds no lead grant, a conductor or t
   expect((await claim($)).text).toBe(CLAIM_NOT_LEAD)
 })
 
-test('stuck lanes: an attached lane bound before this change (its hash includes the lead name) still takes resume and detaches whole', async ($, on) => {
+test('stuck lanes: an attached lane bound under the legacy record hash (without the lead name) still takes resume and detaches whole', async ($, on) => {
   const trace = newTrace()
   const stdins: string[] = []
   await attacher($, on, stdins, { clock: true, trace })
@@ -562,7 +562,7 @@ test('stuck lanes: an attached lane bound before this change (its hash includes 
 test('stuck lanes: a claim leaves out the lanes of a live lead (attached record whose lead session runs), and waits while another live lead of the repo has no usable name', async ($, on) => {
   await leadAt($, on, [])
   putStore([GONE_ATT('ATT', { leadName: 'old-bb', lead: OTHERLEAD }), MADE_OLD()])
-  // The lead session OTHERLEAD runs, under a name that is not valid (so no lane can name it any more): its attached lane is not up for claim.
+  // The lead session OTHERLEAD runs, under a name that is not valid (so no lane can name it): its attached lane is not up for claim.
   leadFiles.set(`${ROOT}/leads/${OTHERLEAD}.json`, { text: JSON.stringify({ sid: OTHERLEAD, pid: 4700, procStart: LEADPS, repo: PIN }) })
   h.sessions = { ...leadSelfReg(), ...cueSession(OTHERLEAD, 'lead b', PIN, { pid: 4700 }) }
   h.askAnswer = YES

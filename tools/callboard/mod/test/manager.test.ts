@@ -550,7 +550,7 @@ test('a manager\'s stop refuses, before any dialog, a target that holds a live p
   for (const verb of ['terminate', 'retire']) expect(JSON.stringify(await $.tool.call(mgrCall(verb, 'API'))), verb).toContain(`lane_${verb} refused: sid-mismatch: `)
   expect(h.askCount).toBe(asked)
   expect(killed(argv)).toEqual([])
-  // With neither, the stop goes through its dialog as before.
+  // With neither, the stop goes through its dialog.
   putStore([ckLane({ sid: APISID })])
   expect((await $.tool.call(mgrCall('terminate', 'API'))).result).toBe('lane API terminated and removed: SIGTERM sent to process 4500. Its .archive/API/ folder and report stay.')
   expect(h.askCount).toBe(asked + 1)

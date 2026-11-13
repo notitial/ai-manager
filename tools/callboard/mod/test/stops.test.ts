@@ -249,7 +249,7 @@ test('lane_retire does nothing unless the session is idle and has signed its rep
     ['not-idle', () => { h.sessions = cueSession(OTHER, 'LABLANE', '/data/x/work/lab', { waitingFor: 'input' }) }],
     ['not-idle', () => { h.sessions = cueSession(OTHER, 'LABLANE', '/data/x/work/lab', { status: 'waiting' }) }],
     ['pid-changed', () => { h.sessions = cueSession(OTHER, 'LABLANE'); h.psOut = 'Wed Oct 28 01:00:00 2026\n' }],
-    // A lane no live session carries is no refusal any more (its record is removed): the sessionless tests below cover it.
+    // A lane no live session carries is no refusal (its record is removed): the sessionless tests below cover it.
     ['not-claude', () => { h.psOut = 'Tue Oct 27 20:37:50 2026\n'; h.sessions = cueSession(OTHER, 'LABLANE'); h.psArgsOut = '/usr/bin/vim /tmp/notes\n' }],
   ]
   for (const [why, setup] of refused) {

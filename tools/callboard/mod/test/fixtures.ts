@@ -8,7 +8,7 @@ export const allEvents = (stdins: string[]) => stdins.filter((x) => x.startsWith
 export const events = (stdins: string[]) => allEvents(stdins).filter((e) => e.event !== 'restored' && e.event !== 'command')
 
 export const PERSON = { kind: 'composer' } as const
-// The usage line, which /callboard on now gets too.
+// The usage line, which /callboard on gets too.
 export const USAGE = 'Use /callboard help, lanes, status, lead, lane [NAME], escalation [off], prompts, manager or off. Run /callboard help for the full list.'
 export const lane = (args: string, origin: unknown = PERSON) => ({ command: 'callboard', args, origin }) as any
 export const statusText = async ($: any) => (await $.command.run(lane('status'))).text as string
@@ -265,7 +265,7 @@ export const ATTLEAD = (verb: string, extra: Record<string, unknown> = {}) => le
 export const ownerText = (pid: number, nonce: string, procStart = LEADPS) => JSON.stringify({ pid, procStart, nonce })
 export const OWNER_LIVE = ownerText(4242, 'live-nonce-0001')
 
-// ---- PR two, fix round 1 ----
+// ---- the attached lane svc-api of the lead LEADSID ----
 export const ATTLANE = (over: Record<string, unknown> = {}) => attRec(LEADSID, 'svc-api', over)
 
 // ---- registry files left by a process that died ----
