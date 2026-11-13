@@ -8,7 +8,7 @@ review; it does not replace CLAUDE.md, the finding format or the trigger rule.
 The manager role and its tooling. `docs/manager/` and `docs/adr/` hold the role and its decisions. `tools/callboard/`
 is the callboard mod (TypeScript hooks for Claude Code and a VS Code extension, both loaded straight from the
 person's live checkout, with a script that links the extension). `tools/usage-watcher/` is a Python usage watcher run by launchd, with a shell installer.
-`tools/session-peers/` is a shell session lister. `.claude/skills/` holds the manager's project skills. It may become
+`.claude/skills/` holds the manager's project skills. It may become
 public, so treat every line as published.
 
 ## Private data
