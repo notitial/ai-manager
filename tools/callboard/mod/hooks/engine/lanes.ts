@@ -76,13 +76,11 @@ import {
 import type { Reg, RegRow, Answer } from './store.ts'
 import {
   leadsFor,
-  briefOnce,
   presenceTouch,
   watchPoll,
   regEntry,
   presenceHeld,
   ownWrite,
-  epochOf,
   grantOf,
   homeOf,
   leadReason,
@@ -98,6 +96,7 @@ import {
   findLead,
   psOne,
 } from './grants.ts'
+import { briefOnce, epochOf } from './levels.ts'
 import { dropRequest, doCompact, isEligible, leadNudge, busyAgents, backgroundShells, counts, bump, interactive, saveHint } from './compaction.ts'
 import { ensureTimer } from './tick.ts'
 
@@ -135,7 +134,7 @@ export async function keepLaneFacts($: any, sid: string, l: c.Lane, attached: bo
 }
 
 // The briefing as one user-role note, at attach and restore only: a born lane has had no request yet, so its first one (the start prompt) carries the section, and
-// a note there could count as a turn and make lane_start refuse not-empty. As briefLead: the mark is set before the await, and a refused or failed append is logged
+// a note there could count as a turn and make lane_start refuse not-empty. As levelBrief: the mark is set before the await, and a refused or failed append is logged
 // as lane-briefing and changes nothing else.
 export async function briefLane($: any, sid: string) {
   const kept = laneBrief.get(sid)

@@ -716,26 +716,31 @@ type LaneBinding = { name: string; at: number; turns?: number; adopted?: true; l
 type Hint = { lane?: LaneBinding; counters: Counters; savedAt: number }
 
 const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
+// A plain JSON object: not null, not an array.
+const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
+// A time a file written by the same user may carry is at most a minute ahead of now.
+const CLOCK_SKEW_MS = 60_000
+// A saved time that is a number, at most a minute ahead and at most 30 days old.
+const hintAgeOk = (savedAt: unknown, now: number): savedAt is number => isNum(savedAt) && savedAt <= now + CLOCK_SKEW_MS && now - savedAt <= HINT_MAX_AGE_MS
 
 // What $.store holds is a file any same-uid process can write: take only fields of a known shape, drop the rest.
 export function parseHint(raw: unknown, now: number): Hint | undefined {
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return undefined
-  const r = raw as Record<string, unknown>
-  if (!isNum(r.savedAt) || r.savedAt > now + 60_000 || now - r.savedAt > HINT_MAX_AGE_MS) return undefined
-  const out: Hint = { counters: {}, savedAt: r.savedAt }
-  if (r.lane !== undefined) {
-    const l = r.lane as Record<string, unknown> | null
-    if (typeof l !== 'object' || l === null || Array.isArray(l) || typeof l.name !== 'string' || !NAME_RE.test(l.name) || !isNum(l.at)) return undefined
+  if (!isObj(raw)) return undefined
+  if (!hintAgeOk(raw.savedAt, now)) return undefined
+  const out: Hint = { counters: {}, savedAt: raw.savedAt }
+  if (raw.lane !== undefined) {
+    const l = raw.lane
+    if (!isObj(l) || typeof l.name !== 'string' || !NAME_RE.test(l.name) || !isNum(l.at)) return undefined
     const t = l.turns
     if (t !== undefined && !(typeof t === 'number' && Number.isInteger(t) && t >= -1 && t <= 1_000_000)) return undefined
     if (!attachFieldsOk(l.adopted, l.lead)) return undefined
     out.lane = { name: l.name, at: l.at, ...(t === undefined ? {} : { turns: t as number }), ...(l.adopted === true ? { adopted: true as const, lead: l.lead as string } : {}) }
   }
-  if (r.counters !== undefined) {
-    const k = r.counters as Record<string, unknown> | null
-    if (typeof k !== 'object' || k === null || Array.isArray(k)) return undefined
+  if (raw.counters !== undefined) {
+    const k = raw.counters
+    if (!isObj(k)) return undefined
     if (k.lastCompactMs !== undefined) {
-      if (!isNum(k.lastCompactMs) || k.lastCompactMs > now + 60_000) return undefined
+      if (!isNum(k.lastCompactMs) || k.lastCompactMs > now + CLOCK_SKEW_MS) return undefined
       out.counters.lastCompactMs = k.lastCompactMs
     }
     if (k.startDone !== undefined) {
@@ -743,7 +748,7 @@ export function parseHint(raw: unknown, now: number): Hint | undefined {
       out.counters.startDone = k.startDone
     }
     if (k.resumeTimes !== undefined) {
-      if (!Array.isArray(k.resumeTimes) || k.resumeTimes.length > RESUME_PER_HOUR || !k.resumeTimes.every((t) => isNum(t) && t <= now + 60_000)) return undefined
+      if (!Array.isArray(k.resumeTimes) || k.resumeTimes.length > RESUME_PER_HOUR || !k.resumeTimes.every((t) => isNum(t) && t <= now + CLOCK_SKEW_MS)) return undefined
       out.counters.resumeTimes = [...(k.resumeTimes as number[])]
     }
   }
@@ -790,10 +795,10 @@ export function rebindRefusal(lanes: Lane[], sid: string, cwd: string, otherLive
 // accept and a savedAt of the last 30 days (not more than a minute ahead) are taken.
 export type LeadHint = { pin: string; savedAt: number }
 export function parseLeadHint(raw: unknown, now: number, home: string): LeadHint | undefined {
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return undefined
-  const { pin, savedAt } = raw as Record<string, unknown>
+  if (!isObj(raw)) return undefined
+  const { pin, savedAt } = raw
   if (typeof pin !== 'string' || !isCleanAbs(pin) || pinRefusal(pin, home) !== undefined) return undefined
-  if (!isNum(savedAt) || savedAt > now + 60_000 || now - savedAt > HINT_MAX_AGE_MS) return undefined
+  if (!hintAgeOk(savedAt, now)) return undefined
   return { pin, savedAt }
 }
 
@@ -1207,9 +1212,9 @@ export const OFF_NOTHING = 'Nothing to turn off: this session is not a lane or a
 // cleared at PostCompact and once the request has left `compacting`. A mark younger than ON_CUE_TTL_MS found at the next start of the same session, with no
 // request left in its state, gives the session one note. The engine can return from a compaction without PostCompact, so the note says "may have".
 export function cmpMarkFresh(raw: unknown, now: number): boolean {
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return false
-  const { at } = raw as Record<string, unknown>
-  return isNum(at) && at <= now + 60_000 && now - at <= ON_CUE_TTL_MS
+  if (!isObj(raw)) return false
+  const { at } = raw
+  return isNum(at) && at <= now + CLOCK_SKEW_MS && now - at <= ON_CUE_TTL_MS
 }
 export const COMPACT_CUT_NOTE =
   `[callboard] A compaction this session started may have been cut off by a restart, so the conversation may not be compacted and the continuation you wrote was not sent back. If your context is still large, write where you are to your report or STATE file and call request_compact with mode \`now\` again. ${SUBMITTED_NOTE}`
@@ -1373,6 +1378,16 @@ const hasCode = (table: object, code: string): boolean => Object.prototype.hasOw
 export const hasText = (code: string): boolean => hasCode(REASON_TEXT, code)
 // A code with its text for the lead; a code without one stays as it was.
 export const reasonWhy = (code: string): string => (hasText(code) ? `${code}: ${REASON_TEXT[code]}` : code)
+
+// One session is a lane, a lead, a conductor or the manager, never two. Holds says what a session is, has been or is becoming; the rows of a level read it in
+// the order that decides the code, the first row with a flag set giving it (a role it was gives the `-after-` code, which lasts until a restart).
+export type Holds = Partial<Record<'lane' | 'grant' | 'lead' | 'conductor' | 'manager' | 'leadMark' | 'leadPending' | 'conductorPending' | 'wasLead' | 'wasConductor' | 'wasManager', boolean>>
+const HOLDER_ROWS: Record<Level, [(keyof Holds)[], string][]> = {
+  lead: [[['lane'], 'lane-holder'], [['manager'], 'manager-holder'], [['wasManager'], 'lead-after-manager'], [['conductor'], 'conductor-holder'], [['wasConductor'], 'lead-after-conductor']],
+  conductor: [[['lane'], 'lane-holder'], [['manager'], 'manager-holder'], [['lead', 'leadMark', 'leadPending'], 'lead-holder'], [['wasLead'], 'conductor-after-lead'], [['wasManager'], 'conductor-after-manager']],
+  manager: [[['lane'], 'lane-holder'], [['conductor', 'conductorPending'], 'conductor-holder'], [['grant', 'leadMark', 'leadPending'], 'lead-holder'], [['wasLead'], 'manager-after-lead'], [['wasConductor'], 'manager-after-conductor']],
+}
+export const holderNo = (wants: Level, h: Holds): string | undefined => HOLDER_ROWS[wants].find(([flags]) => flags.some((f) => h[f]))?.[1]
 
 // The target's answer to one lead cue: `<verb> <outcome> <reason> <inode of the claimed cue file>\n`. The lead accepts only the
 // inode its own cue file had, so a late answer to an older cue is never read as the answer to a newer one. `-` as the verb means
@@ -1553,7 +1568,7 @@ export function parsePresenceFile(text: string, name: string): PresenceFile | un
   } catch {
     return undefined
   }
-  if (typeof j !== 'object' || j === null || Array.isArray(j)) return undefined
+  if (!isObj(j)) return undefined
   const { sid, pid, procStart, level = 'lead', repo, repos, home, name: who } = j
   if (typeof sid !== 'string' || !SID_RE.test(sid) || sid !== name) return undefined
   if (!Number.isInteger(pid) || (pid as number) <= 1 || typeof procStart !== 'string' || procStart.trim() === '' || procStart.length > 64) return undefined
@@ -1863,7 +1878,7 @@ export function laneLeadOf(rows: unknown[], leadSid: unknown): { name: string; s
 }
 function regName(rows: unknown[], sid: unknown): string | undefined {
   if (typeof sid !== 'string' || !SID_RE.test(sid)) return undefined
-  const js = rows.filter((j): j is Record<string, unknown> => typeof j === 'object' && j !== null && !Array.isArray(j))
+  const js = rows.filter(isObj)
   const own = js.filter((j) => j.sessionId === sid)
   if (own.length !== 1) return undefined
   const name = own[0].name
@@ -1933,10 +1948,10 @@ export const MANAGER_FAILED = 'Manager could not be set up.'
 // minute ahead) are taken; a name is judged again at the restore (managerNameRefusal), and the grant itself comes only from the person's answer.
 export type ManagerHint = { name: string; savedAt: number }
 export function parseManagerHint(raw: unknown, now: number): ManagerHint | undefined {
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return undefined
-  const { name, savedAt } = raw as Record<string, unknown>
+  if (!isObj(raw)) return undefined
+  const { name, savedAt } = raw
   if (typeof name !== 'string' || !NAME_RE.test(name)) return undefined
-  if (!isNum(savedAt) || savedAt > now + 60_000 || now - savedAt > HINT_MAX_AGE_MS) return undefined
+  if (!hintAgeOk(savedAt, now)) return undefined
   return { name, savedAt }
 }
 export const MANAGER_RESTORE_QUESTION = 'Restore this session as the manager of every lane on this machine? You made it the manager here earlier and callboard saved that; click Cancel if you did not. It can resume, compact, stop, retire and remove lanes in any repo. Every stop and remove asks you. Cancel removes the saved manager grant.'
@@ -2016,8 +2031,8 @@ export function parseConductorFile(text: string): string[] | undefined {
   } catch {
     return undefined
   }
-  if (typeof j !== 'object' || j === null || Array.isArray(j)) return undefined
-  const repos = (j as Record<string, unknown>).repos
+  if (!isObj(j)) return undefined
+  const repos = j.repos
   if (!Array.isArray(repos) || repos.length > CONDUCTOR_REPOS_MAX || !repos.every(conductorEntryOk) || new Set(repos).size !== repos.length) return undefined
   return [...repos]
 }
@@ -2107,12 +2122,12 @@ export const conductorRemovedText = (entry: string): string => `${stripCtrl(entr
 // (not more than a minute ahead) are taken. An empty list is kept (every approved repo left the file): it restores nothing until the person clicks again.
 export type ConductorHint = { home: string; repos: string[]; savedAt: number }
 export function parseConductorHint(raw: unknown, now: number, homeDir: string): ConductorHint | undefined {
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return undefined
-  const { home, repos, savedAt } = raw as Record<string, unknown>
+  if (!isObj(raw)) return undefined
+  const { home, repos, savedAt } = raw
   if (typeof home !== 'string' || !isCleanAbs(home) || pinRefusal(home, homeDir) !== undefined) return undefined
   if (!Array.isArray(repos) || repos.length > CONDUCTOR_REPOS_MAX || new Set(repos).size !== repos.length) return undefined
   if (!repos.every((r) => typeof r === 'string' && isCleanAbs(r) && pinRefusal(r, homeDir) === undefined)) return undefined
-  if (!isNum(savedAt) || savedAt > now + 60_000 || now - savedAt > HINT_MAX_AGE_MS) return undefined
+  if (!hintAgeOk(savedAt, now)) return undefined
   return { home, repos: [...(repos as string[])], savedAt }
 }
 

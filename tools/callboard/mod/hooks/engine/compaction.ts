@@ -147,11 +147,17 @@ export async function pruneHints($: any, me: string) {
       .then(() => $.store.delete(k))
       .catch(() => undefined)
   }
-  // Lead grants (lead:<sid>), with their own caps. The starting session's own is left to the lead restore, which reads it and deletes it itself.
   const p = await where($)
   if (!p) return
-  // Cut-compaction marks (cmp:<sid>) of other sessions, under the same caps; the starting session's own is read at start.
-  for (const [prefix, ok] of [[c.CMP_PREFIX, (v: unknown) => c.cmpMarkFresh(v, now)]] as const) {
+  // The marks and saved grants of other sessions that fail their parse, each kind under the same caps; the starting session's own is read at start (a saved
+  // grant's by its restore).
+  const kinds: [string, (v: unknown) => boolean][] = [
+    [c.CMP_PREFIX, (v) => c.cmpMarkFresh(v, now)],
+    [c.CONDUCTOR_HINT_PREFIX, (v) => !!c.parseConductorHint(v, now, homeOf(p))],
+    [c.MANAGER_HINT_PREFIX, (v) => !!c.parseManagerHint(v, now)],
+    [c.LEAD_HINT_PREFIX, (v) => !!c.parseLeadHint(v, now, homeOf(p))],
+  ]
+  for (const [prefix, ok] of kinds) {
     let n = 0
     for (const k of all.filter((x) => x.startsWith(prefix) && x !== `${prefix}${me}`).slice(0, c.HINT_SCAN_MAX)) {
       if (n >= HINT_DELETE_MAX) break
@@ -159,33 +165,6 @@ export async function pruneHints($: any, me: string) {
         await $.store.delete(k)
         n++
       }
-    }
-  }
-  // Other sessions' saved conductor grants (conductor:<sid>) that fail the parse, under the same caps.
-  let condDels = 0
-  for (const k of all.filter((x) => x.startsWith(c.CONDUCTOR_HINT_PREFIX) && x !== `${c.CONDUCTOR_HINT_PREFIX}${me}`).slice(0, c.HINT_SCAN_MAX)) {
-    if (condDels >= HINT_DELETE_MAX) break
-    if (!c.SID_RE.test(k.slice(c.CONDUCTOR_HINT_PREFIX.length)) || !c.parseConductorHint(await $.store.get(k), now, homeOf(p))) {
-      await $.store.delete(k)
-      condDels++
-    }
-  }
-  // Other sessions' saved manager grants (manager:<sid>) that fail the parse, under the same caps.
-  let mgrDels = 0
-  for (const k of all.filter((x) => x.startsWith(c.MANAGER_HINT_PREFIX) && x !== `${c.MANAGER_HINT_PREFIX}${me}`).slice(0, c.HINT_SCAN_MAX)) {
-    if (mgrDels >= HINT_DELETE_MAX) break
-    if (!c.SID_RE.test(k.slice(c.MANAGER_HINT_PREFIX.length)) || !c.parseManagerHint(await $.store.get(k), now)) {
-      await $.store.delete(k)
-      mgrDels++
-    }
-  }
-  const leads = all.filter((k) => k.startsWith(c.LEAD_HINT_PREFIX) && k !== `${c.LEAD_HINT_PREFIX}${me}`).slice(0, c.HINT_SCAN_MAX)
-  let leadDels = 0
-  for (const k of leads) {
-    if (leadDels >= HINT_DELETE_MAX) break
-    if (!c.SID_RE.test(k.slice(c.LEAD_HINT_PREFIX.length)) || !c.parseLeadHint(await $.store.get(k), now, homeOf(p))) {
-      await $.store.delete(k)
-      leadDels++
     }
   }
 }

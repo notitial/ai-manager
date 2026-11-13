@@ -14,8 +14,6 @@ import {
   pendingRename,
   conductorRestorePending,
   leadGranting,
-  leadRestorePending,
-  leadDeclared,
   managerRestorePending,
   conductorHome,
   conductorApproved,
@@ -31,7 +29,6 @@ import type { Asked } from './base.ts'
 import { editStore, registryEntries, keptLanes, loadLanes } from './store.ts'
 import {
   cfgGet,
-  epochOf,
   homeOf,
   leadBusy,
   reservedGet,
@@ -40,24 +37,21 @@ import {
   presenceDrop,
   presenceTouch,
   leadDrop,
-  managerSave,
-  briefLead,
+  MANAGER,
+  LEAD,
+  CONDUCTOR,
   colorLater,
-  conductorHeld,
   conductorHere,
   writeConductorFile,
-  conductorSave,
   conductorReach,
   conductorAddPlan,
   conductorShowable,
   conductorApply,
-  briefConductor,
   nameGrant,
   leadsFor,
   managerForget,
   pinOf,
   secondLeadNo,
-  leadSave,
   watchInit,
 } from './grants.ts'
 import type { CondOut } from './grants.ts'
@@ -76,6 +70,8 @@ import {
 import type { Bound, Plan } from './lanes.ts'
 import { restoreFromHint, saveHint, bump, isEligible, dropRequest } from './compaction.ts'
 import { ensureTimer } from './tick.ts'
+import { epochOf, heldNo, holdsOf, levelBrief, levelSave } from './levels.ts'
+import type { LevelDesc } from './levels.ts'
 import { ANSWERING_KEY, ledgerAdd, promptsOff } from './answer-hook.ts'
 import { ledgerRestore } from './answer-tiers.ts'
 
@@ -289,7 +285,7 @@ async function laneCommand($: any, sid: string, code: c.OriginCode, arg: c.Comma
 // ---- /callboard manager [NAME] ----
 // Any origin, as /callboard lead: the dialog is the gate the person answers, and another origin is named in its question. Refused before the dialog and again
 // after a yes: in a bound lane, in a lead, in a session that ever was a lead (its lane tools stay declared: manager-after-lead), and while another live
-// session holds a valid manager file (manager-exists). The grant lives in memory, and the person's yes also saves manager:<sid> (managerSave), so the
+// session holds a valid manager file (manager-exists). The grant lives in memory, and the person's yes also saves manager:<sid> (levelSave), so the
 // same conversation asks again when it starts or resumes (managerRestoreAsk runs this function with restore set: the restore question, and its own log lines).
 // After the grant the presence file must be written (one per machine rests on it), and a second manager that won the same moment makes both step back.
 export async function managerCommand($: any, sid: string, code: c.OriginCode, want: string | undefined, busy: () => Promise<{ text: string }>, restore = false, alive: () => boolean = () => true): Promise<{ text: string }> {
@@ -308,12 +304,8 @@ export async function managerCommand($: any, sid: string, code: c.OriginCode, wa
   if (cur?.level === 'manager') return { text: c.managerAlreadyText(cur.name, want) }
   // marks: the lane and lead marks are this call's to read, not its own (the re-check below runs while it holds leadGranting).
   const held = async (marks: boolean): Promise<string | undefined> => {
-    if ((marks && laneBinding.has(sid)) || (await $.state.get(lane)).value != null) return 'lane-holder'
-    // A conductor (or one being restored), and a session that was one.
-    if (grants.get(sid)?.level === 'conductor' || conductorRestorePending.has(sid)) return 'conductor-holder'
-    if (grants.has(sid) || (marks && leadGranting.has(sid)) || leadRestorePending.has(sid)) return 'lead-holder'
-    if (leadDeclared.has(sid)) return 'manager-after-lead'
-    if (conductorDeclared.has(sid)) return 'manager-after-conductor'
+    const no = await heldNo($, sid, 'manager', marks)
+    if (no) return no
     const live = await registryEntries($)
     if (!live) return 'registry-unreadable'
     return (await managersLive($, live, sid)).length > 0 ? 'manager-exists' : undefined
@@ -388,11 +380,11 @@ export async function managerCommand($: any, sid: string, code: c.OriginCode, wa
   if (!live) return stepBack('registry-unreadable')
   if ((await managersLive($, live, sid)).length > 0) return stepBack('manager-exists')
   if (epochOf(sid) !== grantEpoch) return { text: 'Manager is now off.' }
-  await managerSave($, sid)
+  await levelSave($, sid, MANAGER)
   if (epochOf(sid) !== grantEpoch) return { text: 'Manager is now off.' }
   await log($, sid, restore ? 'manager-restored' : 'manager-on', restore ? '' : code)
   if (restore) toast($, c.MANAGER_RESTORED_TOAST)
-  await briefLead($, sid, '', name)
+  await levelBrief($, sid, MANAGER, name)
   // The rename cannot run inside the command: the tick runs it (as attach), unless the session already carries the name (a launch with -n NAME).
   const mine = live.filter((e) => e.j.sessionId === sid)
   if (mine.length === 1 && mine[0].j.name === name) await log($, sid, 'rename-skipped', 'manager')
@@ -417,7 +409,7 @@ async function conductorListCommand($: any, sid: string, code: c.OriginCode, op:
   const h = p ? homeOf(p) : undefined
   const inConductor = (home: string) => grants.get(sid)?.level === 'conductor' && conductorHome.get(sid) === home
   if ('remove' in op) {
-    const held = await conductorHeld($, sid, true)
+    const held = await heldNo($, sid, 'conductor', true)
     if (held) return refuse(held)
     const here = await conductorHere($)
     if ('no' in here) return refuse(here.no)
@@ -438,7 +430,7 @@ async function conductorListCommand($: any, sid: string, code: c.OriginCode, op:
       const was = conductorApproved.get(sid) ?? []
       if (was.includes(gone)) {
         conductorApproved.set(sid, was.filter((x) => x !== gone))
-        await conductorSave($, sid)
+        await levelSave($, sid, CONDUCTOR)
       }
       await conductorReach($, sid).catch(() => undefined)
     }
@@ -474,7 +466,7 @@ async function conductorListCommand($: any, sid: string, code: c.OriginCode, op:
   if (here) {
     const was = conductorApproved.get(sid) ?? []
     if (!was.includes(plan.target)) conductorApproved.set(sid, [...was, plan.target])
-    await conductorSave($, sid)
+    await levelSave($, sid, CONDUCTOR)
     await conductorReach($, sid).catch(() => undefined)
   }
   return { text: c.conductorAddedText(plan.home, plan.target, h, here) }
@@ -546,12 +538,12 @@ async function conductorGrant($: any, sid: string, code: c.OriginCode, busy: () 
   } finally {
     leadGranting.delete(sid)
   }
-  await conductorSave($, sid)
+  await levelSave($, sid, CONDUCTOR)
   if (epochOf(sid) !== grantEpoch) return { text: 'Conductor is now off.' }
   await presenceDrop($, sid).catch(() => undefined)
   await presenceTouch($, sid).catch(logFail($, sid, 'conductor-presence'))
   await log($, sid, 'conductor-on', code)
-  await briefConductor($, sid, home)
+  await levelBrief($, sid, CONDUCTOR, home)
   await nameGrant($, sid)
   return { text: `${c.CONDUCTOR_ON_TEXT}${c.conductorOutText(first.out)}` }
 }
@@ -779,71 +771,43 @@ export async function commandRun($: any, e: any) {
       return { text: 'Cancelled. Nothing changed.' }
     }
   }
-  // The saved lead grant could not be deleted: the reply says lead may come back after a restart.
+  // A saved grant could not be deleted: the reply says its level may come back after a restart.
   let leadKept = false
-  // What off found, for its answer, read before the drops below: a lead (a grant, or a saved one still being restored), a rebind still waiting
-  // (and the lane it would take, once the tick has read it), and a saved lead grant with neither.
-  let wasLead = false
-  let wasManager = false
-  let wasConductor = false
-  let savedConductor = false
-  let savedManager = false
+  // What off found, for its answer, read before the drops below: the level the session holds (a grant, or a saved one still being restored), a rebind still
+  // waiting (and the lane it would take, once the tick has read it), and the saved grants of a session that holds none.
+  let was: LevelDesc | undefined
+  const saved: LevelDesc[] = []
   let rebindWas = false
   let rebindLane: string | undefined
-  let savedLead = false
   if (arg === 'off') {
     offSeq.set(sid, (offSeq.get(sid) ?? 0) + 1)
-    wasManager = grants.get(sid)?.level === 'manager'
-    wasConductor = grants.get(sid)?.level === 'conductor' || conductorRestorePending.has(sid)
-    wasLead = !wasManager && !wasConductor && (grants.has(sid) || leadRestorePending.has(sid))
+    was = [MANAGER, CONDUCTOR, LEAD].find((d) => d.isOn(sid))
     const rebinding = rebindPending.get(sid)
     rebindWas = rebinding !== undefined
     rebindLane = rebinding?.name
     // A rebind still waiting is cancelled before any await: a tick that starts after the bump would pass its own check and could bind after
     // off has read the binding.
     rebindPending.delete(sid)
-    if (!wasLead && !wasManager && !wasConductor) {
-      // A read that timed out says nothing about the grant: the reply then leaves it out.
-      const got = await withTimeout($, (async () => $.store.get(`${c.LEAD_HINT_PREFIX}${sid}`))(), c.ENGINE_CALL_TIMEOUT_MS).catch(() => undefined)
-      savedLead = got !== undefined && got !== 'timeout'
-      const gotC = await withTimeout($, (async () => $.store.get(`${c.CONDUCTOR_HINT_PREFIX}${sid}`))(), c.ENGINE_CALL_TIMEOUT_MS).catch(() => undefined)
-      savedConductor = gotC !== undefined && gotC !== 'timeout'
-      const gotM = await withTimeout($, (async () => $.store.get(`${c.MANAGER_HINT_PREFIX}${sid}`))(), c.ENGINE_CALL_TIMEOUT_MS).catch(() => undefined)
-      savedManager = managerRestorePending.has(sid) || (gotM !== undefined && gotM !== 'timeout')
+    if (!was) {
+      for (const d of [LEAD, CONDUCTOR, MANAGER]) {
+        // A read that timed out says nothing about the grant: the reply then leaves it out.
+        const got = await withTimeout($, (async () => $.store.get(`${d.hint}${sid}`))(), c.ENGINE_CALL_TIMEOUT_MS).catch(() => undefined)
+        if (d.pending.has(sid) || (got !== undefined && got !== 'timeout')) saved.push(d)
+      }
     }
     if (!(await leadDrop($, sid))) leadKept = true
     if (!(await managerForget($, sid))) leadKept = true
   }
   if (arg === 'lead') {
-    // A lane is never a lead too: asked before the dialog and again after a yes, since the binding may land while the question is open.
+    // A lane, the manager, a conductor and a session that was the manager or a conductor are never a lead (core's holderNo): asked before the dialog and again
+    // after a yes. A conductor restore still pending does not refuse: the person's lead grant stands, and the restore then ends (lead-holder).
+    const leadNo = async (code: string) => {
+      await log($, sid, 'refused', code === 'lead-after-manager' ? code : `lead-${code}`)
+      return { text: `${code === 'lane-holder' && grants.has(sid) ? 'Lead stays on' : 'Lead stays off'}: ${c.REASON_TEXT[code]}` }
+    }
     const laneHeld = async () => (await $.state.get(lane)).value != null
-    const laneNo = async () => {
-      await log($, sid, 'refused', 'lead-lane-holder')
-      return { text: `${grants.has(sid) ? 'Lead stays on' : 'Lead stays off'}: ${c.REASON_TEXT['lane-holder']}` }
-    }
-    if (await laneHeld()) return laneNo()
-    // The manager is never made a lead in place: a no would drop its grant and a yes replace it.
-    if (grants.get(sid)?.level === 'manager') {
-      await log($, sid, 'refused', 'lead-manager-holder')
-      return { text: `Lead stays off: ${c.REASON_TEXT['manager-holder']}` }
-    }
-    // Nor is a session that was the manager since it started: its manager tools stay declared, and the lead's would be
-    // declared over them. Asked before the dialog and again after a yes (as manager-after-lead).
-    const wasManagerNo = async () => {
-      await log($, sid, 'refused', 'lead-after-manager')
-      return { text: `Lead stays off: ${c.REASON_TEXT['lead-after-manager']}` }
-    }
-    if (managerDeclared.has(sid)) return wasManagerNo()
-    // Nor a conductor, nor a session that was one; asked again after a yes. A conductor restore still pending does not refuse: the person's lead grant
-    // stands, and the restore then ends (lead-holder).
-    const conductorNo = async (): Promise<{ text: string } | undefined> => {
-      const code = grants.get(sid)?.level === 'conductor' ? 'conductor-holder' : conductorDeclared.has(sid) ? 'lead-after-conductor' : undefined
-      if (!code) return undefined
-      await log($, sid, 'refused', `lead-${code}`)
-      return { text: `Lead stays off: ${c.REASON_TEXT[code]}` }
-    }
-    const cn = await conductorNo()
-    if (cn) return cn
+    const held = await heldNo($, sid, 'lead', false)
+    if (held) return leadNo(held)
     let cwd: string
     try {
       cwd = await sessionRoot($)
@@ -873,15 +837,14 @@ export async function commandRun($: any, e: any) {
       } else await log($, sid, 'refused', 'lead-not-confirmed')
       return { text: `${grants.has(sid) ? `Lead stays on.${why}` : wasOn ? `Lead is now off.${why}` : `Lead stays off.${why}`}${kept}` }
     }
-    if (laneBinding.has(sid)) return laneNo()
-    if (managerDeclared.has(sid)) return wasManagerNo()
-    const cnAfter = await conductorNo()
-    if (cnAfter) return cnAfter
+    // After the click the manager grant is read through wasManager alone.
+    const heldAfter = c.holderNo('lead', { ...holdsOf(sid, laneBinding.has(sid), false), manager: false })
+    if (heldAfter) return leadNo(heldAfter)
     let grantEpoch = -1
     leadGranting.add(sid)
     try {
       // The engine calls held inside the mark have a time limit; a state read that does not answer counts as a lane binding.
-      if ((await withTimeout($, laneHeld(), c.ENGINE_CALL_TIMEOUT_MS)) !== false) return laneNo()
+      if ((await withTimeout($, laneHeld(), c.ENGINE_CALL_TIMEOUT_MS)) !== false) return leadNo('lane-holder')
       const namedNow = await withTimeout($, secondLeadNo($, sid, pinned), c.ENGINE_CALL_TIMEOUT_MS)
       if (namedNow !== undefined) return nameNo(namedNow === 'timeout' ? 'lead-check-slow' : namedNow)
       let set: unknown
@@ -908,7 +871,7 @@ export async function commandRun($: any, e: any) {
       leadGranting.delete(sid)
     }
     // The grant survives a restart.
-    await leadSave($, sid, pinned)
+    await levelSave($, sid, LEAD, pinned)
     // An off or a Cancel during the save leaves no presence, log, briefing or "Lead is on" behind.
     if (epochOf(sid) !== grantEpoch) return { text: 'Lead is now off.' }
     // A new grant may pin another folder: the old file and its checks go first.
@@ -916,7 +879,7 @@ export async function commandRun($: any, e: any) {
     await presenceTouch($, sid).catch(logFail($, sid, 'presence'))
     await watchInit($, sid).catch(logFail($, sid, 'lane-watch'))
     await log($, sid, 'lead-on')
-    await briefLead($, sid, pinned)
+    await levelBrief($, sid, LEAD, pinned)
     await nameGrant($, sid)
     return { text: 'Lead is on from your next prompt.\nOnly a force stop asks you.' }
   }
@@ -937,7 +900,7 @@ export async function commandRun($: any, e: any) {
     // The rebind was cancelled above. No store record may keep naming a session that is off, or a restart would rebind it.
     // A session that is neither a lane nor a lead keeps its request as it is: off turns nothing off there, and its own request needs no lane.
     const cur = await $.state.get(request)
-    const live = bound || wasLead || wasManager || wasConductor ? (cur.value as Request | null | undefined) : undefined
+    const live = bound || was ? (cur.value as Request | null | undefined) : undefined
     // What off did, for its answer: a request dropped, or a compaction under way that loses its resume.
     let reqDone: 'dropped' | 'no-resume' | undefined
     if (live && live.phase !== 'compacting') {
@@ -963,12 +926,12 @@ export async function commandRun($: any, e: any) {
     // The answer says what off did; it never stops the keepalive or the nudges, which every session gets.
     const rebindTo = rebindWas ? (rebindLane ?? loose?.name) : undefined
     const did = [
-      wasManager ? 'Manager is now off.' : wasConductor ? 'Conductor is now off.' : wasLead ? 'Lead is now off.' : savedLead ? 'Its saved lead grant was removed.' : savedConductor ? 'Its saved conductor grant was removed.' : savedManager ? 'Its saved manager grant was removed.' : '',
+      was ? was.offText : saved[0] ? `Its saved ${saved[0].level} grant was removed.` : '',
       bound ? `This session is no longer lane ${bound.name}.` : '',
       rebindTo !== undefined ? `Lane ${rebindTo} will not rebind automatically.` : '',
       loose?.ok && loose.name !== undefined ? `Lane ${loose.name} no longer names this session.` : '',
       reqDone === 'dropped' ? 'Its compaction request was dropped.' : reqDone === 'no-resume' ? 'The compaction under way will not resume the work.' : '',
     ].filter((x) => x !== '').join(' ')
-    return { text: `${did || c.OFF_NOTHING}${bound ? c.STOPPABLE_BY_NAME(bound.name) : ''}${bound && d.sidKept ? c.SID_KEPT(bound.name) : ''}${loose && !loose.ok && loose.name ? c.SID_KEPT(loose.name) : ''}${leadKept ? (wasConductor || savedConductor ? c.CONDUCTOR_KEPT : wasManager || savedManager ? c.MANAGER_KEPT : c.LEAD_KEPT) : ''}` }
+    return { text: `${did || c.OFF_NOTHING}${bound ? c.STOPPABLE_BY_NAME(bound.name) : ''}${bound && d.sidKept ? c.SID_KEPT(bound.name) : ''}${loose && !loose.ok && loose.name ? c.SID_KEPT(loose.name) : ''}${leadKept ? ([CONDUCTOR, MANAGER].find((d) => d === was || saved.includes(d)) ?? LEAD).kept : ''}` }
   }
 }

@@ -43,7 +43,6 @@ import {
   renameChecked,
   managerRestorePending,
   rebindPending,
-  leadDeclared,
   conductorDeclared,
   laneBrief,
   laneBriefed,
@@ -98,6 +97,8 @@ import { sessionRoot, leadToolsOnce, promptToolsRegister, leadCore, readReport }
 import type { Bound } from './lanes.ts'
 import { interactive, busyAgents, personRow, backgroundShells } from './compaction.ts'
 import { managerCommand } from './commands.ts'
+import { epochOf, heldNo, levelBrief, levelSave } from './levels.ts'
+import type { LevelDesc } from './levels.ts'
 
 // $.state keys declared again where they are used: `claude plugin validate` reads a key in the file that uses it.
 const lane = { plugin: 'callboard', key: 'lane' } as const
@@ -113,6 +114,73 @@ export const pinOf = (sid: string): string | undefined => {
 }
 
 export const leadBusy = (sid: string) => grants.has(sid) || leadGranting.has(sid)
+
+// The three levels as one record each, read by levels.ts. lead:<sid> = { pin, savedAt }, manager:<sid> = { name, savedAt } and conductor:<sid> = { home, repos:
+// approved, savedAt }: written at the grant, and for the conductor at each add or remove in this session and after a ratchet, and once a day. The lead's write
+// checks only that the same pin still holds, with no epoch, so a drop and a new grant meanwhile keep its key.
+export const LEAD: LevelDesc = {
+  level: 'lead',
+  hint: c.LEAD_HINT_PREFIX,
+  savedAt: leadSavedAt,
+  saveEpochCheck: false,
+  unsaved: 'lead-unsaved',
+  hintDelete: 'lead-hint-delete',
+  saved: (_sid, pin) => ({ pin }),
+  held: (sid, pin) => pinOf(sid) === pin,
+  pending: leadRestorePending,
+  isOn: (sid) => grants.has(sid) || leadRestorePending.has(sid),
+  offText: 'Lead is now off.',
+  kept: c.LEAD_KEPT,
+  noteKey: (pin) => pin,
+  note: (_sid, pin) => c.leadBriefingNote(pin),
+  noteErr: 'lead-briefing',
+}
+export const MANAGER: LevelDesc = {
+  level: 'manager',
+  hint: c.MANAGER_HINT_PREFIX,
+  savedAt: managerSavedAt,
+  saveEpochCheck: true,
+  unsaved: 'manager-unsaved',
+  hintDelete: 'manager-hint-delete',
+  saved: (sid) => {
+    const g = grants.get(sid)
+    return g?.level === 'manager' ? { name: g.name } : undefined
+  },
+  held: (sid) => grants.get(sid)?.level === 'manager',
+  pending: managerRestorePending,
+  isOn: (sid) => grants.get(sid)?.level === 'manager',
+  offText: 'Manager is now off.',
+  kept: c.MANAGER_KEPT,
+  noteKey: (name) => `manager:${name}`,
+  note: (_sid, name) => c.managerBriefingNote(name),
+  noteErr: 'manager-briefing',
+  presence: { err: 'presence', fields: (g) => ({ level: 'manager', name: g.name }) },
+}
+export const CONDUCTOR: LevelDesc = {
+  level: 'conductor',
+  hint: c.CONDUCTOR_HINT_PREFIX,
+  savedAt: conductorSavedAt,
+  saveEpochCheck: true,
+  unsaved: 'conductor-unsaved',
+  hintDelete: 'conductor-hint-delete',
+  saved: (sid) => {
+    const home = conductorHome.get(sid)
+    const repos = conductorApproved.get(sid)
+    return grants.get(sid)?.level === 'conductor' && home !== undefined && repos !== undefined ? { home, repos: [...repos] } : undefined
+  },
+  held: (sid) => grants.get(sid)?.level === 'conductor',
+  pending: conductorRestorePending,
+  isOn: (sid) => grants.get(sid)?.level === 'conductor' || conductorRestorePending.has(sid),
+  offText: 'Conductor is now off.',
+  kept: c.CONDUCTOR_KEPT,
+  noteKey: (home) => `conductor:${home}`,
+  note: (sid, home) => {
+    const g = grants.get(sid)
+    return c.conductorBriefingNote(g?.name ?? '', home, g?.pins ?? [])
+  },
+  noteErr: 'conductor-briefing',
+  presence: { err: 'conductor-presence', fields: (g, home) => ({ level: 'conductor', name: g.name, repos: g.pins, home }), key: (g, home) => `${home}\n${g.name}\n${g.pins.join('\n')}` },
+}
 export const grantOf = (sid: string): c.Grant | undefined => grants.get(sid)
 // The grant's name: the session's registry name just after the grant, by c.leadNameOf ('' when it gives none). Set only if the grant is still the same object,
 // so an off or a re-grant meanwhile is never overwritten. Nothing reads it for reach: leadCore reads the name from the live registry again at every lead tool
@@ -149,53 +217,46 @@ const queued = <T>(fn: () => Promise<T>): Promise<T> => {
 // interval, so a burst of lead tool calls against an error that comes back at once cannot spend the budget in a second.
 const PRESENCE_TRIES = 5
 
-// A manager's file names no repo, so none of the pin checks; it resolves true once the file was written.
+// This session's one registry entry (with two, the pid could be a twin's), as the pid and start time its presence file names.
+async function presenceSelf($: any, sid: string): Promise<{ pid: number; procStart: string } | undefined> {
+  const mine = (await registryEntries($))?.filter((e) => e.j.sessionId === sid) ?? []
+  const me = mine.length === 1 && String(mine[0].j.pid) === mine[0].pid ? mine[0] : undefined
+  return me && typeof me.j.procStart === 'string' ? { pid: Number(me.pid), procStart: me.j.procStart } : undefined
+}
+
+// A manager's or conductor's file names no repo, so none of the pin checks; it resolves true once the file was written. A conductor's names its repos (its pins now)
+// and its own repo, is rewritten when those change, and goes when no repo is left in reach.
 export function presenceTouch($: any, sid: string): Promise<boolean | void> {
   return queued(async () => {
     const pin = pinOf(sid)
     const g = grants.get(sid)
     const p = await where($)
-    if (g?.level === 'manager' && p) {
+    if ((g?.level === 'manager' || g?.level === 'conductor') && p) {
+      const d = (g.level === 'manager' ? MANAGER : CONDUCTOR).presence!
+      const home = conductorHome.get(sid)
+      if (g.level === 'conductor') {
+        if (home === undefined) return false
+        if (g.pins.length === 0) {
+          presenceText.delete(sid)
+          conductorPresenceKey.delete(sid)
+          await run($, [RM, '-f', '--', `${p.root}/leads/${sid}.json`])
+          return false
+        }
+      }
+      const key = d.key?.(g, home)
       let text = presenceText.get(sid)
-      if (text === undefined) {
-        const mine = (await registryEntries($))?.filter((e) => e.j.sessionId === sid) ?? []
-        const me = mine.length === 1 && String(mine[0].j.pid) === mine[0].pid ? mine[0] : undefined
-        if (!me || typeof me.j.procStart !== 'string') return false
-        text = c.leadFileText({ sid, pid: Number(me.pid), procStart: me.j.procStart, level: 'manager', name: g.name }) ?? ''
+      if (text === undefined || (key !== undefined && conductorPresenceKey.get(sid) !== key)) {
+        const me = await presenceSelf($, sid)
+        if (!me) return false
+        text = c.leadFileText({ sid, ...me, ...d.fields(g, home) } as Parameters<typeof c.leadFileText>[0]) ?? ''
         // The grant may have ended while the registry was read: its file is not written.
         if (grants.get(sid) !== g) return false
         presenceText.set(sid, text)
+        if (key !== undefined) conductorPresenceKey.set(sid, key)
       }
       if (text === '') return false
       const w = await writeIn($, 'leads', `${sid}.json`, text)
-      if ('err' in w) await log($, sid, 'error', 'presence')
-      return !('err' in w)
-    }
-    // A conductor's file names its repos (its pins now) and its own repo, never repo; it is rewritten when those change, and goes when
-    // no repo is left in reach.
-    if (g?.level === 'conductor' && p) {
-      const home = conductorHome.get(sid)
-      if (home === undefined) return false
-      if (g.pins.length === 0) {
-        presenceText.delete(sid)
-        conductorPresenceKey.delete(sid)
-        await run($, [RM, '-f', '--', `${p.root}/leads/${sid}.json`])
-        return false
-      }
-      const key = `${home}\n${g.name}\n${g.pins.join('\n')}`
-      let text = presenceText.get(sid)
-      if (text === undefined || conductorPresenceKey.get(sid) !== key) {
-        const mine = (await registryEntries($))?.filter((e) => e.j.sessionId === sid) ?? []
-        const me = mine.length === 1 && String(mine[0].j.pid) === mine[0].pid ? mine[0] : undefined
-        if (!me || typeof me.j.procStart !== 'string') return false
-        text = c.leadFileText({ sid, pid: Number(me.pid), procStart: me.j.procStart, level: 'conductor', name: g.name, repos: g.pins, home }) ?? ''
-        if (grants.get(sid) !== g) return false
-        presenceText.set(sid, text)
-        conductorPresenceKey.set(sid, key)
-      }
-      if (text === '') return false
-      const w = await writeIn($, 'leads', `${sid}.json`, text)
-      if ('err' in w) await log($, sid, 'error', 'conductor-presence')
+      if ('err' in w) await log($, sid, 'error', d.err)
       return !('err' in w)
     }
     if (pin === undefined || !p) return
@@ -216,12 +277,10 @@ export function presenceTouch($: any, sid: string): Promise<boolean | void> {
         presenceText.set(sid, '')
         return
       }
-      // Exactly one entry of this session, else no file: with two, the pid could be a twin's. The text is computed once, from that one entry, so it stays right
-      // if a twin appears later.
-      const mine = (await registryEntries($))?.filter((e) => e.j.sessionId === sid) ?? []
-      const me = mine.length === 1 && String(mine[0].j.pid) === mine[0].pid ? mine[0] : undefined
-      if (!me || typeof me.j.procStart !== 'string') return
-      text = c.leadFileText({ sid, pid: Number(me.pid), procStart: me.j.procStart, repo: pin }) ?? ''
+      // Exactly one entry of this session, else no file. The text is computed once, from that one entry, so it stays right if a twin appears later.
+      const me = await presenceSelf($, sid)
+      if (!me) return
+      text = c.leadFileText({ sid, ...me, repo: pin }) ?? ''
       presenceText.set(sid, text)
     }
     if (text === '') return
@@ -239,7 +298,6 @@ export function presenceDrop($: any, sid: string) {
   })
 }
 
-export const epochOf = (sid: string) => leadEpoch.get(sid) ?? 0
 // Resolves true when the saved grant is gone, false when its delete failed (the off and Cancel replies then say lead may come back after a restart).
 export function leadDrop($: any, sid: string): Promise<boolean> {
   leadEpoch.set(sid, epochOf(sid) + 1)
@@ -281,20 +339,6 @@ export function leadDrop($: any, sid: string): Promise<boolean> {
       },
     )
   return Promise.all([presenceDrop($, sid), unsave]).then((r) => r[1])
-}
-
-export async function leadSave($: any, sid: string, pin: string) {
-  const epoch = epochOf(sid)
-  const now = await $.clock.now()
-  if (epochOf(sid) !== epoch || pinOf(sid) !== pin) return
-  leadSavedAt.set(sid, now)
-  try {
-    await $.store.set(`${c.LEAD_HINT_PREFIX}${sid}`, { pin, savedAt: now })
-  } catch {
-    await logq($, sid, 'lead-unsaved')
-  }
-  // A drop while the write was in flight: the key it wrote goes again.
-  if (pinOf(sid) !== pin) await Promise.resolve($.store.delete(`${c.LEAD_HINT_PREFIX}${sid}`)).catch(logFail($, sid, 'lead-hint-delete'))
 }
 
 // A session whose saved grant names its own folder is lead again when it starts, with no question. Started in session.start; a cwd read or a tool
@@ -354,10 +398,10 @@ async function leadRestoreTry($: any, me: string, hint: c.LeadHint): Promise<str
   } finally {
     leadGranting.delete(me)
   }
-  await leadSave($, me, hint.pin)
+  await levelSave($, me, LEAD, hint.pin)
   // An off or a Cancel during the save: no note, log or toast says lead is on.
   if (dropped()) return
-  briefed.set(me, hint.pin)
+  briefed.set(me, LEAD.noteKey(hint.pin))
   await log($, me, 'lead-restored')
   toast($, c.leadRestoredToast(hint.pin))
   await nameGrant($, me)
@@ -380,29 +424,6 @@ export async function leadRestore($: any, me: string, hint: c.LeadHint, tries: n
     return
   }
   leadRestorePending.set(me, { hint, tries })
-}
-
-// One briefing note, once per `key` in `marks`: the mark is set before the append, a refused or failed append unmarks it (if it is still this one) and logs errCode.
-// `text` is a function so it is built inside the try, where a throw while building it is the same failed briefing.
-export async function briefOnce($: any, sid: string, marks: Map<string, string>, key: string, text: () => string, errCode: string) {
-  if (marks.get(sid) === key) return
-  marks.set(sid, key)
-  try {
-    const r = await $.session.append({ message: { type: 'user', content: [{ type: 'text', text: text() }] } })
-    if (r?.deny !== undefined) throw new Error('refused')
-  } catch {
-    if (marks.get(sid) === key) marks.delete(sid)
-    await logq($, sid, 'error', errCode)
-  }
-}
-
-// The briefing as one user-role note (c.leadBriefingNote), once per grant and pin. A refused or failed append is logged and changes nothing else: lead stays on, and the
-// session is not marked briefed, so the next /callboard lead tries again. The mark is set before the await, so a second grant during the append adds no second note
-// and a /callboard off during it leaves no mark behind.
-// The manager's note, keyed `manager:<name>` in the same map (a pin is an absolute path, so the two never meet).
-export async function briefLead($: any, sid: string, pin: string, manager?: string) {
-  const key = manager === undefined ? pin : `manager:${manager}`
-  await briefOnce($, sid, briefed, key, () => (manager === undefined ? c.leadBriefingNote(pin) : c.managerBriefingNote(manager)), manager === undefined ? 'lead-briefing' : 'manager-briefing')
 }
 
 export const regEntry = (r: RegRow): c.RegEntry => ({ sessionId: r.j.sessionId as string, name: r.j.name, cwd: r.j.cwd, pid: String(r.j.pid) === r.pid ? r.j.pid : undefined, procStart: r.j.procStart, startedAt: r.j.startedAt, status: r.j.status, statusUpdatedAt: r.j.statusUpdatedAt, waitingFor: r.j.waitingFor })
@@ -1068,22 +1089,6 @@ export async function managerForget($: any, sid: string): Promise<boolean> {
     return false
   }
 }
-export async function managerSave($: any, sid: string) {
-  const epoch = epochOf(sid)
-  const g = grants.get(sid)
-  if (g?.level !== 'manager') return
-  const now = await $.clock.now()
-  if (epochOf(sid) !== epoch) return
-  managerSavedAt.set(sid, now)
-  const key = `${c.MANAGER_HINT_PREFIX}${sid}`
-  try {
-    await $.store.set(key, { name: g.name, savedAt: now })
-  } catch {
-    await logq($, sid, 'manager-unsaved')
-  }
-  if (epochOf(sid) !== epoch || grants.get(sid)?.level !== 'manager') await Promise.resolve($.store.delete(key)).catch(logFail($, sid, 'manager-hint-delete'))
-}
-
 // A session whose saved manager grant is there when it starts is asked once whether to restore it, as the conductor's widened list is (conductorRestoreAsk): only
 // in a person's session (a registry row of kind interactive: never a --bg worker), and only once the session is idle with an empty prompt box. A session that
 // still holds the grant in memory (a compaction) is never asked. Manager: the usual grant with every usual check again after the yes (one per Mac, a reserved
@@ -1108,7 +1113,7 @@ async function managerRestoreAsk($: any, me: string, pend: MgrPending) {
 export async function managerTick($: any, sid: string) {
   if (grants.get(sid)?.level === 'manager') {
     managerRestorePending.delete(sid)
-    if (c.leadRefreshDue(managerSavedAt.get(sid), await $.clock.now())) await managerSave($, sid)
+    if (c.leadRefreshDue(managerSavedAt.get(sid), await $.clock.now())) await levelSave($, sid, MANAGER)
     return
   }
   const pend = managerRestorePending.get(sid)
@@ -1136,25 +1141,6 @@ export async function managerTick($: any, sid: string) {
 }
 
 // ---- the conductor level ----
-// The saved grant, conductor:<sid> = { home, repos: approved, savedAt }: written at the grant, at each add or remove in this session, after a ratchet and once a day.
-// A failed write is logged and tried again a day later. A drop while the write was in flight deletes the key again.
-export async function conductorSave($: any, sid: string) {
-  const epoch = epochOf(sid)
-  const home = conductorHome.get(sid)
-  const repos = conductorApproved.get(sid)
-  if (grants.get(sid)?.level !== 'conductor' || home === undefined || repos === undefined) return
-  const now = await $.clock.now()
-  if (epochOf(sid) !== epoch) return
-  conductorSavedAt.set(sid, now)
-  const key = `${c.CONDUCTOR_HINT_PREFIX}${sid}`
-  try {
-    await $.store.set(key, { home, repos: [...repos], savedAt: now })
-  } catch {
-    await logq($, sid, 'conductor-unsaved')
-  }
-  if (epochOf(sid) !== epoch || grants.get(sid)?.level !== 'conductor') await Promise.resolve($.store.delete(key)).catch(logFail($, sid, 'conductor-hint-delete'))
-}
-
 // The list file, read as a plain small file of the user's (group and other may read it, not write it), with one more try when a read failed or met a swap.
 // absent: no .claude folder or no file. unsafe: .claude or the file is a link, has two links or is not the user's. bad: too big or not a list. error: a check or
 // read that failed or kept changing.
@@ -1250,17 +1236,6 @@ async function conductorRepoInUse($: any, home: string): Promise<string | undefi
   return errs.error ? 'conductor-repo-check' : undefined
 }
 
-// Lane, lead, conductor, manager: one per session. marks: the lane and lead marks are this call's to read (not after it set its own).
-export async function conductorHeld($: any, sid: string, marks: boolean): Promise<string | undefined> {
-  if ((marks && laneBinding.has(sid)) || (await $.state.get(lane)).value != null) return 'lane-holder'
-  const g = grants.get(sid)
-  if (g?.level === 'manager') return 'manager-holder'
-  if (g?.level === 'lead' || (marks && leadGranting.has(sid)) || leadRestorePending.has(sid)) return 'lead-holder'
-  if (leadDeclared.has(sid)) return 'conductor-after-lead'
-  if (managerDeclared.has(sid)) return 'conductor-after-manager'
-  return undefined
-}
-
 // The list file writer, beside writeBrief: one write at a time per conductor repo in this process; .claude must be a real folder of the user's (made 0755 when
 // absent); an existing list file is replaced only while it is a plain file of the user's with one link; the file is read, the new list computed, the file read
 // again (a change meanwhile refuses conductor-file-changed), then a temp file is renamed into place.
@@ -1331,7 +1306,7 @@ export async function writeConductorFile($: any, home: string, fn: (entries: str
 const conductorTarget = (home: string, arg: string): string => (c.siblingName(arg) ? c.siblingOf(home, arg) : c.entryPath(home, arg))
 // Every check of an add before the dialog and again after a yes; the list as it would be, shown whole in the dialog.
 export async function conductorAddPlan($: any, sid: string, arg: string, marks: boolean): Promise<{ home: string; target: string; list: string[] } | { no: string; home?: string }> {
-  const held = await conductorHeld($, sid, marks)
+  const held = await heldNo($, sid, 'conductor', marks)
   if (held) return { no: held }
   const here = await conductorHere($)
   if ('no' in here) return here
@@ -1391,7 +1366,7 @@ export async function conductorReach($: any, sid: string): Promise<{ pins: strin
   if (kept.length < approved.length) {
     conductorApproved.set(sid, kept)
     await log($, sid, 'conductor-ratchet', String(approved.length - kept.length))
-    await conductorSave($, sid)
+    await levelSave($, sid, CONDUCTOR)
   }
   const pins = r.ok.filter((x) => kept.includes(x))
   const out: CondOut[] = [...r.out, ...r.ok.filter((x) => !kept.includes(x)).map((x) => ({ entry: c.entryFor(home, x), why: 'unapproved' as const }))]
@@ -1435,19 +1410,10 @@ export async function conductorApply($: any, sid: string, home: string, approved
   return 'ok'
 }
 
-// The briefing note, once per grant and conductor repo (keyed conductor:<repo> in briefed, as the manager's). A restore that asked nothing appends none.
-export async function briefConductor($: any, sid: string, home: string) {
-  const text = () => {
-    const g = grants.get(sid)
-    return c.conductorBriefingNote(g?.name ?? '', home, g?.pins ?? [])
-  }
-  await briefOnce($, sid, briefed, `conductor:${home}`, text, 'conductor-briefing')
-}
-
 // The conductor list as the grant shows it: every check of the conductor repo, then the file read and resolved. ok: the repos in reach, out: the ones that
 // are not and why.
 export async function conductorShowable($: any, sid: string, marks: boolean): Promise<{ home: string; ok: string[]; out: CondOut[] } | { no: string; home?: string; out?: CondOut[] }> {
-  const held = await conductorHeld($, sid, marks)
+  const held = await heldNo($, sid, 'conductor', marks)
   if (held) return { no: held }
   const here = await conductorHere($)
   if ('no' in here) return here
@@ -1551,10 +1517,10 @@ async function conductorRestoreTry($: any, me: string, box: { hint: c.ConductorH
   } finally {
     leadGranting.delete(me)
   }
-  await conductorSave($, me)
+  await levelSave($, me, CONDUCTOR)
   if (dropped()) return
   // No note: the history has it from the grant.
-  briefed.set(me, `conductor:${hint.home}`)
+  briefed.set(me, CONDUCTOR.noteKey(hint.home))
   await presenceTouch($, me).catch(logFail($, me, 'conductor-presence'))
   await log($, me, 'conductor-restored')
   toast($, c.conductorRestoredToast(hint.home, r.ok.length))
@@ -1632,11 +1598,11 @@ async function conductorRestoreAsk($: any, me: string, pend: CondPending) {
     } finally {
       leadGranting.delete(me)
     }
-    await conductorSave($, me)
+    await levelSave($, me, CONDUCTOR)
     if (epochOf(me) !== epoch) return
     await presenceTouch($, me).catch(logFail($, me, 'conductor-presence'))
     await log($, me, 'conductor-restored', `widened ${added.length}`)
-    await briefConductor($, me, hint.home)
+    await levelBrief($, me, CONDUCTOR, hint.home)
     toast($, c.conductorRestoredToast(hint.home, shown.length))
     await nameGrant($, me)
   } finally {
@@ -1659,7 +1625,7 @@ export async function conductorTick($: any, sid: string) {
   }
   if (grants.get(sid)?.level !== 'conductor') return
   const now = await $.clock.now()
-  if (c.leadRefreshDue(conductorSavedAt.get(sid), now)) await conductorSave($, sid)
+  if (c.leadRefreshDue(conductorSavedAt.get(sid), now)) await levelSave($, sid, CONDUCTOR)
   const last = conductorReadAt.get(sid)
   if (c.dueEvery(last, now, CONDUCTOR_REFRESH_MS)) {
     conductorReadAt.set(sid, now)
