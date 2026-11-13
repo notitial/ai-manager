@@ -856,9 +856,9 @@ test('laneless leads (manager): a live lead with no lanes gets a box under its r
   const t = (await $.tool.call(listCall())).result as string
   expect(t.split('\n')[0]).toBe('**Manager MANAGER** · live')
   expect(t).toMatch(/^\| LEAD-A \(idle\) \| app \| – \|( – \|)+ no reading \| – \|$/m)
-  expect(t).toMatch(/^\| LEAD-B \| app2 \| – \|( – \|)+ no reading \| – \|$/m)
+  expect(t).toMatch(/^\| LEAD-B \(idle\) \| app2 \| – \|( – \|)+ no reading \| – \|$/m)
   expect(t).toContain('| Any lead | app | ')
-  expect(t.match(/^\| LEAD-[AB] \|/gm)?.length).toBe(2)
+  expect(t.match(/^\| LEAD-[AB] \(idle\) \|/gm)?.length).toBe(2)
   expect((await $.command.run(lane('lanes'))).text).toBe(t)
 })
 
@@ -876,7 +876,7 @@ test('laneless leads (manager): the lead row shows the lead\'s own reading in th
   })
   const t = (await $.tool.call(listCall())).result as string
   expect(t).toMatch(/^\| LEAD-A \(idle\) \| app \| – \|( – \|)+ ctx 90k · \$0\.40 · 2m ago \| – \|$/m)
-  expect(t).toMatch(/^\| LEAD-B \| app2 \| – \|( – \|)+ no reading \| – \|$/m)
+  expect(t).toMatch(/^\| LEAD-B \(idle\) \| app2 \| – \|( – \|)+ no reading \| – \|$/m)
   expect((await $.command.run(lane('lanes'))).text).toBe(t)
 })
 
