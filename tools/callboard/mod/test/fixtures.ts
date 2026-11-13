@@ -237,18 +237,18 @@ export const listCall = () => ({ tool: 'mcp__callboard__lane_list' }) as any
 
 export const listed = async ($: any) => (await $.tool.call(listCall())).result as string
 // The list is one table under a plain header line (the fix pass, 2026-11-11): the lead and the repo sit on the first row of their group. A row is [lane, folder, session,
-// waiting]; four columns means the table has a Folder column. noNote drops the lanes-changed note, which follows the table after a blank line.
+// waiting]; four columns means the table has a Folder column. The Usage cell is added here: `no reading` for a live lane, a dash for the rest. noNote drops the lanes-changed note, which follows the table after a blank line.
 export const ANY: [string, string] = ['Any lead', 'app']
 const LEADHEAD = '**Lead LEAD** · live'
 export const mdTable = (groups: Array<[string, string, string[][]]>, head = LEADHEAD) => {
   const withFolder = groups.some(([, , rows]) => rows.some((r) => r.length === 4))
-  const cols = ['Lead', 'Repo', 'Lane', ...(withFolder ? ['Folder'] : []), 'Session', 'Waiting']
+  const cols = ['Lead', 'Repo', 'Lane', ...(withFolder ? ['Folder'] : []), 'Session', 'Usage', 'Waiting']
   return [
     head,
     '',
     `| ${cols.join(' | ')} |`,
     `|${cols.map(() => '---').join('|')}|`,
-    ...groups.flatMap(([lead, repo, rows]) => rows.map((r, k) => `| ${[k === 0 ? lead : '', k === 0 ? repo : '', ...r].join(' | ')} |`)),
+    ...groups.flatMap(([lead, repo, rows]) => rows.map((r, k) => `| ${[k === 0 ? lead : '', k === 0 ? repo : '', ...r.slice(0, -1), r[r.length - 2] === 'live' ? 'no reading' : '–', r[r.length - 1]].join(' | ')} |`)),
   ].join('\n')
 }
 export const mdBox = (who: [string, string], rows: string[][], head = LEADHEAD) => mdTable([[who[0], who[1], rows]], head)

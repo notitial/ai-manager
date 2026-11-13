@@ -1613,10 +1613,77 @@ export const LANES_CHANGED_NOTE = '(lanes in this repo changed since your last l
 
 // lane_create's reply for a lane that names no lead.
 export const LANE_NO_LEAD = ' It names no lead, so any lead of this repo can reach it.'
+
+// ---- usage readings ----
+// Each session writes its own figures to <root>/usage/<sid>.json (usageFileText); a lane list reads the files of the live rows it shows (parseUsage). Display only:
+// nothing here gates, holds or answers anything, and the file holds no credential, account, email, environment value or repo. A figure that fails a check reads
+// as no reading. The windows are the account's, so sessions on one account show the same ones.
+export const USAGE_FILE_MAX = 4096
+export const USAGE_WRITE_MS = 30_000
+export const USAGE_KEEP_MS = 24 * HOUR_MS
+// The sweep of usage files runs at most this often, and takes a file of a session no live row names only once it is this old (one written just before its row shows is never taken).
+export const USAGE_SWEEP_MS = 60_000
+export const USAGE_READS_MAX = 64
+// A sweep removes at most this many files; the rest wait for the next one.
+export const USAGE_SWEEP_MAX = 64
+const USAGE_WINDOWS_MAX = 4
+const USAGE_KINDS = { five_hour: '5h', seven_day: '7d' } as const
+type UsageKind = keyof typeof USAGE_KINDS
+export type UsageReading = { at: number; tokens?: number; cost?: number; windows: { kind: UsageKind; pct: number; resetsAt?: number }[] }
+
+const usageKind = (k: unknown): k is UsageKind => typeof k === 'string' && Object.prototype.hasOwnProperty.call(USAGE_KINDS, k)
+const usageNum = (x: unknown, max: number): x is number => typeof x === 'number' && Number.isFinite(x) && x >= 0 && x <= max
+// The body of the file from what `$.session.usage()` answers (context.tokens, cost.usd, rateLimits[{ kind, percentUsed, resetsAt }]); a window of a kind not listed
+// above is left out. undefined: the answer is not an object.
+export function usageFileText(sid: string, pid: number, procStart: string, now: number, u: unknown): string | undefined {
+  if (typeof u !== 'object' || u === null) return undefined
+  const x = u as { context?: { tokens?: unknown }; cost?: { usd?: unknown }; rateLimits?: unknown }
+  const seen = new Set<unknown>()
+  const windows = (Array.isArray(x.rateLimits) ? x.rateLimits : []).flatMap((w: { kind?: unknown; percentUsed?: unknown; resetsAt?: unknown } | null) => {
+    const ok = usageKind(w?.kind) && usageNum(w?.percentUsed, 100) && !seen.has(w.kind)
+    if (ok) seen.add(w.kind)
+    return ok ? [{ kind: w.kind, pct: w.percentUsed, resetsAt: typeof w.resetsAt === 'string' && Number.isFinite(Date.parse(w.resetsAt)) ? w.resetsAt : null }] : []
+  })
+  return JSON.stringify({ v: 1, sid, pid, procStart, at: now, tokens: usageNum(x.context?.tokens, 1e8) && Number.isInteger(x.context.tokens) ? x.context.tokens : null, cost: usageNum(x.cost?.usd, 1e6) ? x.cost.usd : null, windows: windows.slice(0, USAGE_WINDOWS_MAX) })
+}
+// The reading in a file's text, or undefined. The file's own checks (a private file of ours, at most USAGE_FILE_MAX bytes) are the reader's; here the body must name
+// this session, the registry row's pid and start time, a past time within a day, and carry only known kinds, percentages 0 to 100 and at most four windows.
+export function parseUsage(text: string, sid: string, row: { pid?: number; procStart?: string }, now: number): UsageReading | undefined {
+  if (text.length > USAGE_FILE_MAX) return undefined
+  let j: any
+  try {
+    j = JSON.parse(text)
+  } catch {
+    return undefined
+  }
+  if (j?.v !== 1 || j.sid !== sid || !Number.isInteger(row.pid) || j.pid !== row.pid || !sameStart(j.procStart, row.procStart)) return undefined
+  if (!Number.isInteger(j.at) || j.at > now || now - j.at > USAGE_KEEP_MS) return undefined
+  if ((j.tokens !== null && !(usageNum(j.tokens, 1e8) && Number.isInteger(j.tokens))) || (j.cost !== null && !usageNum(j.cost, 1e6))) return undefined
+  if (!Array.isArray(j.windows) || j.windows.length > USAGE_WINDOWS_MAX) return undefined
+  const windows: UsageReading['windows'] = []
+  for (const w of j.windows) {
+    const reset = typeof w?.resetsAt === 'string' ? Date.parse(w.resetsAt) : null
+    if (!usageKind(w?.kind) || !usageNum(w.pct, 100) || (w.resetsAt !== null && !Number.isFinite(reset))) return undefined
+    if (windows.some((o) => o.kind === w.kind)) return undefined
+    windows.push({ kind: w.kind, pct: w.pct, ...(reset !== null ? { resetsAt: reset } : {}) })
+  }
+  return { at: j.at, ...(j.tokens !== null ? { tokens: j.tokens } : {}), ...(j.cost !== null ? { cost: j.cost } : {}), windows }
+}
+// The Usage cell of a live row, e.g. `ctx 142k · 5h 34% · 7d 61% · $3.10 · 2m ago`. A window whose reset time has passed shows `?`; a figure the file lacks is left out.
+export function usageCell(r: UsageReading | undefined, now: number): string {
+  if (!r) return 'no reading'
+  const ago = now - r.at
+  const tokens = r.tokens === undefined ? [] : [`ctx ${r.tokens < 1000 ? r.tokens : r.tokens < 999_500 ? `${Math.round(r.tokens / 1000)}k` : `${(r.tokens / 1e6).toFixed(1)}M`}`]
+  const windows = r.windows.map((w) => `${USAGE_KINDS[w.kind]} ${w.resetsAt !== undefined && w.resetsAt <= now ? '?' : `${Math.round(w.pct)}%`}`)
+  const cost = r.cost === undefined ? [] : [`$${r.cost.toFixed(2)}`]
+  return [...tokens, ...windows, ...cost, `${ago < 60_000 ? '<1m' : ago < HOUR_MS ? `${Math.floor(ago / 60_000)}m` : `${Math.floor(ago / HOUR_MS)}h`} ago`].join(' · ')
+}
+export const USAGE_FOOTNOTE = "5h/7d are the account's limits: sessions on one account show the same figures."
+
 // One table, not blockquote boxes, which rendered as stray bars and differed between the CLI and
 // VS Code. The text is a plain header line (`**Manager NAME** · live`, `**Conductor NAME** · live` or `**Lead NAME** · live`), a blank line, then ONE table with
-// the columns Lead, Repo, Lane, Session, Waiting. The lead and the repo are written on the first row of their group only (the cells after are blank); a lane that
-// names no lead goes under `Any lead`, a lead no live session carries is `NAME (not live)`, and a live lead with no lanes is one row with `–` in the lane cells.
+// the columns Lead, Repo, Lane, Session, Usage, Waiting (the Usage cell: usageCell, `–` for a row with no live session). The lead and the repo are written on the first row of their group only (the cells after are blank); a lane that
+// names no lead goes under `Any lead`, a lead no live session carries is `NAME (not live)`, and a live lead with no lanes is one row with `–` in the lane cells and its own Usage cell.
 // A Folder column (after Lane, relative to the repo, `.` for the root) appears only when a lane is outside its repo root. waiting: minutes since the lane's own
 // live row went waiting on a prompt (its statusUpdatedAt; `?` when that is missing or ahead), `–` when it waits on nothing. One text for lane_list and /callboard lanes.
 // With no lanes and no live lead the text is a one-column table (`Lanes`) with one row saying there are none (`no lanes in this repo`, `no lanes in its repos` for a conductor).
@@ -1627,8 +1694,8 @@ export const LANE_NO_LEAD = ' It names no lead, so any lead of this repo can rea
 // A live lead in reach (its presence file passed every check; the registry gives its name), with the repo it leads. The manager's and a conductor's view draw
 // one for each lead that no lane group already names, so a lead with no lanes is seen. A lead's own view ignores them.
 export type ConductorView = { name?: string; repos: string[] }
-export type LiveLead = { name: string; repo: string }
-export function laneListText(lanes: Lane[], entries: RegEntry[], now: number, view: { level?: 'lead' | 'manager' | 'conductor'; name?: string; conductors?: ConductorView[] | 'error'; leads?: LiveLead[] } = {}): string {
+export type LiveLead = { name: string; repo: string; sid?: string }
+export function laneListText(lanes: Lane[], entries: RegEntry[], now: number, view: { level?: 'lead' | 'manager' | 'conductor'; name?: string; conductors?: ConductorView[] | 'error'; leads?: LiveLead[]; usage?: Map<string, UsageReading> } = {}): string {
   const liveLeads = view.level === 'manager' || view.level === 'conductor' ? (view.leads ?? []) : []
   if (lanes.length === 0 && liveLeads.length === 0) return mdTable(['Lanes'], [[view.level === 'conductor' ? 'no lanes in its repos' : 'no lanes in this repo']]).join('\n')
   const names = entries.flatMap((e) => (typeof e.name === 'string' ? [e.name] : []))
@@ -1638,6 +1705,10 @@ export function laneListText(lanes: Lane[], entries: RegEntry[], now: number, vi
     const at = one.entry.statusUpdatedAt
     return typeof at === 'number' && at <= now ? `${Math.floor((now - at) / 60_000)}m` : '?'
   }
+  const sidOf = (l: Lane): string | undefined => {
+    const one = laneSession(entries, l, '')
+    return one.ok ? one.entry.sessionId : undefined
+  }
   const folderOf = (l: Lane): string => {
     const repo = l.repo ?? ''
     if (l.folder === repo) return '.'
@@ -1646,13 +1717,13 @@ export function laneListText(lanes: Lane[], entries: RegEntry[], now: number, vi
   }
   const withFolder = lanes.some((l) => l.folder !== (l.repo ?? ''))
   // One group per repo and lead the lanes name (no lanes: a live lead that none names).
-  type Group = { repo: string; lead: string; lanes: Lane[] }
+  type Group = { repo: string; lead: string; lanes: Lane[]; sid?: string }
   const groups: Group[] = []
   for (const repo of new Set([...lanes.map((l) => l.repo ?? ''), ...liveLeads.map((x) => x.repo)])) {
     const here = lanes.filter((l) => (l.repo ?? '') === repo)
     for (const lead of new Set(here.map((l) => l.leadName ?? ''))) groups.push({ repo, lead, lanes: here.filter((l) => (l.leadName ?? '') === lead) })
     const boxed = new Set(here.map((l) => l.leadName ?? ''))
-    for (const lead of [...new Set(liveLeads.filter((x) => x.repo === repo && !boxed.has(x.name)).map((x) => x.name))].sort()) groups.push({ repo, lead, lanes: [] })
+    for (const lead of [...new Set(liveLeads.filter((x) => x.repo === repo && !boxed.has(x.name)).map((x) => x.name))].sort()) groups.push({ repo, lead, lanes: [], sid: liveLeads.find((x) => x.repo === repo && x.name === lead)?.sid })
   }
   const conds = view.level === 'manager' && Array.isArray(view.conductors) && view.conductors.length > 0
     ? [...view.conductors].sort((a, b) => ((a.name ?? '') < (b.name ?? '') ? -1 : (a.name ?? '') > (b.name ?? '') ? 1 : 0))
@@ -1661,17 +1732,25 @@ export function laneListText(lanes: Lane[], entries: RegEntry[], now: number, vi
   conds.forEach((cd, i) => cd.repos.forEach((r) => (owner.has(r) ? undefined : owner.set(r, i))))
   const label = (cd: ConductorView) => (cd.name ? mdEscape(cd.name) : 'a conductor')
   const dash = (n: number): string[] => Array.from({ length: n }, () => '–')
+  // The Usage cell of a live session's row; the footnote needs two of them with windows.
+  let withWindows = 0
+  const usageOf = (sid: string | undefined): string => {
+    const r = sid === undefined ? undefined : view.usage?.get(sid)
+    if (r && r.windows.length > 0) withWindows++
+    return usageCell(r, now)
+  }
   // The rows of one group. also: the other conductors that list its repo.
   const groupRows = (g: Group, also: string): string[][] => {
     const repo = `${mdEscape(folderName(g.repo))}${also}`
     const lead = g.lead === '' ? 'Any lead' : `${g.lead}${g.lanes.length === 0 || names.includes(g.lead) ? '' : ' (not live)'}`
-    if (g.lanes.length === 0) return [[lead, repo, ...dash(withFolder ? 4 : 3)]]
+    if (g.lanes.length === 0) return [[lead, repo, ...dash(withFolder ? 3 : 2), usageOf(g.sid), '–']]
     return g.lanes.map((l, i) => [
       i === 0 ? lead : '',
       i === 0 ? repo : '',
       l.name,
       ...(withFolder ? [folderOf(l)] : []),
       names.includes(l.name) ? 'live' : l.parked !== undefined ? 'parked' : 'none',
+      names.includes(l.name) ? usageOf(sidOf(l)) : '–',
       waiting(l),
     ])
   }
@@ -1680,16 +1759,16 @@ export function laneListText(lanes: Lane[], entries: RegEntry[], now: number, vi
   if (conds.length > 0) {
     conds.forEach((cd, i) => {
       const mine = groups.filter((g) => owner.get(g.repo) === i).flatMap((g) => groupRows(g, conds.some((o, j) => j !== i && o.repos.includes(g.repo)) ? ` (also ${conds.filter((o, j) => j !== i && o.repos.includes(g.repo)).map(label).join(', ')})` : ''))
-      rows.push(...withCond(mine.length === 0 ? [['–', '–', ...dash(withFolder ? 4 : 3)]] : mine, label(cd)))
+      rows.push(...withCond(mine.length === 0 ? [['–', '–', ...dash(withFolder ? 5 : 4)]] : mine, label(cd)))
     })
     const rest = groups.filter((g) => !owner.has(g.repo)).flatMap((g) => groupRows(g, ''))
     if (rest.length > 0) rows.push(...withCond(rest, '–'))
   } else {
     rows.push(...groups.flatMap((g) => groupRows(g, '')))
   }
-  const head = [...(conds.length > 0 ? ['Conductor'] : []), 'Lead', 'Repo', 'Lane', ...(withFolder ? ['Folder'] : []), 'Session', 'Waiting']
+  const head = [...(conds.length > 0 ? ['Conductor'] : []), 'Lead', 'Repo', 'Lane', ...(withFolder ? ['Folder'] : []), 'Session', 'Usage', 'Waiting']
   const level = view.level === 'manager' ? 'Manager' : view.level === 'conductor' ? 'Conductor' : 'Lead'
-  return mdPage(`**${level}${view.name ? ` ${mdEscape(view.name)}` : ''}** · live`, head, rows, view.level === 'manager' && view.conductors === 'error' ? ['(conductors could not be read)'] : [])
+  return mdPage(`**${level}${view.name ? ` ${mdEscape(view.name)}` : ''}** · live`, head, rows, [...(view.level === 'manager' && view.conductors === 'error' ? ['(conductors could not be read)'] : []), ...(withWindows >= 2 ? [USAGE_FOOTNOTE] : [])])
 }
 
 // ---- lead check-ins ----

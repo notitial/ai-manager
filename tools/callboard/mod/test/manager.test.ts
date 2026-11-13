@@ -154,7 +154,7 @@ test('manager tools: lane_list and lane_resume reach lanes in every repo; every 
   const argv: string[][] = []
   await mgrAt($, on, [], { argv })
   const list = (await $.tool.call(listCall())).result as string
-  expect(list.startsWith('**Manager MANAGER** · live\n\n| Lead | Repo | Lane | Folder | Session | Waiting |\n')).toBe(true)
+  expect(list.startsWith('**Manager MANAGER** · live\n\n| Lead | Repo | Lane | Folder | Session | Usage | Waiting |\n')).toBe(true)
   expect(list).not.toMatch(/^>/m)
   expect(list).toContain('| Any lead | work | ')
   expect(list).toContain('| Any lead | app | ')

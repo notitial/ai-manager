@@ -101,6 +101,7 @@ import type { Bound } from './lanes.ts'
 import { interactive, busyAgents, personRow, backgroundShells } from './compaction.ts'
 import { managerCommand } from './commands.ts'
 import { epochOf, heldNo, levelBrief, levelSave } from './levels.ts'
+import { usageDrop, usageSweep } from './usage.ts'
 import type { LevelDesc, GrantDialog } from './levels.ts'
 import { getCheckinPause, getLane, getNudgeDue, getRequest, getTurnEnd } from '../state.ts'
 
@@ -705,10 +706,11 @@ export async function leadHere($: any, cwd: string, repo: string, leadName: stri
   return leadName === undefined ? leads.length > 0 : leads.some((x) => c.leadNameOf(rows, x.sid) === leadName)
 }
 
-// A lead's tick removes presence files nobody has written for ten minutes (a session that died without its end hook).
+// A lead's tick removes presence files nobody has written for ten minutes (a session that died without its end hook), and the usage files of sessions that are gone.
 export async function presencePrune($: any) {
   const p = await leadsDirOk($)
   if (!p) return
+  await usageSweep($).catch(() => undefined)
   const now = await $.clock.now()
   for (const f of (await $.fs.list(`${p.root}/leads`).catch(() => [])) as { name: string; mtimeMs?: number }[]) {
     if (f.name.endsWith('.json') && c.SID_RE.test(f.name.slice(0, -5)) && typeof f.mtimeMs === 'number' && now - f.mtimeMs > c.LEAD_PRUNE_MS) await run($, [RM, '-f', '--', `${p.root}/leads/${f.name}`])
@@ -905,7 +907,7 @@ export async function leadsInReach($: any, live: RegRow[], g: c.Grant): Promise<
   const out: c.LiveLead[] = []
   for (const lf of await leadsFor($, live, undefined, undefined, undefined, g.level === 'manager' ? undefined : (r) => g.pins.includes(r))) {
     const name = c.leadNameOf(rows, lf.sid)
-    if (name !== undefined) out.push({ name, repo: lf.repo })
+    if (name !== undefined) out.push({ name, repo: lf.repo, sid: lf.sid })
   }
   return out
 }
@@ -1734,6 +1736,7 @@ export async function sessionEnd($: any, e: any, next: any) {
   managerSeen.delete(sid)
   managerSeenBusy.delete(sid)
   await presenceDrop($, sid).catch(() => undefined)
+  await usageDrop($, sid).catch(() => undefined)
   return next(e)
 }
 

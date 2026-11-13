@@ -9,6 +9,7 @@ import { sessionStart } from './engine/tick.ts'
 import { commandRun } from './engine/commands.ts'
 import { toolCheck, permissionRequest, doneHook } from './engine/answer-hook.ts'
 import { promptListCall, promptAnswerCall, promptEscalateCall } from './engine/answer-tiers.ts'
+import { usageMeasure } from './engine/usage.ts'
 
 export const register: Register = (on) => {
   on('session.start', sessionStart).catch(($, e, next) => next(e))
@@ -36,6 +37,8 @@ export const register: Register = (on) => {
   for (const verb of c.STOP_VERBS) {
     on('tool.call', { tool: `mcp__callboard__lane_${verb}` }, ($, e, next) => stopVerbCall($, e, next, verb)).catch(($, e, next) => stopVerbFailed($, e, next, verb))
   }
+
+  on('session.measure', usageMeasure).catch(($, e, next) => next(e))
 
   on('session.end', sessionEnd).catch(($, e, next) => next(e))
 

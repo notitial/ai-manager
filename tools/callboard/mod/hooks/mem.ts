@@ -31,6 +31,8 @@ export const mem = {
   lastSweepAt: 0,
   sweepFrom: 0,
   lastQuestionsPruneAt: 0,
+  // When the usage files were last swept (usage.ts).
+  usageSweptAt: undefined as number | undefined,
 }
 
 export const own = new Map<string, number>()
@@ -112,6 +114,12 @@ export type Watch = { path: string; sig?: string; cur: string; told: string; see
 export const watch = new Map<string, Watch>()
 export const laneNotices = new Map<string, number[]>()
 export const cappedLogged = new Set<string>()
+
+// ---- the usage file (usage.ts), per session ----
+// When it was last written, whether a write is owed (a measure came, or the last write did not land), and the write in flight.
+export const usageWrittenAt = new Map<string, number>()
+export const usageOwed = new Set<string>()
+export const usageWriting = new Map<string, Promise<boolean>>()
 
 // A store write of the lead's own (lane_create, a retire or terminate that removes a lane) is in flight: the tick leaves the list alone until watchOwn has taken the new state as known.
 export const ownWriting = new Map<string, number>()
