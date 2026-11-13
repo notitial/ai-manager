@@ -723,7 +723,7 @@ async function promptsCommand($: any): Promise<{ text: string }> {
     for (const d of ((await $.fs.list(`${p.root}/prompts`).catch(() => [])) as { name: string }[]).filter((x) => c.SID_RE.test(x.name)).slice(0, 512))
       open += ((await $.fs.list(`${p.root}/prompts/${d.name}`).catch(() => [])) as { name: string }[]).filter((f) => f.name.endsWith('.request.json')).length
   }
-  return { text: `${pr.escalationState(a, await promptsOff($))} Open requests: ${open}. ${pr.FLOOR_LINE}` }
+  return { text: pr.escalationText(a, await promptsOff($), open) }
 }
 
 export async function commandRun($: any, e: any) {
@@ -923,11 +923,12 @@ export async function commandRun($: any, e: any) {
   const bound = (await $.state.get(lane)).value as Bound | null | undefined
   // Every session gets the keepalive and the nudges.
   // A lead's status adds its check-ins.
-  const ckStatus = arg === 'status' && grants.has(sid) && grants.get(sid)?.level !== 'conductor' ? ` ${c.checkinStatus((await cfgGet($, sid)).checkin, (await $.state.get(checkinPauseRef)).value, await $.clock.now())}` : ''
+  const ckStatus: [string, string][] = arg === 'status' && grants.has(sid) && grants.get(sid)?.level !== 'conductor' ? [['Check-ins', c.checkinStatus((await cfgGet($, sid)).checkin, (await $.state.get(checkinPauseRef)).value, await $.clock.now())]] : []
   // The manager's status names its level in place of the lead's.
   const gs = grants.get(sid)
-  const grantPart = gs?.level === 'manager' ? 'Manager: ON.' : gs?.level === 'conductor' ? c.conductorStatus(gs.pins.length) : `Lead: ${grants.has(sid) ? 'ON' : 'OFF'}.`
-  if (arg === 'status') return { text: `Lane: ${bound ? bound.name : 'NONE'}. ${grantPart}${ckStatus}${bound ? c.laneStatusLead(laneBrief.get(sid), bound.name) : ''}` }
+  const grantPart: [string, string] = gs?.level === 'manager' ? ['Manager', 'ON'] : gs?.level === 'conductor' ? ['Conductor', c.conductorStatus(gs.pins.length)] : ['Lead', grants.has(sid) ? 'ON' : 'OFF']
+  const laneLead: [string, string][] = bound ? [["This lane's lead", c.laneStatusLead(laneBrief.get(sid), bound.name)]] : []
+  if (arg === 'status') return { text: c.statusTableText([['Lane', bound ? bound.name : 'NONE'], grantPart, ...ckStatus, ...laneLead]) }
   if (arg === 'off') {
     // A recorded nudge and an open grant go too. Off does not opt out of nudges: a later turn past the level records a new one.
     await $.state.set(nudgeDueRef, null)

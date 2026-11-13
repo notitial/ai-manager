@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 import { refusalText, LANES_CHANGED_NOTE, OFF_QUESTION, offLeavesLane, LEAD_YES, LEAD_NO, RESTORE_YES, RESTORE_NO, REASON_TEXT, OFF_NOTHING } from '../hooks/core'
 import { h, NO, ROOT, SID, T0, YES, extraStat, gitFiles, gitNoHead, laneSeed, leadFiles, longTest, realFails, realMap, resultFiles, statErr, storeFiles, toasts, toolDefs } from './harness'
 import type { Trace } from './harness'
-import { ATTACHED, LANES, LEADKEY, LEADPATH, LEADPS, LEADSID, LEAD_LANES, MFOLDER, OTHER, OTHERLEAD, PIN, REG, REGFILE, RESULT, SELFPATH, STATUS_NONE, STORE_LANE, USAGE, allEvents, attRec, attacher, callCreate, created, creator, cue, cueSession, dirStat, doLane, drive, dropRec, grantAt, lane, laneTarget, lead, leadAt, leadCall, leadFileText, leadReg, leadSelfReg, listCall, logged, newTrace, notices, ownReg, pause, putStore, rebinder, rebinds, recOf, renameThroughTick, started, statusText, storeLaneNames, tickTwice, ticks } from './fixtures'
+import { ATTACHED, LANES, LEADKEY, LEADPATH, LEADPS, LEADSID, LEAD_LANES, MFOLDER, OTHER, OTHERLEAD, PIN, REG, REGFILE, RESULT, SELFPATH, STATUS_NONE, STORE_LANE, USAGE, allEvents, attRec, attacher, callCreate, created, creator, cue, cueSession, dirStat, doLane, drive, dropRec, grantAt, lane, laneTarget, lead, leadAt, leadCall, leadFileText, leadReg, leadSelfReg, listCall, logged, newTrace, notices, ownReg, pause, putStore, rebinder, rebinds, recOf, renameThroughTick, started, statusTable, statusText, storeLaneNames, tickTwice, ticks } from './fixtures'
 
 test('the lead scope is the cwd at the grant, not the live cwd', async ($, on) => {
   await lead($, on, [])
@@ -65,11 +65,11 @@ test('off from the prompt or phone needs no dialog; off from anything else asks 
   h.sessions = cueSession(OTHER, 'LABLANE')
   await started($, on, stdins)
   await $.command.run(lane('lead'))
-  expect((await $.command.run(lane('status'))).text).toContain('Lead: ON')
+  expect((await $.command.run(lane('status'))).text).toContain('| Lead | ON |')
   for (const a of ['Deny', 'Cancel', '']) {
     h.askAnswer = a
     expect((await $.command.run(lane('off', { kind: 'plugin', name: 'x' }))).text).toContain('Cancelled. Nothing changed.')
-    expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Lead: ON. Check-ins: ON.')
+    expect((await $.command.run(lane('status'))).text).toBe(statusTable(['Lane', 'NONE'], ['Lead', 'ON'], ['Check-ins', 'ON']))
   }
   h.askAnswer = YES
   expect((await $.command.run(lane('off', { kind: 'peer' }))).text).toBe('Lead is now off.')
@@ -91,10 +91,10 @@ test('a lead request from a non-person origin that times out or is dismissed kee
   await $.command.run(lane('lead'))
   h.askAnswer = ''
   expect((await $.command.run(lane('lead', { kind: 'plugin', name: 'x' }))).text).toContain('Lead stays on.')
-  expect((await $.command.run(lane('status'))).text).toContain('Lead: ON')
+  expect((await $.command.run(lane('status'))).text).toContain('| Lead | ON |')
   h.askAnswer = NO
   expect((await $.command.run(lane('lead', { kind: 'plugin', name: 'x' }))).text).toContain('Lead is now off')
-  expect((await $.command.run(lane('status'))).text).toContain('Lead: OFF')
+  expect((await $.command.run(lane('status'))).text).toContain('| Lead | OFF |')
 })
 
 test('a second lead or off while a question is open is refused busy, not queued; on answers its fixed text', async ($, on) => {
@@ -223,7 +223,7 @@ for (const [why, pin, setup] of noPresence) {
     await grantAt($, pin)
     await tickTwice()
     expect(leadFiles.size).toBe(0)
-    expect((await $.command.run(lane('status'))).text).toContain('Lead: ON')
+    expect((await $.command.run(lane('status'))).text).toContain('| Lead | ON |')
   })
 }
 
@@ -527,7 +527,7 @@ test('a lead yes that lands while a rename cue is binding the session is refused
   open()
   await pause()
   expect(resultFiles.get(RESULT)).toBe('rename ok - 96\n')
-  expect((await $.command.run(lane('status'))).text).toContain('Lane: LABLANE. Lead: OFF.')
+  expect((await $.command.run(lane('status'))).text).toContain('| Lane | LABLANE |\n| Lead | OFF |')
   expect(logged(stdins)).toContain('refused:lead-lane-holder')
 })
 
@@ -545,7 +545,7 @@ test('a rename cue that lands while a lead grant is being set up is refused lead
   expect(resultFiles.get(RESULT)).toBe('rename refused lead-holder 97\n')
   open()
   expect((await p).text).toContain('Lead is on')
-  expect((await $.command.run(lane('status'))).text).toContain('Lane: NONE. Lead: ON.')
+  expect((await $.command.run(lane('status'))).text).toContain('| Lane | NONE |\n| Lead | ON |')
 })
 
 test('a lead yes that lands while an attach is writing its record is refused, and the attach completes', async ($, on) => {
@@ -556,7 +556,7 @@ test('a lead yes that lands while an attach is writing its record is refused, an
   h.askAnswer = YES
   expect((await $.command.run(lane('lead'))).text).toBe(LANE_HOLDER)
   expect((await p).text).toBe(ATTACHED())
-  expect((await $.command.run(lane('status'))).text).toContain('Lead: OFF.')
+  expect((await $.command.run(lane('status'))).text).toContain('| Lead | OFF |')
 })
 
 test('a pending restore is not taken while the session is a lead: refused, still pending, and taken after lead off', async ($, on) => {
@@ -572,11 +572,11 @@ test('a pending restore is not taken while the session is a lead: refused, still
     h.askedOptions = []
     await $.command.run(lane('lane'))
     expect(h.askedOptions).not.toContainEqual([RESTORE_YES, RESTORE_NO])
-    expect((await $.command.run(lane('status'))).text).toContain('Lane: NONE. Lead: ON.')
+    expect((await $.command.run(lane('status'))).text).toContain('| Lane | NONE |\n| Lead | ON |')
     expect(logged(stdins)).toContain('refused:restore-lead-holder')
     await $.command.run(lane('off'))
     await $.command.run(lane('lane'))
-    expect((await $.command.run(lane('status'))).text).toContain('Lane: LABLANE. Lead: OFF.')
+    expect((await $.command.run(lane('status'))).text).toContain('| Lane | LABLANE |\n| Lead | OFF |')
   } finally {
     laneSeed.text = undefined
   }
@@ -682,14 +682,14 @@ test('the lead grant is saved in the store at the grant, and removed by off and 
   expect(h.store.has(LEADKEY)).toBe(true)
   h.askAnswer = NO
   await $.command.run(lane('lead'))
-  expect(await statusText($)).toContain('Lead: OFF')
+  expect(await statusText($)).toContain('| Lead | OFF |')
   expect(h.store.has(LEADKEY)).toBe(false)
 })
 
 test('a session whose saved grant names its own folder is lead again at start: no question, no second note, tools serve, presence on the first tick', async ($, on) => {
   const stdins: string[] = []
   await leadRestarter($, on, stdins)
-  expect(await statusText($)).toContain('Lead: ON')
+  expect(await statusText($)).toContain('| Lead | ON |')
   expect(h.askCount).toBe(0)
   expect(h.appendRows.length).toBe(0)
   expect(logged(stdins)).toContain('lead-restored:')
@@ -715,7 +715,7 @@ test('a restored lead watches the lane list from its first tick: a record added 
 test('a saved grant for another folder: no lead, and the key is deleted', async ($, on) => {
   const stdins: string[] = []
   await leadRestarter($, on, stdins, { cwd: `${PIN}/svc` })
-  expect(await statusText($)).toContain('Lead: OFF')
+  expect(await statusText($)).toContain('| Lead | OFF |')
   expect(h.store.has(LEADKEY)).toBe(false)
   expect(leadLogs(stdins)).toEqual(['lead-restore-rejected:wrong-folder'])
 })
@@ -723,7 +723,7 @@ test('a saved grant for another folder: no lead, and the key is deleted', async 
 test('a saved grant that does not parse is deleted at start', async ($, on) => {
   const stdins: string[] = []
   await leadRestarter($, on, stdins, { raw: { pin: '/', savedAt: T0 } })
-  expect(await statusText($)).toContain('Lead: OFF')
+  expect(await statusText($)).toContain('| Lead | OFF |')
   expect(h.store.has(LEADKEY)).toBe(false)
   expect(leadLogs(stdins)).toEqual(['lead-restore-rejected:invalid'])
 })
@@ -731,9 +731,9 @@ test('a saved grant that does not parse is deleted at start', async ($, on) => {
 test('a cwd read that throws in session.start: the tick finishes the restore once cwd answers', async ($, on) => {
   const stdins: string[] = []
   await leadRestarter($, on, stdins, { seed: () => (h.cwdThrows = 1) })
-  expect(await statusText($)).toContain('Lead: OFF')
+  expect(await statusText($)).toContain('| Lead | OFF |')
   await h.clock!.advance(2000)
-  expect(await statusText($)).toContain('Lead: ON')
+  expect(await statusText($)).toContain('| Lead | ON |')
   expect(logged(stdins)).toContain('lead-restored:')
 })
 
@@ -745,7 +745,7 @@ test('a cwd that never answers in 15 ticks: no lead, the key kept, logged once',
   await ticks(3)
   expect(leadLogs(stdins)).toEqual(['lead-restore-rejected:cwd-unreadable'])
   h.cwdThrows = 0
-  expect(await statusText($)).toContain('Lead: OFF')
+  expect(await statusText($)).toContain('| Lead | OFF |')
   expect(h.store.has(LEADKEY)).toBe(true)
 })
 
@@ -757,7 +757,7 @@ test('a saved grant beside another live lead with no usable name is not restored
       leadFiles.set(`${ROOT}/leads/${OTHERLEAD}.json`, { text: leadFileText({ sid: OTHERLEAD, pid: 4243 }) })
     },
   })
-  expect(await statusText($)).toContain('Lead: OFF')
+  expect(await statusText($)).toContain('| Lead | OFF |')
   expect(leadLogs(stdins)).toEqual(['lead-restore-rejected:other-lead-unnamed'])
   expect(toasts).toContain('Lead not restored: another lead in this repo has no usable name; it must /rename first, or be turned off. Run /callboard lead.')
   expect(h.store.has(LEADKEY)).toBe(true)
@@ -769,10 +769,10 @@ test('a lead restore whose session list cannot be read yet is tried again from t
   await ticks(3)
   expect(leadLogs(stdins)).toEqual([])
   expect(toasts.some((t: string) => t.startsWith('Lead not restored'))).toBe(false)
-  expect(await statusText($)).toContain('Lead: OFF')
+  expect(await statusText($)).toContain('| Lead | OFF |')
   h.sessionsUnsafe = false
   await ticks(2)
-  expect(await statusText($)).toContain('Lead: ON')
+  expect(await statusText($)).toContain('| Lead | ON |')
   expect(logged(stdins)).toContain('lead-restored:')
 })
 
@@ -796,7 +796,7 @@ longTest('a lead restore whose check for other leads never answers is refused le
   expect(toasts).toContain('Lead not restored: the check for other leads took too long. Try again. Run /callboard lead.')
   expect(h.store.has(LEADKEY)).toBe(true)
   h.leadsListHook = undefined
-  expect(await statusText($)).toContain('Lead: OFF')
+  expect(await statusText($)).toContain('| Lead | OFF |')
 })
 
 test('a store record naming the session while the lead restore is pending: the rebind waits, then refuses lead-holder', async ($, on) => {
@@ -812,7 +812,7 @@ test('a store record naming the session while the lead restore is pending: the r
   })
   await ticks(3)
   expect(rebinds(stdins)).toEqual(['rebind-rejected:lead-holder'])
-  expect(await statusText($)).toContain('Lane: NONE. Lead: ON.')
+  expect(await statusText($)).toContain('| Lane | NONE |\n| Lead | ON |')
 })
 
 longTest('a lane tool registration that never answers: no lead, the key kept', async ($, on) => {
@@ -822,10 +822,10 @@ longTest('a lane tool registration that never answers: no lead, the key kept', a
   void start.then(() => (started = true))
   for (let i = 0; i < 30 && !started; i++) await h.clock!.advance(2000)
   expect(started).toBe(true)
-  expect(await statusText($)).toContain('Lead: OFF')
+  expect(await statusText($)).toContain('| Lead | OFF |')
   for (let i = 0; i < 300 && leadLogs(stdins).length === 0; i++) await h.clock!.advance(2000)
   expect(leadLogs(stdins)).toEqual(['lead-restore-rejected:tools-timeout'])
-  expect(await statusText($)).toContain('Lead: OFF')
+  expect(await statusText($)).toContain('| Lead | OFF |')
   expect(h.store.has(LEADKEY)).toBe(true)
 })
 
@@ -833,7 +833,7 @@ test('a bound session is not made lead, and its key is kept', async ($, on) => {
   const stdins: string[] = []
   const trace = newTrace()
   await leadRestarter($, on, stdins, { trace, seed: () => trace.st!.set('lane', { value: { name: 'LABLANE', at: 1, turns: -1 }, version: 1 }) })
-  expect(await statusText($)).toContain('Lead: OFF')
+  expect(await statusText($)).toContain('| Lead | OFF |')
   expect(leadLogs(stdins)).toEqual(['lead-restore-rejected:lane-holder'])
   expect(h.store.has(LEADKEY)).toBe(true)
 })
@@ -882,7 +882,7 @@ test('the lead grant pins the start folder, not the folder the shell moved to', 
 test('the lead restore reads the start folder', async ($, on) => {
   const stdins: string[] = []
   await leadRestarter($, on, stdins, { seed: () => ((h.callerRoot = PIN), (h.callerCwd = `${PIN}/api`)) })
-  expect(await statusText($)).toContain('Lead: ON')
+  expect(await statusText($)).toContain('| Lead | ON |')
 })
 
 // ---- /callboard off while a lead restore waits on its tool registration, and the saved grant ----
@@ -897,7 +897,7 @@ test('/callboard off while a lead restore waits on its tool registration: no lea
   void start.then(() => (done = true))
   for (let i = 0; i < 40 && !done; i++) await h.clock!.advance(1000)
   await ticks(3)
-  expect(await statusText($)).toContain('Lead: OFF')
+  expect(await statusText($)).toContain('| Lead | OFF |')
   expect(h.store.has(LEADKEY)).toBe(false)
   expect(logged(stdins)).not.toContain('lead-restored:')
 })
@@ -911,7 +911,7 @@ longTest('/callboard off while a lead restore times out on its tool registration
   void start.then(() => (done = true))
   for (let i = 0; i < 40 && !done; i++) await h.clock!.advance(1000)
   for (let i = 0; i < 20; i++) await h.clock!.advance(30_000)
-  expect(await statusText($)).toContain('Lead: OFF')
+  expect(await statusText($)).toContain('| Lead | OFF |')
   expect(h.store.has(LEADKEY)).toBe(false)
   expect(leadLogs(stdins)).toEqual([])
 })
@@ -948,7 +948,7 @@ test('a lead restore in a run with no person keeps the key and is not made lead;
   h.ownEntryAuto = false
   h.sessions = {}
   await ticks(16)
-  expect(await statusText($)).toContain('Lead: OFF')
+  expect(await statusText($)).toContain('| Lead | OFF |')
   expect(leadLogs(stdins)).toEqual(['lead-restore-rejected:not-interactive'])
   expect(h.store.has(LEADKEY)).toBe(true)
 })
@@ -956,7 +956,7 @@ test('a lead restore in a run with no person keeps the key and is not made lead;
 test('a VS Code panel that is not interactive at start but has its own registry row is made lead again', async ($, on) => {
   const stdins: string[] = []
   await leadRestarter($, on, stdins, { interactive: false })
-  expect(await statusText($)).toContain('Lead: ON')
+  expect(await statusText($)).toContain('| Lead | ON |')
 })
 
 test('/callboard off while a restored grant is being saved: the key the save wrote goes again', async ($, on) => {
@@ -971,7 +971,7 @@ test('/callboard off while a restored grant is being saved: the key the save wro
   void start.then(() => (done = true))
   for (let i = 0; i < 40 && !done; i++) await h.clock!.advance(1000)
   await ticks(3)
-  expect(await statusText($)).toContain('Lead: OFF')
+  expect(await statusText($)).toContain('| Lead | OFF |')
   expect(h.store.has(LEADKEY)).toBe(false)
 })
 
@@ -1014,7 +1014,7 @@ test('an engine without session.root() reads the live folder instead: the lane r
   } finally {
     h.rootMissing = false
   }
-  expect(await statusText($)).toContain('Lane: LABLANE')
+  expect(await statusText($)).toContain('| Lane | LABLANE |')
   expect(rebinds(stdins)[0]).toStartWith('rebound:')
 })
 

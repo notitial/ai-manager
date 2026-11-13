@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import { STOPPABLE_BY_NAME, reserveShowText, reserveAddedText, reserveRemovedText, reserveNotListedText, reserveManagerText, RESERVE_NOT_PERSON, RESERVE_USAGE, refusalText, attachQuestion, ATTACH_YES, ATTACH_NO, LANE_NO_LEAD, REASON_TEXT, LEAD_MORE, LEAD_PICK_QUESTION } from '../hooks/core'
 import { h, ROOT, SID, T0, YES, extraStat, laneSeed, leadFiles, lockLog, longTest, realMap, storeFiles, teeTexts } from './harness'
-import { ANY, ATTACHED, GONE_ATT, LEADPATH, LEADSID, OTHER, OTHERLEAD, OTHERPATH, PIN, SELFPATH, STATUS_NONE, STOREFILE, SVC, USAGE, attRec, attacher, bareList, bornWithTwoLeads, callCreate, created, cue, cueSession, dirStat, doLane, lane, leadAt, leadCall, leadFileText, leadReg, logged, madeLane, mdBox, mdTable, mgrFile, mgrRow, noLaneWritten, ownReg, putStore, regAs, selfAs, started, storeJson, storeLaneNames, waitFor } from './fixtures'
+import { ANY, ATTACHED, GONE_ATT, LEADPATH, LEADSID, OTHER, OTHERLEAD, OTHERPATH, PIN, SELFPATH, STATUS_NONE, STOREFILE, SVC, USAGE, attRec, attacher, bareList, bornWithTwoLeads, callCreate, created, cue, cueSession, dirStat, doLane, lane, leadAt, leadCall, leadFileText, leadReg, logged, madeLane, mdBox, mdTable, mgrFile, mgrRow, noLaneWritten, ownReg, putStore, regAs, selfAs, started, statusTable, storeJson, storeLaneNames, waitFor } from './fixtures'
 
 longTest('lane_create stamps the lead name; another lead (or this one renamed) neither lists nor reaches that lane; a legacy lane stays in reach of both', async ($, on) => {
   await leadAt($, on, [], { sess: selfAs('LEADA') })
@@ -169,7 +169,7 @@ test('an attach whose store write lands without the lead name is not bound', asy
   h.sessions = { ...regAs(LEADSID, 4242, 'LEADA'), ...ownReg() }
   h.mvHook = (to) => { if (to === STOREFILE) for (const [k, v] of teeTexts) teeTexts.set(k, v.replace(',"leadName":"LEADA"', '')) }
   expect((await doLane($, 'lane svc-api')).text.startsWith('Lane not changed: the record was not saved.')).toBe(true)
-  expect((await $.command.run(lane('status'))).text).toContain('Lane: NONE')
+  expect((await $.command.run(lane('status'))).text).toContain('| Lane | NONE |')
 })
 
 test('two leads in one repo, two lanes each: lane_list, lane_resume, lane_unpark and the stop tools reach only their own; a legacy lane is in reach of both', async ($, on) => {
@@ -238,7 +238,7 @@ for (const [code, me, other] of [
     expect((await $.command.run(lane('lead'))).text).toBe(leadStaysOff(code))
     expect(h.askCount).toBe(n)
     expect(logged(stdins)).toContain(`refused:${code}`)
-    expect((await $.command.run(lane('status'))).text).toContain('Lead: OFF')
+    expect((await $.command.run(lane('status'))).text).toContain('| Lead | OFF |')
     expect(leadFiles.has(SELFPATH)).toBe(false)
   })
 }
@@ -252,7 +252,7 @@ for (const [code, other] of [['other-lead-unnamed', { name: 'LEAD A' }], ['lead-
       return YES
     }
     expect((await $.command.run(lane('lead'))).text).toBe(leadStaysOff(code))
-    expect((await $.command.run(lane('status'))).text).toContain('Lead: OFF')
+    expect((await $.command.run(lane('status'))).text).toContain('| Lead | OFF |')
     expect(leadFiles.has(SELFPATH)).toBe(false)
   })
 }
@@ -272,7 +272,7 @@ test('an in-mark check for other leads that does not answer in time is refused l
   expect((await p).text).toBe(leadStaysOff('lead-check-slow'))
   expect(logged(stdins)).toContain('refused:lead-check-slow')
   h.leadsListHook = undefined
-  expect((await $.command.run(lane('status'))).text).toContain('Lead: OFF')
+  expect((await $.command.run(lane('status'))).text).toContain('| Lead | OFF |')
 })
 
 test('lane_create by a lead with no usable name is refused lead-unnamed once another live lead runs in the repo', async ($, on) => {
@@ -410,11 +410,11 @@ test('/callboard status in a lane names the lane and its lead; /callboard on the
   await attacher($, on, [], { clock: true })
   expect((await $.command.run(lane('status'))).text).toBe(STATUS_NONE)
   expect((await doLane($, 'lane svc-api')).text).toBe(ATTACHED())
-  expect((await $.command.run(lane('status'))).text).toBe("Lane: svc-api. Lead: OFF. This lane's lead: LEAD.")
+  expect((await $.command.run(lane('status'))).text).toBe(statusTable(['Lane', 'svc-api'], ['Lead', 'OFF'], ['This lane\'s lead', 'LEAD']))
   const asks = h.askCount
   expect((await $.command.run(lane('on'))).text).toBe(USAGE)
   expect(h.askCount).toBe(asks)
-  expect((await $.command.run(lane('status'))).text).toBe("Lane: svc-api. Lead: OFF. This lane's lead: LEAD.")
+  expect((await $.command.run(lane('status'))).text).toBe(statusTable(['Lane', 'svc-api'], ['Lead', 'OFF'], ['This lane\'s lead', 'LEAD']))
   expect((await doLane($, 'lane off')).text).toBe(`This session is no longer lane svc-api.${STOPPABLE_BY_NAME('svc-api')}`)
   expect((await $.command.run(lane('status'))).text).toBe(STATUS_NONE)
 })

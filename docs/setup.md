@@ -290,7 +290,7 @@ lane or a live lead carries cannot be reserved. Details: callboard README, The m
 | Panels extension | `ls -l ~/.vscode/extensions \| grep callboard-panels` | one link, to `<checkout>/tools/callboard/extension` |
 | Panels entry | `bash <checkout>/tools/callboard/link-extension.sh` | it prints `already linked` and no `DRY:` line |
 | Default load | type `! echo $CLAUDE_CODE_PLUGIN_DIRS` in a new session | `<checkout>/tools/callboard/mod` |
-| Mod loaded | type `/callboard status` in a session | it answers `Lane: NONE. Lead: OFF.` or similar |
+| Mod loaded | type `/callboard status` in a session | it answers a status table with a `Lane` row (`NONE`) and a `Lead` row (`OFF`) or similar |
 | Reserved names | type `/callboard reserve` | the manager's name, when it is not `MANAGER`, is listed |
 | Deny lines | read `permissions.deny` in `~/.claude/settings.json` | the two store and list-file lines and the six live-checkout lines are there |
 | Prompt answering lines | read `permissions.deny` and `permissions.ask` in `~/.claude/settings.json` | `Edit(~/.claude/callboard/**)` is in deny and `Bash(*.claude/callboard*)` is in ask, before any `/callboard escalation` |

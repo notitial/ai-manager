@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import { LEAD_MANAGER_TEXT, MANAGER_RESTORE_QUESTION, MANAGER_RESTORED_TOAST, MANAGER_UNANSWERED_TOAST, HINT_REFRESH_MS, REASON_TEXT, MANAGER_QUESTION, MANAGER_ON_TEXT, MANAGER_ALREADY, MANAGER_H2, managerRefusalText, managerBriefingNote, terminateQuestion, retireQuestion, removeQuestion } from '../hooks/core'
 import { h, GOOD, LANESDIR, NO, PS_TABLE, ROOT, SID, T0, YES, colorRuns, extraStat, laneSeed, leadFiles, lockLog, longTest, psCalls, psDead, psFail, renames, seen, statErr, storeFiles, toasts, toolDefs } from './harness'
-import { APISID, COMPOSE, HOME, LEADPATH, LEADPS, LEADSID, MGR_NOAPI, MGR_SESS, MIN, NEWSID, OTHER, OTHERLEAD, OTHERMGR, PIN, QUIET, REPORT_OK, SELFPATH, STATUS_NONE, TURN, attacher, checkins, ckLane, ckLead, ckText, cue, cueSession, dirStat, doLane, grantAt, idleFor, killed, lane, leadAt, leadFileText, leadReg, leadSelfReg, listCall, logged, madeLane, mgrAt, mgrCall, mgrFile, mgrRow, newTrace, noArchiveRm, noteRows, nudges, ownReg, putStore, regAs, started, statusText, storeNames, ticks, unanswered, waitFor } from './fixtures'
+import { APISID, COMPOSE, HOME, LEADPATH, LEADPS, LEADSID, MGR_NOAPI, MGR_SESS, MIN, NEWSID, OTHER, OTHERLEAD, OTHERMGR, PIN, QUIET, REPORT_OK, SELFPATH, STATUS_NONE, TURN, attacher, checkins, ckLane, ckLead, ckText, cue, cueSession, dirStat, doLane, grantAt, idleFor, killed, lane, leadAt, leadFileText, leadReg, leadSelfReg, listCall, logged, madeLane, mgrAt, mgrCall, mgrFile, mgrRow, newTrace, noArchiveRm, noteRows, nudges, ownReg, putStore, regAs, started, statusTable, statusText, storeNames, ticks, unanswered, waitFor } from './fixtures'
 
 // lane_remove does not exist (retire and terminate remove the record): five.
 const MGR_TOOLS = ['lane_list', 'lane_resume', 'lane_compact', 'lane_terminate', 'lane_retire']
@@ -27,7 +27,7 @@ test('manager: one dialog (header Manager, buttons Manager and Cancel); a yes wr
   expect([...new Set(names)].sort()).toEqual([...MGR_TOOLS].sort())
   for (const t of ['lane_terminate', 'lane_retire']) expect(toolDefs.slice(defs0).find((d) => d.includes(`"${t}"`))).toContain('Every stop asks the person')
   expect(toolDefs.slice(defs0).some((d) => d.includes('"lane_remove"'))).toBe(false)
-  expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Manager: ON. Check-ins: ON.')
+  expect((await $.command.run(lane('status'))).text).toBe(statusTable(['Lane', 'NONE'], ['Manager', 'ON'], ['Check-ins', 'ON']))
   expect(logged(stdins)).toContain('manager-on:prompt')
   expect(renames).toEqual([])
   expect(colorRuns).toEqual([])
@@ -102,7 +102,7 @@ test('manager: /callboard off drops the grant and the presence file; status name
   await mgrAt($, on, stdins)
   expect((await $.command.run(lane('lead'))).text).toBe('Lead stays off: this session is the manager, so it cannot be a lane or a lead. Run /callboard off first.')
   expect(logged(stdins)).toContain('refused:lead-manager-holder')
-  expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Manager: ON. Check-ins: ON.')
+  expect((await $.command.run(lane('status'))).text).toBe(statusTable(['Lane', 'NONE'], ['Manager', 'ON'], ['Check-ins', 'ON']))
   expect((await $.command.run(lane('off'))).text).toBe('Manager is now off.')
   expect(leadFiles.has(SELFPATH)).toBe(false)
   expect((await $.command.run(lane('status'))).text).toBe(STATUS_NONE)
@@ -763,7 +763,7 @@ test('manager restore: the same conversation asks once when it starts, with the 
   expect(h.lastHeader).toBe('Manager')
   expect(h.askedOptions).toEqual([['Manager', 'Cancel']])
   expect(h.askCount).toBe(1)
-  expect(await statusText($)).toBe('Lane: NONE. Manager: ON. Check-ins: ON.')
+  expect(await statusText($)).toBe(statusTable(['Lane', 'NONE'], ['Manager', 'ON'], ['Check-ins', 'ON']))
   expect(JSON.parse(leadFiles.get(SELFPATH)!.text)).toEqual({ sid: SID, pid: 4400, procStart: LEADPS, level: 'manager', name: 'MANAGER' })
   expect(h.store.get(MGRKEY)).toEqual({ name: 'MANAGER', savedAt: expect.any(Number) })
   expect((h.store.get(MGRKEY) as any).savedAt).toBeGreaterThan(T0)
@@ -884,7 +884,7 @@ test('manager restore: a session that is a lead is not asked (lead-holder) and k
   expect(h.askCount).toBe(asked)
   expect(mgrLogs(stdins)).toContain('manager-restore-rejected:lead-holder')
   expect(h.store.has(MGRKEY)).toBe(true)
-  expect(JSON.stringify(await statusText($))).toContain('Lead: ON')
+  expect(JSON.stringify(await statusText($))).toContain('| Lead | ON |')
 })
 
 test('manager restore: every check runs again after the yes: a manager that came up while the question was open means nothing is restored', async ($, on) => {
@@ -926,7 +926,7 @@ test('manager restore: the person\'s own /callboard manager while a restore wait
   expect(h.askCount).toBe(asked)
   expect(mgrLogs(stdins).some((x) => x.startsWith('manager-restore'))).toBe(false)
   expect(h.store.get(MGRKEY)).toEqual({ name: 'MANAGER', savedAt: T0 })
-  expect(await statusText($)).toBe('Lane: NONE. Manager: ON. Check-ins: ON.')
+  expect(await statusText($)).toBe(statusTable(['Lane', 'NONE'], ['Manager', 'ON'], ['Check-ins', 'ON']))
 })
 
 test('manager restore: a manager that still holds the grant in memory (a compaction) is not asked again', async ($, on) => {
@@ -937,7 +937,7 @@ test('manager restore: a manager that still holds the grant in memory (a compact
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   await ticks(5)
   expect(h.askCount).toBe(1)
-  expect(await statusText($)).toBe('Lane: NONE. Manager: ON. Check-ins: ON.')
+  expect(await statusText($)).toBe(statusTable(['Lane', 'NONE'], ['Manager', 'ON'], ['Check-ins', 'ON']))
   expect(mgrLogs(stdins).some((x) => x.startsWith('manager-restore'))).toBe(false)
 })
 

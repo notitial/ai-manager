@@ -14,7 +14,7 @@ longTest('lane NAME: Join writes an attached record under the lock, binds the se
   expect(h.lastQuestion).toBe(attachQuestion('svc-api', folderName(SVC), folderName(PIN), false))
   const rec = storeJson()
   expect(rec).toEqual({ repo: PIN, lanes: [{ name: 'svc-api', folder: SVC, brief: `${SVC}/.callboard-attached`, createdAt: T0, adopted: true, lead: LEADSID, sid: SID, leadName: 'LEAD' }], creates: [] })
-  expect((await $.command.run(lane('status'))).text).toContain('Lane: svc-api')
+  expect((await $.command.run(lane('status'))).text).toContain('| Lane | svc-api |')
   const hint = h.store.get(`sess:${SID}`) as any
   expect(hint.lane).toMatchObject({ name: 'svc-api', turns: -1, adopted: true, lead: LEADSID })
   expect(hint.counters.startDone).toBe(true)
@@ -54,7 +54,7 @@ test('a rename that fails or never finishes leaves the binding and tells the per
   expect(renames).toEqual(['API'])
   expect(toasts).toContain('Rename failed. Run /rename API.')
   expect(logged(stdins)).toContain('rename-failed:refused')
-  expect((await $.command.run(lane('status'))).text).toContain('Lane: API')
+  expect((await $.command.run(lane('status'))).text).toContain('| Lane | API |')
   await h.clock!.advance(10_000)
   expect(renames).toEqual(['API'])
   await doLane($, 'lane off')
@@ -461,7 +461,7 @@ test('lane off detaches: the binding and the hint go, the record stays and loses
   const r = await doLane($, 'lane off')
   expect(r.text).toBe(`This session is no longer lane svc-api.${STOPPABLE_BY_NAME('svc-api')}`)
   expect(storeJson().lanes.map((l: any) => [l.name, l.sid])).toEqual([['svc-api', undefined]])
-  expect((await $.command.run(lane('status'))).text).toContain('Lane: NONE')
+  expect((await $.command.run(lane('status'))).text).toContain('| Lane | NONE |')
   expect(h.store.has(`sess:${SID}`)).toBe(false)
   expect(h.lockState.held).toBe(false)
   expect(await cue(61, 'resume\n')).toBe('resume refused not-eligible 61\n')
@@ -479,7 +479,7 @@ test('lane off needs the person; off from anything else asks first and then deta
   await attacher($, on)
   await doLane($, 'lane svc-api')
   expect((await doLane($, 'lane off', { kind: 'plugin', name: 'x' })).text).toBe('Only you can change a lane: type /callboard lane yourself.')
-  expect((await $.command.run(lane('status'))).text).toContain('Lane: svc-api')
+  expect((await $.command.run(lane('status'))).text).toContain('| Lane | svc-api |')
   h.askAnswer = NO
   expect((await $.command.run(lane('off', { kind: 'peer' }))).text).toContain('Cancelled. Nothing changed.')
   expect(storeJson().lanes.length).toBe(1)
@@ -513,7 +513,7 @@ test('detach clears the session id of the record the binding names and leaves a 
 test('a session bound by a birth rename is unbound by off too, and its record stays', async ($, on) => {
   const stdins: string[] = []
   await renameThroughTick($, on, stdins, 1)
-  expect((await $.command.run(lane('status'))).text).toContain('Lane: LABLANE')
+  expect((await $.command.run(lane('status'))).text).toContain('| Lane | LABLANE |')
   expect((await $.command.run(lane('off'))).text).toBe(`This session is no longer lane LABLANE.${STOPPABLE_BY_NAME('LABLANE')}`)
   expect((await $.command.run(lane('status'))).text).toBe(STATUS_NONE)
   expect(h.store.has(`sess:${SID}`)).toBe(false)
@@ -547,12 +547,12 @@ test('detach whose session id clear fails still clears the binding, and tells th
     for (let i = 0; i < 40; i++) await h.clock!.advance(150)
     expect((await p).text, why).toBe(text)
     fix()
-    expect((await $.command.run(lane('status'))).text, why).toContain('Lane: NONE')
+    expect((await $.command.run(lane('status'))).text, why).toContain('| Lane | NONE |')
     expect(h.store.has(`sess:${SID}`), why).toBe(false)
   }
   expect(logged(stdins)).not.toContain('detach-incomplete:')
   const w = await $.command.run(lane('status'))
-  expect(w.text).toContain('Lane: NONE')
+  expect(w.text).toContain('| Lane | NONE |')
 })
 
 test('a hint that cannot be deleted at detach is logged, not swallowed', async ($, on) => {
@@ -574,7 +574,7 @@ test('a restored attached lane works like any lane: the store record is the auth
   h.restoreAnswer = YES
   h.askAnswer = YES
   await $.command.run(lane('lane'))
-  expect((await $.command.run(lane('status'))).text).toContain('Lane: svc-api')
+  expect((await $.command.run(lane('status'))).text).toContain('| Lane | svc-api |')
   expect((h.store.get(`sess:${SID}`) as any).lane).toMatchObject({ name: 'svc-api', turns: -1, adopted: true, lead: LEADSID })
   expect(await cue(55, 'resume\n')).toBe('resume ok - 55\n')
   await $.command.run(lane('off'))
@@ -589,7 +589,7 @@ const restoreRefused = (rec: Record<string, unknown>) => async ($: any, on: any)
   h.store.set(`sess:${SID}`, hint)
   h.askAnswer = NO
   await $.command.run(lane('lane'))
-  expect((await $.command.run(lane('status'))).text).toContain('Lane: NONE')
+  expect((await $.command.run(lane('status'))).text).toContain('| Lane | NONE |')
   expect(logged(stdins)).toContain('hint-rejected:record-changed')
 }
 test('a restore of an attached lane is refused when the record names another lead', restoreRefused({ ...ATT_REC, lead: OTHER }))
@@ -653,7 +653,7 @@ test('a join whose startDone cannot be set binds nothing, and the record it wrot
   expect((await doLane($, 'lane svc-api')).text).toBe('Lane not changed: the session could not be bound.')
   expect(trace.log).not.toContain('lane')
   expect(storeJson().lanes).toEqual([])
-  expect((await $.command.run(lane('status'))).text).toContain('Lane: NONE')
+  expect((await $.command.run(lane('status'))).text).toContain('| Lane | NONE |')
   expect(logged(stdins)).toContain('error:attach-bind')
 })
 
@@ -662,7 +662,7 @@ test('a birth rename into an attached record is refused adopted-record, whoever 
   putStore([{ name: 'ATT', folder: SVC, brief: `${SVC}/.callboard-attached`, createdAt: 1, adopted: true, lead: LEADSID }])
   expect(await cue(33, 'rename ATT\n')).toBe('rename refused adopted-record 33\n')
   expect(renames).toEqual([])
-  expect((await $.command.run(lane('status'))).text).toContain('Lane: NONE')
+  expect((await $.command.run(lane('status'))).text).toContain('| Lane | NONE |')
 })
 
 test('detach removes only a record that is attached; a plain record of the same name stays, and so does the record of a lane the session was only restored into', async ($, on) => {
@@ -836,7 +836,7 @@ test('the pending rename is not run when another live session now carries the na
   expect(renames).toEqual([])
   expect(toasts).toContain('Rename failed. Run /rename API.')
   expect(logged(stdins)).toContain('rename-failed:name-taken')
-  expect((await $.command.run(lane('status'))).text).toContain('Lane: API')
+  expect((await $.command.run(lane('status'))).text).toContain('| Lane | API |')
 })
 
 test('off of a lane the lead made says the lead can still stop the session by its name; off of an attached lane does not', async ($, on) => {

@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 import { refusalText, STOPPABLE_BY_NAME, RESTORE_YES, RESTORE_NO, ATTACH_YES, ATTACH_NO, SID_KEPT, reboundToast, restoreChangedToast, OFF_NOTHING } from '../hooks/core'
 import { h, GOOD, LANESDIR, NO, OPEN_RESULT, PS_TABLE, ROOT, SESSIONS, SID, T0, YES, extraStat, laneSeed, longTest, psStartsGone, renames, resultFiles, storeFiles, teeTexts, toasts, toolDefs } from './harness'
 import type { Trace } from './harness'
-import { ATTACHED, ATTSESS, ATT_REC, KEY, LANES, LANE_COMPOSE, LANE_HINT, LEADSID, LEAD_LANES, MFOLDER, NEWSID, OTHER, OTHERLEAD, PARK_API, PIN, REG, REGFILE, RESULT, SELFREG, STATUS_NONE, STOREFILE, STORE_LANE, SVC, TWIN, allEvents, attRec, attacher, bornStore, callCreate, closeWrites, cue, cueSession, doLane, drive, events, fileStat, grantAt, killed, lane, laneSections, lateLane, lead, leadAt, leadCall, leadReg, leadSelfReg, logged, newTrace, notices, ownReg, park, parkSess, parker, pause, putStore, rebindAsks, rebinder, rebinds, recOf, renameThroughTick, sleepMs, started, statusText, storeJson, tickTwice, ticks, unanswered, waitFor } from './fixtures'
+import { ATTACHED, ATTSESS, ATT_REC, KEY, LANES, LANE_COMPOSE, LANE_HINT, LEADSID, LEAD_LANES, MFOLDER, NEWSID, OTHER, OTHERLEAD, PARK_API, PIN, REG, REGFILE, RESULT, SELFREG, STATUS_NONE, STOREFILE, STORE_LANE, SVC, TWIN, allEvents, attRec, attacher, bornStore, callCreate, closeWrites, cue, cueSession, doLane, drive, events, fileStat, grantAt, killed, lane, laneSections, lateLane, lead, leadAt, leadCall, leadReg, leadSelfReg, logged, newTrace, notices, ownReg, park, parkSess, parker, pause, putStore, rebindAsks, rebinder, rebinds, recOf, renameThroughTick, sleepMs, started, statusTable, statusText, storeJson, tickTwice, ticks, unanswered, waitFor } from './fixtures'
 
 test('a session that is not a lane writes no hint and no saved on; a lane writes a hint for its own session id only', async ($, on) => {
   await started($, on, [])
@@ -54,7 +54,7 @@ test('a restored binding can never start: turns -1, startDone, its own named que
   await started($, on, stdins, { seed: () => { laneSeed.text = LANES; h.store.set(`sess:${SID}`, hint) } })
   expect((await $.command.run(lane('lane'))).text).toBe(reboundToast('LABLANE'))
   expect(h.lastQuestion).toBe("Restore this session as lane LABLANE?\nOnly if it was that lane's session.")
-  expect((await $.command.run(lane('status'))).text).toContain('Lane: LABLANE. Lead: OFF.')
+  expect((await $.command.run(lane('status'))).text).toContain('| Lane | LABLANE |\n| Lead | OFF |')
   const saved = h.store.get(`sess:${SID}`) as any
   expect(saved.lane).toMatchObject({ name: 'LABLANE', turns: -1, restored: true })
   expect(saved.counters.startDone).toBe(true)
@@ -122,7 +122,7 @@ test('a restore dialog that is dismissed is not a decision: the next /callboard 
     expect((await $.command.run(lane('status'))).text).toBe(STATUS_NONE)
     h.restoreAnswer = YES
     expect((await $.command.run(lane('lane'))).text).toBe(reboundToast('LABLANE'))
-    expect((await $.command.run(lane('status'))).text).toContain('Lane: LABLANE. Lead: OFF.')
+    expect((await $.command.run(lane('status'))).text).toContain('| Lane | LABLANE |\n| Lead | OFF |')
     await $.command.run(lane('off'))
     expect((await $.command.run(lane('status'))).text).toBe(STATUS_NONE)
   } finally {
@@ -226,7 +226,7 @@ longTest('a question nobody answers in 90 seconds is not a decision: it says so,
   h.askHang = new Promise<string>(() => undefined)
   expect((await unanswered($.command.run(lane('lead', plugin)))).text).toBe('Lead stays on. The question timed out.')
   expect((await unanswered($.command.run(lane('off', plugin)))).text).toBe('Nothing changed: the question timed out.')
-  expect((await $.command.run(lane('status'))).text).toBe('Lane: NONE. Lead: ON. Check-ins: ON.')
+  expect((await $.command.run(lane('status'))).text).toBe(statusTable(['Lane', 'NONE'], ['Lead', 'ON'], ['Check-ins', 'ON']))
   expect(JSON.stringify(await unanswered($.tool.call(leadCall('terminate'))))).toContain('lane_terminate refused: the question timed out.')
   expect(argv.some((a) => a[0] === '/bin/kill')).toBe(false)
   expect((await unanswered($.command.run(lane('lead')))).text).toBe('Lead is now off. The question timed out.')
@@ -246,12 +246,12 @@ test('a restore question that times out stays pending: the next /callboard lane 
     expect((await unanswered($.command.run(lane('lane')))).text).toBe('Nothing changed: the question timed out.')
     expect(h.askCount).toBe(before + 1)
     expect(toasts).toContain('Question timed out. Lane not restored.')
-    expect((await $.command.run(lane('status'))).text).toContain('Lane: NONE')
+    expect((await $.command.run(lane('status'))).text).toContain('| Lane | NONE |')
     h.restoreHang = undefined
     const asks = h.askCount
     expect((await $.command.run(lane('lane'))).text).toBe(reboundToast('LABLANE'))
     expect(h.askCount).toBe(asks + 1)
-    expect((await $.command.run(lane('status'))).text).toContain('Lane: LABLANE')
+    expect((await $.command.run(lane('status'))).text).toContain('| Lane | LABLANE |')
   } finally {
     laneSeed.text = undefined
   }
@@ -302,10 +302,10 @@ test('a restored lane the lead made keeps its record when the session is turned 
   h.restoreAnswer = YES
   h.askAnswer = YES
   await $.command.run(lane('lane'))
-  expect((await $.command.run(lane('status'))).text).toContain('Lane: svc-api')
+  expect((await $.command.run(lane('status'))).text).toContain('| Lane | svc-api |')
   await $.command.run(lane('off'))
   expect(storeJson().lanes).toEqual([made])
-  expect((await $.command.run(lane('status'))).text).toContain('Lane: NONE')
+  expect((await $.command.run(lane('status'))).text).toContain('| Lane | NONE |')
 })
 
 test('an off that lands while a restore writes the binding unbinds it again and leaves no note', async ($, on) => {
@@ -345,7 +345,7 @@ test('a restore reads the registry again after its dialog: a lead renamed meanwh
   h.sessions = { ...leadReg({ nameSource: 'user' }), ...ownReg() }
   release(YES)
   await p
-  expect((await $.command.run(lane('status'))).text).toContain('Lane: svc-api')
+  expect((await $.command.run(lane('status'))).text).toContain('| Lane | svc-api |')
   expect(h.appendRows.length).toBe(1)
   expect(h.appendRows[0].content[0].text).toContain(`Your lead is \`LEAD\` (session \`${LEADSID}\`)`)
 })
@@ -369,7 +369,7 @@ test('a restore whose lane is removed while its question is open binds nothing a
   const stdins: string[] = []
   await attacher($, on, stdins, { clock: true })
   await restoreDuring($, () => { putStore([]) })
-  expect((await $.command.run(lane('status'))).text).toContain('Lane: NONE')
+  expect((await $.command.run(lane('status'))).text).toContain('| Lane | NONE |')
   expect(toasts).toContain(NOT_RESTORED)
   expect(logged(stdins)).toContain('hint-rejected:unknown-lane')
   expect(h.appendRows.length).toBe(0)
@@ -379,7 +379,7 @@ test('a restore whose name another session takes while its question is open stay
   const stdins: string[] = []
   await attacher($, on, stdins, { clock: true })
   await restoreDuring($, () => { h.sessions = { ...h.sessions, ...cueSession(TWIN, 'svc-api', SVC, { pid: 4777 }) } })
-  expect((await $.command.run(lane('status'))).text).toContain('Lane: NONE')
+  expect((await $.command.run(lane('status'))).text).toContain('| Lane | NONE |')
   expect(toasts).toContain(NOT_RESTORED)
   expect(logged(stdins)).toContain('hint-rejected:name-in-use')
 })
@@ -397,7 +397,7 @@ test('a restore finds a binding written while its question was open: refused res
 test('a restore binds the record as it is after its question: a record rewritten meanwhile is not refused record-changed later', async ($, on) => {
   await attacher($, on, [], { clock: true })
   await restoreDuring($, () => { putStore([{ ...ATT_REC, brief: `${SVC}/NEW-BRIEF.md` }]) })
-  expect((await $.command.run(lane('status'))).text).toContain('Lane: svc-api')
+  expect((await $.command.run(lane('status'))).text).toContain('| Lane | svc-api |')
   expect(await cue(56, 'resume\n')).toBe('resume ok - 56\n')
 })
 
@@ -417,7 +417,7 @@ test('a restore binding write that times out binds nothing, is not left pending,
   expect(toasts).not.toContain(NOT_RESTORED)
   late.release()
   await waitFor(() => logged(stdins).includes('error:late-bind-undone'))
-  expect((await $.command.run(lane('status'))).text).toContain('Lane: NONE')
+  expect((await $.command.run(lane('status'))).text).toContain('| Lane | NONE |')
 })
 const storeMvs = (argv: string[][]) => argv.filter((a) => a[0] === '/bin/mv' && a[a.length - 1].startsWith(`${LANESDIR}/`)).length
 // A binding the test writes itself (another time), as a new binding of the same session.
@@ -446,7 +446,7 @@ test('a restore through the dialog writes the id; a record that names another si
   h.store.set(`sess:${SID}`, { lane: { name: 'svc-api', at: 1, turns: -1, adopted: true, lead: LEADSID }, counters: { startDone: true }, savedAt: T0 })
   h.askAnswer = YES
   await $.command.run(lane('lane'))
-  expect((await $.command.run(lane('status'))).text).toContain('Lane: svc-api')
+  expect((await $.command.run(lane('status'))).text).toContain('| Lane | svc-api |')
   await tickTwice()
   expect(storeJson().lanes).toEqual([{ ...ATT_REC, sid: SID }])
   expect(logged(stdins)).toContain('sid-healed:')
@@ -844,7 +844,7 @@ test('a session whose store record names its id rebinds from the tick as a resto
   const stdins: string[] = []
   const trace = newTrace()
   await rebinder($, on, stdins, { trace, hint: LANE_HINT() })
-  expect(await statusText($)).toContain('Lane: NONE')
+  expect(await statusText($)).toContain('| Lane | NONE |')
   await tickTwice()
   const b = trace.st!.get('lane')!.value as any
   expect(b).toMatchObject({ name: 'LABLANE', turns: -1, restored: true })
@@ -859,7 +859,7 @@ test('a session whose store record names its id rebinds from the tick as a resto
   expect((h.store.get(`sess:${SID}`) as any).lane).toMatchObject({ name: 'LABLANE', turns: -1, restored: true })
   await $.command.run(lane('lane'))
   expect(rebindAsks.some((q) => q.startsWith('Restore'))).toBe(false)
-  expect(await statusText($)).toContain('Lane: LABLANE')
+  expect(await statusText($)).toContain('| Lane | LABLANE |')
   expect(recOf()).toEqual(STORE_LANE({ sid: SID }))
 })
 
@@ -867,7 +867,7 @@ test('a rebind merges the counters of its hint: a compaction 5 minutes before th
   const stdins: string[] = []
   await rebinder($, on, stdins, { hint: LANE_HINT({}, { lastCompactMs: T0 - 5 * 60_000, resumeTimes: [T0 - 60_000] }) })
   await tickTwice()
-  expect(await statusText($)).toContain('Lane: LABLANE')
+  expect(await statusText($)).toContain('| Lane | LABLANE |')
   expect((h.store.get(`sess:${SID}`) as any).counters).toMatchObject({ lastCompactMs: T0 - 5 * 60_000, startDone: true, resumeTimes: [T0 - 60_000] })
   expect(JSON.stringify(await $.tool.call(GOOD as any))).toContain('Compaction not allowed: rate-limit')
 })
@@ -882,7 +882,7 @@ for (const [what, opts, code] of NOT_REBOUND) {
     const stdins: string[] = []
     await rebinder($, on, stdins, opts)
     await ticks(4)
-    expect(await statusText($)).toContain('Lane: NONE')
+    expect(await statusText($)).toContain('| Lane | NONE |')
     expect(rebinds(stdins)).toEqual([code])
     expect(toasts).not.toContain(reboundToast('LABLANE'))
     expect(toasts.filter((t) => t === 'Lane LABLANE did not rebind automatically. Run /callboard lane to restore it.')).toEqual(['Lane LABLANE did not rebind automatically. Run /callboard lane to restore it.'])
@@ -897,7 +897,7 @@ test('a lead is never rebound into a lane: refused lead-holder, and the lead sta
   h.callerCwd = MFOLDER
   await ticks(3)
   expect(rebinds(stdins)).toEqual(['rebind-rejected:lead-holder'])
-  expect(await statusText($)).toContain('Lane: NONE. Lead: ON.')
+  expect(await statusText($)).toContain('| Lane | NONE |\n| Lead | ON |')
   expect(toasts.some((t) => t.includes('did not rebind'))).toBe(false)
 })
 
@@ -933,7 +933,7 @@ test('another live session carrying the name holds the rebind back; once it is g
   const busy = { [REGFILE]: REG({ cwd: MFOLDER }), ...cueSession(OTHER, 'LABLANE', MFOLDER, { pid: 4500 }) }
   await rebinder($, on, stdins, { sess: busy })
   await ticks(3)
-  expect(await statusText($)).toContain('Lane: NONE')
+  expect(await statusText($)).toContain('| Lane | NONE |')
   expect(rebinds(stdins)).toEqual([])
   h.sessions = { [REGFILE]: REG({ cwd: MFOLDER }) }
   await ticks(2)
@@ -945,7 +945,7 @@ test('a name in use for all 15 tries is logged once as rebind-rejected name-in-u
   await rebinder($, on, stdins, { sess: { [REGFILE]: REG({ cwd: MFOLDER }), ...cueSession(OTHER, 'LABLANE', MFOLDER, { pid: 4500 }) } })
   await ticks(20)
   expect(rebinds(stdins)).toEqual(['rebind-rejected:name-in-use'])
-  expect(await statusText($)).toContain('Lane: NONE')
+  expect(await statusText($)).toContain('| Lane | NONE |')
 })
 
 test('a registry read whose ps -p confirmation failed is not trusted: no rebind on it, and after 15 tries rebind-rejected registry-ps-confirm', async ($, on) => {
@@ -954,7 +954,7 @@ test('a registry read whose ps -p confirmation failed is not trusted: no rebind 
   psStartsGone.add('4500')
   h.psConfirmFails = 'throw'
   await ticks(16)
-  expect(await statusText($)).toContain('Lane: NONE')
+  expect(await statusText($)).toContain('| Lane | NONE |')
   expect(rebinds(stdins)).toEqual(['rebind-rejected:registry-ps-confirm'])
 })
 
@@ -993,7 +993,7 @@ test('no trusted own row by try 15: rebind-rejected registry-no-own-row, and no 
   h.sessions = { [REGFILE]: REG({ cwd: MFOLDER }) }
   await ticks(2)
   expect(rebinds(stdins)).toEqual(['rebind-rejected:registry-no-own-row'])
-  expect(await statusText($)).toContain('Lane: NONE')
+  expect(await statusText($)).toContain('| Lane | NONE |')
 })
 
 test('a rebound lane answers a resume cue', async ($, on) => {
@@ -1014,7 +1014,7 @@ test('a Restore question answered yes after the rebind landed shows no "things c
   expect(rebinds(stdins)).toEqual(['rebound:LABLANE'])
   answer(YES)
   await p
-  expect(await statusText($)).toContain('Lane: LABLANE')
+  expect(await statusText($)).toContain('| Lane | LABLANE |')
   expect(logged(stdins)).toContain('refused:restore-already-bound')
   expect(toasts).toContain(reboundToast('LABLANE'))
   expect(toasts).not.toContain(restoreChangedToast('LABLANE'))
@@ -1027,7 +1027,7 @@ test('/callboard off in a born lane, then the session starts again: no rebind', 
   await $.command.run(lane('off'))
   await $.session.start({ cwd: MFOLDER, surface: 'vscode', isInteractive: true })
   await ticks(3)
-  expect(await statusText($)).toContain('Lane: NONE')
+  expect(await statusText($)).toContain('| Lane | NONE |')
   expect(rebinds(stdins)).toEqual([])
 })
 
@@ -1059,7 +1059,7 @@ test('/callboard off before a pending rebind lands cancels it and clears the rec
   expect((await $.command.run(lane('off'))).text).toBe('Lane LABLANE will not rebind automatically. Lane LABLANE no longer names this session.')
   expect(recOf()).toEqual(STORE_LANE())
   await ticks(3)
-  expect(await statusText($)).toContain('Lane: NONE')
+  expect(await statusText($)).toContain('| Lane | NONE |')
   expect(rebinds(stdins)).toEqual([])
   expect(logged(stdins)).toContain('sid-cleared:')
 })
@@ -1100,7 +1100,7 @@ test('/callboard off whose session id clear fails still cancels a pending rebind
   expect(r.text).toBe(`Lane LABLANE will not rebind automatically.${SID_KEPT('LABLANE')}`)
   h.storeWrites = 'ok'
   await ticks(3)
-  expect(await statusText($)).toContain('Lane: NONE')
+  expect(await statusText($)).toContain('| Lane | NONE |')
   expect(rebinds(stdins)).toEqual([])
   expect(logged(stdins)).toContain('sid-uncleared:')
 })
@@ -1115,7 +1115,7 @@ test('/callboard off while a rebind is past its lanes read: no binding is writte
   for (let i = 0; i < 20 && !offDone; i++) await h.clock!.advance(1000)
   expect(offDone).toBe(true)
   await ticks(3)
-  expect(await statusText($)).toContain('Lane: NONE')
+  expect(await statusText($)).toContain('| Lane | NONE |')
   expect(recOf()).toEqual(STORE_LANE())
   expect(logged(stdins).filter((x) => x.startsWith('rebound:'))).toEqual([])
 })
@@ -1134,7 +1134,7 @@ test('/callboard off that has read no binding yet: a rebind tick while off is st
   for (let i = 0; i < 20 && !offDone; i++) await h.clock!.advance(1000)
   await off
   await ticks(3)
-  expect(await statusText($)).toContain('Lane: NONE')
+  expect(await statusText($)).toContain('| Lane | NONE |')
   expect(logged(stdins).filter((x) => x.startsWith('rebound:'))).toEqual([])
 })
 
@@ -1163,7 +1163,7 @@ test('/callboard lane with a hint whose restore is refused goes on to the Join q
   expect((await doLane($)).text).toBe(ATTACHED())
   expect(logged(stdins)).toContain('hint-rejected:unknown-lane')
   expect(h.askedOptions).toEqual([[ATTACH_YES, ATTACH_NO]])
-  expect((await $.command.run(lane('status'))).text).toBe("Lane: svc-api. Lead: OFF. This lane's lead: LEAD.")
+  expect((await $.command.run(lane('status'))).text).toBe(statusTable(['Lane', 'svc-api'], ['Lead', 'OFF'], ['This lane\'s lead', 'LEAD']))
 })
 
 test('/callboard lane with a hint whose Restore is declined goes on to the Join question', async ($, on) => {

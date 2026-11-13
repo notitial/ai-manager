@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 import { folderName, briefingFolder, leadBriefing, STOPPABLE_BY_NAME, LANES_CHANGED_TEXT, LANES_CHANGED_NOTE } from '../hooks/core'
 import { h, LANESDIR, NO, REPORT, ROOT, SID, T0, TOOL, YES, engine, extraStat, laneSeed, leadFiles, longTest, resultFiles, storeFiles, submitted } from './harness'
 import type { Trace } from './harness'
-import { ANY, ATTACHED, ATTLEAD, ATTSESS, ATT_REC, COMPOSE, LANES, LANE_COMPOSE, LEADPATH, LEADPS, LEADSID, LEAD_LANES, OTHER, OTHERLEAD, PIN, REG, REGFILE, RESULT, STOREFILE, SVC, attRec, attacher, bornWithTwoLeads, briefings, callCreate, cue, cueSession, dirStat, doLane, fileStat, grantAt, lane, laneSections, leadAt, leadCall, leadFileText, leadReg, leadSelfReg, listCall, listed, logged, mdBox, newTrace, noNote, noteRows, notices, ownReg, putStore, renameThroughTick, sleepMs, started, storeText, tickTwice, ticks, waitFor } from './fixtures'
+import { ANY, ATTACHED, ATTLEAD, ATTSESS, ATT_REC, COMPOSE, LANES, LANE_COMPOSE, LEADPATH, LEADPS, LEADSID, LEAD_LANES, NO_LANES, OTHER, OTHERLEAD, PIN, REG, REGFILE, RESULT, STOREFILE, SVC, attRec, attacher, bornWithTwoLeads, briefings, callCreate, cue, cueSession, dirStat, doLane, fileStat, grantAt, lane, laneSections, leadAt, leadCall, leadFileText, leadReg, leadSelfReg, listCall, listed, logged, mdBox, newTrace, noNote, noteRows, notices, ownReg, putStore, renameThroughTick, sleepMs, started, statusTable, storeText, tickTwice, ticks, waitFor } from './fixtures'
 
 test('lane_list gives one fixed line per lane of this repo: lanes the lead made, attached lanes, and whether a session carries the name', async ($, on) => {
   await leadAt($, on, [], { sess: { ...leadSelfReg(), ...cueSession(OTHER, 'API', `${PIN}/api`, { pid: 4500 }) } })
@@ -15,7 +15,7 @@ test('lane_list gives one fixed line per lane of this repo: lanes the lead made,
   expect(bare(await listed($))).toBe(mdBox(ANY, [['LAB', 'lab', 'none', '–'], ['API', 'api', 'live', '–'], ['ATT', 'svc', 'none', '–']]))
   laneSeed.text = undefined
   storeFiles.clear()
-  expect(bare(await listed($))).toBe('no lanes in this repo')
+  expect(bare(await listed($))).toBe(NO_LANES)
 })
 
 longTest('/callboard lanes prints the lane_list table to the person; with lead off it says so', async ($, on) => {
@@ -27,7 +27,7 @@ longTest('/callboard lanes prints the lane_list table to the person; with lead o
   expect((await $.command.run(lane('lanes'))).text).toBe(table)
   expect(bare(await listed($))).toBe(table)
   storeFiles.clear()
-  expect((await $.command.run(lane('lanes'))).text).toBe('no lanes in this repo')
+  expect((await $.command.run(lane('lanes'))).text).toBe(NO_LANES)
   expect((await $.command.run(lane('off'))).text).toBe('Lead is now off.')
   expect((await $.command.run(lane('lanes'))).text).toBe('Lanes need a lead, conductor or manager here: run /callboard lead to make this session a lead.')
 })
@@ -190,7 +190,7 @@ test('lane_list shows another lead only its own repo: a lead pinned in a subfold
   await leadAt($, on, [], { sess: leadSelfReg() })
   putStore([attRec(SID)])
   await grantAt($, SVC)
-  expect(await listed($)).toBe('no lanes in this repo')
+  expect(await listed($)).toBe(NO_LANES)
 })
 
 const swapIdle = (status: string) => (h.sessions = leadSelfReg({ status }))
@@ -315,7 +315,7 @@ test('the lead own lane_create and the removal by its own lane_terminate are not
 
 test('the next lane tool result says once that the lanes changed since the last lane tool call', async ($, on) => {
   await leadAt($, on, [])
-  expect(await listed($)).toBe('no lanes in this repo')
+  expect(await listed($)).toBe(NO_LANES)
   putStore([attRec(SID)])
   const r1 = await listed($)
   expect(r1.endsWith(LANES_CHANGED_NOTE)).toBe(true)
@@ -331,18 +331,18 @@ test('the next lane tool result says once that the lanes changed since the last 
 // The notice tells the lead the list changed, so the lane_list it makes in answer is not told again; the footer is for a change the lead has not been told about.
 test('a notice counts as telling the lead: the lane_list made in answer has no footer, for a lead with no lanes too', async ($, on) => {
   await leadAt($, on, [], { clock: true })
-  expect(await listed($)).toBe('no lanes in this repo')
+  expect(await listed($)).toBe(NO_LANES)
   storeFiles.set(STOREFILE, storeText(1))
   await tickTwice()
   expect(notices()).toBe(1)
-  expect(await listed($)).toBe('no lanes in this repo')
-  expect(await listed($)).toBe('no lanes in this repo')
+  expect(await listed($)).toBe(NO_LANES)
+  expect(await listed($)).toBe(NO_LANES)
   await tickTwice()
   expect(notices()).toBe(1)
   storeFiles.set(STOREFILE, storeText(2))
   await tickTwice()
   expect(notices()).toBe(2)
-  expect(await listed($)).toBe('no lanes in this repo')
+  expect(await listed($)).toBe(NO_LANES)
 })
 
 test('a change that lands after the notice is still news to the next lane tool call', async ($, on) => {
@@ -352,7 +352,7 @@ test('a change that lands after the notice is still news to the next lane tool c
   expect(notices()).toBe(1)
   storeFiles.set(STOREFILE, storeText(2))
   expect((await listed($)).endsWith(LANES_CHANGED_NOTE)).toBe(true)
-  expect(await listed($)).toBe('no lanes in this repo')
+  expect(await listed($)).toBe(NO_LANES)
 })
 
 test('a lead whose lane list has not changed does not read its store again', async ($, on) => {
@@ -401,7 +401,7 @@ test('a lane notice that could not be submitted told the lead nothing: its next 
   await h.clock!.advance(2000)
   expect(notices()).toBe(1)
   expect((await listed($)).endsWith(LANES_CHANGED_NOTE)).toBe(true)
-  expect(await listed($)).toBe('no lanes in this repo')
+  expect(await listed($)).toBe(NO_LANES)
 })
 
 test('a lane tool call that carries the news also settles the notice: nothing is sent for it afterwards', async ($, on) => {
@@ -504,14 +504,14 @@ test('a born lane names a lead the person named, found at bind time', async ($, 
 test('with two leads in the repo, a born lane names the lead whose rename cue named it, and /callboard status says so', async ($, on) => {
   const r = await bornWithTwoLeads($, on, `rename LABLANE ${OTHERLEAD}\n`)
   expect(r.first).toContain(`Your lead is \`LEAD2\` (session \`${OTHERLEAD}\`)`)
-  expect(r.status).toBe(`Lane: LABLANE. Lead: OFF. This lane's lead: LEAD2.`)
+  expect(r.status).toBe(statusTable(['Lane', 'LABLANE'], ['Lead', 'OFF'], ['This lane\'s lead', 'LEAD2']))
 })
 
 for (const [what, text] of [['names no lead', 'rename LABLANE\n'], ['names a session that is not a live lead of the repo', 'rename LABLANE 7a1b2c3d-0000-4000-8000-123456789abc\n']]) {
   test(`with two leads in the repo, a rename cue that ${what} gets the generic wording and status says not named`, async ($, on) => {
     const r = await bornWithTwoLeads($, on, text)
     expect(r.first).toContain('Your lead is the lead session of this repo.')
-    expect(r.status).toBe("Lane: LABLANE. Lead: OFF. This lane's lead: not named.")
+    expect(r.status).toBe(statusTable(['Lane', 'LABLANE'], ['Lead', 'OFF'], ['This lane\'s lead', 'not named']))
   })
 }
 
@@ -602,7 +602,7 @@ test('a restore appends one note: a born lane restored, with the report path of 
   const hint = { lane: { name: 'LABLANE', at: 1, turns: 0 }, counters: {}, savedAt: T0 }
   await started($, on, [], { seed: () => { laneSeed.text = LANES; h.store.set(`sess:${SID}`, hint) } })
   await $.command.run(lane('lane'))
-  expect((await $.command.run(lane('status'))).text).toContain('Lane: LABLANE')
+  expect((await $.command.run(lane('status'))).text).toContain('| Lane | LABLANE |')
   expect(h.appendRows.length).toBe(1)
   const note = h.appendRows[0].content[0].text as string
   expect(note.startsWith(`${NOTE_OPENER}\n\n**Callboard lane.** You are lane \`LABLANE\`, session \`${SID}\`, working in \`/data/x/work/lab\`. Your lead is the lead session of this repo.\n`)).toBe(true)
@@ -618,7 +618,7 @@ test('a refused note append is logged as lane-briefing and the attach still succ
   h.appendDeny = true
   expect((await doLane($, 'lane svc-api')).text).toBe(ATTACHED())
   expect(logged(stdins)).toContain('error:lane-briefing')
-  expect((await $.command.run(lane('status'))).text).toContain('Lane: svc-api')
+  expect((await $.command.run(lane('status'))).text).toContain('| Lane | svc-api |')
   expect(laneSections(await $.prompt.compose(LANE_COMPOSE)).length).toBe(1)
 })
 
@@ -672,7 +672,7 @@ test('an attached record whose lead holds no presence file for the lane repo nam
   h.restoreAnswer = YES
   h.askAnswer = YES
   await $.command.run(lane('lane'))
-  expect((await $.command.run(lane('status'))).text).toContain('Lane: svc-api')
+  expect((await $.command.run(lane('status'))).text).toContain('| Lane | svc-api |')
   expect(h.appendRows.length).toBe(1)
   const note = h.appendRows[0].content[0].text as string
   expect(note).toContain('Your lead is the lead session of this repo.')

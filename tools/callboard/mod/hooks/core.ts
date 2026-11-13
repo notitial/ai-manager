@@ -485,18 +485,22 @@ function parseConfigArgs(rest: string | undefined): ConfigOp {
   return inRange(field, value) ? { field, value } : 'bad'
 }
 
-const CONFIG_LABEL: Record<(typeof CONFIG_FIELDS)[number], (c: Config) => string> = {
-  keepalive: (c) => `keepalive ${c.keepalive ? 'on' : 'off'}`,
-  pingAfterMin: (c) => `ping after ${c.pingAfterMin} min`,
-  stopAfterH: (c) => `stop after ${c.stopAfterH} h`,
-  idleK: (c) => `idle level ${c.idleK}k`,
-  workingK: (c) => `working level ${c.workingK}k`,
-  checkin: (c) => `check-ins ${c.checkin ? 'on' : 'off'}`,
+type ConfigField = (typeof CONFIG_FIELDS)[number]
+const CONFIG_NAME: Record<ConfigField, string> = { keepalive: 'keepalive', pingAfterMin: 'ping after', stopAfterH: 'stop after', idleK: 'idle level', workingK: 'working level', checkin: 'check-ins' }
+const CONFIG_VALUE: Record<ConfigField, (c: Config) => string> = {
+  keepalive: (c) => (c.keepalive ? 'on' : 'off'),
+  pingAfterMin: (c) => `${c.pingAfterMin} min`,
+  stopAfterH: (c) => `${c.stopAfterH} h`,
+  idleK: (c) => `${c.idleK}k`,
+  workingK: (c) => `${c.workingK}k`,
+  checkin: (c) => (c.checkin ? 'on' : 'off'),
 }
+const CONFIG_LABEL = (f: ConfigField, c: Config): string => `${CONFIG_NAME[f]} ${CONFIG_VALUE[f](c)}`
+// /callboard config: one row per setting, with whether it still has its default.
 export const configText = (cfg: Config): string =>
-  `Callboard settings: ${CONFIG_FIELDS.map((f) => `${CONFIG_LABEL[f](cfg)}${cfg[f] === CONFIG_DEFAULTS[f] ? ' (default)' : ''}`).join(', ')}.`
+  mdPage('**Callboard settings**', ['Setting', 'Value', 'Default'], CONFIG_FIELDS.map((f) => [CONFIG_NAME[f], CONFIG_VALUE[f](cfg), cfg[f] === CONFIG_DEFAULTS[f] ? 'yes' : 'no']))
 const CONFIG_APPLIES = ' It applies to every session on this Mac within a minute.'
-export const configSetText = (field: (typeof CONFIG_FIELDS)[number], cfg: Config): string => `Callboard setting changed: ${CONFIG_LABEL[field](cfg)}.${CONFIG_APPLIES}`
+export const configSetText = (field: ConfigField, cfg: Config): string => `Callboard setting changed: ${CONFIG_LABEL(field, cfg)}.${CONFIG_APPLIES}`
 export const CONFIG_RESET_TEXT = `Callboard settings are back to the defaults.${CONFIG_APPLIES}`
 export const CONFIG_USAGE = 'Use /callboard config [keepalive on|off, ping 30-55, stop 1-8, idle 150-800, working IDLE-900, checkin on|off, reset].'
 export const CONFIG_NOT_PERSON = 'Only you can change callboard settings: type /callboard config yourself.'
@@ -608,7 +612,13 @@ export const HINT_REFRESH_MS = 24 * HOUR_MS
 // `reserve` and anything after it is this machine's reserved-names command (parseReserveArgs); a form it does not know is its own usage text.
 export type CommandArg = 'off' | 'status' | 'lead' | 'lanes' | 'lane-off' | { lane: string | undefined } | { config: ConfigOp } | { checkin: CheckinOp } | { manager: string | undefined } | { conductor: ConductorOp } | { reserve: ReserveOp }
 
-// /callboard with no argument and /callboard help: one row per subcommand the handler accepts, in laneListText's table style. Who: who may run it ("You" is the
+// The one table every /callboard print and lane_list uses: a bold header line, a blank line, a header row, a separator row, one row per row, then each note as its own
+// paragraph. A cell is written as given: the caller escapes what it did not write itself (mdEscape).
+const mdEscape = (s: string): string => s.replace(/[\\|*_`><[\]]/g, '\\$&')
+const mdTable = (head: string[], rows: string[][]): string[] => [`| ${head.join(' | ')} |`, `|${head.map(() => '---').join('|')}|`, ...rows.map((r) => `| ${r.join(' | ')} |`)]
+export const mdPage = (header: string, head: string[], rows: string[][], notes: string[] = []): string => [header, '', ...mdTable(head, rows), ...notes.flatMap((n) => ['', n])].join('\n')
+
+// /callboard with no argument and /callboard help: one row per subcommand the handler accepts, in the shared table style (mdPage). Who: who may run it ("You" is the
 // person, typing it or answering its dialog).
 const HELP_ROWS: [string, string, string][] = [
   ['lanes', 'List the lanes in reach and their sessions.', 'Lead, conductor, manager'],
@@ -626,8 +636,7 @@ const HELP_ROWS: [string, string, string][] = [
   ['off', 'Turn lead, conductor, manager and lane off for this session.', 'Anyone, after you confirm'],
   ['help', 'Show this table.', 'Anyone'],
 ]
-export const helpText = (): string =>
-  ['**Callboard commands**', '', '| Command | What it does | Who |', '|---|---|---|', ...HELP_ROWS.map((r) => `| ${r.map(mdEscape).join(' | ')} |`)].join('\n')
+export const helpText = (): string => mdPage('**Callboard commands**', ['Command', 'What it does', 'Who'], HELP_ROWS.map((r) => r.map(mdEscape)))
 // A word the handler does not know: the short list, then the way to the full one.
 export const HELP_USAGE = 'Use /callboard help, lanes, status, lead, lane [NAME], escalation [off], prompts, manager or off. Run /callboard help for the full list.'
 // /callboard lanes where there is no list to show: a lane is told who lists, any other session what it lacks.
@@ -685,7 +694,7 @@ export const RESERVE_NOT_PERSON = 'Only you can change the reserved names: type 
 export const RESERVE_UNREADABLE = 'The reserved names could not be read. Nothing changed.'
 export const RESERVE_UNSAVED = 'The reserved names could not be saved. Run /callboard reserve to see them.'
 export const reserveShowText = (names: readonly string[]): string =>
-  names.length === 0 ? `Reserved names: ${RESERVED_NAMES.join(', ')} (built in). None added on this machine.` : `Reserved names: ${RESERVED_NAMES.join(', ')} (built in); on this machine: ${names.join(', ')}.`
+  mdPage('**Reserved names**', ['Name', 'Source'], [...RESERVED_NAMES.map((n) => [n, 'built in']), ...names.map((n) => [n, 'this machine'])], names.length === 0 ? ['None added on this machine.'] : [])
 // A name the person may add, judged against the list as stored and what carries names now: refused when it is built in or already reserved (a look-alike
 // counts), when the list is full, or when a lane record, a lead stamp or a live lead or lane carries it, in any letter case (inUse names that one). The manager
 // may carry it: that is what the name is for.
@@ -1594,7 +1603,7 @@ export const LANE_NO_LEAD = ' It names no lead, so any lead of this repo can rea
 // names no lead goes under `Any lead`, a lead no live session carries is `NAME (not live)`, and a live lead with no lanes is one row with `–` in the lane cells.
 // A Folder column (after Lane, relative to the repo, `.` for the root) appears only when a lane is outside its repo root. waiting: minutes since the lane's own
 // live row went waiting on a prompt (its statusUpdatedAt; `?` when that is missing or ahead), `–` when it waits on nothing. One text for lane_list and /callboard lanes.
-const mdEscape = (s: string): string => s.replace(/[\\|*_`><[\]]/g, '\\$&')
+// With no lanes and no live lead the text is a one-column table (`Lanes`) with one row saying there are none (`no lanes in this repo`, `no lanes in its repos` for a conductor).
 // The Repo cell names the repo by its folder name only (folderName), as a path made the row long; a lane's own Folder column is relative.
 // A conductor's view has its own header. The manager's view, when a live conductor lists repos, gains a leading Conductor column (conductors
 // sorted by name, then the repos no conductor lists, with `–`); a repo two conductors list goes under the first, its Repo cell saying `(also NAME2)`. conductors
@@ -1605,7 +1614,7 @@ export type ConductorView = { name?: string; repos: string[] }
 export type LiveLead = { name: string; repo: string }
 export function laneListText(lanes: Lane[], entries: RegEntry[], now: number, view: { level?: 'lead' | 'manager' | 'conductor'; name?: string; conductors?: ConductorView[] | 'error'; leads?: LiveLead[] } = {}): string {
   const liveLeads = view.level === 'manager' || view.level === 'conductor' ? (view.leads ?? []) : []
-  if (lanes.length === 0 && liveLeads.length === 0) return view.level === 'conductor' ? 'no lanes in its repos' : 'no lanes in this repo'
+  if (lanes.length === 0 && liveLeads.length === 0) return mdTable(['Lanes'], [[view.level === 'conductor' ? 'no lanes in its repos' : 'no lanes in this repo']]).join('\n')
   const names = entries.flatMap((e) => (typeof e.name === 'string' ? [e.name] : []))
   const waiting = (l: Lane): string => {
     const one = laneSession(entries, l, '')
@@ -1664,14 +1673,7 @@ export function laneListText(lanes: Lane[], entries: RegEntry[], now: number, vi
   }
   const head = [...(conds.length > 0 ? ['Conductor'] : []), 'Lead', 'Repo', 'Lane', ...(withFolder ? ['Folder'] : []), 'Session', 'Waiting']
   const level = view.level === 'manager' ? 'Manager' : view.level === 'conductor' ? 'Conductor' : 'Lead'
-  return [
-    `**${level}${view.name ? ` ${mdEscape(view.name)}` : ''}** · live`,
-    '',
-    `| ${head.join(' | ')} |`,
-    `|${head.map(() => '---').join('|')}|`,
-    ...rows.map((r) => `| ${r.join(' | ')} |`),
-    ...(view.level === 'manager' && view.conductors === 'error' ? ['', '(conductors could not be read)'] : []),
-  ].join('\n')
+  return mdPage(`**${level}${view.name ? ` ${mdEscape(view.name)}` : ''}** · live`, head, rows, view.level === 'manager' && view.conductors === 'error' ? ['(conductors could not be read)'] : [])
 }
 
 // ---- lead check-ins ----
@@ -1780,9 +1782,9 @@ export const CHECKIN_NOT_LEAD = 'Check-ins are for a lead or manager, and this s
 export const CHECKIN_ON_BUT_OFF = 'Check-ins are on again in this session, but off on this Mac: /callboard config checkin on turns them on.'
 const minsLeft = (until: number, now: number) => Math.ceil((until - now) / 60_000)
 export const checkinPausedText = (until: number, now: number): string => `Check-ins paused in this session for ${minsLeft(until, now)} min.`
-// The status line part, for a lead only.
+// The state of the Check-ins row of /callboard status, for a lead or manager only.
 export const checkinStatus = (on: boolean, pauseUntil: unknown, now: number): string =>
-  !on ? 'Check-ins: OFF.' : typeof pauseUntil === 'number' && pauseUntil > now ? `Check-ins: PAUSED for ${minsLeft(pauseUntil, now)} more min.` : 'Check-ins: ON.'
+  !on ? 'OFF' : typeof pauseUntil === 'number' && pauseUntil > now ? `PAUSED for ${minsLeft(pauseUntil, now)} more min` : 'ON'
 
 // The lead's briefing: one `session`-scope section of the system prompt, added only while lead is on in the session (the person approved the text, 2026-10-31).
 export const LEAD_BRIEFING_ID = 'callboard:lead'
@@ -1843,11 +1845,13 @@ export const laneBriefingNote = (f: LaneFacts): string | undefined => {
   return t === undefined ? undefined : `${LEAD_BRIEFING_NOTE}\n\n${t}`
 }
 
-// The /callboard status tail in a bound lane: the lead its briefing names, or that none is named (two leads at birth, none live, or a reload).
+// The state of the "This lane's lead" row of /callboard status in a bound lane: the lead its briefing names, or that none is named (two leads at birth, none live, or a reload).
 export function laneStatusLead(f: LaneFacts | undefined, lane: string): string {
   const l = f?.name === lane ? f.lead : undefined
-  return l && NAME_RE.test(l.name) && SID_RE.test(l.sid) ? ` This lane's lead: ${l.name}.` : " This lane's lead: not named."
+  return l && NAME_RE.test(l.name) && SID_RE.test(l.sid) ? l.name : 'not named'
 }
+// /callboard status: one Role and State row per fact (Lane, Lead, Manager or Conductor, Check-ins for a lead or manager, This lane's lead in a lane).
+export const statusTableText = (rows: [string, string][]): string => mdPage('**Callboard status**', ['Role', 'State'], rows)
 
 // The lead a lane's briefing may name: the one registry row of that session id, with a valid lane-style name from any name source (the person's decision:
 // the registry writes nameSource 'auto' even for a /rename), and no other live row carrying that name in any letter case. Anything else: no name,
@@ -2033,7 +2037,8 @@ export const conductorShown = (conductorRepo: string, real: string, home?: strin
   return e.startsWith('../') ? e : `${fullPath(real, home)} (not next to ${folderName(conductorRepo)})`
 }
 // The list as shown: each entry (sibling or absolute), in the file's sorted order.
-const conductorShownList = (conductorRepo: string, reals: string[], home?: string): string => [...reals].sort((a, b) => (entryFor(conductorRepo, a) < entryFor(conductorRepo, b) ? -1 : 1)).map((r) => conductorShown(conductorRepo, r, home)).join(', ')
+const conductorShownRepos = (conductorRepo: string, reals: string[], home?: string): string[] => [...reals].sort((a, b) => (entryFor(conductorRepo, a) < entryFor(conductorRepo, b) ? -1 : 1)).map((r) => conductorShown(conductorRepo, r, home))
+const conductorShownList = (conductorRepo: string, reals: string[], home?: string): string => conductorShownRepos(conductorRepo, reals, home).join(', ')
 
 // Where an added repo may not be: the conductor repo itself (in this release), inside or around it or a listed repo, or listed already.
 export function nestRefusal(conductorRepo: string, pins: string[], p: string): string | undefined {
@@ -2119,13 +2124,14 @@ export const CONDUCTOR_ON_TEXT = 'Conductor is on from your next prompt.\nEvery 
 export const CONDUCTOR_FAILED = 'Conductor could not be set up.'
 export const CONDUCTOR_OFF_QUESTION = 'Turn conductor off for this session? Its saved conductor grant is deleted.'
 export const CONDUCTOR_KEPT = ' Conductor may come back after a restart. If it does, run /callboard off again.'
-export const conductorStatus = (n: number): string => `Conductor: ON (${n} repo${n === 1 ? '' : 's'}).`
+export const conductorStatus = (n: number): string => `ON (${n} repo${n === 1 ? '' : 's'})`
 // Why a listed repo is out of reach, in the replies (fixed words).
 const OUT_WORDS: Record<string, string> = { 'not-found': 'not found', 'not-real': 'not its own real path', 'not-git': 'not a git repo root', broad: 'too broad', nested: 'inside or around the conductor repo', error: 'could not be checked', unapproved: 'not approved in this session' }
 export const conductorOutText = (out: { entry: string; why: string }[]): string =>
   out.length === 0 ? '' : ` Out of reach: ${out.map((o) => `${stripCtrl(o.entry)} (${OUT_WORDS[o.why] ?? o.why})`).join(', ')}.`
+// /callboard conductor in a conductor that needs no dialog: one row per repo in reach, then one per listed repo out of reach with the reason.
 export const conductorReachText = (conductorRepo: string, pins: string[], home: string | undefined, out: { entry: string; why: string }[]): string =>
-  `Conductor is on for ${conductorShownList(conductorRepo, pins, home)}.${conductorOutText(out)}`
+  mdPage('**Conductor** · on', ['Repo', 'State'], [...conductorShownRepos(conductorRepo, pins, home).map((r) => [mdEscape(r), 'in reach']), ...out.map((o) => [mdEscape(stripCtrl(o.entry)), `out of reach: ${OUT_WORDS[o.why] ?? o.why}`])])
 export const conductorRestoredToast = (conductorRepo: string, n: number): string => `Conductor is on again for ${folderName(conductorRepo)} (${n} repo${n === 1 ? '' : 's'}).`
 export const conductorNoReposToast = (conductorRepo: string): string => `Conductor is off: none of ${folderName(conductorRepo)}'s approved repos can be reached. Run /callboard conductor.`
 export const conductorUnansweredToast = (conductorRepo: string): string => `Conductor not restored: ${folderName(conductorRepo)}'s list changed and the question was not answered. Run /callboard conductor.`

@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import { h, NO, PS_TABLE, T0, leadFiles, longTest, resultFiles } from './harness'
-import { ANY, LEADPATH, MGR_SESS, MIN, OTHER, OTHERLEAD, OWN_ROW, PIN, QUIET, RESULT, TURN, bareList, checkins, ckLane, ckLead, ckRow, ckText, cueSession, grantAt, idleFor, lane, leadAt, leadCall, leadFileText, leadReg, leadSelfReg, logged, madeLane, mdBox, mgrAt, newTrace, notices, putStore, regAs, sleepFor, started, ticks } from './fixtures'
+import { ANY, LEADPATH, MGR_SESS, MIN, OTHER, OTHERLEAD, OWN_ROW, PIN, QUIET, RESULT, TURN, bareList, checkins, ckLane, ckLead, ckRow, ckText, cueSession, grantAt, idleFor, lane, leadAt, leadCall, leadFileText, leadReg, leadSelfReg, logged, madeLane, mdBox, mgrAt, newTrace, notices, putStore, regAs, sleepFor, started, statusTable, ticks } from './fixtures'
 
 longTest('check-in: a lane quiet 30 min gets one fixed notice from an idle lead, not before; once per since; again after it worked (seen busy twice)', async ($, on) => {
   const stdins: string[] = []
@@ -64,10 +64,10 @@ longTest('/callboard checkin: only the person pauses (a fixed refusal otherwise)
   const stdins: string[] = []
   await ckLead($, on, stdins)
   const status = async () => (await $.command.run(lane('status'))).text
-  expect(await status()).toBe('Lane: NONE. Lead: ON. Check-ins: ON.')
+  expect(await status()).toBe(statusTable(['Lane', 'NONE'], ['Lead', 'ON'], ['Check-ins', 'ON']))
   for (const origin of [{ kind: 'plugin', name: 'x' }, { kind: 'peer' }, null]) expect((await $.command.run(lane('checkin pause 2h', origin))).text).toBe('Only you can pause check-ins: type /callboard checkin yourself.')
   expect(logged(stdins).filter((x) => x.startsWith('refused:checkin'))).toEqual(['refused:checkin-not-person:plugin', 'refused:checkin-not-person:session', 'refused:checkin-not-person:other'])
-  expect(await status()).toBe('Lane: NONE. Lead: ON. Check-ins: ON.')
+  expect(await status()).toBe(statusTable(['Lane', 'NONE'], ['Lead', 'ON'], ['Check-ins', 'ON']))
   await $.command.run(lane('config checkin off'))
   expect((await $.command.run(lane('checkin on'))).text).toBe('Check-ins are on again in this session, but off on this Mac: /callboard config checkin on turns them on.')
   await $.command.run(lane('config checkin on'))
@@ -75,13 +75,13 @@ longTest('/callboard checkin: only the person pauses (a fixed refusal otherwise)
   expect((await $.command.run(lane('checkin pause 1h'))).text).toBe('Check-ins paused in this session for 60 min.')
   expect(logged(stdins).at(-1)).toBe('checkin-pause:60m:prompt')
   await idleFor(40 * MIN)
-  expect(await status()).toMatch(/^Lane: NONE\. Lead: ON\. Check-ins: PAUSED for (19|20|21) more min\.$/)
+  expect(await status()).toMatch(/^\*\*Callboard status\*\*\n\n\| Role \| State \|\n\|---\|---\|\n\| Lane \| NONE \|\n\| Lead \| ON \|\n\| Check-ins \| PAUSED for (19|20|21) more min \|$/)
   expect(checkins()).toEqual([])
   expect((await $.command.run(lane('checkin on'))).text).toBe('Check-ins are on again in this session.')
-  expect(await status()).toBe('Lane: NONE. Lead: ON. Check-ins: ON.')
+  expect(await status()).toBe(statusTable(['Lane', 'NONE'], ['Lead', 'ON'], ['Check-ins', 'ON']))
   await $.command.run(lane('config checkin off'))
   await idleFor(8 * MIN)
-  expect(await status()).toBe('Lane: NONE. Lead: ON. Check-ins: OFF.')
+  expect(await status()).toBe(statusTable(['Lane', 'NONE'], ['Lead', 'ON'], ['Check-ins', 'OFF']))
   expect(checkins()).toEqual([])
   await $.command.run(lane('config checkin on'))
   await idleFor(8 * MIN)

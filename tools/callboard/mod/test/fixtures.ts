@@ -14,8 +14,13 @@ export const lane = (args: string, origin: unknown = PERSON) => ({ command: 'cal
 export const statusText = async ($: any) => (await $.command.run(lane('status'))).text as string
 
 // Helpers the tests share, declared before their first use.
-// The status of a session with no lane and no lead. The text is built inline in register.ts, so it cannot be imported: this is the typed copy the tests check against.
-export const STATUS_NONE = 'Lane: NONE. Lead: OFF.'
+// The /callboard status text: a bold header, then a Role and State table with one row per [role, state]. Written here apart from the mod's own renderer, so a test checks the bytes.
+export const statusTable = (...rows: [string, string][]) => ['**Callboard status**', '', '| Role | State |', '|---|---|', ...rows.map(([role, state]) => `| ${role} | ${state} |`)].join('\n')
+// The status of a session with no lane and no lead.
+export const STATUS_NONE = statusTable(['Lane', 'NONE'], ['Lead', 'OFF'])
+// What lane_list and /callboard lanes say with no lanes at all: a one-column table with one row.
+export const NO_LANES = '| Lanes |\n|---|\n| no lanes in this repo |'
+export const NO_LANES_COND = '| Lanes |\n|---|\n| no lanes in its repos |'
 export const newTrace = (): Trace => ({ log: [], failCounters: false })
 export const putStore = (lanes: unknown[], creates: number[] = []) => storeFiles.set(STOREFILE, JSON.stringify({ repo: PIN, lanes, creates }))
 export const OWN_ROW = (over: Record<string, unknown> = {}): Record<string, string> => ({ '4999.json': JSON.stringify({ ...JSON.parse(AUTO_OWN), kind: 'interactive', ...over }) })
@@ -207,7 +212,7 @@ export async function attacher($: any, on: any, stdins: string[] = [], opts: { c
 }
 export const noLaneWritten = async ($: any) => {
   expect(storeFiles.has(STOREFILE)).toBe(false)
-  expect((await $.command.run(lane('status'))).text).toContain('Lane: NONE')
+  expect((await $.command.run(lane('status'))).text).toContain('| Lane | NONE |')
 }
 export const LOCK_CYCLE = ['mkdir', 'owner-file', 'owner-write', 'rm-owner', 'rmdir']
 export const ATTACHED = (name = 'svc-api', folder = SVC) => `This session is now lane ${name} in ${folderName(folder)} (repo ${folderName(PIN)}).`
