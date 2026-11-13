@@ -157,6 +157,18 @@ export async function leadRun($: any, e: unknown, body: () => Promise<any>) {
   return typeof out.result === 'string' ? { ...out, result: `${out.result}${out.result.includes('\n| ') ? '\n\n' : ' '}${c.LANES_CHANGED_NOTE}` } : typeof out.deny === 'string' ? { ...out, deny: `${out.deny} ${c.LANES_CHANGED_NOTE}` } : out
 }
 
+// The start of every lane tool but the prompt ones: leadRun, the timer, and `no`, which logs a refusal and answers it as that tool (lane_<verb> refused: <why>).
+export function leadTool($: any, e: unknown, verb: string, body: (sid: string, no: (reason: string, why: string) => Promise<{ deny: string }>) => Promise<any>) {
+  return leadRun($, e, async () => {
+    const sid = await $.session.id()
+    ensureTimer($)
+    return body(sid, async (reason, why) => {
+      await log($, sid, 'refused', `lead-${reason}`)
+      return { deny: leadReason(verb, why) }
+    })
+  })
+}
+
 export function leadToolsOnce($: any, sid: string): Promise<void> {
   let p = leadToolsInFlight.get(sid)
   if (!p) {
@@ -330,7 +342,7 @@ async function stopNoSession($: any, e: unknown, sid: string, verb: 'retire' | '
   const w = await removeRecord($, e, sid, l.src, l.name, { kind: 'idle', sid: l.sid, parked: l.parked !== undefined, seen: l, held })
   if ('no' in w) return no(w.no, w.why ?? c.reasonWhy(w.no))
   await log($, sid, 'lane-removed', l.name)
-  return { result: c.removedNoSessionText(verb, l.name) } as never
+  return { result: c.removedNoSessionText(verb, l.name) }
 }
 
 // lane_park's two store writes (the record names the session before the signal; the mark after it): the record of that name, changed only when `ok` holds for it.
@@ -1099,14 +1111,8 @@ export async function detach($: any, sid: string, b: Bound): Promise<{ sidKept: 
 }
 
 export async function leadVerbCall($: any, e: any, next: any, verb: (typeof c.LEAD_VERBS)[number]) {
-  return leadRun($, e, async () => {
-      const sid = await $.session.id()
+  return leadTool($, e, verb, async (sid, no) => {
       const deadline = (await $.clock.now()) + c.RESULT_DEADLINE_MS
-      ensureTimer($)
-      const no = async (reason: string, why: string) => {
-        await log($, sid, 'refused', `lead-${reason}`)
-        return { deny: leadReason(verb, why) }
-      }
       // The manager's lane_compact may name a live lead by its session name, in any repo (leadByName).
       // The conductor's too, for a lead of its repos.
       if (verb === 'compact' && (grantOf(sid)?.level === 'manager' || grantOf(sid)?.level === 'conductor')) {
@@ -1115,7 +1121,7 @@ export async function leadVerbCall($: any, e: any, next: any, verb: (typeof c.LE
         if (ld) {
           const sent = await cueExchange($, sid, ld.name, ld.sid, 'compact', deadline, no)
           if (sent) return sent
-          return { result: `cue compact acted for lead ${ld.name}.` } as never
+          return { result: `cue compact acted for lead ${ld.name}.` }
         }
       }
       let prep = await leadPrep($, e, sid)
@@ -1140,19 +1146,13 @@ export async function leadVerbCall($: any, e: any, next: any, verb: (typeof c.LE
       }
       const sent = await cueExchange($, sid, prep.lane.name, to.sid, verb, deadline, no)
       if (sent) return sent
-      return { result: `cue ${verb} acted for lane ${prep.lane.name}.` } as never
+      return { result: `cue ${verb} acted for lane ${prep.lane.name}.` }
     })
 }
 
 export async function laneCreateCall($: any, e: any, next: any) {
-  return leadRun($, e, async () => {
-    const sid = await $.session.id()
-    ensureTimer($)
+  return leadTool($, e, 'create', async (sid, no) => {
     await reservedGet($, sid, true)
-    const no = async (reason: string, why: string) => {
-      await log($, sid, 'refused', `lead-${reason}`)
-      return { deny: leadReason('create', why) }
-    }
     if ((e as { agentId?: string }).agentId !== undefined) return no('subagent', 'for the main agent only.')
     // The manager never creates a lane (it has no pin either).
     if (grantOf(sid)?.level === 'manager') return no('manager-tool', c.REASON_TEXT['manager-tool'])
@@ -1221,18 +1221,12 @@ export async function laneCreateCall($: any, e: any, next: any) {
     if ('no' in w) return no(w.no, w.why ?? c.reasonWhy(w.no))
     await log($, sid, 'lane-created', made!.name)
     toast($, `Lane ${made!.name} created (model ${made!.model})`)
-    return { result: `lane ${made!.name} created (model ${made!.model}); brief written to ${made!.brief}.${made!.leadName ? '' : c.LANE_NO_LEAD} Next: lane_open, then lane_rename with the id it returns, then lane_start.` } as never
+    return { result: `lane ${made!.name} created (model ${made!.model}); brief written to ${made!.brief}.${made!.leadName ? '' : c.LANE_NO_LEAD} Next: lane_open, then lane_rename with the id it returns, then lane_start.` }
   })
 }
 
 export async function laneOpenCall($: any, e: any, next: any) {
-  return leadRun($, e, async () => {
-    const sid = await $.session.id()
-    ensureTimer($)
-    const no = async (reason: string, why: string) => {
-      await log($, sid, 'refused', `lead-${reason}`)
-      return { deny: leadReason('open', why) }
-    }
+  return leadTool($, e, 'open', async (sid, no) => {
     const prep = await leadPrep($, e, sid)
     if ('err' in prep) return no(...prep.err)
     if (prep.lane.adopted) return no('adopted-record', c.reasonWhy('adopted-record'))
@@ -1260,7 +1254,7 @@ export async function laneOpenCall($: any, e: any, next: any) {
         return no(`open-${r.reason}`, why)
       }
       await log($, sid, 'opened', prep.lane.name)
-      return { result: `lane ${prep.lane.name}: panel opened as session ${r.sid}. Next: lane_rename with sid ${r.sid}, then lane_start.` } as never
+      return { result: `lane ${prep.lane.name}: panel opened as session ${r.sid}. Next: lane_rename with sid ${r.sid}, then lane_start.` }
     }
     await run($, [RM, '-f', '--', request])
     return no('open-timeout', 'no window answered in time. A VS Code window with the lane folder as its first workspace folder must run the callboard panels extension. A panel may still appear: check for an unnamed session in that folder first.')
@@ -1271,13 +1265,7 @@ export async function laneOpenCall($: any, e: any, next: any) {
 // rebinds itself (the tick's rebind step). Live means a registry row of that id whose process still has its start time. A row of the parked process that
 // started before the park mark is waited for (up to 5 s) first: right after lane_park the stopped process can still be exiting.
 export async function laneUnparkCall($: any, e: any, next: any) {
-  return leadRun($, e, async () => {
-    const sid = await $.session.id()
-    ensureTimer($)
-    const no = async (reason: string, why: string) => {
-      await log($, sid, 'refused', `lead-${reason}`)
-      return { deny: leadReason('unpark', why) }
-    }
+  return leadTool($, e, 'unpark', async (sid, no) => {
     let prep = await leadPrep($, e, sid)
     if ('err' in prep) return no(...prep.err)
     const rec = prep.lane
@@ -1310,7 +1298,7 @@ export async function laneUnparkCall($: any, e: any, next: any) {
     if (rec.parked !== undefined && live.some(stopped)) return no('session-live', c.reasonWhy('session-live'))
     if (live.length === 1 && live[0].name === name) {
       await unmark()
-      return { result: c.alreadyLiveText(name, want) } as never
+      return { result: c.alreadyLiveText(name, want) }
     }
     if (live.length > 0) return no('session-live', c.reasonWhy('session-live'))
     if (prep.entries.some((x) => x.name === name && x.sessionId !== want)) return no('name-in-use', c.reasonWhy('name-in-use'))
@@ -1336,7 +1324,7 @@ export async function laneUnparkCall($: any, e: any, next: any) {
       await unmark()
       await log($, sid, 'reopened', name)
       toast($, `Lane ${name} reopened`)
-      return { result: c.reopenedText(name, want) } as never
+      return { result: c.reopenedText(name, want) }
     }
     await run($, [RM, '-f', '--', request])
     return no('reopen-timeout', c.reasonWhy('reopen-timeout'))
@@ -1344,29 +1332,21 @@ export async function laneUnparkCall($: any, e: any, next: any) {
 }
 
 export async function laneListCall($: any, e: any, next: any) {
-  return leadRun($, e, async () => {
-    const sid = await $.session.id()
-    ensureTimer($)
+  return leadTool($, e, 'list', async (sid, no) => {
     const sub = (e as { agentId?: string }).agentId !== undefined
     const t = sub ? { err: SUBAGENT } : await laneTable($, sid)
-    if ('err' in t) {
-      await log($, sid, 'refused', `lead-${t.err[0]}`)
-      return { deny: leadReason('list', t.err[1]) }
-    }
-    return { result: t.text } as never
+    if ('err' in t) return no(t.err[0], t.err[1])
+    return { result: t.text }
   })
 }
 
 export async function stopVerbCall($: any, e: any, next: any, verb: (typeof c.STOP_VERBS)[number]) {
-  return leadRun($, e, async () => {
-      const sid = await $.session.id()
+  return leadTool($, e, verb, async (sid, refuse) => {
       let deadline = (await $.clock.now()) + c.RESULT_DEADLINE_MS
-      ensureTimer($)
       let lastCode = ''
       const no = async (reason: string, why: string) => {
         lastCode = reason
-        await log($, sid, 'refused', `lead-${reason}`)
-        return { deny: leadReason(verb, why) }
+        return refuse(reason, why)
       }
       // The level the call started under. At manager reach every stop asks the person once, in a dialog that names the repo, and nothing is
       // signalled unless the grant still holds at that level after the click.
@@ -1543,10 +1523,10 @@ export async function stopVerbCall($: any, e: any, next: any, verb: (typeof c.ST
           toast($, `Lane ${prep.lane.name} parked`)
           if (marked) {
             await log($, sid, 'park-unmarked', marked)
-            return { result: c.parkUnmarkedText(prep.lane.name, victim.pid as number) } as never
+            return { result: c.parkUnmarkedText(prep.lane.name, victim.pid as number) }
           }
           await log($, sid, 'parked', prep.lane.name)
-          return { result: c.parkedText(prep.lane.name, victim.pid as number) } as never
+          return { result: c.parkedText(prep.lane.name, victim.pid as number) }
         }
         // Retire and force stop end the lane for good: once the session got its signal, its store record goes too (the .archive folder and the
         // report stay), a joined lane's as well as a made one's. A failed removal is told, with its code; the call
@@ -1581,13 +1561,13 @@ export async function stopVerbCall($: any, e: any, next: any, verb: (typeof c.ST
             await log($, sid, 'lane-removed', prep.lane.name)
           }
         }
-        return { result: c.stoppedText(verb as 'retire' | 'terminate', prep.lane.name, victim.pid as number, outcome) } as never
+        return { result: c.stoppedText(verb as 'retire' | 'terminate', prep.lane.name, victim.pid as number, outcome) }
       }
       try {
         return await afterSignal()
       } catch {
         await logq($, sid, 'error', `after-signal-${verb}`)
-        return { result: c.afterSignalFailedText(verb as 'retire' | 'park' | 'terminate', prep.lane.name, victim.pid as number) } as never
+        return { result: c.afterSignalFailedText(verb as 'retire' | 'park' | 'terminate', prep.lane.name, victim.pid as number) }
       } finally {
         signalledCalls.delete(callKey)
       }

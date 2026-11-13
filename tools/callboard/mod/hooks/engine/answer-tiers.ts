@@ -531,20 +531,20 @@ export async function promptMidTurnNotice($: any, e: any): Promise<string | unde
 export async function promptListCall($: any, e: any, next: any) {
   return leadRun($, e, async () => {
     ensureTimer($)
-    return (await promptListTool($, e)) as never
+    return await promptListTool($, e)
   })
 }
 
 export async function promptAnswerCall($: any, e: any, next: any) {
   return leadRun($, e, async () => {
     ensureTimer($)
-    return (await promptAnswerTool($, e, true)) as never
+    return await promptAnswerTool($, e, true)
   })
 }
 
 export async function promptEscalateCall($: any, e: any, next: any) {
   return leadRun($, e, async () => {
     ensureTimer($)
-    return (await promptAnswerTool($, e, false)) as never
+    return await promptAnswerTool($, e, false)
   })
 }
