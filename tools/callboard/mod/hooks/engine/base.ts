@@ -297,17 +297,24 @@ export async function pickLead($: any, names: string[]): Promise<{ name: string 
   }
 }
 
-// Start time of a process as `ps` prints it in UTC, the way the session registry records `procStart`.
+// One field of one process, as `ps` prints it, with the failure told apart: exit 0 is the answer; exit 1 with no output is ps's "no such process" (gone);
+// any other result is a ps that failed. A ps that throws still throws. lstart is in UTC, the way the session registry records `procStart`.
+export async function psOne($: any, pid: unknown, field: 'lstart=' | 'args='): Promise<{ out: string } | 'gone' | 'error'> {
+  if (!Number.isInteger(pid) || (pid as number) <= 1) return 'gone'
+  const r = await run($, [PS, '-o', field, '-p', String(pid)], undefined, field === 'lstart=' ? { TZ: 'UTC', LC_ALL: 'C' } : { LC_ALL: 'C' })
+  if (r.exitCode === 0) return { out: r.stdout }
+  return r.exitCode === 1 && `${r.stdout ?? ''}${r.stderr ?? ''}`.trim() === '' ? 'gone' : 'error'
+}
+
+// psOne with every failure as undefined.
 export async function psStart($: any, pid: unknown): Promise<string | undefined> {
-  if (!Number.isInteger(pid) || (pid as number) <= 1) return undefined
-  const r = await run($, [PS, '-o', 'lstart=', '-p', String(pid)], undefined, { TZ: 'UTC', LC_ALL: 'C' })
-  return r.exitCode === 0 ? r.stdout : undefined
+  const r = await psOne($, pid, 'lstart=')
+  return typeof r === 'string' ? undefined : r.out
 }
 
 export async function psArgs($: any, pid: unknown): Promise<string | undefined> {
-  if (!Number.isInteger(pid) || (pid as number) <= 1) return undefined
-  const r = await run($, [PS, '-o', 'args=', '-p', String(pid)], undefined, { LC_ALL: 'C' })
-  return r.exitCode === 0 ? r.stdout : undefined
+  const r = await psOne($, pid, 'args=')
+  return typeof r === 'string' ? undefined : r.out
 }
 
 export async function withTimeout<T>($: any, p: Promise<T>, ms: number): Promise<T | 'timeout'> {

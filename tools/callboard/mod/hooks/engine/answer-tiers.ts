@@ -31,10 +31,7 @@ import {
   capOf,
   labelHash,
 } from './answer-hook.ts'
-
-// $.state keys declared again where they are used: `claude plugin validate` reads a key in the file that uses it.
-const request = { plugin: 'callboard', key: 'request' } as const
-const nudgeDueRef = { plugin: 'callboard', key: 'nudgeDue' } as const
+import { getNudgeDue, getRequest } from '../state.ts'
 
 const LN = '/bin/ln'
 
@@ -446,7 +443,7 @@ export async function promptNoticeTick($: any, sid: string, submitsAtStart: numb
   }
   if (dialogOpen.has(sid) || mem.submits !== submitsAtStart) return
   // A pending request (a compaction that is armed or waiting to resume) or a due nudge has the idle moment first.
-  if ((await $.state.get(request)).value != null || (await $.state.get(nudgeDueRef)).value != null) return
+  if ((await getRequest($)).value != null || (await getNudgeDue($)).value != null) return
   if ((await idleCheck($, sid)) !== undefined) return
   // Every read is behind us: nothing is awaited between this guard and the submit. A request the mid-turn path told meanwhile is not told again.
   if (dialogOpen.has(sid) || mem.submits !== submitsAtStart) return
@@ -501,7 +498,7 @@ export async function promptMidTurnNotice($: any, e: any): Promise<string | unde
   if (!told || ![...told].some(([id, v]) => v === -1 && !retold?.has(id))) return undefined
   try {
     // A compaction that is armed or waiting to resume would take the text with it: the notice stays owed, as for the tick's submit.
-    if ((await $.state.get(request)).value != null) return undefined
+    if ((await getRequest($)).value != null) return undefined
     const now = await $.clock.now()
     const times = promptNotices.get(sid) ?? []
     if (!c.noticeAllowed(times, now, pr.PROMPT_NOTICES_PER_HOUR)) {
@@ -534,20 +531,20 @@ export async function promptMidTurnNotice($: any, e: any): Promise<string | unde
 export async function promptListCall($: any, e: any, next: any) {
   return leadRun($, e, async () => {
     ensureTimer($)
-    return (await promptListTool($, e)) as never
+    return await promptListTool($, e)
   })
 }
 
 export async function promptAnswerCall($: any, e: any, next: any) {
   return leadRun($, e, async () => {
     ensureTimer($)
-    return (await promptAnswerTool($, e, true)) as never
+    return await promptAnswerTool($, e, true)
   })
 }
 
 export async function promptEscalateCall($: any, e: any, next: any) {
   return leadRun($, e, async () => {
     ensureTimer($)
-    return (await promptAnswerTool($, e, false)) as never
+    return await promptAnswerTool($, e, false)
   })
 }

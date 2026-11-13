@@ -62,11 +62,7 @@ import {
 } from './compaction.ts'
 import { promptCloseTick, promptSweep } from './answer-hook.ts'
 import { promptNoticeTick } from './answer-tiers.ts'
-
-// $.state keys declared again where they are used: `claude plugin validate` reads a key in the file that uses it.
-const seen = { plugin: 'callboard', key: 'seen' } as const
-const request = { plugin: 'callboard', key: 'request' } as const
-const interactiveRef = { plugin: 'callboard', key: 'interactive' } as const
+import { getRequest, getSeen, setInteractive, setRequest, setSeen } from '../state.ts'
 
 const RESUME_TTL_MS = 120_000
 
@@ -98,7 +94,7 @@ async function timedStep($: any, sid: string, work: Promise<unknown>, event: str
 // cue from being claimed, so a throw is logged and counted, and a request that keeps failing is dropped.
 async function requestStep($: any, sid: string) {
   try {
-    const read = await $.state.get(request)
+    const read = await getRequest($)
     const req = read.value as Request | null | undefined
     if (cmpMarked.has(sid) && req?.phase !== 'compacting') await cmpClear($, sid)
     if (req && c.requestExpired(req, await $.clock.now())) {
@@ -114,12 +110,12 @@ async function requestStep($: any, sid: string) {
       if ((await $.clock.now()) - (req.compactedMs ?? req.requestedMs) > RESUME_TTL_MS) await dropRequest($, sid, 'resume-expired')
       else if ((await sha($, req.continuation)) !== req.sha256) await dropRequest($, sid, 'hash-mismatch')
       else {
-        const cur = await $.state.get(request)
+        const cur = await getRequest($)
         const live = cur.value as Request | null | undefined
         if (!live || live.phase !== 'compacted' || live.id !== req.id) await log($, sid, 'dropped', 'cancelled-before-resume')
         else if ((await $.prompt.read()).text !== '') await dropRequest($, sid, 'draft-in-box')
         else if (!(await requestOk($, sid, live))) await dropRequest($, sid, 'not-eligible')
-        else if ((await $.state.set(request, null, { ifVersion: cur.version })).isSet === false) await log($, sid, 'dropped', 'cancelled-before-resume')
+        else if ((await setRequest($, null, { ifVersion: cur.version })).isSet === false) await log($, sid, 'dropped', 'cancelled-before-resume')
         else {
           const sent = await withTimeout($, submitOwn($, c.compactResumeText(req.continuation)).then(() => 'ok' as const, () => 'failed' as const), ACTION_TIMEOUT_MS)
           if (sent === 'ok') await log($, sid, 'resumed', 'compact')
@@ -263,14 +259,14 @@ async function tick($: any) {
 export async function sessionStart($: any, e: any, next: any) {
   goneSeen.clear()
   const now = await $.clock.now()
-  if ((await $.state.get(seen)).value == null) await $.state.set(seen, now)
+  if ((await getSeen($)).value == null) await setSeen($, now)
   // One of the two signs of a person's session for the self-threshold nudge (interactive(): this, or an own registry row). A recorded nudge is left alone (it expires on its own).
-  await $.state.set(interactiveRef, (e as { isInteractive?: unknown }).isInteractive === true).catch(async () => logq($, await $.session.id(), 'error', 'interactive'))
-  const req = (await $.state.get(request)).value as Request | null | undefined
+  await setInteractive($, (e as { isInteractive?: unknown }).isInteractive === true).catch(async () => logq($, await $.session.id(), 'error', 'interactive'))
+  const req = (await getRequest($)).value as Request | null | undefined
   // A request still in $.state means the state survived (a reload, not a restart): a cut-compaction mark then gives no note.
   const stateKept = req != null
   if (req) {
-    await $.state.set(request, null)
+    await setRequest($, null)
     await log($, await $.session.id(), 'dropped', req.phase === 'compacted' ? 'restart-after-compact' : 'restart')
   }
   await $.tool.register({

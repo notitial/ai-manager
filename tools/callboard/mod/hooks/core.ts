@@ -1,12 +1,12 @@
 // Pure logic of the callboard mod (ADR 0002). No engine calls here:
-// register.ts feeds it values and acts on what it returns.
+// The files under engine/ feed it values and act on what it returns.
 
 export const SID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 export const NAME_RE = /^[A-Za-z0-9_-]{1,40}$/
 // A rename cue may name the lead that sent it (its session id), so a lane born with two leads in its repo can name the right one.
 export const CUE_RE = /^(rename [A-Za-z0-9_-]{1,40}( [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?|start|resume|compact|retire|park)\n$/
 
-// The key prefixes of the mod's $.store entries, one per kind, each followed by a session id. The unprefixed `answering` key is ANSWERING_KEY in register.ts.
+// The key prefixes of the mod's $.store entries, one per kind, each followed by a session id. The unprefixed `answering` key is ANSWERING_KEY in engine/answer-hook.ts.
 export const ORDER_PREFIX = 'ord:'
 export const HINT_PREFIX = 'sess:'
 export const LEAD_HINT_PREFIX = 'lead:'
@@ -45,7 +45,7 @@ function skeletons(name: string): string[] {
   for (const v of [base, base.replace(/[0-9]+$/, '')]) out.add(v.replace(/[L0-9]/g, (ch) => FOLD[ch] ?? ch))
   return [...out]
 }
-// This machine's own reserved names, as the mod last read them from $.store (register.ts reservedGet; at most a minute old in other sessions).
+// This machine's own reserved names, as the mod last read them from $.store (reservedGet in engine/grants.ts; at most a minute old in other sessions).
 // They are reserved like MANAGER for every new name (a lane, a lead's name, a join, a rename) and may name the manager; a stored lane list is judged by
 // RESERVED_NAMES alone (reservedHit(name, [])), so a name reserved later can never make a repo's lane list unreadable.
 let localReserved: readonly string[] = []
@@ -2197,7 +2197,7 @@ export function leadConductorText(names: string[]): string {
 
 // ---- a warning when the live checkout is not on main (ADR 0003) ----
 // The mod lives at <checkout>/tools/callboard/mod, and the engine names that folder ($.plugin.root). The checkout's .git/HEAD is read as a plain file
-// (never through git, whose config could run code). Pure parts only: register.ts reads the file and shows the toast.
+// (never through git, whose config could run code). Pure parts only: liveCheckoutCheck in engine/base.ts reads the file and shows the toast.
 const LIVE_MOD_SUFFIX = '/tools/callboard/mod'
 export const LIVE_HEAD_MAX = 256
 // The checkout a mod folder belongs to, or undefined when the folder is not at that place (a copied or moved mod) or the path has a control character.

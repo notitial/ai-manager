@@ -1,5 +1,5 @@
 // Prompt answering (ADR 0004): the pure logic. No engine call lives here, so core.spec-style tests (prompts.spec.ts) cover it whole.
-// The hook that uses it is in register.ts. Nothing in this file lets an agent decide anything: it recognises what no agent may answer (the floor), what an
+// The hooks that use it are in engine/answer-hook.ts and engine/answer-tiers.ts. Nothing in this file lets an agent decide anything: it recognises what no agent may answer (the floor), what an
 // agent may judge (the classifier), what a request file may hold (redaction, caps), and when a decision file is valid (the apply checks).
 
 import { SID_RE, SUBMITTED_NOTE_NEVER_RECORD, mdPage } from './core.ts'

@@ -68,7 +68,7 @@ import {
   toast,
   real,
   readSmallR,
-  PS,
+  psOne,
   statR,
   dirOk,
   facts,
@@ -90,7 +90,7 @@ import {
   storePath,
   idleCheck,
   loadLanes,
-  editStore,
+  editLanes,
   registryOf,
   regOnce,
   lockStore,
@@ -102,13 +102,7 @@ import { interactive, busyAgents, personRow, backgroundShells } from './compacti
 import { managerCommand } from './commands.ts'
 import { epochOf, heldNo, levelBrief, levelSave } from './levels.ts'
 import type { LevelDesc, GrantDialog } from './levels.ts'
-
-// $.state keys declared again where they are used: `claude plugin validate` reads a key in the file that uses it.
-const lane = { plugin: 'callboard', key: 'lane' } as const
-const request = { plugin: 'callboard', key: 'request' } as const
-const nudgeDueRef = { plugin: 'callboard', key: 'nudgeDue' } as const
-const turnEndRef = { plugin: 'callboard', key: 'turnEndAt' } as const
-const checkinPauseRef = { plugin: 'callboard', key: 'checkinPauseUntil' } as const
+import { getCheckinPause, getLane, getNudgeDue, getRequest, getTurnEnd } from '../state.ts'
 
 // A lead's one pin; undefined for no grant, and for any other level (a conductor or manager has no single pin and reads its grant whole).
 export const pinOf = (sid: string): string | undefined => {
@@ -462,7 +456,7 @@ async function leadRestoreTry($: any, me: string, hint: c.LeadHint): Promise<str
     return void (await reject('wrong-folder'))
   }
   // A lane is never a lead too (the rebind refuses a lead in turn); a read that does not answer counts as a binding.
-  const held = await withTimeout($, $.state.get(lane), c.ENGINE_CALL_TIMEOUT_MS)
+  const held = await withTimeout($, getLane($), c.ENGINE_CALL_TIMEOUT_MS)
   if (dropped()) return
   if (held === 'timeout' || held?.value != null || laneBinding.has(me)) return void (await reject('lane-holder'))
   // The person granted lead meanwhile: that grant stands.
@@ -562,14 +556,6 @@ async function presenceRead($: any, p: { uid: number; root: string }, live: RegR
   if (args === 'error') return 'error'
   if (c.processRefusal(args === 'gone' ? undefined : args.out, lf.pid, undefined) !== undefined) return 'no'
   return lf
-}
-// psStart and psArgs with the failure told apart: exit 0 is the answer; exit 1 with no output is ps's "no such process" (gone); any other
-// result is a ps that failed. A ps that throws still throws, as before.
-export async function psOne($: any, pid: unknown, field: 'lstart=' | 'args='): Promise<{ out: string } | 'gone' | 'error'> {
-  if (!Number.isInteger(pid) || (pid as number) <= 1) return 'gone'
-  const r = await run($, [PS, '-o', field, '-p', String(pid)], undefined, field === 'lstart=' ? { TZ: 'UTC', LC_ALL: 'C' } : { LC_ALL: 'C' })
-  if (r.exitCode === 0) return { out: r.stdout }
-  return r.exitCode === 1 && `${r.stdout ?? ''}${r.stderr ?? ''}`.trim() === '' ? 'gone' : 'error'
 }
 // The fresh presence file names, cut to the fresh ones before the cap (as leadsFor). strict: a list that throws throws, not "none".
 async function freshPresence($: any, p: { root: string }, strict = false): Promise<string[]> {
@@ -775,7 +761,7 @@ export async function watchTick($: any, sid: string) {
   const submitsAt = mem.submits
   if (ownWriting.has(sid)) return
   // After a compaction the resume text goes out from the tick: a notice must not take the idle moment before it.
-  if (((await $.state.get(request)).value as Request | null | undefined)?.phase === 'compacted') return
+  if (((await getRequest($)).value as Request | null | undefined)?.phase === 'compacted') return
   await watchPoll($, sid)
   const w = watch.get(sid)
   if (!w || w.cur === w.told) return
@@ -964,10 +950,10 @@ export async function checkinTick($: any, sid: string, submitsAtStart: number) {
   const owed = items.filter((i) => !told.has(c.checkinKey(i)))
   if (owed.length === 0) return
   if (!(await cfgGet($, sid)).checkin) return
-  const pause = (await $.state.get(checkinPauseRef)).value
+  const pause = (await getCheckinPause($)).value
   if (typeof pause === 'number' && pause > now) return
   if (mem.wokeAt !== undefined && now - mem.wokeAt < c.CHECKIN_WAKE_MS) return
-  const turnEnd = (await $.state.get(turnEndRef)).value
+  const turnEnd = (await getTurnEnd($)).value
   if (typeof turnEnd !== 'number' || now - Math.max(turnEnd, lastSubmitAt.get(sid) ?? 0) < c.CHECKIN_IDLE_MS) return
   // The manager is told only of lanes no live lead reaches, by leadHere's rule (a lane naming its lead: a live
   // lead of its repo with that registry name; a legacy lane: any live lead of its repo). The leads of a repo are read at most once per evaluation. A lane a lead
@@ -1074,7 +1060,7 @@ async function attentionNotice($: any, sid: string, items: c.AttentionItem[], su
   const untold = (xs: c.AttentionItem[]) => xs.filter((i) => !told.has(c.checkinKey(i)))
   if (render(untold(items)) === undefined || dialogOpen.has(sid) || mem.submits !== submitsAtStart) return
   const sentAt = lastSubmitAt.get(sid)
-  if ((await $.state.get(request)).value != null || (await $.state.get(nudgeDueRef)).value != null) return
+  if ((await getRequest($)).value != null || (await getNudgeDue($)).value != null) return
   const capped = async () => {
     if (c.noticeAllowed(laneNotices.get(sid) ?? [], await $.clock.now(), c.LANES_NOTICES_PER_HOUR)) return false
     if (!attnCapped.has(sid)) {
@@ -1094,7 +1080,7 @@ async function attentionNotice($: any, sid: string, items: c.AttentionItem[], su
   // the told set are read again. Every read comes before the last guard, so nothing is awaited between it and the submit.
   if (await capped()) return
   const now = await $.clock.now()
-  if (dialogOpen.has(sid) || (await $.state.get(request)).value != null || (await $.state.get(nudgeDueRef)).value != null) return
+  if (dialogOpen.has(sid) || (await getRequest($)).value != null || (await getNudgeDue($)).value != null) return
   if ((await idleCheck($, sid)) !== undefined) return
   const draft = (await $.prompt.read()).text
   if (draft !== '' || dialogOpen.has(sid) || mem.submits !== submitsAtStart || lastSubmitAt.get(sid) !== sentAt || !grants.has(sid) || epochOf(sid) !== ep) return
@@ -1142,17 +1128,14 @@ export async function leadRenameTick($: any, sid: string) {
   if (typeof lanes === 'string') return
   const mine = lanes.filter((l) => l.src !== undefined && l.repo === g.pins[0] && c.leadOwns(l, sid) && l.leadName === old)
   if (mine.length > 0) {
-    const r = await ownWrite($, sid, () => editStore($, mine[0].src!, async (file) => {
-      const parsed = file.state === 'ok' ? c.parseStore(file.text) : undefined
-      if (!parsed) return { no: 'store-unreadable' }
-      if (!parsed.ok) return { no: parsed.reason }
+    const r = await ownWrite($, sid, () => editLanes($, mine[0].src!, async (store) => {
       const rows = await registryEntries($)
       if (!rows) return { no: 'registry-unreadable' }
       // The last checks before the write: the name is still the one seen, and this is still the same grant.
       if (c.leadNameOf(rows.map((x) => x.j), sid) !== cur || grantOf(sid)?.level !== 'lead' || epochOf(sid) !== epoch) return { no: 'changed' }
       const own = (l: c.Store['lanes'][number]) => c.leadOwns(l, sid) && l.leadName === old
-      if (!parsed.store.lanes.some(own)) return { skip: true }
-      const t = c.storeText({ ...parsed.store, lanes: parsed.store.lanes.map((l) => (own(l) ? { ...l, leadName: cur } : l)) })
+      if (!store.lanes.some(own)) return { skip: true }
+      const t = c.storeText({ ...store, lanes: store.lanes.map((l) => (own(l) ? { ...l, leadName: cur } : l)) })
       if ('no' in t) return t
       return { text: t.text, landed: (s) => !!s && !s.lanes.some(own) }
     })).catch(() => ({ no: 'store-busy' }))
@@ -1556,7 +1539,7 @@ async function conductorRestoreTry($: any, me: string, box: { hint: c.ConductorH
   }
   // A lane on its way back: its binding, its restore hint, or a store record naming this session. A pending rebind alone is tried again:
   // rebindTick clears it once it finds no record, and waits for this restore while it is pending.
-  const held = await withTimeout($, $.state.get(lane), c.ENGINE_CALL_TIMEOUT_MS)
+  const held = await withTimeout($, getLane($), c.ENGINE_CALL_TIMEOUT_MS)
   if (dropped()) return
   if (held === 'timeout' || held?.value != null || laneBinding.has(me)) return void (await reject('lane-holder'))
   const now = await $.clock.now()
@@ -1664,7 +1647,7 @@ async function conductorRestoreAsk($: any, me: string, pend: CondPending) {
     end()
     if (leadBusy(me) || leadRestorePending.has(me)) return void (await log($, me, 'conductor-restore-rejected', 'lead-holder'))
     // Every check again after the click.
-    const held = await withTimeout($, $.state.get(lane), c.ENGINE_CALL_TIMEOUT_MS)
+    const held = await withTimeout($, getLane($), c.ENGINE_CALL_TIMEOUT_MS)
     if (held === 'timeout' || held?.value != null || laneBinding.has(me)) return void (await log($, me, 'conductor-restore-rejected', 'lane-holder'))
     const used = await conductorRepoInUse($, hint.home)
     if (used) return void (await log($, me, 'conductor-restore-rejected', used))
@@ -1777,7 +1760,7 @@ export async function promptCompose($: any, e: any, next: any) {
     brief = laneBrief.get(sid)
     if (!brief) {
       try {
-        const b = (await $.state.get(lane)).value as Bound | null | undefined
+        const b = (await getLane($)).value as Bound | null | undefined
         if (b && typeof b.name === 'string') brief = { name: b.name, sid, attached: b.adopted === true }
       } catch {}
     }

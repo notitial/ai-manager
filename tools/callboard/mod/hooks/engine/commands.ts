@@ -74,19 +74,17 @@ import { epochOf, heldNo, holdsOf, levelSave } from './levels.ts'
 import type { LevelDesc } from './levels.ts'
 import { ANSWERING_KEY, ledgerAdd, promptsOff } from './answer-hook.ts'
 import { ledgerRestore } from './answer-tiers.ts'
+import { getCheckinPause, getLane, getRequest, setCheckinPause, setLane, setNudgeDue, setNudgedAt, setRequest, setRest } from '../state.ts'
 
-// Until when /callboard checkin pause holds this session's check-ins. A reload keeps it, a restart loses it.
-const checkinPauseRef = { plugin: 'callboard', key: 'checkinPauseUntil' } as const
-// $.state keys declared again where they are used: `claude plugin validate` reads a key in the file that uses it.
-const lane = { plugin: 'callboard', key: 'lane' } as const
-const request = { plugin: 'callboard', key: 'request' } as const
-const nudgeDueRef = { plugin: 'callboard', key: 'nudgeDue' } as const
-const nudgedAtRef = { plugin: 'callboard', key: 'nudgedAt' } as const
-const restRef = { plugin: 'callboard', key: 'restAt' } as const
+// The refusal of a person-only command from another origin: logged as <command>-not-person:<origin>, answered with the command's fixed text.
+async function notPerson($: any, sid: string, command: string, code: c.OriginCode, text: string): Promise<{ text: string }> {
+  await logq($, sid, 'refused', `${command}-not-person:${code}`)
+  return { text }
+}
 
 async function restCommand($: any, sid: string, code: string) {
   try {
-    if ((await $.state.set(restRef, await $.clock.now())).isSet === false) throw new Error('not set')
+    if ((await setRest($, await $.clock.now())).isSet === false) throw new Error('not set')
   } catch {
     return { text: c.REST_FAILED }
   }
@@ -97,14 +95,11 @@ async function restCommand($: any, sid: string, code: string) {
 // /callboard checkin pause <N>m|<N>h and checkin on: the person's own, as config; a plugin, another session or a script gets a fixed refusal.
 async function checkinCommand($: any, sid: string, code: c.OriginCode, op: c.CheckinOp): Promise<{ text: string }> {
   if (op === 'bad') return { text: c.CHECKIN_USAGE }
-  if (!c.originIsPerson(code)) {
-    await logq($, sid, 'refused', `checkin-not-person:${code}`)
-    return { text: c.CHECKIN_NOT_PERSON }
-  }
+  if (!c.originIsPerson(code)) return notPerson($, sid, 'checkin', code, c.CHECKIN_NOT_PERSON)
   if (!grants.has(sid)) return { text: c.CHECKIN_NOT_LEAD }
   const now = await $.clock.now()
   const until = op === 'on' ? null : now + op.pauseMs
-  if ((await $.state.set(checkinPauseRef, until))?.isSet === false) return { text: c.CHECKIN_UNSAVED }
+  if ((await setCheckinPause($, until))?.isSet === false) return { text: c.CHECKIN_UNSAVED }
   await logq($, sid, 'checkin-pause', `${op === 'on' ? 'on' : `${op.pauseMs / 60_000}m`}:${code}`)
   if (until !== null) return { text: c.checkinPausedText(until, now) }
   return { text: (await cfgGet($, sid)).checkin ? c.CHECKIN_ON_TEXT : c.CHECKIN_ON_BUT_OFF }
@@ -119,7 +114,7 @@ async function laneCommand($: any, sid: string, code: c.OriginCode, arg: c.Comma
     await log($, sid, 'refused', `lane-origin:${code}`)
     return { text: c.refusalText('lane-origin') }
   }
-  const bound = (await $.state.get(lane)).value as Bound | null | undefined
+  const bound = (await getLane($)).value as Bound | null | undefined
   if (arg === 'lane-off') {
     if (!bound) return { text: `This session is not a lane. ${c.NO_LANE_RECORD}` }
     const d = await detach($, sid, bound)
@@ -149,7 +144,7 @@ async function laneCommand($: any, sid: string, code: c.OriginCode, arg: c.Comma
         return { text: 'Nothing changed: callboard was turned off meanwhile.' }
       }
       if (asked === 'timed-out') return { text: `Nothing changed: ${c.TIMED_OUT}.` }
-      const got = (await $.state.get(lane)).value as Bound | null | undefined
+      const got = (await getLane($)).value as Bound | null | undefined
       if (got) {
         // The hint takes the restored binding and the merged counters at once.
         await saveHint($, sid)
@@ -250,7 +245,7 @@ async function laneCommand($: any, sid: string, code: c.OriginCode, arg: c.Comma
     try {
       await limited(bump($, (ct) => ({ ...ct, startDone: true })), 'counters')
       written = true
-      const setting = $.state.set(lane, binding)
+      const setting = setLane($, binding)
       const bw = await limited(setting, 'bind').catch((err: unknown) => {
         // A write that timed out may still land after the detach below: it is undone then.
         if (err instanceof Error && err.message === 'bind-timeout') undoLate($, sid, setting, binding)
@@ -407,10 +402,7 @@ export async function managerCommand($: any, sid: string, code: c.OriginCode, wa
 // (naming the whole list as it would be); remove asks nothing (it only narrows). Neither grants: the grant is /callboard conductor and its own dialog.
 async function conductorListCommand($: any, sid: string, code: c.OriginCode, op: { add: string } | { remove: string }, busy: () => Promise<{ text: string }>): Promise<{ text: string }> {
   const verb = 'add' in op ? 'add' : 'remove'
-  if (!c.originIsPerson(code)) {
-    await logq($, sid, 'refused', `conductor-not-person:${code}`)
-    return { text: c.CONDUCTOR_NOT_PERSON }
-  }
+  if (!c.originIsPerson(code)) return notPerson($, sid, 'conductor', code, c.CONDUCTOR_NOT_PERSON)
   const refuse = async (why: string, home = '') => {
     await log($, sid, 'refused', why)
     return { text: c.conductorRefusalText(why, home) }
@@ -554,10 +546,7 @@ async function conductorGrant($: any, sid: string, code: c.OriginCode, busy: () 
 async function configCommand($: any, sid: string, code: c.OriginCode, op: c.ConfigOp): Promise<{ text: string }> {
   if (op === 'show') return { text: c.configText(await cfgGet($, sid, true)) }
   if (op === 'bad') return { text: c.CONFIG_USAGE }
-  if (!c.originIsPerson(code)) {
-    await logq($, sid, 'refused', `config-not-person:${code}`)
-    return { text: c.CONFIG_NOT_PERSON }
-  }
+  if (!c.originIsPerson(code)) return notPerson($, sid, 'config', code, c.CONFIG_NOT_PERSON)
   // Each store call runs inside an async function, so a call that throws at once is answered like one that rejects.
   const raw = await withTimeout($, (async () => $.store.get(c.CONFIG_KEY))(), c.ENGINE_CALL_TIMEOUT_MS).catch(() => 'timeout' as const)
   if (raw === 'timeout') return { text: c.CONFIG_UNREADABLE }
@@ -589,10 +578,7 @@ async function configCommand($: any, sid: string, code: c.OriginCode, op: c.Conf
 async function reserveCommand($: any, sid: string, code: c.OriginCode, op: c.ReserveOp): Promise<{ text: string }> {
   if (op === 'bad') return { text: c.RESERVE_USAGE }
   if (op === 'show') return { text: c.reserveShowText(await reservedGet($, sid, true)) }
-  if (!c.originIsPerson(code)) {
-    await logq($, sid, 'refused', `reserve-not-person:${code}`)
-    return { text: c.RESERVE_NOT_PERSON }
-  }
+  if (!c.originIsPerson(code)) return notPerson($, sid, 'reserve', code, c.RESERVE_NOT_PERSON)
   // The list as stored now: also what managerNameOf reads for the remove guard below.
   await reservedGet($, sid, true)
   const raw = await withTimeout($, (async () => $.store.get(c.RESERVE_KEY))(), c.ENGINE_CALL_TIMEOUT_MS).catch(() => 'timeout' as const)
@@ -670,10 +656,7 @@ async function escalationCommand($: any, sid: string, code: c.OriginCode, op: pr
     return { text: 'Escalation is off on this Mac.' }
   }
   // On is the person's own command, with a dialog that names exactly what turns on.
-  if (!c.originIsPerson(code)) {
-    await logq($, sid, 'refused', `escalation-not-person:${code}`)
-    return { text: pr.ESCALATION_NOT_PERSON }
-  }
+  if (!c.originIsPerson(code)) return notPerson($, sid, 'escalation', code, pr.ESCALATION_NOT_PERSON)
   const r = await askOnce($, sid, pr.ESCALATION_QUESTION, pr.ESCALATION_YES, pr.ESCALATION_NO, pr.ESCALATION_HEADER)
   if (r === 'busy') return { text: 'A callboard question is already open. Answer it first.' }
   if (r !== 'yes') return { text: r === 'timed-out' ? 'Nothing changed: the question timed out.' : 'Cancelled. Nothing changed.' }
@@ -759,7 +742,7 @@ export async function commandRun($: any, e: any) {
     return { text: `Lanes unavailable: ${c.hasText(t.err[0]) ? c.REASON_TEXT[t.err[0]] : t.err[1]}` }
   }
   if (arg === 'off' && !c.originIsPerson(code)) {
-    const leaves = ((await $.state.get(lane)).value as Bound | null | undefined)?.name
+    const leaves = ((await getLane($)).value as Bound | null | undefined)?.name
     // In a conductor session the question names the conductor and its saved grant.
     const offQ = grants.get(sid)?.level === 'conductor' ? c.CONDUCTOR_OFF_QUESTION : c.offQuestionFor(leaves)
     const r = await askOnce($, sid, c.askedFrom(offQ, code), c.OFF_YES, c.OFF_NO, c.HEADER.enable)
@@ -804,7 +787,7 @@ export async function commandRun($: any, e: any) {
       await log($, sid, 'refused', code === 'lead-after-manager' ? code : `lead-${code}`)
       return { text: `${code === 'lane-holder' && grants.has(sid) ? 'Lead stays on' : 'Lead stays off'}: ${c.REASON_TEXT[code]}` }
     }
-    const laneHeld = async () => (await $.state.get(lane)).value != null
+    const laneHeld = async () => (await getLane($)).value != null
     const held = await heldNo($, sid, 'lead', false)
     if (held) return leadNo(held)
     let cwd: string
@@ -879,10 +862,10 @@ export async function commandRun($: any, e: any) {
       text: 'Lead is on from your next prompt.\nOnly a force stop asks you.',
     })
   }
-  const bound = (await $.state.get(lane)).value as Bound | null | undefined
+  const bound = (await getLane($)).value as Bound | null | undefined
   // Every session gets the keepalive and the nudges.
   // A lead's status adds its check-ins.
-  const ckStatus: [string, string][] = arg === 'status' && grants.has(sid) && grants.get(sid)?.level !== 'conductor' ? [['Check-ins', c.checkinStatus((await cfgGet($, sid)).checkin, (await $.state.get(checkinPauseRef)).value, await $.clock.now())]] : []
+  const ckStatus: [string, string][] = arg === 'status' && grants.has(sid) && grants.get(sid)?.level !== 'conductor' ? [['Check-ins', c.checkinStatus((await cfgGet($, sid)).checkin, (await getCheckinPause($)).value, await $.clock.now())]] : []
   // The manager's status names its level in place of the lead's.
   const gs = grants.get(sid)
   const grantPart: [string, string] = gs?.level === 'manager' ? ['Manager', 'ON'] : gs?.level === 'conductor' ? ['Conductor', c.conductorStatus(gs.pins.length)] : ['Lead', grants.has(sid) ? 'ON' : 'OFF']
@@ -890,12 +873,12 @@ export async function commandRun($: any, e: any) {
   if (arg === 'status') return { text: c.statusTableText([['Lane', bound ? bound.name : 'NONE'], grantPart, ...ckStatus, ...laneLead]) }
   if (arg === 'off') {
     // A recorded nudge and an open grant go too. Off does not opt out of nudges: a later turn past the level records a new one.
-    await $.state.set(nudgeDueRef, null)
-    await $.state.set(nudgedAtRef, null)
+    await setNudgeDue($, null)
+    await setNudgedAt($, null)
     if (!(await leadDrop($, sid))) leadKept = true
     // The rebind was cancelled above. No store record may keep naming a session that is off, or a restart would rebind it.
     // A session that is neither a lane nor a lead keeps its request as it is: off turns nothing off there, and its own request needs no lane.
-    const cur = await $.state.get(request)
+    const cur = await getRequest($)
     const live = bound || was ? (cur.value as Request | null | undefined) : undefined
     // What off did, for its answer: a request dropped, or a compaction under way that loses its resume.
     let reqDone: 'dropped' | 'no-resume' | undefined
@@ -907,8 +890,8 @@ export async function commandRun($: any, e: any) {
       // A compaction under way through the nudge grant finishes, but loses the grant: its resume then needs the session to be eligible, which off
       // has just ended, so the continuation is dropped as not-eligible. If PostCompact moved it on meanwhile, the request is dropped as above.
       const { viaNudge: _granted, ...kept } = live
-      if ((await $.state.set(request, kept, { ifVersion: cur.version })).isSet === false) {
-        const again = (await $.state.get(request)).value as Request | null | undefined
+      if ((await setRequest($, kept, { ifVersion: cur.version })).isSet === false) {
+        const again = (await getRequest($)).value as Request | null | undefined
         if (again && again.phase !== 'compacting') {
           await dropRequest($, sid, 'disabled')
           reqDone = 'dropped'
