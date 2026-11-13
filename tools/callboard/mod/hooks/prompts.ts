@@ -807,7 +807,7 @@ const GIT_NOARG = new Set(['--no-pager', '-p', '-P', '--paginate', '--bare', '--
 const GIT_PATHS = new Set(['init', 'clone', 'mv', 'merge-file', 'worktree', 'archive', 'format-patch', 'bundle', 'submodule', 'apply', 'am', 'sparse-checkout'])
 // The verbs whose flags can hide a settings write, and the verbs that rewrite the work tree.
 const GIT_COND = /^(config|remote)$/
-const GIT_TREE = /^(checkout|switch|restore|reset|clean|rm|mv|pull|merge|rebase|cherry-pick|revert|am|apply|stash|read-tree|checkout-index|worktree|submodule|sparse-checkout|bisect|filter-branch)$/
+const GIT_TREE = /^(init|clone|checkout|switch|restore|reset|clean|rm|mv|pull|merge|rebase|cherry-pick|revert|am|apply|stash|read-tree|checkout-index|worktree|submodule|sparse-checkout|bisect|filter-branch)$/
 const GIT_TREE_READ = /^(stash|worktree|submodule|bisect|sparse-checkout)$/
 
 // One git call: options before the verb (-C, -c, --git-dir), the verb, and the shapes the floor names: a setting that runs code, a path it writes, a program it runs, and
@@ -859,9 +859,13 @@ function judgeGit(args: Word[], cur: B[], j: J): Res {
   const R = (cat: FloorCategory): Res => ({ cat })
   // The shapes whose flags decide it cannot be judged when a flag is spelled by a variable.
   if (GIT_COND.test(verb) && rest.some(opaque)) return SETT
-  const out = fl.find((w) => /^--output=/.test(w.t))
-  if (out) {
-    const c = wpath({ ...out, t: out.t.slice(9) }, eff, j)
+  // An output file: --output, or any abbreviation of it, with the file glued on or as the next word (none readable is the floor).
+  const oi = fl.findIndex((w) => w.t.startsWith('--') && ((n) => n.length >= 2 && 'output'.startsWith(n))(w.t.slice(2).split('=')[0]))
+  if (oi >= 0) {
+    const ow = fl[oi]
+    const ov = ow.t.includes('=') ? { ...ow, t: ow.t.slice(ow.t.indexOf('=') + 1) } : fl[oi + 1]
+    if (!ov) return SETT
+    const c = wpath(ov, eff, j)
     if (c) return R(c)
   }
   if (GIT_PATHS.has(verb)) {
@@ -996,8 +1000,10 @@ function wrapScan(args: Word[], it: Item, cur: B[], j: J, reparse: boolean): Flo
 const GH_VAL = /^(-R|--repo|--hostname|-b|--body|-t|--title|-B|--base|-H|--head|-l|--label|-a|--assignee|-m|--milestone|-F|--body-file|-q|--jq|-r|--reviewer|--json|-L|--limit|-s|--state|--author|-A|--search|-S|--branch)$/
 const GRAPHQL_OK = /^(mergePullRequest|createRef|updateRef|deleteRef|createIssue|updateIssue|closeIssue|reopenIssue|addComment|updateIssueComment|deleteIssueComment)$/
 // Whether a GraphQL text holds a mutation outside the allow list: the field names that take an `input:` argument (every mutation does), and any mutation whose names cannot be read that way.
-function graphqlMutates(x: string): boolean {
-  if (!/mutation/i.test(x)) return false
+function graphqlMutates(x0: string): boolean {
+  if (!/mutation/i.test(x0)) return false
+  // Commas and # comments are ignored tokens in GraphQL: they may sit between a field name and its arguments.
+  const x = x0.replace(/#[^\n]*/g, ' ').replace(/,/g, ' ')
   const names = [...x.matchAll(/([A-Za-z_]\w*)\s*\(\s*input\s*:/g)].map((m) => m[1])
   return names.length === 0 || names.some((n) => !GRAPHQL_OK.test(n))
 }
@@ -1083,7 +1089,8 @@ function judgeNet(v: string, args: Word[], cur: B[], j: J): FloorCategory | unde
       if (x.startsWith('--')) {
         const n = x.slice(2).split('=')[0]
         if (n.length > 0 && 'config'.startsWith(n)) return 'settings'
-        if (n === 'output' || n === 'output-dir' || n === 'dump-header') {
+        // The options that name a file curl writes, or any abbreviation of one (three letters at least).
+        if (n.length >= 3 && ['output', 'output-dir', 'dump-header', 'stderr', 'trace', 'trace-ascii', 'cookie-jar', 'etag-save', 'libcurl'].some((f) => f.startsWith(n))) {
           const c = x.includes('=') ? wpath(attached(k), cur, j) : wr(++k)
           if (c) return c
         }
@@ -1094,7 +1101,7 @@ function judgeNet(v: string, args: Word[], cur: B[], j: J): FloorCategory | unde
           // An option with a value: the rest of the word, or the next word, is the value (-o and -D name a file that is written).
           if ('AbcCDeEHmoPQrtuUwxyYzXdFT'.includes(ch)) {
             const r = x.slice(c + 1)
-            if (ch === 'o' || ch === 'D') {
+            if (ch === 'o' || ch === 'D' || ch === 'c') {
               const cat = r ? wpath({ ...args[k], t: r }, cur, j) : wr(++k)
               if (cat) return cat
             } else if (!r) k++
@@ -1353,6 +1360,9 @@ function inRootWrites(v: string, args: Word[]): boolean {
   if (v === 'wget') return !(t.some((x) => /^-[A-Za-z]*O-$/.test(x) || x === '--output-document=-') || (t.some((x) => /^-[A-Za-z]*O$/.test(x) || x === '--output-document') && t.includes('-')))
   if (v === 'http' || v === 'https' || v === 'xh') return t.some((x) => /^(-d|--download)$/.test(x))
   if (v === 'env') return args.length > 0
+  if (v === 'find') return t.some((x) => /^-(fprint0?|fprintf|fls)$/.test(x))
+  if (v === 'less') return t.some((x) => /^(-[A-Za-z]*[oO]|--log-file|--LOG-FILE)/.test(x))
+  if (v === 'tree') return t.some((x) => /^-[A-Za-z]*o/.test(x) || /^--o/.test(x))
   if (v === 'uniq') return t.filter((x) => !x.startsWith('-')).length > 1
   if (v === 'sort') return t.some((x) => /^(-[A-Za-z]*o|--output)/.test(x))
   return !IN_ROOT_OK.test(v)
