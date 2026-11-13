@@ -82,6 +82,15 @@ test('a clean ledger has no anomalies, one table row and the right wait', () => 
   assert.match(render(rep), /ANOMALIES \(must be empty\)\nnone/)
 })
 
+test('lead-offer and lead-offer-void rows are read, counted by kind, and are no anomaly beside an ordinary request', () => {
+  const fx = fixture()
+  ledger(fx, [ON(), ...clean(), R('lead-offer', BASE + 1000, { hash: H('c'), repo: '/Users/x/api', lane: 'LEAD-A', nonce: '0123456789abcdef0123456789abcdef', by: SID }), R('lead-offer-void', BASE + 2000, { hash: H('c'), nonce: '0123456789abcdef0123456789abcdef', code: 'panel-only' })])
+  const rep = run(fx)
+  assert.deepEqual(rules(rep), [])
+  assert.equal(rep.counts.rowsByKind['lead-offer'], 1)
+  assert.equal(rep.counts.rowsByKind['lead-offer-void'], 1)
+})
+
 test('a: a returned row with no answered row is an anomaly', () => {
   const fx = fixture()
   const rows = clean().filter((r) => r.kind !== 'answered')

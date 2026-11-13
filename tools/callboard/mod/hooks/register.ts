@@ -4,6 +4,7 @@ import type { Register } from 'claude-code'
 import * as c from './core.ts'
 import { sessionEnd, promptCompose } from './engine/grants.ts'
 import { leadVerbCall, laneCreateCall, laneOpenCall, laneUnparkCall, laneListCall, stopVerbCall, stopVerbFailed } from './engine/lanes.ts'
+import { leadOpenCall } from './engine/lead-open.ts'
 import { TOOL, requestCompactCall, turnComplete, promptSubmit, turnStart, postToolHook, postCompact } from './engine/compaction.ts'
 import { sessionStart } from './engine/tick.ts'
 import { commandRun } from './engine/commands.ts'
@@ -29,6 +30,7 @@ export const register: Register = (on) => {
   on('tool.call', { tool: 'mcp__callboard__lane_unpark' }, laneUnparkCall).catch(() => ({ deny: 'lane_unpark failed closed.' }))
 
   on('tool.call', { tool: 'mcp__callboard__lane_list' }, laneListCall).catch(() => ({ deny: 'lane_list failed closed.' }))
+  on('tool.call', { tool: 'mcp__callboard__lead_open' }, leadOpenCall).catch(() => ({ deny: 'lead_open failed closed.' }))
 
   on('tool.call', { tool: 'mcp__callboard__prompt_list' }, promptListCall).catch(() => ({ deny: 'prompt_list failed closed.' }))
   on('tool.call', { tool: 'mcp__callboard__prompt_answer' }, promptAnswerCall).catch(() => ({ deny: 'prompt_answer failed closed.' }))
