@@ -11,7 +11,7 @@ Self-contained: nothing here imports from the rest of the repository, so the dir
 | `mod/` | The Claude Code mod (`callboard`): reads `~/.claude/callboard/cue/<sid>.cue`, serves the `request_compact` tool, logs per session |
 | `mod/hooks/core.ts` | Pure logic: cue grammar, freshness, lane store checks, fixed texts, request validation, limits |
 | `prompt-audit.mjs` | Read-only audit of prompt answering: `node prompt-audit.mjs [--since DATE] [--root DIR] [--projects DIR] [--json]` reads the machine-wide ledger and the lane transcripts, prints every request and the anomalies that must stay empty; exit 0 clean, 1 anomalies, 2 error |
-| `extension/` | VS Code extension (commands `callboard.open(folder)`, `callboard.reopen(sid)`, `callboard.close(sid)`): opens and reopens lane panels, and closes a lane's tab after `lane_retire`, `lane_park` or `lane_terminate`. What it does and its limits: [`extension/README.md`](extension/README.md) |
+| `extension/` | VS Code extension (driven by the request files under `~/.claude/callboard/open/`, with no commands of its own): opens and reopens lane panels, and closes a lane's tab after `lane_retire`, `lane_park` or `lane_terminate`. What it does and its limits: [`extension/README.md`](extension/README.md) |
 | `link-extension.sh` | Links the panels extension into `~/.vscode/extensions` from this checkout (see Install) |
 
 ## Cue contract (reader side)

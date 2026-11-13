@@ -305,20 +305,7 @@ function createLanes({ vscode, registry, sleep, now, workspaceFolders = () => un
     return true
   }
 
-  async function close(sid) {
-    if (!SID_RE.test(String(sid))) throw new Error('bad session id')
-    // Only a live row counts: a stale row (or one whose check failed) could carry an old name that another session's tab now has.
-    let entry
-    for (const e of panels(await registry.list())) if (e.sessionId === sid && (await rowLive(e))) { entry = e; break }
-    if (!entry || !entry.name) throw new Error('no such open panel')
-    if (reservedHit(entry.name)) throw new Error('refusing to close a reserved lane name')
-    const tabs = claudeTabs().filter((t) => t.label === entry.name)
-    if (tabs.length !== 1) throw new Error(`expected one tab named for the panel, found ${tabs.length}`)
-    await vscode.window.tabGroups.close(tabs[0])
-    return sid
-  }
-
-  return { open, reopen, close, sweep, adopt }
+  return { open, reopen, sweep, adopt }
 }
 
 module.exports = { createLanes }
