@@ -176,11 +176,15 @@ The prefix can be imitated by another hook running as the person. That gains not
 
 No agent can answer these, whatever it judges. The hook checks at the request and again at apply:
 
-- edits to settings files, hooks and rules (the folders that `~/.claude/hooks` and `~/.claude/rules` link into included,
-  with the agents, skills and tools folders beside them), `.claude`, git hooks and git config, `.mcp.json`,
-  `install.conf` and callboard's own state folder;
-- what steers sessions in the live checkout (`tools/callboard`, `CLAUDE.md`, `docs/manager` and `rules`), and the mod's
-  dialogs (`ExitPlanMode`);
+- edits to settings files, hooks and rules, `.claude`, git hooks and git config, `.mcp.json`, `install.conf` and
+  callboard's own state folder;
+- any write that lands in the live checkout, whole, or in the toolkit checkout that `~/.claude/hooks` and
+  `~/.claude/rules` link into, whole (the mod's code, `CLAUDE.md` and `CLAUDE.local.md`, `docs/manager`, `rules`,
+  `.claude`, agents, skills, tools): by path, real path, glob or shell text. A session whose folder is inside one of
+  them may run only read-only verbs and git there; a verb that may write where it runs (a build, a package manager,
+  `curl -O`, an unpacker, a script) is the floor, a `cd` to a glob that may land there included. A write that names a
+  target outside them reaches the tiers, from a live-checkout session too. The mod's dialogs (`ExitPlanMode`) are
+  floor as well;
 - any write whose target cannot be shown to stay outside those: a shell line that cannot be read (`eval`, `bash -c`, an
   interpreter's `-c`, a verb built at run time, text that does not parse), a database client or interpreter that can run
   a shell, a git call that rewrites a work tree in, under or above a protected folder or from an unknown one, and
@@ -192,15 +196,34 @@ acts only when a prompt exists: it stops no shell write that nothing prompts for
 **Limits.** A shell command is a string: `eval`, an encoded payload or a script file can hide a write to a protected
 file. A write offered by an unrelated MCP server isn't recognised unless a path in its input names a protected place.
 
+*Amended 2026-11-12: a lane's own report.* The edit-of-settings rule holds every file under a live checkout, so a lane
+that runs in that checkout and signs `.archive/<LANE>/REPORT.md` got a `floor settings` row, no request and no notice
+(seen 2026-11-11: the dialog sat with the person and no tier knew). The floor now leaves out exactly that write, and
+only the live-checkout part of the rule for it: a `Write`, `Edit` or `MultiEdit` whose `file_path`, spelled exactly
+(the case too), is the path the session's own lane record gives (`<repo>/.archive/<LANE>/REPORT.md`), whose real path is
+that repo's real path plus the same tail, and whose file is absent or a plain file of the person's with one link. The
+hook checks this at the request and at apply; it writes the path into the request file (`ownReport`), and a tier's
+`prompt_answer` takes it from there, accepting it only if it reads as `<repo>/.archive/<the request's own lane>/REPORT.md`.
+Everything else stays floor: another lane's report, any other `.archive` file, any other path under the checkout, a
+link or hard link, a changed case, a `..` road to another file, a notebook tool, a shell append, callboard's state folder
+and every settings or hooks path. The report is the file `lane_retire` trusts, so what a tier allows here is a lane
+signing its own done line, judged under the normal rubric; a wrong allow can make a lane read as done, and `lane_retire`
+still asks the lane itself (idle, an empty box, a signature newer than its last turn). The tiers' judgment is the only
+check on what the lane writes into it. The checks run before the write, as every check of the hook does: a link or hard link swapped in between by another process in the same checkout is the old window, now open for this one file name inside a live checkout too; it is accepted. The repo must be its own real path, and a tier takes the path from the request only if a lane record of that name gives it. A whole-file `Write` of a long report is a truncated copy, which a tier may not allow (it passes up to the person); a lane signs with `Edit` or a short `Write` to be answerable. A prompt that stays the person's still leaves only a ledger row; a notice to the
+lane's lead for those is not built, as it needs a new fixed turn with its own cap.
+
 *Amended 2026-11-13: the floor shrinks to self-protection.* Merges, force pushes, pushes to main, master or production,
-destructive deletes, and the live-checkout rule for shell writes left the floor, by the person's decision ("fully remove
-the floor for now, and then put it back in only if needed"; scope: all but self-protection). Those calls now reach the tiers like any other call, and the
+destructive deletes, and the live-checkout rule for shell writes (every shell write from a session standing in a live
+checkout, whatever its target) left the floor, by the person's decision ("fully remove the floor for now, and then put
+it back in only if needed"; scope: all but self-protection). Those calls now reach the tiers like any other call, and the
 rubric's risk list (rule 4) names them: a merge, a force push, a push to main, master or production, and a delete that is not the lane's own work. A tier passes them up and
 the top tier asks the person through the relay. What that buys a forged decision file or a tier's wrong allow is stated in
 the security bound below. Where a call mixed a removed part with a kept one (an unreadable shell line, a database client,
 a git call near the mod's own code, a `rm -rf` of a folder that holds it), the reading that keeps self-protection whole
-was taken. The lane's own `REPORT.md` exception of 2026-11-12 went with the live-checkout rule: `.archive` is not under a
-protected folder, so a lane's report is an ordinary write that a tier answers under the rubric.
+was taken: the whole live checkout and the whole toolkit checkout stay protected targets, so a write that lands in them
+is the floor, and the lane's own `REPORT.md` exception above stays the one file under them a tier may answer. A verb that
+may write where it runs, from a folder inside them, is the floor too; a write that names a target outside them reaches
+the tiers.
 
 ### The risk list is judgment, not floor
 
