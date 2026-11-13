@@ -364,6 +364,8 @@ export const h = {
   laneRegisterHang: undefined,
   // A write of a lead:<sid> key waits on this while it is set (the save of a grant in flight).
   leadSetHang: undefined,
+  // Runs before any $.store write lands (the key as its argument); a returned promise holds the write (a save in flight).
+  storeSetHook: undefined as ((key: string) => Promise<void> | void) | undefined,
   takenPlanted: false,
   storeWrites: 'ok' as 'ok' | 'fail' | 'ignore',
   storeDeleteFails: false,
@@ -515,6 +517,7 @@ function resetStoreFiles() {
 function resetPluginState() {
   h.condSetHook = undefined
   h.leadSetHang = undefined
+  h.storeSetHook = undefined
   h.storeDeleteFails = false
   h.leadDeleteHang = undefined
   h.leadGetHang = undefined
@@ -758,6 +761,7 @@ export function engine(on0: any, argvSeen: string[][], stdins: string[] = [], cl
   const storeSet = async (e: any) => {
     if (over()) return { value: undefined }
     if (h.leadSetHang && String(e.key).startsWith('lead:')) await h.leadSetHang
+    if (h.storeSetHook) await h.storeSetHook(String(e.key))
     if (h.condSetHook && String(e.key).startsWith('conductor:')) {
       const hook = h.condSetHook
       h.condSetHook = undefined
