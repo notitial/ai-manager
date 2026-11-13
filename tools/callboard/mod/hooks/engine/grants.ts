@@ -118,13 +118,13 @@ export const pinOf = (sid: string): string | undefined => {
 export const leadBusy = (sid: string) => grants.has(sid) || leadGranting.has(sid)
 
 // The three levels as one record each, read by levels.ts. lead:<sid> = { pin, savedAt }, manager:<sid> = { name, savedAt } and conductor:<sid> = { home, repos:
-// approved, savedAt }: written at the grant, and for the conductor at each add or remove in this session and after a ratchet, and once a day. The lead's write
-// checks only that the same pin still holds, with no epoch, so a drop and a new grant meanwhile keep its key.
+// approved, savedAt }: written at the grant, and for the conductor at each add or remove in this session and after a ratchet, and once a day. A write that ends
+// after a drop deletes its key again, even when a new grant came meanwhile (saveEpochCheck), for all three levels.
 export const LEAD: LevelDesc = {
   level: 'lead',
   hint: c.LEAD_HINT_PREFIX,
   savedAt: leadSavedAt,
-  saveEpochCheck: false,
+  saveEpochCheck: true,
   unsaved: 'lead-unsaved',
   hintDelete: 'lead-hint-delete',
   saved: (_sid, pin) => ({ pin }),
@@ -137,7 +137,7 @@ export const LEAD: LevelDesc = {
   note: (_sid, pin) => c.leadBriefingNote(pin),
   noteErr: 'lead-briefing',
   notYes: 'person-or-no',
-  offCancelsDialog: false,
+  offCancelsDialog: true,
   presenceFirst: false,
   offToast: c.TIMED_OUT_LEAD_OFF_TOAST,
 }

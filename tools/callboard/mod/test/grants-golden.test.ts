@@ -216,10 +216,9 @@ for (const level of LEVELS) {
     expect(h.store.has(L.key)).toBe(false)
   })
 
-  // The conductor's and the manager's save checks the grant's epoch: a write begun by a grant that was dropped deletes the key even when the person granted
-  // again meanwhile, so the new grant is left with no saved key. The lead's save checks only that the same pin still holds, with no epoch: the same drop and
-  // re-grant keeps the key. The lead's test pins today's lead save without an epoch check.
-  test(`save: off and a new grant while the ${level} key is being written ${level === 'lead' ? "keep the key (pins today's lead save without an epoch check)" : 'lose the key: the older write deletes it'}`, async ($, on) => {
+  // The save checks the grant's epoch: a write begun by a grant that was dropped deletes the key even when the person granted again meanwhile, so the new grant is
+  // left with no saved key.
+  test(`save: off and a new grant while the ${level} key is being written lose the key: the older write deletes it`, async ($, on) => {
     await world($, on, [])
     let release!: () => void
     let held = false
@@ -231,7 +230,7 @@ for (const level of LEVELS) {
     expect(h.store.get(L.key)).toEqual(L.saved)
     release()
     expect((await first).text).toBe(L.offText)
-    expect(h.store.has(L.key)).toBe(level === 'lead')
+    expect(h.store.has(L.key)).toBe(false)
   })
 }
 
@@ -630,10 +629,9 @@ for (const [level, gone] of [['lead', ['lead', 'conductor']], ['conductor', ['le
   })
 }
 
-// /callboard off while the grant dialog is open, then the click: the conductor and the manager grant nothing (the off is remembered); the lead's click still grants.
-// The lead's test pins today's lead off-during-dialog.
+// /callboard off while the grant dialog is open, then the click: nothing is granted at any level (the off is remembered).
 for (const level of LEVELS) {
-  test(`dialog: /callboard off while the ${level} dialog is open, then Yes: ${level === 'lead' ? "the lead is granted (pins today's lead off-during-dialog)" : 'nothing is granted (refused off-meanwhile)'}`, async ($, on) => {
+  test(`dialog: /callboard off while the ${level} dialog is open, then Yes: nothing is granted (refused off-meanwhile)`, async ($, on) => {
     const stdins: string[] = []
     await world($, on, stdins)
     let release!: (a: string) => void
@@ -644,17 +642,10 @@ for (const level of LEVELS) {
     release(YES)
     const text = (await p).text as string
     h.askHang = undefined
-    if (level === 'lead') {
-      expect(text).toContain('Lead is on')
-      expect(await isOn($)).toBe(true)
-      expect(h.store.has(LV.lead.key)).toBe(true)
-      expect(logged(stdins)).not.toContain('refused:off-meanwhile')
-    } else {
-      expect(text).toBe('Nothing changed: callboard was turned off meanwhile.')
-      expect(logged(stdins)).toContain('refused:off-meanwhile')
-      expect(logged(stdins)).not.toContain(LV[level].onLog)
-      expect(await isOn($)).toBe(false)
-      expect(h.store.has(LV[level].key)).toBe(false)
-    }
+    expect(text).toBe('Nothing changed: callboard was turned off meanwhile.')
+    expect(logged(stdins)).toContain('refused:off-meanwhile')
+    expect(logged(stdins)).not.toContain(LV[level].onLog)
+    expect(await isOn($)).toBe(false)
+    expect(h.store.has(LV[level].key)).toBe(false)
   })
 }

@@ -83,6 +83,8 @@ Four levels, one per session (`conductor-holder`, `lead-holder`, `lane-holder` a
 
 `/callboard off` drops whatever level the session holds (from another origin it asks first). `/callboard status` prints the levels without a model turn. The lead grant is a filter, not proof: it decides which session gets the `lane_*` tools, and every target still runs its own checks.
 
+  *2026-11-13: the three grant dialogs run through one flow driven by the level's descriptor. Two behaviours of the lead level now match the other two: `/callboard off` typed while the Lead dialog is open cancels it (the click afterwards is refused `off-meanwhile`, nothing is granted), and the lead's saved grant is written with the same epoch check as the conductor's and manager's, so a drop and a new grant while the write is in flight no longer leave the older write's key in place of the new grant's.*
+
 ### Lead tools
 
 `lane_create`, `lane_open`, `lane_rename`, `lane_start`, `lane_resume`, `lane_compact`, `lane_park`, `lane_unpark`, `lane_retire`, `lane_terminate` and `lane_list`, registered on the grant. The engine cannot unregister a tool, so after `off` they stay declared and refuse every call. A target is found by registry name inside the lane folder; a name on two live sessions is `ambiguous`, and a lead never targets itself.
