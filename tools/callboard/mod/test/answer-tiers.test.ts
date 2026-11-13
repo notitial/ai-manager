@@ -179,10 +179,9 @@ test('prompts: a truncated input can be denied but never allowed', async ($, on)
 test('prompts: prompt_answer never answers a floor call, allow or deny', async ($, on) => {
   await tier($, on)
   const floorCalls: [string, unknown][] = [
-    ['mcp__github__merge_pull_request', { owner: 'a', repo: 'b', pullNumber: 1 }],
-    ['mcp__git-mcp__git_push', { path: SVC, force: true }],
-    ['mcp__git-mcp__git_push', { path: SVC, branch: 'main' }],
-    ['Bash', { command: 'rm -rf build' }],
+    ['Bash', { command: 'echo x >> ~/.claude/hooks/guard.sh' }],
+    ['Bash', { command: 'git config core.hooksPath /tmp/h' }],
+    ['Bash', { command: 'eval "$X"' }],
     ['Write', { file_path: '/Users/x/.claude/settings.json', content: '{}' }],
     ['ExitPlanMode', {}],
   ]
@@ -193,6 +192,19 @@ test('prompts: prompt_answer never answers a floor call, allow or deny', async (
   expect(decFile()).toBeUndefined()
   expect(answered()).toEqual([])
 })
+
+for (const [name, tool, input] of [
+  ['a merge', 'mcp__github__merge_pull_request', { owner: 'a', repo: 'b', pullNumber: 1 }],
+  ['a force push', 'mcp__git-mcp__git_push', { path: SVC, force: true }],
+  ['a push to main', 'mcp__git-mcp__git_push', { path: SVC, branch: 'main' }],
+  ['a delete', 'Bash', { command: 'rm -rf /tmp/build' }],
+] as [string, string, unknown][])
+  test(`prompts: prompt_answer answers what left the floor: ${name}`, async ($, on) => {
+    await tier($, on)
+    putQ({ tool, input })
+    expect(said(await $.tool.call(answerCall({ decision: 'allow' })))).toContain('Recorded: allow')
+    expect(decFile()).toBeDefined()
+  })
 
 test('prompts: the comment cap: 2 --comments per PR refuse the next allow; a deny, another PR and a full review count apart; both months are read', async ($, on) => {
   await tier($, on)

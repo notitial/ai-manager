@@ -4,7 +4,7 @@ import * as c from '../core.ts'
 import * as pr from '../prompts.ts'
 import { grants, checks, openReqs, doneIds, unclosed, askingSids, relayAskedTurn, mem } from '../mem.ts'
 import { run, MKDIR, dirOk, INSTALL, TEE, MV, rmF, where, facts, sha, statR, realR, REALPATH, readSmallR, pause, RMDIR } from './base.ts'
-import { loadLanes, registryEntries, registryOf } from './store.ts'
+import { registryEntries, registryOf } from './store.ts'
 import { leadsFor, homeOf, presenceCheck } from './grants.ts'
 import { reportLaneOf, sessionRoot } from './lanes.ts'
 import type { Bound } from './lanes.ts'
@@ -16,7 +16,6 @@ import { getLane } from '../state.ts'
 // prompt_answer or the person, and the hook applies it under every check of pr.applyCheck.
 const UUIDGEN = '/usr/bin/uuidgen'
 const GREP = '/usr/bin/grep'
-const GIT_BIN = '/usr/bin/git'
 
 export const PROMPT_DIRS_MAX = 512
 export const ANSWERING_KEY = 'answering'
@@ -160,83 +159,21 @@ async function promptObserve($: any, e: any, r: any): Promise<void> {
   while (checks.size > CHECKS_MAX) checks.delete(checks.keys().next().value as string)
 }
 
-// The current branch of a repo, by a read-only git call that reads no hook and no optional lock; undefined (detached, or any failure) leaves the floor holding.
-async function branchOf($: any, dir: string): Promise<string | undefined> {
-  const r = await run($, [GIT_BIN, '--no-optional-locks', '-C', dir, 'symbolic-ref', '--short', '-q', 'HEAD'], undefined, { LC_ALL: 'C' }).catch(() => undefined)
-  const b = r?.exitCode === 0 ? String(r.stdout).trim() : ''
-  return b === '' || /[\u0000-\u001f]/.test(b) ? undefined : b
-}
-
-// Where a push of this branch goes when the call names no branch: the keys git reads for it (branch.<b>.remote, pushRemote, merge, remote.pushDefault, push.default,
-// a remote's push or mirror). No keys is an answer (the defaults apply); anything else that fails leaves it unresolved, and the floor holds.
-const PUSH_KEYS = '^(branch\\..*\\.(remote|pushremote|merge)|remote\\.pushdefault|remote\\..*\\.(push|pushurl|mirror)|url\\..*\\.(insteadof|pushinsteadof)|push\\.default)$'
-async function pushTargetOf($: any, dir: string, branch: string, remote?: string): Promise<NonNullable<pr.FloorOpts['pushTarget']>> {
-  const r = await run($, [GIT_BIN, '--no-optional-locks', '-C', dir, 'config', '--get-regexp', PUSH_KEYS], undefined, { LC_ALL: 'C' }).catch(() => undefined)
-  // A config that cannot be read may rewrite the push: even a named ref is then the floor.
-  if (!r) return { unresolved: true, mapped: true }
-  if (r.exitCode === 1 && String(r.stdout).trim() === '') return pr.pushTargetFrom('', branch, remote)
-  return r.exitCode === 0 && !r.isStdoutTruncated ? pr.pushTargetFrom(String(r.stdout), branch, remote) : { unresolved: true, mapped: true }
-}
-
+// The floor's options: The mod's own code in the live checkout (tools/callboard, and its real path when the checkout is reached through a link), and the folders
+// the hooks and rules under ~/.claude are linked into (the toolkit's live checkout): an edit there is an edit of the guards themselves.
 // cwdKnown: cwd is the folder the engine said the call ran in. When it said none, the floor reads every relative path as having an unknown base.
-// A lane's own report (a lane signs by writing it), for the floor: the path and its real path, only when everything about it checks out. In the asking session (`sid`)
-// the path is the one its lane record gives, the one lane_retire reads. A prompt_answer in a tier's session has only the request, which carries that path (`path`);
-// it must still read as `<repo>/.archive/<lane>/REPORT.md` of the request's own lane and be the path a lane record of that name gives. Anything that does not check out gives undefined, and the floor holds as before.
-async function ownReportOf($: any, own: { lane: string; sid?: string; path?: string }, file: { filePath: unknown; cwd: string | undefined }): Promise<pr.FloorOpts['ownReport']> {
-  try {
-    let path = own.path
-    if (own.sid !== undefined) {
-      const l = await reportLaneOf($, own.sid)
-      if (!l || l.name !== own.lane) return undefined
-      path = c.reportPath(l)
-    } else {
-      // A tier has only the request: the path it names must be the one a lane record of that name gives.
-      const lanes = await loadLanes($)
-      if (typeof lanes === 'string' || !lanes.some((x) => x.name === own.lane && c.reportPath(x) === path)) return undefined
-    }
-    const tail = `/.archive/${own.lane}/REPORT.md`
-    const repo = path !== undefined && path.endsWith(tail) ? path.slice(0, -tail.length) : undefined
-    const p = await where($)
-    if (path === undefined || repo === undefined || pr.ownReportPath(repo, own.lane) !== path || !p) return undefined
-    // Only a call that names the report pays for the file system checks, and only it gets the exception.
-    if (!pr.namesOwnReport(file.filePath, file.cwd, path)) return undefined
-    // The repo is its own real path: a folder that was swapped for a link since the lane was made gets no exception.
-    const real = await realR($, repo)
-    if (typeof real === 'string' || real.path !== repo) return undefined
-    // The file is ours and plain (a link or a second hard link would write somewhere else), or not made yet.
-    const st = await statR($, path)
-    if (st === 'error' || (st !== 'absent' && (st.kind !== 'file' || st.nlink !== 1 || st.uid !== p.uid))) return undefined
-    return { path, real: `${real.path === '/' ? '' : real.path}${tail}` }
-  } catch {
-    return undefined
-  }
-}
-
-// own: the session's lane, for its own report (see ownReportOf); only a write by a file tool uses it.
-export async function promptFloorOpts($: any, tool: string, input: any, cwd: string, home: string, cwdKnown = true, own?: { lane: string; sid?: string; path?: string }): Promise<pr.FloorOpts> {
+export async function promptFloorOpts($: any, tool: string, input: any, cwd: string, home: string, cwdKnown = true): Promise<pr.FloorOpts> {
   const o: pr.FloorOpts = { home, roots: [], cwd, ...(cwdKnown ? {} : { cwdUnknown: true }) }
   const isGit = tool.startsWith('mcp__git-mcp__')
   try {
     const co = c.liveCheckout($.plugin.root)
     if (co) {
-      o.roots = [co]
+      o.roots = [`${co}/tools/callboard`]
       const real = await realR($, co)
-      if (typeof real !== 'string' && real.path !== co) o.roots.push(real.path)
+      if (typeof real !== 'string' && real.path !== co) o.roots.push(`${real.path}/tools/callboard`)
     }
   } catch {}
-  // The folders the hooks and rules under ~/.claude are linked into (the toolkit's live checkout): an edit there is an edit of the guards themselves.
-  if (PERSON_HOLDS.has(tool) || tool === 'Bash' || isGit) for (const r of await linkedRoots($, home)) if (!o.roots!.includes(r)) o.roots!.push(r)
-  if (pr.needsBranch(tool, input)) {
-    const dir = pr.gitPathOf(tool, input) ?? (tool === 'Bash' ? cwd : undefined)
-    if (dir) o.branch = await branchOf($, dir)
-  }
-  // Every push is judged by where git sends it: a push naming no branch goes to the configured target of the current one, and a remote may rewrite even a named ref.
-  // An unread branch is '' (the rewrite check needs none); no folder to read is unresolved.
-  if (pr.needsPushTarget(tool, input)) {
-    // The git server acts in the folder the call names; with none it acts in its own, which is not read here.
-    const dir = pr.gitPathOf(tool, input)
-    o.pushTarget = dir === undefined ? { unresolved: true, mapped: true } : await pushTargetOf($, dir, o.branch ?? '', typeof input?.remote === 'string' ? input.remote : undefined)
-  }
+  for (const r of await linkedRoots($, home)) if (!o.roots!.includes(r)) o.roots!.push(r)
   if (PERSON_HOLDS.has(tool) || isGit) {
     const real: string[] = []
     // A git call acts on its `path`, or on the folder the session runs in.
@@ -256,15 +193,12 @@ export async function promptFloorOpts($: any, tool: string, input: any, cwd: str
     }
     o.real = real
   }
-  if (own && PERSON_HOLDS.has(tool)) {
-    const r = await ownReportOf($, own, { filePath: input?.file_path, cwd: o.cwdUnknown === true ? undefined : cwd })
-    if (r) o.ownReport = r
-  }
   return o
 }
 
-// The folder above `hooks` or `rules` in the real path of each entry of ~/.claude/hooks and ~/.claude/rules that is a link out of ~/.claude. Best effort: a
-// failed list or realpath adds nothing. A folder found this way is as wide as the link's own parent, which errs toward the floor.
+// The `hooks` or `rules` folder in the real path of each entry of ~/.claude/hooks and ~/.claude/rules that is a link out of ~/.claude, and the guard folders beside it in
+// the same checkout (agents, skills, and the GitHub guard and workspace lock under tools). Best effort: a failed list or realpath adds nothing.
+const GUARD_SIBLINGS = ['agents', 'skills', 'tools/github-mcp', 'tools/workspace-lock']
 async function linkedRoots($: any, home: string): Promise<string[]> {
   const out = new Set<string>()
   const own = `${home.toLowerCase()}/.claude`
@@ -274,9 +208,13 @@ async function linkedRoots($: any, home: string): Promise<string[]> {
       if (names.length === 0) continue
       const r = await run($, [REALPATH, '--', ...names.map((n) => `${home}/.claude/${sub}/${n}`)], undefined, { LC_ALL: 'C' })
       for (const line of String(r.stdout).split('\n')) {
-        const m = /^(\/.+?)\/(?:hooks|rules)\/[^/]+$/.exec(line.trim())
+        const m = /^(\/.+?\/(?:hooks|rules))\/[^/]+$/.exec(line.trim())
         const low = m?.[1].toLowerCase()
-        if (m && low !== own && !low!.startsWith(`${own}/`)) out.add(m[1])
+        if (m && low !== own && !low!.startsWith(`${own}/`)) {
+          out.add(m[1])
+          const parent = m[1].slice(0, m[1].lastIndexOf('/'))
+          for (const s of GUARD_SIBLINGS) out.add(`${parent}/${s}`)
+        }
       }
     } catch {}
   }
@@ -548,7 +486,7 @@ async function promptHook($: any, e: any, nextOnce: (x: any) => Promise<any>, si
     // 6. The floor.
     // The floor reads relative paths against the folder the engine says the call ran in (a shell keeps its cd between calls), not the folder the session started in.
     const ecwd = typeof e.cwd === 'string' && e.cwd.startsWith('/') ? e.cwd : undefined
-    const fo = await promptFloorOpts($, tool, input, ecwd ?? cwd, homeOf(p), ecwd !== undefined, cov.level === 'lane' && cov.lane !== undefined ? { lane: cov.lane, sid } : undefined)
+    const fo = await promptFloorOpts($, tool, input, ecwd ?? cwd, homeOf(p), ecwd !== undefined)
     const floor = pr.floorCheck(tool, input, fo)
     // What the floor read besides the input: the audit compares it between a floor row and a later request of the same input.
     const ctx = (await sha($, JSON.stringify(fo)).catch(() => '')).slice(0, 16)
@@ -577,7 +515,7 @@ async function promptHook($: any, e: any, nextOnce: (x: any) => Promise<any>, si
     const id = await promptNewId($)
     const nonce = await promptNewId($)
     const capped = pr.capInput(input)
-    const req: pr.Request = { id, sid, pid: own.pid, procStart: own.procStart, level: cov.level, lane: cov.lane ?? cov.self, ...(leadName ? { leadName } : {}), ...(cov.level === 'lane' && lead === undefined ? { noLead: true } : {}), repo: cwd, tool, ...(ecwd !== undefined ? { cwd: ecwd } : {}), inputHash: hash, ...(fo.ownReport !== undefined ? { ownReport: fo.ownReport.path } : {}), raisedBy: judged.raisedBy, at: started, expiresAt: started + pr.EXPIRES_MS, nonce, input: capped.input, truncated: capped.truncated }
+    const req: pr.Request = { id, sid, pid: own.pid, procStart: own.procStart, level: cov.level, lane: cov.lane ?? cov.self, ...(leadName ? { leadName } : {}), ...(cov.level === 'lane' && lead === undefined ? { noLead: true } : {}), repo: cwd, tool, ...(ecwd !== undefined ? { cwd: ecwd } : {}), inputHash: hash, raisedBy: judged.raisedBy, at: started, expiresAt: started + pr.EXPIRES_MS, nonce, input: capped.input, truncated: capped.truncated }
     const text = pr.requestText(req)
     if (new TextEncoder().encode(text).length > pr.REQUEST_MAX || !(await promptPut($, `${dir}/${id}.request.json`, text))) {
       await ledgerAdd($, { ...base, kind: 'abandoned', code: 'hook-failed' })
@@ -815,7 +753,7 @@ async function promptApply($: any, w: WaitCtx, d: pr.Decision, awake: number, gr
   try {
     liveHash = await sha($, pr.canonical(w.input))
   } catch {}
-  const fo = await promptFloorOpts($, w.tool, w.input, w.ecwd ?? w.cwd, w.home, w.ecwd !== undefined, w.req.level === 'lane' && w.req.lane !== undefined ? { lane: w.req.lane, sid: w.sid } : undefined)
+  const fo = await promptFloorOpts($, w.tool, w.input, w.ecwd ?? w.cwd, w.home, w.ecwd !== undefined)
   let byOk = false
   // The tier of the presence-checked stand that matches the decision's author: the name an answer prints comes from here, never from the decision file.
   let tier: pr.Tier | undefined

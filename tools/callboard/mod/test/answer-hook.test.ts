@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import * as prm from '../hooks/prompts'
-import { h, NO, PROMPTS_DIR, SID, T0, YES, extraStat, leadFiles, longTest, pdirs, pfs, psFail, realMap } from './harness'
+import { h, NO, PROMPTS_DIR, SID, T0, YES, leadFiles, longTest, pdirs, pfs, psFail, realMap } from './harness'
 import { HOOK_BUDGET_MS, LEADPATH, LEADPS, LEADSID, OTHER, PIN, SVC, attRec, lane, leadReg, ownReg, putStore, sleeps, started } from './fixtures'
 import { GONE, LDIR, LEAD2, LEDGER_FILE, OFF_FILE, PCOMMENT, PDIR, PRQ, TID, answerCall, answered, answerer, askCheck, at, callOf, decFile, driveClock, handDecision, hookKinds, hookRows, ledgerRows, noFiles, putLedger, putQ, putRelay, readReq, refusal, reqFiles, retRow, rowKinds, runRequest, said, startReq, stop, tier, waitingRow } from './answer-fixtures'
 
@@ -210,34 +210,15 @@ test('prompts: classifier: a request raised by the guard says so in its file', a
 
 // ---- the floor, at the request: no request is written and the dialog stays the person's ----
 const FLOOR_CASES: [string, string, unknown, string][] = [
-  ['merge', 'mcp__github__merge_pull_request', { owner: 'o', repo: 'r', pullNumber: 1 }, 'merge'],
-  ['the optional merge item, off', 'mcp__machine-ops__pr_merge', { owner: 'o', repo: 'r', number: 1 }, 'merge'],
-  ['a force push', 'mcp__git-mcp__git_push', { path: '/r', branch: 'feat/x', force: true }, 'force-push'],
-  ['a push to main', 'mcp__git-mcp__git_push', { path: '/r', branch: 'main' }, 'protected-push'],
-  ['a push to +main', 'mcp__git-mcp__git_push', { path: '/r', branch: '+main' }, 'force-push'],
-  ['a push to refs/heads/main', 'mcp__git-mcp__git_push', { path: '/r', branch: 'refs/heads/main' }, 'protected-push'],
-  ['a push to origin/master', 'mcp__git-mcp__git_push', { path: '/r', branch: 'origin/master' }, 'protected-push'],
-  ['any Bash git push', 'Bash', { command: 'git push origin feat/x' }, 'protected-push'],
-  ['a branch delete push', 'mcp__git-mcp__git_push', { path: '/r', branch: 'feat/x', delete: true }, 'destructive'],
-  ['git_clean', 'mcp__git-mcp__git_clean', { path: '/r' }, 'destructive'],
-  ['git reset hard', 'mcp__git-mcp__git_reset', { path: '/r', mode: 'hard' }, 'destructive'],
-  ['rm -rf', 'Bash', { command: 'rm -rf build' }, 'destructive'],
-  ['SQL DROP', 'mcp__db__query', { sql: 'DROP TABLE users' }, 'destructive'],
   ['an edit of settings.json', 'Write', { file_path: '/Users/x/.claude/settings.json', content: 'x' }, 'settings'],
   ['an edit of callboard\'s folder', 'Edit', { file_path: '/Users/x/.claude/callboard/prompts/ledger-2026-11.jsonl', old_string: 'a', new_string: 'b' }, 'settings'],
   ['a shell command naming the callboard folder', 'Bash', { command: 'echo x >> ~/.claude/callboard/prompts/ledger-2026-11.jsonl' }, 'settings'],
   ['workspace-lock clear', 'Bash', { command: '/x/workspace-lock.sh --id a clear' }, 'settings'],
   ['ExitPlanMode', 'ExitPlanMode', { plan: 'p' }, 'dialog'],
-  ['rm by path', 'Bash', { command: '/bin/rm -rf build' }, 'destructive'],
-  ['git clean after -C', 'Bash', { command: 'git -C /r clean -fdx' }, 'destructive'],
-  ['a Bash merge, whatever the branch', 'Bash', { command: 'git checkout main && git merge feat/x' }, 'merge'],
-  ['gh pr merge with -R before the verb', 'Bash', { command: 'gh -R o/r pr merge 5' }, 'merge'],
-  ['a commit to main through the GitHub server', 'mcp__github__create_or_update_file', { owner: 'o', repo: 'r', path: 'a', content: 'x', message: 'm', branch: 'main' }, 'protected-push'],
-  ['a GitHub commit with no branch (the default one)', 'mcp__github__push_files', { owner: 'o', repo: 'r', files: [], message: 'm' }, 'protected-push'],
-  ['a GitHub file delete', 'mcp__github__delete_file', { owner: 'o', repo: 'r', path: 'a', message: 'm', branch: 'feat/x' }, 'destructive'],
   ['a git config that sets the hooks folder', 'Bash', { command: 'git config core.hooksPath /tmp/h' }, 'settings'],
-  ['a matching push (a lone colon)', 'mcp__git-mcp__git_push', { path: '/r', branch: ':' }, 'protected-push'],
-  ['a push whose ref reads as an option', 'mcp__git-mcp__git_push', { path: '/r', branch: '--mirror' }, 'protected-push'],
+  ['a database client, which can run a shell', 'Bash', { command: 'psql -h h -c "select 1"' }, 'settings'],
+  ['a shell line that cannot be read', 'Bash', { command: 'eval "$X"' }, 'settings'],
+  ['removing ~/.claude', 'Bash', { command: 'rm -rf /Users/x/.claude' }, 'settings'],
 ]
 for (const [name, tool, input, cat] of FLOOR_CASES) {
   test(`prompts: floor at the request: ${name}: no request, a floor ${cat} row, the dialog stays`, async ($, on) => {
@@ -251,31 +232,40 @@ for (const [name, tool, input, cat] of FLOOR_CASES) {
     expect(sleeps(argv).length).toBe(0)
   })
 }
-test('prompts: floor: a push with no branch reads the current branch, and an unreadable one is floor', async ($, on) => {
-  await answerer($, on, [])
-  const c2 = callOf('mcp__git-mcp__git_push', { path: '/r' })
-  h.gitBranch = 'main'
-  expect(await runRequest($, [], c2.over, c2.check)).toEqual({})
-  expect(rowKinds()).toEqual(['floor protected-push'])
-  h.gitBranch = undefined
-  await askCheck($, { ...c2.check, tool_use_id: 'tu2' })
-  expect(await startReq($, c2.over)).toEqual({})
-  expect(rowKinds()).toEqual(['floor protected-push', 'floor protected-push'])
-  expect(reqFiles().length).toBe(0)
-})
-test('prompts: floor: the branch a push without one lands on is read with a read-only git call', async ($, on) => {
-  const argv: string[][] = []
-  await answerer($, on, [], { argv })
-  const c2 = callOf('mcp__git-mcp__git_push', { path: '/r' })
-  await runRequest($, [stop(8000)], c2.over, c2.check)
-  const g = argv.find((a) => a[0] === '/usr/bin/git')!
-  expect(g).toEqual(['/usr/bin/git', '--no-optional-locks', '-C', '/r', 'symbolic-ref', '--short', '-q', 'HEAD'])
-})
+// What left the floor reaches the tiers: a request is written, and the rubric judges it.
+const REACH_CASES: [string, string, unknown][] = [
+  ['a merge', 'mcp__github__merge_pull_request', { owner: 'o', repo: 'r', pullNumber: 1 }],
+  ['a machine-ops merge', 'mcp__machine-ops__pr_merge', { owner: 'o', repo: 'r', number: 1 }],
+  ['a force push', 'mcp__git-mcp__git_push', { path: '/r', branch: 'feat/x', force: true }],
+  ['a push to main', 'mcp__git-mcp__git_push', { path: '/r', branch: 'main' }],
+  ['a push with no branch', 'mcp__git-mcp__git_push', { path: '/r' }],
+  ['any Bash git push', 'Bash', { command: 'git push origin feat/x' }],
+  ['a Bash merge', 'Bash', { command: 'git -C /r checkout main && git -C /r merge feat/x' }],
+  ['gh pr merge', 'Bash', { command: 'gh -R o/r pr merge 5' }],
+  ['git_clean', 'mcp__git-mcp__git_clean', { path: '/r' }],
+  ['git reset hard', 'mcp__git-mcp__git_reset', { path: '/r', mode: 'hard' }],
+  ['rm -rf', 'Bash', { command: 'rm -rf /tmp/build' }],
+  ['SQL in a tool input', 'mcp__db__query', { sql: 'DELETE FROM users' }],
+  ['a commit to main through the GitHub server', 'mcp__github__create_or_update_file', { owner: 'o', repo: 'r', path: 'a', content: 'x', message: 'm', branch: 'main' }],
+  ['a GitHub file delete', 'mcp__github__delete_file', { owner: 'o', repo: 'r', path: 'a', message: 'm', branch: 'feat/x' }],
+]
+for (const [name, tool, input] of REACH_CASES) {
+  test(`prompts: reaches the tiers: ${name}: a request is written and no floor row`, async ($, on) => {
+    await answerer($, on, [])
+    const c2 = callOf(tool, input)
+    await runRequest($, [stop(8000)], c2.over, c2.check)
+    expect(rowKinds()).toEqual(['requested', 'off'])
+  })
+}
 
-test('prompts: floor at apply: a push that was fine at the request and lands on main by the decision is dropped', async ($, on) => {
+test('prompts: floor at apply: a call that was fine at the request and edits a guard folder by the time of the decision is dropped', async ($, on) => {
   await answerer($, on, [])
-  const c2 = callOf('mcp__git-mcp__git_push', { path: '/r' })
-  const r = await runRequest($, [at(4000, () => { handDecision(readReq()); h.gitBranch = 'main' }), stop(40_000)], c2.over, c2.check)
+  const c2 = callOf('Edit', { file_path: '/Users/x/code/toolkit/hooks/a.sh', old_string: 'a', new_string: 'b' })
+  const r = await runRequest($, [at(4000, () => {
+    handDecision(readReq())
+    h.hooksList = ['guard.sh']
+    realMap.set('/Users/x/.claude/hooks/guard.sh', '/Users/x/code/toolkit/hooks/guard.sh')
+  }), stop(40_000)], c2.over, c2.check)
   expect(r).toEqual({})
   expect(rowKinds()).toEqual(['requested', 'answered allow', 'dropped floor', 'off'])
 })
@@ -751,15 +741,15 @@ test('prompts: a poll reads this session\'s own row by one file: no table of eve
   expect(during.filter((a) => a[0] === '/bin/ps').length).toBe(0)
   expect(during.some((a) => a[0] === '/usr/bin/stat' && a.some((x) => String(x).endsWith('/4300.json')))).toBe(true)
 })
-test('prompts: floor: an edit under the folder that the hooks of ~/.claude link into (the toolkit checkout) is settings', async ($, on) => {
+test('prompts: floor: an edit under the hooks folder that ~/.claude/hooks links into (the toolkit checkout) is settings', async ($, on) => {
   await answerer($, on, [])
   h.hooksList = ['guard.sh']
   realMap.set('/Users/x/.claude/hooks/guard.sh', '/Users/x/code/toolkit/hooks/guard.sh')
-  const c2 = callOf('Edit', { file_path: '/Users/x/code/toolkit/rules/a.md', old_string: 'a', new_string: 'b' })
+  const c2 = callOf('Edit', { file_path: '/Users/x/code/toolkit/hooks/a.sh', old_string: 'a', new_string: 'b' })
   expect(await runRequest($, [], c2.over, c2.check)).toEqual({})
   expect(rowKinds()).toEqual(['floor settings'])
-  // Elsewhere stays judged.
-  const c3 = callOf('Edit', { file_path: '/Users/x/code/other/a.md', old_string: 'a', new_string: 'b' })
+  // Elsewhere, the rest of the same checkout included, stays judged.
+  const c3 = callOf('Edit', { file_path: '/Users/x/code/toolkit/docs/a.md', old_string: 'a', new_string: 'b' })
   await askCheck($, { ...c3.check, tool_use_id: 'tu2' })
   h.sessions = waitingRow(T0 + 500)
   driveClock()
@@ -767,92 +757,49 @@ test('prompts: floor: an edit under the folder that the hooks of ~/.claude link 
   expect(await startReq($, c3.over)).toEqual({})
   expect(rowKinds()).toEqual(['floor settings', 'requested', 'off'])
 })
-// ---- the lane's own report under a live checkout: the one write a tier may answer (ADR 0004, 2026-11-12) ----
-// The lane svc-api's repo is PIN, made a live root here the way the toolkit's is: through a link from ~/.claude/hooks.
+// ---- the guard folders of a checkout stay the floor; its other files, a lane's own report included, reach the tiers ----
+// The lane svc-api's repo is PIN, whose hooks folder is linked from ~/.claude/hooks, the way the toolkit's is.
 const OWN_REPORT = `${PIN}/.archive/svc-api/REPORT.md`
-const liveRootIsPin = () => {
+const guardsInPin = () => {
   h.hooksList = ['guard.sh']
   realMap.set('/Users/x/.claude/hooks/guard.sh', `${PIN}/hooks/guard.sh`)
 }
-test('prompts: floor: a lane\'s own REPORT.md under a live root raises a request; every other path under it stays the floor', async ($, on) => {
+test('prompts: floor: a write into a guard folder of a checkout stays the floor, by path, by shell and through a link', async ($, on) => {
   await answerer($, on, [])
-  liveRootIsPin()
-  const held: [string, string, Record<string, unknown>][] = [
-    ['another lane\'s report', 'Write', { file_path: `${PIN}/.archive/OTHER/REPORT.md`, content: 'x' }],
-    ['the lane\'s own brief', 'Write', { file_path: `${PIN}/.archive/svc-api/BRIEF.md`, content: 'x' }],
-    ['a file of the checkout', 'Edit', { file_path: `${PIN}/docs/a.md`, old_string: 'a', new_string: 'b' }],
-    ['the report with another case', 'Write', { file_path: `${PIN}/.archive/SVC-API/REPORT.md`, content: 'x' }],
-    ['the report through a dot-dot road to another lane', 'Write', { file_path: `${PIN}/.archive/svc-api/../OTHER/REPORT.md`, content: 'x' }],
-    ['a shell append to the own report', 'Bash', { command: `echo 'status: done x' >> ${OWN_REPORT}` }],
+  guardsInPin()
+  const held: [string, Record<string, unknown>][] = [
+    ['Write', { file_path: `${PIN}/hooks/guard.sh`, content: 'x' }],
+    ['Edit', { file_path: `${PIN}/hooks/new.sh`, old_string: 'a', new_string: 'b' }],
+    ['Bash', { command: `echo x >> ${PIN}/hooks/guard.sh` }],
   ]
   let n = 0
-  for (const [, tool, input] of held) {
+  for (const [tool, input] of held) {
     const c2 = callOf(tool, input)
     expect(await runRequest($, [], c2.over, { ...c2.check, tool_use_id: `tu${++n}` })).toEqual({})
   }
-  expect(rowKinds()).toEqual(held.map(() => 'floor settings'))
-  expect(reqFiles().length).toBe(0)
-  // A link in place of the report, a second hard link to it, and a real path that is somewhere else: held.
-  realMap.set(OWN_REPORT, `${PIN}/tools/callboard/mod/hooks/register.ts`)
+  // The lane's report, as a link to a guard file.
+  realMap.set(OWN_REPORT, `${PIN}/hooks/guard.sh`)
   const cw = callOf('Write', { file_path: OWN_REPORT, content: 'x' })
   expect(await runRequest($, [], cw.over, { ...cw.check, tool_use_id: 'tu20' })).toEqual({})
-  realMap.delete(OWN_REPORT)
-  extraStat.set(OWN_REPORT, '501 600 2 Regular File 55 40 1700000000\n')
-  expect(await runRequest($, [], cw.over, { ...cw.check, tool_use_id: 'tu21' })).toEqual({})
-  extraStat.set(OWN_REPORT, '501 600 1 Symbolic Link 55 40 1700000000\n')
-  expect(await runRequest($, [], cw.over, { ...cw.check, tool_use_id: 'tu22' })).toEqual({})
-  expect(rowKinds().slice(held.length)).toEqual(['floor settings', 'floor settings', 'floor settings'])
+  expect(rowKinds()).toEqual(Array(held.length + 1).fill('floor settings'))
   expect(reqFiles().length).toBe(0)
 })
-longTest('prompts: floor: the lane\'s own REPORT.md (Write, Edit or MultiEdit) gets a request that names the file, and a decision on it is applied', async ($, on) => {
+longTest('prompts: a lane\'s own REPORT.md and the other files of a checkout get a request, and a decision on it is applied', async ($, on) => {
   await answerer($, on, [])
-  liveRootIsPin()
+  guardsInPin()
   for (const [tool, input] of [
     ['Write', { file_path: OWN_REPORT, content: 'x' }],
-    ['Edit', { file_path: OWN_REPORT, old_string: 'a', new_string: 'b' }],
-    ['MultiEdit', { file_path: OWN_REPORT, edits: [{ old_string: 'a', new_string: 'b' }] }],
+    ['Edit', { file_path: `${PIN}/docs/a.md`, old_string: 'a', new_string: 'b' }],
+    ['MultiEdit', { file_path: `${PIN}/.archive/OTHER/REPORT.md`, edits: [{ old_string: 'a', new_string: 'b' }] }],
   ] as [string, Record<string, unknown>][]) {
     pfs.delete(LEDGER_FILE)
     const c2 = callOf(tool, input)
     let seenReq: any
     const r = await runRequest($, [at(4000, () => { seenReq = readReq(); handDecision(seenReq) })], c2.over, c2.check)
-    expect(seenReq.ownReport, tool).toBe(OWN_REPORT)
+    expect(seenReq.ownReport, tool).toBeUndefined()
     expect(r, tool).toEqual({ decision: { behavior: 'allow' } })
     expect(rowKinds(), tool).toEqual(['requested', 'answered allow', 'returned allow'])
   }
-  // A write of any other file raises its request with no ownReport on it.
-  pfs.delete(LEDGER_FILE)
-  const other = callOf('Write', { file_path: '/Users/x/code/other/a.md', content: 'x' })
-  let otherReq: any
-  await runRequest($, [at(4000, () => { otherReq = readReq() }), stop(6000)], other.over, { ...other.check, tool_use_id: 'tu30' })
-  expect(otherReq.ownReport).toBeUndefined()
-})
-test('prompts: floor: a decision on the own report is not applied if the file became a second hard link while the request waited', async ($, on) => {
-  await answerer($, on, [])
-  liveRootIsPin()
-  const c2 = callOf('Write', { file_path: OWN_REPORT, content: 'x' })
-  const r = await runRequest($, [at(4000, () => { extraStat.set(OWN_REPORT, '501 600 2 Regular File 55 40 1700000000\n') }), at(5000, () => handDecision(readReq())), stop(9000)], c2.over, c2.check)
-  expect(r).toEqual({})
-  expect(rowKinds()).not.toContain('returned allow')
-})
-test('prompts: floor: with no verified own report on the request the old rule holds for a tier too (floor), and with one it is answered', async ($, on) => {
-  await tier($, on)
-  liveRootIsPin()
-  // The lane's record, as the tier's own store has it (an attached lane in SVC, whose repo is PIN).
-  putStore([attRec(LEADSID, 'svc-api')])
-  const w = (file_path: string) => ({ tool: 'Write', input: { file_path, content: 'x' } })
-  // The request carries no ownReport, or one for another lane or another file: the floor, whichever way the tier decides.
-  for (const over of [{ ...w(OWN_REPORT) }, { ...w(OWN_REPORT), ownReport: `${PIN}/.archive/OTHER/REPORT.md` }, { ...w(`${PIN}/.archive/OTHER/REPORT.md`), ownReport: OWN_REPORT }, { ...w(`${PIN}/docs/a.md`), ownReport: OWN_REPORT },
-    // The request's lane has no record that gives that path.
-    { ...w(`${PIN}/.archive/ghost/REPORT.md`), ownReport: `${PIN}/.archive/ghost/REPORT.md`, lane: 'ghost' },
-    { ...w(OWN_REPORT), ownReport: `${PIN}/.archive/svc-api/../svc-api/REPORT.md` }, { ...w(OWN_REPORT), ownReport: `${PIN}/.archive/svc-api/BRIEF.md` }, { ...w(OWN_REPORT), ownReport: 'REPORT.md' }]) {
-    putQ(over)
-    for (const decision of ['allow', 'deny']) expect(said(await $.tool.call(answerCall({ decision }))), JSON.stringify(over)).toContain(refusal('floor'))
-  }
-  expect(decFile()).toBeUndefined()
-  putQ({ ...w(OWN_REPORT), ownReport: OWN_REPORT })
-  expect(said(await $.tool.call(answerCall()))).toContain('Recorded: allow')
-  expect(decFile()).toBeDefined()
 })
 test('prompts: sweep: folders past the first 64 are reached on a later tick; an old orphan file and the empty folder of a gone session go', async ($, on) => {
   await answerer($, on, [], { clock: true })
@@ -871,7 +818,7 @@ test('prompts: sweep: folders past the first 64 are reached on a later tick; an 
   expect(ledgerRows().map((r) => `${r.kind} ${r.code} ${r.id}`)).toEqual([`abandoned session-gone ${RID(8)}`])
 })
 
-test('prompts: floor: a mutating git call on the toolkit checkout (found through the linked hooks) is settings; a read there is judged', async ($, on) => {
+test('prompts: floor: a git call that rewrites the work tree of the toolkit checkout (found through the linked hooks) is settings; a read there is judged', async ($, on) => {
   await answerer($, on, [])
   h.hooksList = ['guard.sh']
   realMap.set('/Users/x/.claude/hooks/guard.sh', '/Users/x/code/toolkit/hooks/guard.sh')
@@ -955,76 +902,6 @@ test('prompts hook: a call with no @claude body never reads the cap', async ($, 
   expect(r).toEqual({ decision: { behavior: 'allow' } })
   expect(hookRows().filter((x) => x.kind === 'returned')[0].cap).toBeUndefined()
   expect(hookRows().filter((x) => x.kind === 'returned')[0].target).toBeUndefined()
-})
-
-// ---- a push with no branch is judged by where git sends it ----
-test('prompts floor: a push with no branch is judged by its configured push target, read with a read-only git call', async ($, on) => {
-  const argv: string[][] = []
-  await answerer($, on, [], { argv })
-  const c2 = callOf('mcp__git-mcp__git_push', { path: '/r' })
-  h.gitBranch = 'feat/x'
-  h.gitPushConfig = 'branch.feat/x.remote origin\nbranch.feat/x.merge refs/heads/main\npush.default upstream\n'
-  expect(await runRequest($, [], c2.over, c2.check)).toEqual({})
-  expect(rowKinds()).toEqual(['floor protected-push'])
-  const g = argv.find((a) => a[0] === '/usr/bin/git' && a.includes('--get-regexp'))!
-  expect(g.slice(0, 6)).toEqual(['/usr/bin/git', '--no-optional-locks', '-C', '/r', 'config', '--get-regexp'])
-  expect(g.join(' ')).toContain('pushremote')
-})
-
-test('prompts floor: a push target that cannot be read is floor; a branch with no keys and a safe name is judged as before', async ($, on) => {
-  await answerer($, on, [])
-  const c2 = callOf('mcp__git-mcp__git_push', { path: '/r' })
-  h.gitBranch = 'feat/x'
-  h.pfsFails = undefined
-  h.gitPushConfig = 'FAIL'
-  expect(await runRequest($, [], c2.over, c2.check)).toEqual({})
-  expect(rowKinds()).toEqual(['floor protected-push'])
-  h.gitPushConfig = undefined
-  await askCheck($, { ...c2.check, tool_use_id: 'tu2' })
-  h.sessions = waitingRow(T0 + 500)
-  driveClock()
-  h.clockHooks.push(stop(8000))
-  await startReq($, c2.over)
-  expect(rowKinds()).toContain('requested')
-})
-
-test('prompts floor: a push that names its branch is floor when the remote rewrites pushes, and judged as named when it does not', async ($, on) => {
-  const argv: string[][] = []
-  await answerer($, on, [], { argv })
-  h.gitBranch = 'feat/x'
-  const named = callOf('mcp__git-mcp__git_push', { path: '/r', branch: 'feat/y' })
-  h.gitPushConfig = 'remote.origin.push refs/heads/*:refs/heads/main\n'
-  expect(await runRequest($, [], named.over, named.check)).toEqual({})
-  expect(rowKinds()).toEqual(['floor protected-push'])
-  expect(argv.some((a) => a[0] === '/usr/bin/git' && a.includes('--get-regexp'))).toBe(true)
-  h.gitPushConfig = 'url.ssh://h/.insteadof https://h/\n'
-  await askCheck($, { ...named.check, tool_use_id: 'tu2' })
-  h.sessions = waitingRow(T0 + 500)
-  driveClock()
-  h.clockHooks.push(stop(8000))
-  expect(await startReq($, named.over)).toEqual({})
-  expect(rowKinds().filter((k) => k === 'floor protected-push').length).toBe(2)
-  h.gitPushConfig = undefined
-  await askCheck($, { ...named.check, tool_use_id: 'tu3' })
-  h.sessions = waitingRow(T0 + 500)
-  driveClock()
-  h.clockHooks.push(stop(8000))
-  await startReq($, named.over)
-  expect(rowKinds()).toContain('requested')
-})
-
-test('prompts floor: a push that names its branch is floor when the push config cannot be read', async ($, on) => {
-  await answerer($, on, [])
-  h.gitBranch = 'feat/x'
-  const named = callOf('mcp__git-mcp__git_push', { path: '/r', branch: 'feat/y' })
-  h.gitPushConfig = 'FAIL'
-  expect(await runRequest($, [], named.over, named.check)).toEqual({})
-  h.gitPushConfig = 'THROW'
-  await askCheck($, { ...named.check, tool_use_id: 'tu2' })
-  h.sessions = waitingRow(T0 + 500)
-  driveClock()
-  expect(await startReq($, named.over)).toEqual({})
-  expect(rowKinds()).toEqual(['floor protected-push', 'floor protected-push'])
 })
 
 test('prompts floor: a relative write with no folder from the engine is floor; with the event\'s folder it is judged', async ($, on) => {
