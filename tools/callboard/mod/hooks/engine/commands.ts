@@ -34,11 +34,10 @@ import {
   reservedGet,
   managersLive,
   managerTools,
-  presenceDrop,
-  presenceTouch,
   leadDrop,
   MANAGER,
   LEAD,
+  grantDialog,
   CONDUCTOR,
   colorLater,
   conductorHere,
@@ -70,7 +69,7 @@ import {
 import type { Bound, Plan } from './lanes.ts'
 import { restoreFromHint, saveHint, bump, isEligible, dropRequest } from './compaction.ts'
 import { ensureTimer } from './tick.ts'
-import { epochOf, heldNo, holdsOf, levelBrief, levelSave } from './levels.ts'
+import { epochOf, heldNo, holdsOf, levelSave } from './levels.ts'
 import type { LevelDesc } from './levels.ts'
 import { ANSWERING_KEY, ledgerAdd, promptsOff } from './answer-hook.ts'
 import { ledgerRestore } from './answer-tiers.ts'
@@ -314,83 +313,79 @@ export async function managerCommand($: any, sid: string, code: c.OriginCode, wa
   if (before) return refuse(before)
   // A restore whose pending entry went while these checks ran (an /callboard off, a manager grant by hand) asks nothing.
   if (restore && !alive()) return { text: '' }
-  const seq = offSeq.get(sid) ?? 0
-  const r = await askOnce($, sid, restore ? c.MANAGER_RESTORE_QUESTION : c.askedFrom(c.MANAGER_QUESTION, code), c.MANAGER_YES, c.MANAGER_NO, c.HEADER.manager)
-  if (r === 'busy') return busy()
-  // A restore: only the person's Cancel removes the saved grant; no answer (a timeout, a dismissal, an error) restores nothing and keeps it.
-  if (restore && r !== 'yes') {
-    if (r === 'no') {
-      await Promise.resolve($.store.delete(`${c.MANAGER_HINT_PREFIX}${sid}`)).catch(logFail($, sid, 'manager-hint-delete'))
-      await log($, sid, 'manager-restore-cancelled')
-    } else {
-      await log($, sid, 'manager-restore-unanswered')
-      toast($, c.MANAGER_UNANSWERED_TOAST)
-    }
-    return { text: 'Manager stays off.' }
-  }
-  if (r === 'timed-out') {
-    await timedOut($, sid)
-    return { text: `Manager stays off. ${c.TIMED_OUT_SENTENCE}` }
-  }
-  if (r !== 'yes') {
-    await log($, sid, 'refused', 'manager-not-confirmed')
-    return { text: 'Manager stays off.' }
-  }
-  // The post-click re-check, as the lead's: the marks are read and set with no await between.
-  if (restore && !alive()) return refuse('changed')
-  if (laneBinding.has(sid) || leadGranting.has(sid)) return refuse(laneBinding.has(sid) ? 'lane-holder' : 'lead-holder')
-  leadGranting.add(sid)
-  let grantEpoch = -1
-  try {
-    const after = await withTimeout($, held(false), c.ENGINE_CALL_TIMEOUT_MS)
-    if (restore && !alive()) return refuse('changed')
-    if (after !== undefined) return refuse(after === 'timeout' ? 'manager-check-slow' : after)
-    if ((offSeq.get(sid) ?? 0) !== seq) {
-      await log($, sid, 'refused', 'off-meanwhile')
-      return { text: 'Nothing changed: callboard was turned off meanwhile.' }
-    }
-    let set: unknown
-    try {
-      set = await withTimeout($, managerTools($, sid), c.ENGINE_CALL_TIMEOUT_MS)
-    } catch {
-      set = 'error'
-    }
-    if (set !== undefined || (offSeq.get(sid) ?? 0) !== seq) {
-      await logq($, sid, 'error', set === undefined ? 'off-meanwhile' : `manager-register-${set}`)
-      return { text: c.MANAGER_FAILED }
-    }
-    grants.set(sid, { level: 'manager', pins: [], name })
-    grantEpoch = epochOf(sid)
-    // A grant the person made while a restore question was still pending stands; the pending restore ends here.
-    managerRestorePending.delete(sid)
-  } finally {
-    leadGranting.delete(sid)
-  }
-  await presenceDrop($, sid).catch(() => undefined)
-  const wrote = await presenceTouch($, sid).catch(() => false)
-  const stepBack = async (why: string) => {
-    if (epochOf(sid) === grantEpoch) await leadDrop($, sid)
-    if (why !== 'manager-presence') return refuse(why)
-    await log($, sid, 'error', why)
-    return { text: c.MANAGER_FAILED }
-  }
-  if (epochOf(sid) !== grantEpoch) return { text: 'Manager is now off.' }
-  if (wrote !== true) return stepBack('manager-presence')
-  const live = await registryEntries($)
-  if (!live) return stepBack('registry-unreadable')
-  if ((await managersLive($, live, sid)).length > 0) return stepBack('manager-exists')
-  if (epochOf(sid) !== grantEpoch) return { text: 'Manager is now off.' }
-  await levelSave($, sid, MANAGER)
-  if (epochOf(sid) !== grantEpoch) return { text: 'Manager is now off.' }
-  await log($, sid, restore ? 'manager-restored' : 'manager-on', restore ? '' : code)
-  if (restore) toast($, c.MANAGER_RESTORED_TOAST)
-  await levelBrief($, sid, MANAGER, name)
-  // The rename cannot run inside the command: the tick runs it (as attach), unless the session already carries the name (a launch with -n NAME).
-  const mine = live.filter((e) => e.j.sessionId === sid)
-  if (mine.length === 1 && mine[0].j.name === name) await log($, sid, 'rename-skipped', 'manager')
-  else pendingRename.set(sid, { name, until: (await $.clock.now()) + c.RENAME_PENDING_MS, manager: true })
-  colorLater($, sid, grantEpoch)
-  return { text: c.MANAGER_ON_TEXT }
+  let live: Awaited<ReturnType<typeof registryEntries>>
+  return grantDialog($, sid, MANAGER, {
+    question: restore ? c.MANAGER_RESTORE_QUESTION : c.askedFrom(c.MANAGER_QUESTION, code),
+    yes: c.MANAGER_YES,
+    no: c.MANAGER_NO,
+    header: c.HEADER.manager,
+    busy,
+    person: c.originIsPerson(code),
+    on: () => grants.get(sid)?.level === 'manager',
+    // A restore: only the person's Cancel removes the saved grant; no answer (a timeout, a dismissal, an error) restores nothing and keeps it.
+    onNotYes: restore
+      ? async (r) => {
+          if (r === 'no') {
+            await Promise.resolve($.store.delete(`${c.MANAGER_HINT_PREFIX}${sid}`)).catch(logFail($, sid, 'manager-hint-delete'))
+            await log($, sid, 'manager-restore-cancelled')
+          } else {
+            await log($, sid, 'manager-restore-unanswered')
+            toast($, c.MANAGER_UNANSWERED_TOAST)
+          }
+          return { text: 'Manager stays off.' }
+        }
+      : undefined,
+    // The post-click re-check, as the lead's: the marks are read and set with no await between.
+    postClick: () => {
+      if (restore && !alive()) return refuse('changed')
+      if (laneBinding.has(sid) || leadGranting.has(sid)) return refuse(laneBinding.has(sid) ? 'lane-holder' : 'lead-holder')
+    },
+    recheck: async () => {
+      const after = await withTimeout($, held(false), c.ENGINE_CALL_TIMEOUT_MS)
+      if (restore && !alive()) return refuse('changed')
+      if (after !== undefined) return refuse(after === 'timeout' ? 'manager-check-slow' : after)
+    },
+    apply: async (offNow) => {
+      let set: unknown
+      try {
+        set = await withTimeout($, managerTools($, sid), c.ENGINE_CALL_TIMEOUT_MS)
+      } catch {
+        set = 'error'
+      }
+      if (set !== undefined || offNow()) {
+        await logq($, sid, 'error', set === undefined ? 'off-meanwhile' : `manager-register-${set}`)
+        return { text: c.MANAGER_FAILED }
+      }
+      grants.set(sid, { level: 'manager', pins: [], name })
+      // A grant the person made while a restore question was still pending stands; the pending restore ends here.
+      managerRestorePending.delete(sid)
+    },
+    afterPresence: async (wrote, grantEpoch) => {
+      const stepBack = async (why: string) => {
+        if (epochOf(sid) === grantEpoch) await leadDrop($, sid)
+        if (why !== 'manager-presence') return refuse(why)
+        await log($, sid, 'error', why)
+        return { text: c.MANAGER_FAILED }
+      }
+      if (epochOf(sid) !== grantEpoch) return { text: MANAGER.offText }
+      if (wrote !== true) return stepBack('manager-presence')
+      live = await registryEntries($)
+      if (!live) return stepBack('registry-unreadable')
+      if ((await managersLive($, live, sid)).length > 0) return stepBack('manager-exists')
+      if (epochOf(sid) !== grantEpoch) return { text: MANAGER.offText }
+    },
+    onLog: [restore ? 'manager-restored' : 'manager-on', restore ? '' : code],
+    toast: restore ? c.MANAGER_RESTORED_TOAST : undefined,
+    briefArg: name,
+    // The rename cannot run inside the command: the tick runs it (as attach), unless the session already carries the name (a launch with -n NAME).
+    after: async (grantEpoch) => {
+      const mine = live!.filter((e) => e.j.sessionId === sid)
+      if (mine.length === 1 && mine[0].j.name === name) await log($, sid, 'rename-skipped', 'manager')
+      else pendingRename.set(sid, { name, until: (await $.clock.now()) + c.RENAME_PENDING_MS, manager: true })
+      colorLater($, sid, grantEpoch)
+    },
+    text: c.MANAGER_ON_TEXT,
+  })
 }
 
 // /callboard conductor add|remove, the person's own command only (from the prompt or the phone); any other origin is refused with no dialog. add asks once
@@ -497,55 +492,41 @@ async function conductorGrant($: any, sid: string, code: c.OriginCode, busy: () 
   const approvedNow = on() ? (conductorApproved.get(sid) ?? []) : []
   const question = c.askedFrom(c.conductorQuestion(home, first.ok, h, on() ? first.ok.filter((x) => !approvedNow.includes(x)) : []), code)
   if (question.length > c.QUESTION_MAX) return refuse('conductor-list-too-long', home)
-  const seq = offSeq.get(sid) ?? 0
-  const r = await askOnce($, sid, question, c.CONDUCTOR_YES, c.CONDUCTOR_NO, c.HEADER.conductor)
-  if (r === 'busy') return busy()
-  if (r !== 'yes') {
-    const wasOn = on()
-    // A no from the person's own prompt or phone ends the grant and deletes its saved key (as the lead's Cancel); another origin's no, or no answer, changes nothing.
-    const kept = r === 'no' && c.originIsPerson(code) && !(await leadDrop($, sid)) ? c.CONDUCTOR_KEPT : ''
-    if (r === 'timed-out') {
-      await timedOut($, sid)
-      return { text: `${on() ? 'Conductor stays on.' : 'Conductor stays off.'} ${c.TIMED_OUT_SENTENCE}` }
-    }
-    await log($, sid, 'refused', 'conductor-not-confirmed')
-    return { text: `${on() ? 'Conductor stays on.' : wasOn ? 'Conductor is now off.' : 'Conductor stays off.'}${kept}` }
-  }
-  // The post-click re-check, as the lead's and the manager's: the marks are read and set with no await between.
-  if (laneBinding.has(sid) || leadGranting.has(sid)) return refuse(laneBinding.has(sid) ? 'lane-holder' : 'lead-holder', home)
-  leadGranting.add(sid)
-  let grantEpoch = -1
-  try {
-    const again = await withTimeout($, conductorShowable($, sid, false), c.ENGINE_CALL_TIMEOUT_MS)
-    if (again === 'timeout') return refuse('conductor-file-error', home)
-    if ('no' in again) return refuse(again.no, again.home ?? home, again.out)
-    if ((offSeq.get(sid) ?? 0) !== seq) {
-      await log($, sid, 'refused', 'off-meanwhile')
-      return { text: 'Nothing changed: callboard was turned off meanwhile.' }
-    }
-    // The list resolved now must be the list the dialog showed.
-    // The same repos in another order (a writer sorts the file) are no change.
-    if (again.home !== home || [...again.ok].sort().join('\n') !== [...first.ok].sort().join('\n')) return refuse('conductor-changed', home)
-    const a = await conductorApply($, sid, home, first.ok, first.ok, epochOf(sid))
-    if (a !== 'ok') {
-      await logq($, sid, 'error', `conductor-register-${a}`)
-      return { text: c.CONDUCTOR_FAILED }
-    }
-    grantEpoch = epochOf(sid)
-    // A grant the person made while a restore question was still pending stands, as the lead's does; the pending restore ends here,
-    // so a later Cancel on its question cannot delete this grant's saved key.
-    conductorRestorePending.delete(sid)
-  } finally {
-    leadGranting.delete(sid)
-  }
-  await levelSave($, sid, CONDUCTOR)
-  if (epochOf(sid) !== grantEpoch) return { text: 'Conductor is now off.' }
-  await presenceDrop($, sid).catch(() => undefined)
-  await presenceTouch($, sid).catch(logFail($, sid, 'conductor-presence'))
-  await log($, sid, 'conductor-on', code)
-  await levelBrief($, sid, CONDUCTOR, home)
-  await nameGrant($, sid)
-  return { text: `${c.CONDUCTOR_ON_TEXT}${c.conductorOutText(first.out)}` }
+  let fresh!: { home: string; ok: string[] }
+  return grantDialog($, sid, CONDUCTOR, {
+    question,
+    yes: c.CONDUCTOR_YES,
+    no: c.CONDUCTOR_NO,
+    header: c.HEADER.conductor,
+    busy,
+    person: c.originIsPerson(code),
+    on,
+    // The post-click re-check, as the lead's and the manager's: the marks are read and set with no await between.
+    postClick: () => (laneBinding.has(sid) || leadGranting.has(sid) ? refuse(laneBinding.has(sid) ? 'lane-holder' : 'lead-holder', home) : undefined),
+    recheck: async () => {
+      const again = await withTimeout($, conductorShowable($, sid, false), c.ENGINE_CALL_TIMEOUT_MS)
+      if (again === 'timeout') return refuse('conductor-file-error', home)
+      if ('no' in again) return refuse(again.no, again.home ?? home, again.out)
+      fresh = again
+    },
+    apply: async () => {
+      // The list resolved now must be the list the dialog showed.
+      // The same repos in another order (a writer sorts the file) are no change.
+      if (fresh.home !== home || [...fresh.ok].sort().join('\n') !== [...first.ok].sort().join('\n')) return refuse('conductor-changed', home)
+      const a = await conductorApply($, sid, home, first.ok, first.ok, epochOf(sid))
+      if (a !== 'ok') {
+        await logq($, sid, 'error', `conductor-register-${a}`)
+        return { text: c.CONDUCTOR_FAILED }
+      }
+      // A grant the person made while a restore question was still pending stands, as the lead's does; the pending restore ends here,
+      // so a later Cancel on its question cannot delete this grant's saved key.
+      conductorRestorePending.delete(sid)
+    },
+    onLog: ['conductor-on', code],
+    briefArg: home,
+    after: () => nameGrant($, sid),
+    text: `${c.CONDUCTOR_ON_TEXT}${c.conductorOutText(first.out)}`,
+  })
 }
 
 // /callboard config. Reading works from any origin and logs nothing (as status). A change is the person's own: from the prompt or the phone it is applied,
@@ -825,63 +806,55 @@ export async function commandRun($: any, e: any) {
     await reservedGet($, sid, true)
     const named = await secondLeadNo($, sid, pinned)
     if (named !== undefined) return nameNo(named)
-    const r = await askOnce($, sid, c.askedFrom(c.leadQuestion(pinned), code), c.LEAD_YES, c.LEAD_NO, c.HEADER.lead)
-    if (r === 'busy') return busy()
-    if (r !== 'yes') {
-      const wasOn = grants.has(sid)
-      const kept = (r === 'no' || c.originIsPerson(code)) && !(await leadDrop($, sid)) ? c.LEAD_KEPT : ''
-      let why = ''
-      if (r === 'timed-out') {
-        await timedOut($, sid, 'timed-out', wasOn && !grants.has(sid) ? c.TIMED_OUT_LEAD_OFF_TOAST : c.TIMED_OUT_TOAST)
-        why = ` ${c.TIMED_OUT_SENTENCE}`
-      } else await log($, sid, 'refused', 'lead-not-confirmed')
-      return { text: `${grants.has(sid) ? `Lead stays on.${why}` : wasOn ? `Lead is now off.${why}` : `Lead stays off.${why}`}${kept}` }
-    }
-    // After the click the manager grant is read through wasManager alone.
-    const heldAfter = c.holderNo('lead', { ...holdsOf(sid, laneBinding.has(sid), false), manager: false })
-    if (heldAfter) return leadNo(heldAfter)
-    let grantEpoch = -1
-    leadGranting.add(sid)
-    try {
-      // The engine calls held inside the mark have a time limit; a state read that does not answer counts as a lane binding.
-      if ((await withTimeout($, laneHeld(), c.ENGINE_CALL_TIMEOUT_MS)) !== false) return leadNo('lane-holder')
-      const namedNow = await withTimeout($, secondLeadNo($, sid, pinned), c.ENGINE_CALL_TIMEOUT_MS)
-      if (namedNow !== undefined) return nameNo(namedNow === 'timeout' ? 'lead-check-slow' : namedNow)
-      let set: unknown
-      try {
-        set = await withTimeout($, leadToolsOnce($, sid), c.ENGINE_CALL_TIMEOUT_MS)
-      } catch {
-        await logq($, sid, 'error', 'lead-register')
-        return { text: 'Lead could not be set up.' }
-      }
-      if (set === 'timeout') {
-        await logq($, sid, 'error', 'lead-register-timeout')
-        return { text: 'Lead could not be set up.' }
-      }
-      // A re-grant with a new folder is a new reach: work in flight for the old one (a check-in) sees the epoch move and stops.
-      const oldPin = pinOf(sid)
-      if (oldPin !== undefined && oldPin !== pinned) {
-        leadEpoch.set(sid, epochOf(sid) + 1)
-        laneObs.delete(sid)
-        attnTold.delete(sid)
-      }
-      grants.set(sid, c.leadGrant(pinned))
-      grantEpoch = epochOf(sid)
-    } finally {
-      leadGranting.delete(sid)
-    }
-    // The grant survives a restart.
-    await levelSave($, sid, LEAD, pinned)
-    // An off or a Cancel during the save leaves no presence, log, briefing or "Lead is on" behind.
-    if (epochOf(sid) !== grantEpoch) return { text: 'Lead is now off.' }
-    // A new grant may pin another folder: the old file and its checks go first.
-    await presenceDrop($, sid).catch(() => undefined)
-    await presenceTouch($, sid).catch(logFail($, sid, 'presence'))
-    await watchInit($, sid).catch(logFail($, sid, 'lane-watch'))
-    await log($, sid, 'lead-on')
-    await levelBrief($, sid, LEAD, pinned)
-    await nameGrant($, sid)
-    return { text: 'Lead is on from your next prompt.\nOnly a force stop asks you.' }
+    return grantDialog($, sid, LEAD, {
+      question: c.askedFrom(c.leadQuestion(pinned), code),
+      yes: c.LEAD_YES,
+      no: c.LEAD_NO,
+      header: c.HEADER.lead,
+      busy,
+      person: c.originIsPerson(code),
+      on: () => grants.has(sid),
+      pin: pinned,
+      // After the click the manager grant is read through wasManager alone.
+      postClick: () => {
+        const heldAfter = c.holderNo('lead', { ...holdsOf(sid, laneBinding.has(sid), false), manager: false })
+        return heldAfter ? leadNo(heldAfter) : undefined
+      },
+      recheck: async () => {
+        // The engine calls held inside the mark have a time limit; a state read that does not answer counts as a lane binding.
+        if ((await withTimeout($, laneHeld(), c.ENGINE_CALL_TIMEOUT_MS)) !== false) return leadNo('lane-holder')
+        const namedNow = await withTimeout($, secondLeadNo($, sid, pinned), c.ENGINE_CALL_TIMEOUT_MS)
+        if (namedNow !== undefined) return nameNo(namedNow === 'timeout' ? 'lead-check-slow' : namedNow)
+      },
+      apply: async () => {
+        let set: unknown
+        try {
+          set = await withTimeout($, leadToolsOnce($, sid), c.ENGINE_CALL_TIMEOUT_MS)
+        } catch {
+          await logq($, sid, 'error', 'lead-register')
+          return { text: 'Lead could not be set up.' }
+        }
+        if (set === 'timeout') {
+          await logq($, sid, 'error', 'lead-register-timeout')
+          return { text: 'Lead could not be set up.' }
+        }
+        // A re-grant with a new folder is a new reach: work in flight for the old one (a check-in) sees the epoch move and stops.
+        const oldPin = pinOf(sid)
+        if (oldPin !== undefined && oldPin !== pinned) {
+          leadEpoch.set(sid, epochOf(sid) + 1)
+          laneObs.delete(sid)
+          attnTold.delete(sid)
+        }
+        grants.set(sid, c.leadGrant(pinned))
+      },
+      afterPresence: async () => {
+        await watchInit($, sid).catch(logFail($, sid, 'lane-watch'))
+      },
+      onLog: ['lead-on', ''],
+      briefArg: pinned,
+      after: () => nameGrant($, sid),
+      text: 'Lead is on from your next prompt.\nOnly a force stop asks you.',
+    })
   }
   const bound = (await $.state.get(lane)).value as Bound | null | undefined
   // Every session gets the keepalive and the nudges.

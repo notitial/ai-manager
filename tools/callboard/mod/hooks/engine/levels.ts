@@ -3,6 +3,7 @@
 // Trust rules held here: the holder and exclusion checks (core's holderNo), the epoch checks of the saved grant.
 import * as c from '../core.ts'
 import { logq, logFail } from './base.ts'
+import type { Asked } from './base.ts'
 import { briefed, grants, leadEpoch, leadGranting, leadRestorePending, conductorRestorePending, leadDeclared, conductorDeclared, managerDeclared, laneBinding } from '../mem.ts'
 
 // $.state keys declared again where they are used: `claude plugin validate` reads a key in the file that uses it.
@@ -35,7 +36,44 @@ export type LevelDesc = {
   noteKey(arg: string): string
   note(sid: string, arg: string): string
   noteErr: string
+  // The grant dialog (grantDialog in grants.ts). notYes: what a click that is not yes does to the grant, and its saved key: 'person-or-no' ends it on any no and on
+  // any non-yes the person's own origin gets (a dismissal, a timeout), 'person-no' only on the person's own no, 'none' never. offCancelsDialog: a /callboard off
+  // while it is open cancels the grant (refused off-meanwhile). presenceFirst: the presence file is written before the saved grant and must succeed (the manager);
+  // otherwise it follows the save and a failed write is only logged. offToast: the toast of a timeout that ended the grant.
+  notYes: 'person-or-no' | 'person-no' | 'none'
+  offCancelsDialog: boolean
+  presenceFirst: boolean
+  offToast?: string
   presence?: { err: string; fields(g: c.Grant, home?: string): object; key?(g: c.Grant, home?: string): string }
+}
+
+type Refusal = { text: string } | void
+
+// What a command hands grantDialog beside the level's LevelDesc: the question and closures over what the command read before it. A closure that refuses
+// returns the reply, its refusal already logged. person: the origin is the person's own. on: the session holds this level.
+export type GrantDialog = {
+  question: string
+  yes: string
+  no: string
+  header: string
+  busy: () => Promise<{ text: string }>
+  person: boolean
+  on: () => boolean
+  pin?: string
+  // A question that is not the grant's own (the manager's restore) ends its own way when the answer is not yes.
+  onNotYes?: (r: Asked) => Promise<{ text: string }>
+  // The checks that read the marks, with no await: the marks are read and set with nothing between.
+  postClick: () => Promise<{ text: string }> | undefined
+  // Checks inside the mark, then the tools and the grant (offNow: an off came since the question).
+  recheck: () => Promise<Refusal>
+  apply: (offNow: () => boolean) => Promise<Refusal>
+  // Once the presence file is written (presenceFirst: with its result, and a refusal ends the grant), or after the saved grant when presence follows it.
+  afterPresence?: (wrote: unknown, epoch: number) => Promise<Refusal>
+  onLog: [string, string]
+  toast?: string
+  briefArg: string
+  after: (epoch: number) => Promise<void>
+  text: string
 }
 
 // What the session already is or was, for core's holderNo. marks: the lane and lead marks are this call's to read, not its own (a re-check made while it holds

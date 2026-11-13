@@ -40,6 +40,7 @@ import {
   lastSubmitAt,
   orderBusy,
   dialogOpen,
+  offSeq,
   renameChecked,
   managerRestorePending,
   rebindPending,
@@ -79,6 +80,7 @@ import {
   TEE,
   MV,
   askOnce,
+  timedOut,
 } from './base.ts'
 import {
   registryEntries,
@@ -98,7 +100,7 @@ import type { Bound } from './lanes.ts'
 import { interactive, busyAgents, personRow, backgroundShells } from './compaction.ts'
 import { managerCommand } from './commands.ts'
 import { epochOf, heldNo, levelBrief, levelSave } from './levels.ts'
-import type { LevelDesc } from './levels.ts'
+import type { LevelDesc, GrantDialog } from './levels.ts'
 
 // $.state keys declared again where they are used: `claude plugin validate` reads a key in the file that uses it.
 const lane = { plugin: 'callboard', key: 'lane' } as const
@@ -134,6 +136,10 @@ export const LEAD: LevelDesc = {
   noteKey: (pin) => pin,
   note: (_sid, pin) => c.leadBriefingNote(pin),
   noteErr: 'lead-briefing',
+  notYes: 'person-or-no',
+  offCancelsDialog: false,
+  presenceFirst: false,
+  offToast: c.TIMED_OUT_LEAD_OFF_TOAST,
 }
 export const MANAGER: LevelDesc = {
   level: 'manager',
@@ -154,6 +160,9 @@ export const MANAGER: LevelDesc = {
   noteKey: (name) => `manager:${name}`,
   note: (_sid, name) => c.managerBriefingNote(name),
   noteErr: 'manager-briefing',
+  notYes: 'none',
+  offCancelsDialog: true,
+  presenceFirst: true,
   presence: { err: 'presence', fields: (g) => ({ level: 'manager', name: g.name }) },
 }
 export const CONDUCTOR: LevelDesc = {
@@ -179,6 +188,9 @@ export const CONDUCTOR: LevelDesc = {
     return c.conductorBriefingNote(g?.name ?? '', home, g?.pins ?? [])
   },
   noteErr: 'conductor-briefing',
+  notYes: 'person-no',
+  offCancelsDialog: true,
+  presenceFirst: false,
   presence: { err: 'conductor-presence', fields: (g, home) => ({ level: 'conductor', name: g.name, repos: g.pins, home }), key: (g, home) => `${home}\n${g.name}\n${g.pins.join('\n')}` },
 }
 export const grantOf = (sid: string): c.Grant | undefined => grants.get(sid)
@@ -341,6 +353,84 @@ export function leadDrop($: any, sid: string): Promise<boolean> {
   return Promise.all([presenceDrop($, sid), unsave]).then((r) => r[1])
 }
 
+// The grant dialog of the three levels, in one order: ask once, a click that is not yes, the checks again after a yes, the tools and the grant, the epoch, the saved
+// grant and the presence file (the manager's first), the briefing. The command's own checks before the question stay with the command.
+export async function grantDialog($: any, sid: string, d: LevelDesc, g: GrantDialog): Promise<{ text: string }> {
+  const seq = offSeq.get(sid) ?? 0
+  const offNow = () => (offSeq.get(sid) ?? 0) !== seq
+  const label = d.level.charAt(0).toUpperCase() + d.level.slice(1)
+  const r = await askOnce($, sid, g.question, g.yes, g.no, g.header)
+  if (r === 'busy') return g.busy()
+  if (r !== 'yes') {
+    if (g.onNotYes) return g.onNotYes(r)
+    // A timeout ends the grant only where the level's notYes says so; the text then says it is now off.
+    const wasOn = g.on()
+    const was = wasOn && (r !== 'timed-out' || d.notYes === 'person-or-no')
+    const drops = d.notYes === 'person-no' ? r === 'no' && g.person : d.notYes === 'person-or-no' ? r === 'no' || g.person : false
+    const kept = drops && !(await leadDrop($, sid)) ? d.kept : ''
+    let why = ''
+    if (r === 'timed-out') {
+      await timedOut($, sid, 'timed-out', was && !g.on() ? (d.offToast ?? c.TIMED_OUT_TOAST) : c.TIMED_OUT_TOAST)
+      why = ` ${c.TIMED_OUT_SENTENCE}`
+    } else await log($, sid, 'refused', `${d.level}-not-confirmed`)
+    return { text: `${g.on() ? `${label} stays on.${why}` : was ? `${label} is now off.${why}` : `${label} stays off.${why}`}${kept}` }
+  }
+  const no = g.postClick()
+  if (no) return no
+  leadGranting.add(sid)
+  let grantEpoch = -1
+  try {
+    const bad = await g.recheck()
+    if (bad) return bad
+    if (d.offCancelsDialog && offNow()) {
+      await log($, sid, 'refused', 'off-meanwhile')
+      return { text: 'Nothing changed: callboard was turned off meanwhile.' }
+    }
+    const failed = await g.apply(offNow)
+    if (failed) return failed
+    grantEpoch = epochOf(sid)
+  } finally {
+    leadGranting.delete(sid)
+  }
+  const gone = { text: d.offText }
+  // A new grant may pin another folder: the old file and its checks go first.
+  const writePresence = async () => {
+    await presenceDrop($, sid).catch(() => undefined)
+    return d.presenceFirst ? presenceTouch($, sid).catch(() => false) : presenceTouch($, sid).catch(logFail($, sid, d.presence?.err ?? 'presence'))
+  }
+  if (d.presenceFirst) {
+    const refused = await g.afterPresence!(await writePresence(), grantEpoch)
+    if (refused) return refused
+  }
+  await levelSave($, sid, d, g.pin)
+  // An off or a Cancel during the save leaves no presence, log, briefing or "on" behind.
+  if (epochOf(sid) !== grantEpoch) return gone
+  if (!d.presenceFirst) {
+    await writePresence()
+    await g.afterPresence?.(undefined, grantEpoch)
+  }
+  await log($, sid, g.onLog[0], g.onLog[1])
+  if (g.toast) toast($, g.toast)
+  await levelBrief($, sid, d, g.briefArg)
+  await g.after(grantEpoch)
+  return { text: g.text }
+}
+
+// One try of a silent restore (the lead's and the conductor's): a try that throws is rejected as `error`; one that ended (undefined), or that a drop overtook,
+// clears the pending entry. What it returns is the code (or question) the caller keeps the entry for or gives up on.
+async function restoreAttempt<A>($: any, me: string, d: LevelDesc, attempt: () => Promise<A | undefined>): Promise<A | undefined> {
+  const epoch = epochOf(me)
+  let again: A | undefined
+  try {
+    again = await attempt()
+  } catch {
+    again = undefined
+    await logq($, me, `${d.level}-restore-rejected`, 'error')
+  }
+  if (again !== undefined && epochOf(me) === epoch) return again
+  d.pending.delete(me)
+}
+
 // A session whose saved grant names its own folder is lead again when it starts, with no question. Started in session.start; a cwd read or a tool
 // registration that does not answer in time is tried again from the tick, up to LEAD_RESTORE_TRIES ticks, and the key is kept. A grant for another folder is
 // deleted. A bound session keeps the key and is not made lead. The briefing note stays in the history from the first grant: no second note.
@@ -407,15 +497,8 @@ async function leadRestoreTry($: any, me: string, hint: c.LeadHint): Promise<str
   await nameGrant($, me)
 }
 export async function leadRestore($: any, me: string, hint: c.LeadHint, tries: number) {
-  const epoch = epochOf(me)
-  let again: string | undefined
-  try {
-    again = await leadRestoreTry($, me, hint)
-  } catch {
-    again = undefined
-    await logq($, me, 'lead-restore-rejected', 'error')
-  }
-  if (again === undefined || epochOf(me) !== epoch) return void leadRestorePending.delete(me)
+  const again = await restoreAttempt($, me, LEAD, () => leadRestoreTry($, me, hint))
+  if (again === undefined) return
   if (tries >= LEAD_RESTORE_TRIES) {
     leadRestorePending.delete(me)
     await log($, me, 'lead-restore-rejected', again)
@@ -1527,16 +1610,9 @@ async function conductorRestoreTry($: any, me: string, box: { hint: c.ConductorH
   await nameGrant($, me)
 }
 export async function conductorRestore($: any, me: string, hint: c.ConductorHint, tries: number, last?: string) {
-  const epoch = epochOf(me)
   const box = { hint }
-  let again: string | { shown: string[]; added: string[] } | undefined
-  try {
-    again = await conductorRestoreTry($, me, box)
-  } catch {
-    again = undefined
-    await logq($, me, 'conductor-restore-rejected', 'error')
-  }
-  if (again === undefined || epochOf(me) !== epoch) return void conductorRestorePending.delete(me)
+  const again = await restoreAttempt($, me, CONDUCTOR, () => conductorRestoreTry($, me, box))
+  if (again === undefined) return
   if (typeof again === 'object') return void conductorRestorePending.set(me, { hint: box.hint, tries, ask: again })
   if (tries >= CONDUCTOR_RESTORE_TRIES) {
     conductorRestorePending.delete(me)
