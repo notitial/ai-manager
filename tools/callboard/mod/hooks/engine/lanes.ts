@@ -114,7 +114,8 @@ const stopCallKey = (sid: string, verb: string, lane: unknown) => `${sid}\n${ver
 // ---- the lane's briefing (c.laneBriefing) ----
 // The facts of a binding just written, kept at once without a lead; then the lead. Only a lead with a valid presence file for the lane's own repo counts (never
 // one of a parent repo, nor any lead of a lane with no repo): for a record naming its lead, the live lead with that registry name and no other; else the
-// attached record's lead while it holds one, else the one lead of that repo. It is named only as c.laneLeadOf allows. The lead is added only to the entry
+// lead session id the record holds (`leadSid` of a made one, then the one the caller passes: an attached record's `lead` or the rename cue's), else the one
+// lead of that repo. It is named only as c.laneLeadOf allows. The lead is added only to the entry
 // this call kept, so a detach meanwhile leaves nothing behind. A failure keeps the generic lead wording and is logged as lane-lead; c.laneBriefing checks
 // every field again.
 export async function keepLaneFacts($: any, sid: string, l: c.Lane, attached: boolean, leadSid: string | undefined, reg: Reg = () => registryEntries($)) {
@@ -126,7 +127,8 @@ export async function keepLaneFacts($: any, sid: string, l: c.Lane, attached: bo
     if (!live) return
     const leads = await leadsFor($, live, l.folder, l.repo)
     const rows = live.map((r) => r.j)
-    const lead = l.leadName !== undefined ? leads.find((x) => c.leadNameOf(rows, x.sid) === l.leadName) : leadSid !== undefined ? leads.find((x) => x.sid === leadSid) : leads.length === 1 ? leads[0] : undefined
+    const ownSid = l.leadSid ?? leadSid
+    const lead = l.leadName !== undefined ? leads.find((x) => c.leadNameOf(rows, x.sid) === l.leadName) : ownSid !== undefined ? leads.find((x) => x.sid === ownSid) : leads.length === 1 ? leads[0] : undefined
     const known = lead ? c.laneLeadOf(rows, lead.sid) : undefined
     if (known && laneBrief.get(sid) === base) laneBrief.set(sid, { ...base, lead: known })
   } catch {
@@ -291,7 +293,7 @@ async function removeRecord($: any, e: unknown, me: string, key: string, name: s
       } else {
         if (rec.sid !== mode.sid || (rec.parked !== undefined) !== mode.parked) return { no: 'changed' }
         // The record the question or the check saw: not one remade under the name, nor one a claim re-pointed at another lead meanwhile.
-        if (rec.leadName !== mode.seen.leadName || (rec.adopted === true) !== (mode.seen.adopted === true) || rec.lead !== mode.seen.lead) return { no: 'changed' }
+        if (rec.leadName !== mode.seen.leadName || (rec.adopted === true) !== (mode.seen.adopted === true) || rec.lead !== mode.seen.lead || rec.leadSid !== mode.seen.leadSid) return { no: 'changed' }
         const rows = await registryEntries($)
         if (!rows) return { no: 'registry-unreadable', why: c.reasonWhy('registry-unreadable') }
         const live = await laneLive($, rows, rec)
@@ -1225,7 +1227,7 @@ export async function laneCreateCall($: any, e: any, next: any) {
         // legacy lane that lead would reach too. A lone lead that never had a name makes a legacy lane, reachable by any lead of the repo.
         const leadName = c.leadNameOf(reg.map((x) => x.j), sid)
         if (leadName === undefined && ((grantOf(sid)?.name ?? '') !== '' || (await leadsFor($, reg, pin, pin)).some((x) => x.sid !== sid))) return { no: 'lead-unnamed', why: c.reasonWhy('lead-unnamed') }
-        const lane = leadName !== undefined ? { ...r.lane, leadName } : r.lane
+        const lane = { ...r.lane, ...(leadName !== undefined ? { leadName } : {}), leadSid: sid }
         const df = await facts($, r.lane.folder)
         if (!df || df.kind !== 'dir' || df.uid !== p.uid || (await real($, r.lane.folder)) !== r.lane.folder) return { no: 'folder-bad', why: 'folder-bad: the folder must exist and be its own real path.' }
         // The brief is written only once every other check has passed; a store-changed retry writes the same text again. The checks below run after the write.
@@ -1241,7 +1243,7 @@ export async function laneCreateCall($: any, e: any, next: any) {
         })
         if (text.length > c.STORE_MAX_BYTES) return { no: 'store-size' }
         made = lane
-        return { text, landed: (s) => !!s?.lanes.some((l) => l.name === r.lane.name && l.folder === r.lane.folder && l.leadName === lane.leadName) }
+        return { text, landed: (s) => !!s?.lanes.some((l) => l.name === r.lane.name && l.folder === r.lane.folder && l.leadName === lane.leadName && l.leadSid === sid) }
       },
       async () => {
         const lanes = await loadLanes($)

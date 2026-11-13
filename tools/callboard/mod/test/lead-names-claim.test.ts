@@ -442,6 +442,33 @@ test('stuck lanes: a lead renamed carries the attached records its own session j
   expect(names().MADE).toBe('LEAD')
 })
 
+test('stuck lanes: a lead renamed also carries the lanes it made (its session id is on the record), not another lead\'s, and a record made before the field stays as it was', async ($, on) => {
+  const stdins: string[] = []
+  await leadAt($, on, stdins, { clock: true })
+  const made = (name: string, extra: Record<string, unknown> = {}) => ({ name, folder: SVC, brief: `${SVC}/${name}.md`, createdAt: 1, leadName: 'LEAD', ...extra })
+  putStore([made('MINE', { leadSid: SID }), made('THEIRS', { leadSid: OTHERLEAD }), made('OLD'), GONE_ATT('JOINED')])
+  const names = () => Object.fromEntries((storeJson().lanes as any[]).map((l) => [l.name, l.leadName]))
+  h.sessions = selfAs('LEAD2')
+  await h.clock!.advance(2000)
+  expect(names()).toEqual({ MINE: 'LEAD2', THEIRS: 'LEAD', OLD: 'LEAD', JOINED: 'LEAD2' })
+  expect(logged(stdins)).toContain('lead-rename-carried:2')
+  expect((storeJson().lanes as any[]).map((l) => l.leadSid)).toEqual([SID, OTHERLEAD, undefined, undefined])
+  h.sessions = selfAs('LEAD3')
+  await h.clock!.advance(12_000)
+  expect(names()).toEqual({ MINE: 'LEAD3', THEIRS: 'LEAD', OLD: 'LEAD', JOINED: 'LEAD3' })
+})
+
+test('lane_create stamps the lead session id beside the lead name', async ($, on) => {
+  await leadAt($, on, [], { sess: selfAs('LEADA') })
+  expect(JSON.stringify(await callCreate($))).toContain('lane API created')
+  expect(storeJson().lanes[0]).toMatchObject({ name: 'API', leadName: 'LEADA', leadSid: SID })
+})
+
+test('a born store lane that carries its lead session id and no lead name gets that lead in its briefing, whatever lead the rename cue names', async ($, on) => {
+  const r = await bornWithTwoLeads($, on, `rename LABLANE ${LEADSID}\n`, { leadSid: OTHERLEAD })
+  expect(r.first).toContain(`Your lead is \`LEAD2\` (session \`${OTHERLEAD}\`)`)
+})
+
 test('stuck lanes: a rename that changes nothing, or a lead that never had a name, writes no store', async ($, on) => {
   await leadAt($, on, [], { clock: true })
   putStore([GONE_ATT('MINE')])

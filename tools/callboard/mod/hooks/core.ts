@@ -125,7 +125,8 @@ export function parseStat(out: string): (FileFacts & { ino: number }) | undefine
 // sid: the session bound to a store lane (the lane rebinds itself when that session starts again); parked: when lane_park stopped it (ms).
 // leadName: the registry name of the lead the lane belongs to; only that lead reaches it. A store lane without it is legacy:
 // any lead of its repo reaches it.
-export type Lane = { name: string; folder: string; brief: string; repo?: string; src?: string; adopted?: true; lead?: string; model?: LaneModel; sid?: string; parked?: number; leadName?: string }
+// leadSid: the session id of the lead that made the lane (lane_create); a joined lane carries it as `lead`. A record made before the field has none.
+export type Lane = { name: string; folder: string; brief: string; repo?: string; src?: string; adopted?: true; lead?: string; model?: LaneModel; sid?: string; parked?: number; leadName?: string; leadSid?: string }
 export const LANE_MODELS = ['opus', 'sonnet', 'haiku', 'fable'] as const
 export type LaneModel = (typeof LANE_MODELS)[number]
 const DEFAULT_LANE_MODEL: LaneModel = 'sonnet'
@@ -135,9 +136,12 @@ const isLaneModel = (m: unknown): m is LaneModel => typeof m === 'string' && (LA
 // its record while bound, and park and unpark change them, so neither may make a live binding refuse record-changed or orphan an attached record's removal.
 // A binding without a stored hash is an old one: no lane accepts it.
 export const recOk = (rec: string | undefined, current: string): boolean => rec !== undefined && rec === current
-// The attach fields, the model and the lead's name are appended only when present, so a record without them hashes as it always did. An attached record's identity
-// is its lead's session id (hashed above); its lead's name is a reach filter that follows the lead through a rename, so it is left out for adopted records.
-export const recordText = (l: Lane) => `${l.name}\n${l.folder}\n${l.brief}\n${l.repo ?? ''}${l.adopted ? `\nadopted\n${l.lead}` : ''}${l.model ? `\nmodel\n${l.model}` : ''}${l.leadName && !l.adopted ? `\nleadName\n${l.leadName}` : ''}`
+// The attach fields, the model, the lead's session id and the lead's name are appended only when present, so a record without them hashes as it always did. An
+// attached record's identity is its lead's session id (hashed above), and so is a made record's when it carries one (`leadSid`): the lead's name is a reach filter
+// that follows the lead through a rename, so it is left out of both. A made record with no lead session id keeps the name in its hash.
+export const recordText = (l: Lane) => `${l.name}\n${l.folder}\n${l.brief}\n${l.repo ?? ''}${l.adopted ? `\nadopted\n${l.lead}` : ''}${l.model ? `\nmodel\n${l.model}` : ''}${l.leadSid && !l.adopted ? `\nleadSid\n${l.leadSid}` : l.leadName && !l.adopted ? `\nleadName\n${l.leadName}` : ''}`
+// Whether the lead session `sid` is the one that made or joined this lane: an attached record names it as `lead`, a made record as `leadSid`.
+export const leadOwns = (l: Lane, sid: string): boolean => (l.adopted === true ? l.lead === sid : l.leadSid === sid)
 
 // The per-repo store of lanes a lead made, in the user's own callboard folder (not in the repo, and found by name, never by walking up).
 export type Store = { repo: string; lanes: (Lane & { createdAt: number })[]; creates: number[] }
@@ -155,7 +159,7 @@ export function parseStore(text: string): { ok: true; store: Store } | { ok: fal
   if (!Array.isArray(creates) || creates.length > 64 || creates.some((t) => !Number.isFinite(t))) return { ok: false, reason: 'store-shape' }
   const out: Store['lanes'] = []
   for (const l of lanes) {
-    const { name, folder, brief, createdAt, adopted, lead, model, sid, parked, leadName } = (l ?? {}) as Record<string, unknown>
+    const { name, folder, brief, createdAt, adopted, lead, model, sid, parked, leadName, leadSid } = (l ?? {}) as Record<string, unknown>
     if (typeof name !== 'string' || !NAME_RE.test(name) || reservedHit(name, [])) return { ok: false, reason: 'store-name' }
     if (typeof folder !== 'string' || !isCleanAbs(folder) || !(folder === repo || within(repo, folder)) || dotBelow(repo, folder)) return { ok: false, reason: 'store-folder' }
     if (typeof brief !== 'string' || !isSafeBrief(brief) || !within(folder, brief)) return { ok: false, reason: 'store-brief' }
@@ -164,8 +168,9 @@ export function parseStore(text: string): { ok: true; store: Store } | { ok: fal
     if (model !== undefined && !isLaneModel(model)) return { ok: false, reason: 'store-shape' }
     if (!sidFieldsOk(sid, parked)) return { ok: false, reason: 'store-shape' }
     if (leadName !== undefined && (typeof leadName !== 'string' || !NAME_RE.test(leadName) || reservedHit(leadName, []))) return { ok: false, reason: 'store-shape' }
+    if (leadSid !== undefined && (adopted === true || typeof leadSid !== 'string' || !SID_RE.test(leadSid))) return { ok: false, reason: 'store-shape' }
     if (out.some((x) => x.name === name)) return { ok: false, reason: 'store-dup' }
-    out.push({ name, folder, brief, repo, createdAt: createdAt as number, ...(adopted === true ? { adopted: true as const, lead: lead as string } : {}), ...(model !== undefined ? { model } : {}), ...(sid !== undefined ? { sid: sid as string } : {}), ...(parked !== undefined ? { parked: parked as number } : {}), ...(leadName !== undefined ? { leadName: leadName as string } : {}) })
+    out.push({ name, folder, brief, repo, createdAt: createdAt as number, ...(adopted === true ? { adopted: true as const, lead: lead as string } : {}), ...(model !== undefined ? { model } : {}), ...(sid !== undefined ? { sid: sid as string } : {}), ...(parked !== undefined ? { parked: parked as number } : {}), ...(leadName !== undefined ? { leadName: leadName as string } : {}), ...(leadSid !== undefined ? { leadSid: leadSid as string } : {}) })
   }
   return { ok: true, store: { repo, lanes: out, creates: creates as number[] } }
 }
@@ -177,8 +182,8 @@ const attachFieldsOk = (adopted: unknown, lead: unknown): boolean => (adopted ==
 export const sidFieldsOk = (sid: unknown, parked: unknown): boolean =>
   (sid === undefined || (typeof sid === 'string' && SID_RE.test(sid))) && (parked === undefined || (Number.isFinite(parked) && sid !== undefined))
 
-// The JSON a store keeps for a lane; every writer uses it, so no writer drops adopted, lead, model, sid, parked or leadName from a record it keeps.
-export const storeLaneJson = (l: Lane & { createdAt: number }) => ({ name: l.name, folder: l.folder, brief: l.brief, createdAt: l.createdAt, ...(l.adopted ? { adopted: true, lead: l.lead } : {}), ...(l.model ? { model: l.model } : {}), ...(l.sid !== undefined ? { sid: l.sid } : {}), ...(l.parked !== undefined ? { parked: l.parked } : {}), ...(l.leadName ? { leadName: l.leadName } : {}) })
+// The JSON a store keeps for a lane; every writer uses it, so no writer drops adopted, lead, model, sid, parked, leadName or leadSid from a record it keeps.
+export const storeLaneJson = (l: Lane & { createdAt: number }) => ({ name: l.name, folder: l.folder, brief: l.brief, createdAt: l.createdAt, ...(l.adopted ? { adopted: true, lead: l.lead } : {}), ...(l.model ? { model: l.model } : {}), ...(l.sid !== undefined ? { sid: l.sid } : {}), ...(l.parked !== undefined ? { parked: l.parked } : {}), ...(l.leadName ? { leadName: l.leadName } : {}), ...(l.leadSid && !l.adopted ? { leadSid: l.leadSid } : {}) })
 
 // A whole store as one writer writes it, through storeLaneJson, or store-size when every reader would refuse it (parseStore's limit).
 export function storeText(s: Store): { text: string } | { no: 'store-size' } {

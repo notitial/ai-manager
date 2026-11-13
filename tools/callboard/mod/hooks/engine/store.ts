@@ -78,7 +78,7 @@ export async function loadLanes($: any): Promise<c.Lane[] | string> {
   const count = new Map<string, number>()
   for (const s of stores) for (const l of s.store.lanes) count.set(l.name, (count.get(l.name) ?? 0) + 1)
   const out: c.Lane[] = []
-  for (const s of stores) for (const l of s.store.lanes) if (count.get(l.name) === 1) out.push({ name: l.name, folder: l.folder, brief: l.brief, repo: l.repo, src: s.key, ...(l.adopted ? { adopted: true as const, lead: l.lead } : {}), ...(l.model ? { model: l.model } : {}), ...(l.sid !== undefined ? { sid: l.sid } : {}), ...(l.parked !== undefined ? { parked: l.parked } : {}), ...(l.leadName ? { leadName: l.leadName } : {}) })
+  for (const s of stores) for (const l of s.store.lanes) if (count.get(l.name) === 1) out.push({ name: l.name, folder: l.folder, brief: l.brief, repo: l.repo, src: s.key, ...(l.adopted ? { adopted: true as const, lead: l.lead } : {}), ...(l.model ? { model: l.model } : {}), ...(l.sid !== undefined ? { sid: l.sid } : {}), ...(l.parked !== undefined ? { parked: l.parked } : {}), ...(l.leadName ? { leadName: l.leadName } : {}), ...(l.leadSid ? { leadSid: l.leadSid } : {}) })
   return out
 }
 

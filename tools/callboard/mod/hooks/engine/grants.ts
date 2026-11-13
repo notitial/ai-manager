@@ -1010,9 +1010,10 @@ async function attentionNotice($: any, sid: string, items: c.AttentionItem[], su
 }
 
 // ---- the rename carry and /callboard claim (see c.claimable) ----
-// A lead that is renamed keeps the lanes its own session joined: once a lead's registry name (c.leadNameOf) differs from the one cached at its grant, the attached
-// records of its repo that name its session id (adopted, lead == this session) and its old name take the new name, in one store write under the lock. A record it
-// cannot prove is its own (a lane it made carries no lead session id; a lead that restarted has another session id) is left to /callboard claim. A rename that
+// A lead that is renamed keeps the lanes its own session made or joined: once a lead's registry name (c.leadNameOf) differs from the one cached at its grant, the
+// records of its repo that name its session id (c.leadOwns: `lead` of an attached record, `leadSid` of a made one) and its old name take the new name, in one store
+// write under the lock. A record it cannot prove is its own (a lane made before records carried `leadSid`; a lead that restarted has another session id) is left
+// to /callboard claim. A rename that
 // leaves no usable name carries nothing and keeps the old name cached, so the next valid name still finds the records. Checked at most every RENAME_CHECK_MS.
 const RENAME_CHECK_MS = 10_000
 
@@ -1031,7 +1032,7 @@ export async function leadRenameTick($: any, sid: string) {
   const old = g.name
   const lanes = await loadLanes($)
   if (typeof lanes === 'string') return
-  const mine = lanes.filter((l) => l.src !== undefined && l.repo === g.pins[0] && l.adopted === true && l.lead === sid && l.leadName === old)
+  const mine = lanes.filter((l) => l.src !== undefined && l.repo === g.pins[0] && c.leadOwns(l, sid) && l.leadName === old)
   if (mine.length > 0) {
     const r = await ownWrite($, sid, () => editStore($, mine[0].src!, async (file) => {
       const parsed = file.state === 'ok' ? c.parseStore(file.text) : undefined
@@ -1041,7 +1042,7 @@ export async function leadRenameTick($: any, sid: string) {
       if (!rows) return { no: 'registry-unreadable' }
       // The last checks before the write: the name is still the one seen, and this is still the same grant.
       if (c.leadNameOf(rows.map((x) => x.j), sid) !== cur || grantOf(sid)?.level !== 'lead' || epochOf(sid) !== epoch) return { no: 'changed' }
-      const own = (l: c.Store['lanes'][number]) => l.adopted === true && l.lead === sid && l.leadName === old
+      const own = (l: c.Store['lanes'][number]) => c.leadOwns(l, sid) && l.leadName === old
       if (!parsed.store.lanes.some(own)) return { skip: true }
       const t = c.storeText({ ...parsed.store, lanes: parsed.store.lanes.map((l) => (own(l) ? { ...l, leadName: cur } : l)) })
       if ('no' in t) return t

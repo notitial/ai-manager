@@ -898,6 +898,34 @@ test('recordText of a record without the attach fields is the text it always was
   assert.equal(recordText(att), `A\n/f\n/f/b\n/r\nadopted\n${LEAD}`)
 })
 
+test('leadSid: parseStore takes it on a made record only and keeps it; the hash takes the lead session id in place of the lead name; a record without it hashes as it always did', () => {
+  const store = (l: any) => JSON.stringify({ repo: '/Users/x/code/app', lanes: [l], creates: [] })
+  const made = { name: 'API', folder: '/Users/x/code/app/api', brief: '/Users/x/code/app/api/B.md', createdAt: 1, leadName: 'LEADA' }
+  const ok = parseStore(store({ ...made, leadSid: LEAD }))
+  assert.equal(ok.ok && ok.store.lanes[0].leadSid, LEAD)
+  assert.equal((c.storeLaneJson((ok as any).store.lanes[0]) as any).leadSid, LEAD)
+  const old = parseStore(store(made))
+  assert.equal(old.ok && 'leadSid' in old.store.lanes[0], false)
+  assert.equal('leadSid' in c.storeLaneJson((old as any).store.lanes[0]), false)
+  for (const leadSid of ['x', 5, null, LEAD.toUpperCase()]) assert.equal((parseStore(store({ ...made, leadSid })) as any).reason, 'store-shape', `leadSid ${leadSid}`)
+  assert.equal((parseStore(store({ ...adoptedLane, leadSid: LEAD })) as any).reason, 'store-shape', 'an attached record names its lead as lead')
+  const rec = { name: 'A', folder: '/f', brief: '/f/b', repo: '/r', leadName: 'LEADA' }
+  assert.equal(recordText(rec), 'A\n/f\n/f/b\n/r\nleadName\nLEADA')
+  const withSid = { ...rec, leadSid: LEAD }
+  assert.equal(recordText(withSid), `A\n/f\n/f/b\n/r\nleadSid\n${LEAD}`)
+  assert.equal(recordText(withSid), recordText({ ...withSid, leadName: 'LEADB' }), 'a carry that moves the lead name leaves the hash alone')
+  assert.notEqual(recordText(withSid), recordText({ ...withSid, leadSid: OTHER }))
+})
+
+test('leadOwns: the lead session id of an attached record is `lead`, of a made record `leadSid`; a record with neither is nobody\'s', () => {
+  const made = { name: 'A', folder: '/f', brief: '/f/b' }
+  assert.equal(c.leadOwns({ ...made, leadSid: LEAD }, LEAD), true)
+  assert.equal(c.leadOwns({ ...made, leadSid: LEAD }, OTHER), false)
+  assert.equal(c.leadOwns({ ...made, adopted: true, lead: LEAD }, LEAD), true)
+  assert.equal(c.leadOwns({ ...made, adopted: true, lead: LEAD }, OTHER), false)
+  assert.equal(c.leadOwns(made, LEAD), false)
+})
+
 test('birthRenameOk refuses a record that was attached', () => {
   const l = { name: 'ATT', folder: '/w/x', brief: '/w/x/.callboard-attached', adopted: true as const, lead: LEAD }
   const s = { cwd: '/w/x', turns: 0, nameSource: 'auto', firstSeenMs: 1000, liveNames: [] as string[] }
