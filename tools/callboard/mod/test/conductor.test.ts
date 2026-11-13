@@ -618,8 +618,8 @@ test('the conductor\'s lane_list shows its repos\' lanes inside one Conductor bo
   await condOn($, on)
   const t = (await $.tool.call(listCall())).result as string
   expect(t.split('\n')[0]).toBe('**Conductor COND** · live')
-  expect(t).toContain('| Any lead | app | ')
-  expect(t).toContain('| API |')
+  expect(t).toContain('**app · Any lead**')
+  expect(t).toContain('| ↳ API |')
   expect(t).not.toContain('LABLANE')
   expect((await $.command.run(lane('lanes'))).text).toBe(t)
 })
@@ -805,11 +805,11 @@ test('the manager\'s list nests a live conductor\'s repos in a Conductor box ins
   const t = (await $.tool.call(listCall())).result as string
   const lines = t.split('\n')
   expect(lines[0]).toBe('**Manager MANAGER** · live')
-  expect(lines[2].startsWith('| Conductor | Lead | Repo | Lane |')).toBe(true)
-  const condRow = lines.findIndex((l) => l.startsWith('| CONDX | Any lead | app | '))
-  const workRow = lines.findIndex((l) => l.startsWith('| – | Any lead | work | '))
+  expect(lines[2].startsWith('| Conductor | Lane |')).toBe(true)
+  const condRow = lines.findIndex((l) => l.startsWith('| CONDX | **app · Any lead** | '))
+  const workRow = lines.findIndex((l) => l.startsWith('| – | **work · Any lead** | '))
   expect(condRow).toBeGreaterThan(3)
-  expect(lines.some((l) => l.includes('| API | '))).toBe(true)
+  expect(lines.some((l) => l.includes('| ↳ API | '))).toBe(true)
   expect(workRow).toBeGreaterThan(condRow)
 })
 
@@ -822,9 +822,9 @@ test('a repo listed by two conductors appears once, under the first, with an als
     },
   })
   const t = (await $.tool.call(listCall())).result as string
-  expect(t.split('| Any lead | app (also CONDY) | ').length).toBe(2)
-  expect(t).toContain('| CONDX | Any lead | app (also CONDY) | ')
-  expect(t).toMatch(/^\| CONDY \| – \| – \| /m)
+  expect(t.split('**app (also CONDY) · Any lead**').length).toBe(2)
+  expect(t).toContain('| CONDX | **app (also CONDY) · Any lead** | ')
+  expect(t).toMatch(/^\| CONDY \| –( \| –)+ \|$/m)
   expect(t.indexOf('| CONDX | ')).toBeLessThan(t.indexOf('| CONDY | '))
 })
 
@@ -832,10 +832,10 @@ test('a conductor file that fails the check gives no box; a leads folder that ca
   await mgrAt($, on, [], { seed: () => condPresenceOf(OTHERLEAD, 4243, 'CONDX', [PIN]) })
   const t = (await $.tool.call(listCall())).result as string
   expect(t).not.toContain('Conductor')
-  expect(t).toContain('| Any lead | app | ')
+  expect(t).toContain('**app · Any lead**')
   h.leadsStatRejects = true
   const flat = (await $.tool.call(listCall())).result as string
-  expect(flat).toContain('| Any lead | app | ')
+  expect(flat).toContain('**app · Any lead**')
   expect(flat).not.toContain('Conductor')
   expect(flat.endsWith('|\n\n(conductors could not be read)')).toBe(true)
 })
@@ -855,14 +855,14 @@ test('laneless leads (manager): a live lead with no lanes gets a box under its r
   })
   const t = (await $.tool.call(listCall())).result as string
   expect(t.split('\n')[0]).toBe('**Manager MANAGER** · live')
-  expect(t).toMatch(/^\| LEAD-A \(idle\) \| app \| – \|( – \|)+ no reading \| – \|$/m)
-  expect(t).toMatch(/^\| LEAD-B \(idle\) \| app2 \| – \|( – \|)+ no reading \| – \|$/m)
-  expect(t).toContain('| Any lead | app | ')
-  expect(t.match(/^\| LEAD-[AB] \(idle\) \|/gm)?.length).toBe(2)
+  expect(t).toMatch(/^\| \*\*app · LEAD-A\*\* \(idle\) \|.*\| lead \| \? \| \? \| \? \| \? \| – \|  \|$/m)
+  expect(t).toMatch(/^\| \*\*app2 · LEAD-B\*\* \(idle\) \|.*\| lead \| \? \| \? \| \? \| \? \| – \|  \|$/m)
+  expect(t).toContain('**app · Any lead**')
+  expect(t.match(/^\| \*\*app2? · LEAD-[AB]\*\* \(idle\) \|/gm)?.length).toBe(2)
   expect((await $.command.run(lane('lanes'))).text).toBe(t)
 })
 
-test('laneless leads (manager): the lead row shows the lead\'s own reading in the Usage column, a conductor\'s list too', async ($, on) => {
+test('laneless leads (manager): the lead row shows the lead\'s own reading in its figure columns, a conductor\'s list too', async ($, on) => {
   const reading = usageFileText(OTHERLEAD, 4243, LEADPS, T0 - 2 * MIN, { context: { tokens: 90_000 }, cost: { usd: 0.4 }, rateLimits: [] })!
   await mgrAt($, on, [], {
     sess: { ...MGR_SESS(), ...regAs(OTHERLEAD, 4243, 'LEAD-A'), ...regAs(COND2, 4244, 'LEAD-B') },
@@ -875,8 +875,8 @@ test('laneless leads (manager): the lead row shows the lead\'s own reading in th
     },
   })
   const t = (await $.tool.call(listCall())).result as string
-  expect(t).toMatch(/^\| LEAD-A \(idle\) \| app \| – \|( – \|)+ ctx 90k · \$0\.40 · 2m ago \| – \|$/m)
-  expect(t).toMatch(/^\| LEAD-B \(idle\) \| app2 \| – \|( – \|)+ no reading \| – \|$/m)
+  expect(t).toMatch(/^\| \*\*app · LEAD-A\*\* \(idle\) \|.*\| lead \| 90k \| – \| – \| \$0\.40 \| 2m \|  \|$/m)
+  expect(t).toMatch(/^\| \*\*app2 · LEAD-B\*\* \(idle\) \|.*\| lead \| \? \| \? \| \? \| \? \| – \|  \|$/m)
   expect((await $.command.run(lane('lanes'))).text).toBe(t)
 })
 
@@ -890,8 +890,8 @@ test('laneless leads (manager): inside a live conductor\'s Conductor box when th
   })
   const t = (await $.tool.call(listCall())).result as string
   // The conductor's name is on its first row only; the laneless lead's row sits under it.
-  expect(t).toMatch(/^\| CONDX \| Any lead \| app \| /m)
-  expect(t).toMatch(/^\|  \| LEAD-A \(idle\) \| app \| – \|( – \|)+ no reading \| – \|$/m)
+  expect(t).toMatch(/^\| CONDX \| \*\*app · Any lead\*\* \| /m)
+  expect(t).toMatch(/^\|  \| \*\*app · LEAD-A\*\* \(idle\) \|.*\| lead \| \? \| \? \| \? \| \? \| – \|  \|$/m)
 })
 
 test('laneless leads (conductor): a live lead of a listed repo is in the Conductor box, one of a repo it does not list is not; lane_list and /callboard lanes agree', async ($, on) => {
@@ -906,7 +906,7 @@ test('laneless leads (conductor): a live lead of a listed repo is in the Conduct
   })
   const t = (await $.tool.call(listCall())).result as string
   expect(t.split('\n')[0]).toBe('**Conductor COND** · live')
-  expect(t).toMatch(/^\| LEAD-A \(idle\) \| app \| – \|( – \|)+ no reading \| – \|$/m)
+  expect(t).toMatch(/^\| \*\*app · LEAD-A\*\* \(idle\) \|.*\| lead \| \? \| \? \| \? \| \? \| – \|  \|$/m)
   expect(t).not.toContain('LEAD-B')
   expect((await $.command.run(lane('lanes'))).text).toBe(t)
 })
@@ -931,10 +931,10 @@ test('lead state (manager): lane_list shows a lead busy, idle, waiting with minu
     },
   })
   const t = (await $.tool.call(listCall())).result as string
-  expect(t).toMatch(/^\| LEAD-A \(waiting 4m\) \| app \|/m)
-  expect(t).toMatch(/^\| LEAD-B \(busy\) \| app \|/m)
-  expect(t).toMatch(/^\| LEAD-C \(idle\) \| app \|/m)
-  expect(t).toMatch(/^\| LEAD-D \| app \|/m)
+  expect(t).toMatch(/^\| \*\*app · LEAD-A\*\* \(waiting 4m\) \|/m)
+  expect(t).toMatch(/^\| \*\*app · LEAD-B\*\* \(busy\) \|/m)
+  expect(t).toMatch(/^\| \*\*app · LEAD-C\*\* \(idle\) \|/m)
+  expect(t).toMatch(/^\| \*\*app · LEAD-D\*\* \|/m)
   expect((await $.command.run(lane('lanes'))).text).toBe(t)
 })
 

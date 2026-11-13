@@ -51,7 +51,7 @@ file of its area, registered by reference (a loop variable such as the stop verb
 | `engine/tick.ts` | the tick, its timer and steps, session start |
 | `engine/commands.ts` | the `/callboard` command handler and the commands under it |
 | `engine/answer-hook.ts`, `engine/answer-tiers.ts` | the prompt-answering hook, and the tiers, tier tools and notices |
-| `engine/usage.ts` | the usage file: its writer, its sweep and the reader behind the lane list's Usage column |
+| `engine/usage.ts` | the usage file: its writer, its sweep and the reader behind the lane list's figure columns |
 
 Rules for the files:
 
