@@ -76,6 +76,12 @@ import { ANSWERING_KEY, ledgerAdd, promptsOff } from './answer-hook.ts'
 import { ledgerRestore } from './answer-tiers.ts'
 import { getCheckinPause, getLane, getRequest, setCheckinPause, setLane, setNudgeDue, setNudgedAt, setRequest, setRest } from '../state.ts'
 
+// The refusal of a person-only command from another origin: logged as <command>-not-person:<origin>, answered with the command's fixed text.
+async function notPerson($: any, sid: string, command: string, code: c.OriginCode, text: string): Promise<{ text: string }> {
+  await logq($, sid, 'refused', `${command}-not-person:${code}`)
+  return { text }
+}
+
 async function restCommand($: any, sid: string, code: string) {
   try {
     if ((await setRest($, await $.clock.now())).isSet === false) throw new Error('not set')
@@ -89,10 +95,7 @@ async function restCommand($: any, sid: string, code: string) {
 // /callboard checkin pause <N>m|<N>h and checkin on: the person's own, as config; a plugin, another session or a script gets a fixed refusal.
 async function checkinCommand($: any, sid: string, code: c.OriginCode, op: c.CheckinOp): Promise<{ text: string }> {
   if (op === 'bad') return { text: c.CHECKIN_USAGE }
-  if (!c.originIsPerson(code)) {
-    await logq($, sid, 'refused', `checkin-not-person:${code}`)
-    return { text: c.CHECKIN_NOT_PERSON }
-  }
+  if (!c.originIsPerson(code)) return notPerson($, sid, 'checkin', code, c.CHECKIN_NOT_PERSON)
   if (!grants.has(sid)) return { text: c.CHECKIN_NOT_LEAD }
   const now = await $.clock.now()
   const until = op === 'on' ? null : now + op.pauseMs
@@ -399,10 +402,7 @@ export async function managerCommand($: any, sid: string, code: c.OriginCode, wa
 // (naming the whole list as it would be); remove asks nothing (it only narrows). Neither grants: the grant is /callboard conductor and its own dialog.
 async function conductorListCommand($: any, sid: string, code: c.OriginCode, op: { add: string } | { remove: string }, busy: () => Promise<{ text: string }>): Promise<{ text: string }> {
   const verb = 'add' in op ? 'add' : 'remove'
-  if (!c.originIsPerson(code)) {
-    await logq($, sid, 'refused', `conductor-not-person:${code}`)
-    return { text: c.CONDUCTOR_NOT_PERSON }
-  }
+  if (!c.originIsPerson(code)) return notPerson($, sid, 'conductor', code, c.CONDUCTOR_NOT_PERSON)
   const refuse = async (why: string, home = '') => {
     await log($, sid, 'refused', why)
     return { text: c.conductorRefusalText(why, home) }
@@ -546,10 +546,7 @@ async function conductorGrant($: any, sid: string, code: c.OriginCode, busy: () 
 async function configCommand($: any, sid: string, code: c.OriginCode, op: c.ConfigOp): Promise<{ text: string }> {
   if (op === 'show') return { text: c.configText(await cfgGet($, sid, true)) }
   if (op === 'bad') return { text: c.CONFIG_USAGE }
-  if (!c.originIsPerson(code)) {
-    await logq($, sid, 'refused', `config-not-person:${code}`)
-    return { text: c.CONFIG_NOT_PERSON }
-  }
+  if (!c.originIsPerson(code)) return notPerson($, sid, 'config', code, c.CONFIG_NOT_PERSON)
   // Each store call runs inside an async function, so a call that throws at once is answered like one that rejects.
   const raw = await withTimeout($, (async () => $.store.get(c.CONFIG_KEY))(), c.ENGINE_CALL_TIMEOUT_MS).catch(() => 'timeout' as const)
   if (raw === 'timeout') return { text: c.CONFIG_UNREADABLE }
@@ -581,10 +578,7 @@ async function configCommand($: any, sid: string, code: c.OriginCode, op: c.Conf
 async function reserveCommand($: any, sid: string, code: c.OriginCode, op: c.ReserveOp): Promise<{ text: string }> {
   if (op === 'bad') return { text: c.RESERVE_USAGE }
   if (op === 'show') return { text: c.reserveShowText(await reservedGet($, sid, true)) }
-  if (!c.originIsPerson(code)) {
-    await logq($, sid, 'refused', `reserve-not-person:${code}`)
-    return { text: c.RESERVE_NOT_PERSON }
-  }
+  if (!c.originIsPerson(code)) return notPerson($, sid, 'reserve', code, c.RESERVE_NOT_PERSON)
   // The list as stored now: also what managerNameOf reads for the remove guard below.
   await reservedGet($, sid, true)
   const raw = await withTimeout($, (async () => $.store.get(c.RESERVE_KEY))(), c.ENGINE_CALL_TIMEOUT_MS).catch(() => 'timeout' as const)
@@ -662,10 +656,7 @@ async function escalationCommand($: any, sid: string, code: c.OriginCode, op: pr
     return { text: 'Escalation is off on this Mac.' }
   }
   // On is the person's own command, with a dialog that names exactly what turns on.
-  if (!c.originIsPerson(code)) {
-    await logq($, sid, 'refused', `escalation-not-person:${code}`)
-    return { text: pr.ESCALATION_NOT_PERSON }
-  }
+  if (!c.originIsPerson(code)) return notPerson($, sid, 'escalation', code, pr.ESCALATION_NOT_PERSON)
   const r = await askOnce($, sid, pr.ESCALATION_QUESTION, pr.ESCALATION_YES, pr.ESCALATION_NO, pr.ESCALATION_HEADER)
   if (r === 'busy') return { text: 'A callboard question is already open. Answer it first.' }
   if (r !== 'yes') return { text: r === 'timed-out' ? 'Nothing changed: the question timed out.' : 'Cancelled. Nothing changed.' }
