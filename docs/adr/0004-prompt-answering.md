@@ -176,33 +176,29 @@ The prefix can be imitated by another hook running as the person. That gains not
 
 No agent can answer these, whatever it judges. The hook checks at the request and again at apply:
 
-- merges (optional);
-- force pushes (optional);
-- pushes to main, master or production;
-- destructive deletes;
-- edits to settings, hooks or callboard's own state.
+- edits to settings files, hooks and rules (the folders that `~/.claude/hooks` and `~/.claude/rules` link into included),
+  `.claude`, git hooks and git config, `.mcp.json`, `install.conf` and callboard's own state folder;
+- callboard's own code in the live checkout (`tools/callboard`), and the mod's dialogs (`ExitPlanMode`);
+- any write whose target cannot be shown to stay outside those: a shell line that cannot be read (`eval`, `bash -c`, an
+  interpreter's `-c`, a verb built at run time, text that does not parse), a database client or interpreter that can run
+  a shell, a git call that rewrites a work tree in, under or above a protected folder or from an unknown one, and
+  removing a folder above a protected one.
 
 Matchers recognise git, GitHub, file-path and shell shapes. Nothing is blocked for a word in a tool's name. The floor
 acts only when a prompt exists: it stops no shell write that nothing prompts for.
 
-**Limits.** A shell command is a string: `eval`, an encoded payload or a script file can hide a delete. A delete
-offered by an unrelated MCP server isn't recognised.
+**Limits.** A shell command is a string: `eval`, an encoded payload or a script file can hide a write to a protected
+file. A write offered by an unrelated MCP server isn't recognised unless a path in its input names a protected place.
 
-*Amended 2026-11-12: a lane's own report.* The edit-of-settings rule holds every file under a live checkout, so a lane
-that runs in that checkout and signs `.archive/<LANE>/REPORT.md` got a `floor settings` row, no request and no notice
-(seen 2026-11-11: the dialog sat with the person and no tier knew). The floor now leaves out exactly that write, and
-only the live-checkout part of the rule for it: a `Write`, `Edit` or `MultiEdit` whose `file_path`, spelled exactly
-(the case too), is the path the session's own lane record gives (`<repo>/.archive/<LANE>/REPORT.md`), whose real path is
-that repo's real path plus the same tail, and whose file is absent or a plain file of the person's with one link. The
-hook checks this at the request and at apply; it writes the path into the request file (`ownReport`), and a tier's
-`prompt_answer` takes it from there, accepting it only if it reads as `<repo>/.archive/<the request's own lane>/REPORT.md`.
-Everything else stays floor: another lane's report, any other `.archive` file, any other path under the checkout, a
-link or hard link, a changed case, a `..` road to another file, a notebook tool, a shell append, callboard's state folder
-and every settings or hooks path. The report is the file `lane_retire` trusts, so what a tier allows here is a lane
-signing its own done line, judged under the normal rubric; a wrong allow can make a lane read as done, and `lane_retire`
-still asks the lane itself (idle, an empty box, a signature newer than its last turn). The tiers' judgment is the only
-check on what the lane writes into it. The checks run before the write, as every check of the hook does: a link or hard link swapped in between by another process in the same checkout is the old window, now open for this one file name inside a live checkout too; it is accepted. The repo must be its own real path, and a tier takes the path from the request only if a lane record of that name gives it. A whole-file `Write` of a long report is a truncated copy, which a tier may not allow (it passes up to the person); a lane signs with `Edit` or a short `Write` to be answerable. A prompt that stays the person's still leaves only a ledger row; a notice to the
-lane's lead for those is not built, as it needs a new fixed turn with its own cap.
+*Amended 2026-11-13: the floor shrinks to self-protection.* Merges, force pushes, pushes to main, master or production,
+destructive deletes, and the live-checkout rule for shell writes left the floor, by the person's decision ("fully remove
+the floor for now, and then put it back in only if needed"; scope: all but self-protection). Those calls now reach the tiers like any other call, and the
+rubric's risk list (rule 4) names them: a merge, a force push, a push to main, master or production, and a delete that is not the lane's own work. A tier passes them up and
+the top tier asks the person through the relay. What that buys a forged decision file or a tier's wrong allow is stated in
+the security bound below. Where a call mixed a removed part with a kept one (an unreadable shell line, a database client,
+a git call near the mod's own code, a `rm -rf` of a folder that holds it), the reading that keeps self-protection whole
+was taken. The lane's own `REPORT.md` exception of 2026-11-12 went with the live-checkout rule: `.archive` is not under a
+protected folder, so a lane's report is an ordinary write that a tier answers under the rubric.
 
 ### The risk list is judgment, not floor
 
@@ -214,30 +210,11 @@ accepted this.
 
 ### Optional floor items
 
-Merges and force pushes can be allowed per machine. Everything is off until chosen, and neither is available on a
-machine until both keys below exist. **The first release ships the choice but not the server**, so neither item lifts
-on any machine until a later decision builds it.
-
-*2026-11-12: the choice is not built either. There is no `/callboard floor set` command, and the floor reads an optional-item field that nothing sets, so both stay on the floor. What the floor blocks has not changed.*
-
-*2026-11-13: the optional-item field is removed from the floor's options: `mcp__machine-ops__pr_merge` and `mcp__machine-ops__force_push` are always floor. A choice would need new code and a new decision.*
-
-Both are blocked before any PermissionRequest hook: merges by a deny rule, the guard's tool list and the server's own
-`--tools`; force pushes by ai-toolkit's git guard and destructive-command hook. A mod could lift those, and must not.
-So allowing either takes two independent keys:
-
-1. **By hand, on the machine:** the person registers a small server from this repo that exposes only the chosen
-   operation, and adds an ask rule for it. The operation has its own tool name, so ai-toolkit's rules and guards keep
-   guarding theirs and ai-toolkit changes in no way. **Only those tool names ever lift;** every other merge or
-   force-push shape stays on the floor. This is a second write path around those guards, on purpose, and only where
-   the person registers it.
-2. **The choice:** `/setup-manager` asks the person. The agent passes the pick as a fixed enum to
-   `/callboard floor set`, which stores nothing and opens the mod's dialog, naming the origin when it isn't the
-   person's own prompt, what turns on and what stays off. Only `Allow` stores it. A value with no matching ledger row
-   counts as off.
-
-A forged store value without the server reaches nothing. The server without the value stays the person's click.
-Pushes to main or master, destructive deletes, settings and the risk list can't be chosen.
+Merges and force pushes were once an optional floor item, lifted per machine through a registered server and a stored
+choice. The choice was never built, and on 2026-11-13 merges and force pushes left the floor altogether (see The floor),
+so nothing is left to lift: `mcp__machine-ops__pr_merge` and `mcp__machine-ops__force_push` reach the tiers like any call.
+ai-toolkit's deny rules, guards and the server's own `--tools` still decide whether such a prompt exists at all. The mod
+does not lift them, and `tool.check` still returns the engine's verdict unchanged.
 
 ### Generic judgment
 
@@ -365,7 +342,7 @@ shell, but not where the prompt was the only gate on a connected tool.
 
 What remains as the guard:
 
-- the floor, at request and at apply: firm on tool shapes, best effort on shell text;
+- the floor, at request and at apply: the mod's own protection, firm on paths and tool shapes, best effort on shell text;
 - the input hash: one exact call, not a class of calls;
 - expiry and nonce;
 - a live tier in reach, by the presence checks, which filter rather than prove;
@@ -397,6 +374,9 @@ rollout, after the two hand-added lines.
 - **Forged requests** buy at most 30 wasted turns an hour per tier. A forged escalation or "with the person" flag only
   keeps a dialog open, or opens a tier early.
 - **Other plugins** may answer the floor dialog (ADR 0002's residual).
+- **Merges, force pushes, pushes to main, master or production and destructive deletes are judgment, not floor** (2026-11-13).
+  A tier can allow one the person wouldn't have, and a forged decision file can buy one. Rule 4 of the rubric sends them
+  up, and ai-toolkit's deny rules and guards still stand in front of them.
 
 ### Changes to earlier decisions
 
