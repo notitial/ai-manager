@@ -1774,14 +1774,14 @@ export function laneListText(lanes: Lane[], entries: RegEntry[], now: number, vi
   }
   // The rows of one group, with `also`: the other conductors that list its repo. The lead's own session is the one its live-lead entry names, or this one in a lead's own view.
   const groupRows = (g: Group, also: string): string[][] => {
-    const lead = g.lead === '' ? 'Any lead' : `${g.lead}${g.lanes.length === 0 || names.includes(g.lead) ? '' : ' (not live)'}`
+    const lead = g.lead === '' ? 'Any lead' : `${mdEscape(g.lead)}${g.lanes.length === 0 || names.includes(g.lead) ? '' : ' (not live)'}`
     const leadLive = g.lead !== '' && (g.lanes.length === 0 || names.includes(g.lead))
     const leadSid = g.sid ?? liveLeads.find((x) => x.repo === g.repo && x.name === g.lead)?.sid ?? (view.level === 'lead' && g.lead === view.name ? view.self : undefined)
     const head = [`**${mdEscape(folderName(g.repo))}${also} · ${lead}**${leadStateText(g)}`, ...(withFolder ? [''] : []), leadLive ? 'lead' : '', ...(leadLive ? figures(leadSid) : NO_USAGE), '']
     return [
       head,
       ...g.lanes.map((l) => [
-        `↳ ${l.name}`,
+        `↳ ${mdEscape(l.name)}`,
         ...(withFolder ? [folderOf(l)] : []),
         names.includes(l.name) ? 'live' : l.parked !== undefined ? 'parked' : 'none',
         ...(names.includes(l.name) ? figures(sidOf(l)) : NO_USAGE),
