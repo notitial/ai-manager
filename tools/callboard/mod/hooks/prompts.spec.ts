@@ -14,7 +14,7 @@ const HOME = { home: '/Users/x' }
 
 // ---- the floor: self-protection only. What it holds is the person's; everything else reaches the tiers ----
 // The protected folders: callboard's own code in the live checkout, and the folders ~/.claude/hooks and ~/.claude/rules link into.
-const PROT = ['/live/ai-manager/tools/callboard', '/live/toolkit/hooks', '/live/ai-manager/rules']
+const PROT = ['/live/ai-manager/tools/callboard', '/live/ai-manager/CLAUDE.md', '/live/ai-manager/docs/manager', '/live/ai-manager/rules', '/live/toolkit/hooks', '/live/toolkit/tools']
 const IN = { ...HOME, roots: PROT }
 test('reaches the tiers: merges, branch updates and machine-ops calls', () => {
   for (const tool of ['mcp__github__merge_pull_request', 'mcp__other__merge_pull_request', 'mcp__github__update_pull_request_branch', 'mcp__machine-ops__pr_merge', 'mcp__machine-ops__force_push', 'mcp__github__get_file_contents'])
@@ -94,15 +94,27 @@ test('floor: removing a folder above a protected folder, or above ~/.claude, sta
   for (const command of ['rm -rf /live', 'rm -rf /live/ai-manager', 'rm -rf /live/ai-manager/tools', 'rm -rf /live/toolkit', 'rm -rf /', 'rm -rf /Users/x', 'rm -rf ~', 'rm -rf $HOME', 'rm -rf /Users/x/.claude', 'rm -rf /live/ai-manager/tools/callboard', 'rm -rf /live/toolkit/hooks/x.sh', 'rm -rf /LIVE/AI-MANAGER/TOOLS',
     'find /live -delete', 'find /live/ai-manager -name x -delete', 'find ~ -delete', 'cd /live/ai-manager && rm -rf tools', 'cd /live && rm -rf ai-manager'])
     assert.equal(floor('Bash', { command }, o), 'settings', command)
-  for (const command of ['rm -rf /live/ai-manager/docs', 'rm -rf /live/ai-manager/.archive/x', 'rm -rf /live/toolkit/skills', 'rm -rf /tmp/clone/build', 'find /tmp -name x -delete', 'find /live/ai-manager/docs -delete', 'rm -rf build', 'rm /live/ai-manager/README.md'])
+  for (const command of ['rm -rf /live/ai-manager/docs/adr', 'rm -rf /live/ai-manager/.archive/x', 'rm -rf /live/toolkit/skills', 'rm -rf /tmp/clone/build', 'find /tmp -name x -delete', 'find /live/ai-manager/docs/adr -delete', 'rm -rf build', 'rm /live/ai-manager/README.md'])
     assert.equal(floor('Bash', { command }, o), undefined, command)
+})
+test('floor: the parts of a live checkout that steer sessions (CLAUDE.md, docs/manager, rules) and the toolkit tools folder, by file tool and by shell', () => {
+  const o = { ...IN, cwd: '/tmp/clone' }
+  for (const path of ['/live/ai-manager/CLAUDE.md', '/live/ai-manager/docs/manager/README.md', '/live/ai-manager/rules/callboard.md', '/live/toolkit/tools/statusline.sh', '/live/toolkit/tools/shell-init.zsh', '/live/ai-manager/tools/callboard/mod/x.ts']) {
+    assert.equal(floor('Write', { file_path: path, content: 'x' }, o), 'settings', path)
+    assert.equal(floor('Bash', { command: `echo x >> ${path}` }, o), 'settings', path)
+    assert.equal(floor('Bash', { command: `sed -i s/a/b/ ${path}` }, o), 'settings', path)
+  }
+  for (const path of ['/live/ai-manager/docs/a.md', '/live/ai-manager/README.md', '/live/ai-manager/docs/adr/0001.md', '/live/toolkit/docs/a.md', '/live/ai-manager/.archive/L/REPORT.md']) {
+    assert.equal(floor('Write', { file_path: path, content: 'x' }, o), undefined, path)
+    assert.equal(floor('Bash', { command: `echo x >> ${path}` }, o), undefined, path)
+  }
 })
 test('floor: a write, move or extract that replaces a folder above a protected one, by name or by glob, stays the floor', () => {
   const o = { ...IN, cwd: '/live/ai-manager' }
   for (const command of ['rm -rf t*', 'rm -rf tool?', 'rm -rf [t]ools', 'mv t* /tmp/x', 'find t* -delete', 'mv /live/ai-manager/tools /tmp/x', 'rsync -a --delete /tmp/x/ /live/ai-manager/tools/', 'tar -xf a.tar -C /live/ai-manager',
-    'cp -R /tmp/x /live/ai-manager/tools/', 'unzip a.zip -d /live/ai-manager', 'ditto /tmp/x /live/ai-manager/tools', 'mv /Users/x/.claude /tmp/x', 'rm -rf /Users/x/.cl*', 'rm -rf .claude', 'mv /live/.claude /tmp/x', 'cd t* && touch x'])
+    'cp -R /tmp/x /live/ai-manager/tools/', 'unzip a.zip -d /live/ai-manager', 'ditto /tmp/x /live/ai-manager/tools', 'mv /Users/x/.claude /tmp/x', 'rm -rf /Users/x/.cl*', 'rm -rf .claude', 'mv /live/.claude /tmp/x', 'cd t* && touch x', 'rm -rf d*', 'rm -rf /live/ai-manager/docs', 'cp a.txt /live/ai-manager/docs/'])
     assert.equal(floor('Bash', { command }, o), 'settings', command)
-  for (const command of ['rm -rf d*', 'rm -rf docs/a*', 'mv README.md /tmp/x', 'cp a.txt /live/ai-manager/docs/', 'rm -rf .a*', 'cp -R /tmp/x /live/ai-manager/docs/', 'cd /tmp/y && tar -xf a.tar'])
+  for (const command of ['rm -rf docs/a*', 'mv README.md /tmp/x', 'rm -rf .a*', 'cp -R /tmp/x /live/ai-manager/docs/adr', 'cp a.txt /live/ai-manager/docs/adr/', 'cd /tmp/y && tar -xf a.tar'])
     assert.equal(floor('Bash', { command }, o), undefined, command)
   // A writer with no named target (a patch, an archive) acts in the folder it runs in: the floor from a folder in, under or above a protected one.
   const implicit = ['patch -p1 < a.diff', 'tar -xf a.tar', 'unzip a.zip', 'ditto a b', 'cpio -id < a']
@@ -110,7 +122,7 @@ test('floor: a write, move or extract that replaces a folder above a protected o
     assert.equal(floor('Bash', { command }, o), 'settings', command)
     assert.equal(floor('Bash', { command }, { ...IN, cwd: '/live/ai-manager/tools/callboard' }), 'settings', command)
     assert.equal(floor('Bash', { command }, { ...IN, cwd: '/tmp/clone' }), undefined, command)
-    assert.equal(floor('Bash', { command }, { ...IN, cwd: '/live/ai-manager/docs' }), undefined, command)
+    assert.equal(floor('Bash', { command }, { ...IN, cwd: '/live/ai-manager/docs/adr' }), undefined, command)
   }
 })
 test('floor: a git call that rewrites the work tree in, under or above a protected folder stays the floor', () => {
@@ -256,7 +268,17 @@ test('shell judge 4: api and CLI writes', () => {
     'gh api -X PUT /repos/o/r/pulls/3/merge', 'gh api graphql -f query=\'mutation{mergePullRequest(input:{pullRequestId:"x"}){clientMutationId}}\''])
   floored(['gh api repos/o/r/hooks -f url=x', 'gh api -X PATCH repos/o/r -f private=true', 'gh api -X PUT repos/o/r/branches/main/protection --input p.json',
     'gh api -X PUT repos/o/r/actions/secrets/X -f v=1', 'gh api -X POST orgs/o/rulesets --input r.json', 'gh api -X PUT repos/o/r/actions/permissions -f enabled=true'])
-  reaches(["gh api graphql -f query='mutation{x}'", 'gh api graphql -F query=@q.graphql', 'gh api graphql -f query="$Q"', 'gh api graphql --input q.json', 'gh api graphql -X PUT -f query=x'])
+  reaches(["gh api graphql -f query='mutation{x}'", 'gh api graphql -X PUT -f query=x'])
+  // A GraphQL query read from a file, a variable or the input, and a mutation of settings, rulesets, access or visibility, are the floor.
+  floored(['gh api graphql -F query=@q.graphql', 'gh api graphql -f query="$Q"', 'gh api graphql --input q.json',
+    "gh api graphql -f query='mutation{createBranchProtectionRule(input:{repositoryId:\"x\"}){clientMutationId}}'", "gh api graphql -f query='mutation{updateRepository(input:{repositoryId:\"x\",visibility:PUBLIC}){clientMutationId}}'",
+    "gh api graphql -f query='mutation{a: addCollaborator(input:{}){x}}'"])
+  // A checkout, a sync, a clone or a download rewrites the folder it runs in: the floor in, under or above a protected one, and where the folder is unknown.
+  floored(['gh pr checkout 3', 'gh repo sync', 'gh repo clone o/r', 'gh gist clone x', 'gh run download 1'], INROOT)
+  floored(['cd "$X" && gh repo sync'])
+  floored(['gh pr checkout 3'], { ...CLEAN, cwd: '/live/ai-manager' })
+  reaches(['gh pr checkout 3', 'gh repo sync', 'gh repo clone o/r', 'gh run download 1'])
+  floored(['git -C /tmp/a --work-tree=/tmp/b status', 'git --work-tree=/tmp/b -C /tmp/a status', 'git --git-dir=/tmp/b/.git -C /tmp/a status', 'git -C /tmp/a --git-dir=/tmp/b/.git status'])
   floored(['gh repo edit --visibility public', 'gh repo archive o/r', 'gh repo rename x', 'gh secret set X', 'gh variable set X', 'gh auth token', 'gh auth login', 'gh config set x y',
     'gh alias set x y', 'gh extension install o/r', 'gh ssh-key add k.pub'])
   floored(['gh ruleset delete 1', 'gh secret delete X'])
@@ -305,9 +327,11 @@ test('shell judge 6: a session inside a protected folder: reads stay open, write
   // A write that names a place in the folder, a pipe to a shell, or a rewrite of the work tree is the floor there.
   floored(['touch x', 'mkdir x', 'cp a b', 'mv a b', 'echo hi > f', 'echo hi >> f', 'echo hi | tee f', 'cat a | sh', 'cat a > b', 'sed -i s/a/b/ f', 'git checkout main', 'git pull',
     'git stash', 'git config user.name x', 'git remote add x y', 'git diff --output=f', 'find . -exec ls {} \\;', 'echo $(touch x)', 'for f in a b; do touch $f; done'], o)
-  reaches(['npm test', 'node --test x.ts', 'git commit -m x', 'git add .', 'git fetch', 'git branch x', 'git branch -m a b', 'git tag v1', 'git push', 'make', './build.sh', 'unknownverb',
-    'sort -o x a', 'uniq a b', 'date -s x', 'env FOO=1 ls', 'ls | xargs wc -l', 'echo $(npm test)', 'cd ../ai-manager && touch x', 'cd "$X" && npm test', 'cd /tmp/clone; npm test',
+  // Any other verb may write where it runs without naming the file (a build, a package manager, an unpacker, a script): from a folder inside a protected one it is the floor too.
+  floored(['npm test', 'node --test x.ts', 'make', './build.sh', 'unknownverb', 'sort -o x a', 'uniq a b', 'env FOO=1 ls', 'ls | xargs wc -l', 'echo $(npm test)', 'cd /tmp/clone; npm test'], o)
+  reaches(['git commit -m x', 'git add .', 'git fetch', 'git branch x', 'git branch -m a b', 'git tag v1', 'git push', 'date -s x', 'cd ../ai-manager && touch x', 'cd "$X" && npm test',
     'git -C . commit -m x', 'git -C ../x commit -m x'], o)
+  reaches(['npm test', 'make', 'cd /tmp/clone && npm test'], { ...CLEAN, cwd: '/live/ai-manager/tools' })
   // Without a protected folder (or with the session elsewhere) none of that is the rule.
   open(['npm test', 'touch x', 'git commit -m x', 'gh pr view 3', 'make'], { ...CLEAN, cwd: '/tmp/clone' })
   open(['npm test', 'touch x'], { home: '/Users/x', cwd: '/live/ai-manager' })
@@ -439,11 +463,13 @@ test('review F8: merge-base and friends, network tools in a protected folder, sc
   // (b) gh, curl, wget, httpie and ssh from a protected folder: a read opens; a download into the folder, or output redirected into it, is the floor; the rest reaches the tiers.
   open(['gh pr view 3', 'gh pr list', 'gh pr diff 3', 'gh pr checks 3', 'gh api repos/o/r/pulls/3', 'gh issue list', 'gh issue view 3', 'gh search issues x', 'gh run list', 'curl -s https://example.com', 'curl -I https://example.com', 'curl -sSL https://example.com | head', 'wget -qO- https://example.com', 'wget -O - https://example.com', 'http example.com', 'ssh host uptime', 'ssh -p 22 host ls -la', 'ssh -o StrictHostKeyChecking=no host "touch x"'], INROOT)
   floored(['curl -o f https://example.com', 'curl -s https://example.com > f'], INROOT)
-  reaches(['gh pr checkout 3', 'gh repo clone o/r', 'gh pr create --title x', 'gh pr comment 3 -b x', 'gh run download 1', 'curl -O https://example.com/a',
-    'curl -sSLO https://example.com/a', 'wget https://example.com', 'http --download example.com', 'ssh host', 'ssh -p 22 host', 'curl -X POST https://example.com'], INROOT)
+  reaches(['gh pr create --title x', 'gh pr comment 3 -b x', 'ssh host', 'ssh -p 22 host', 'curl -X POST https://example.com'], INROOT)
+  // A download that saves under the remote name, wget with no stdout output, a checkout, a clone: written in the folder they run in, so the floor there.
+  floored(['gh pr checkout 3', 'gh repo clone o/r', 'gh run download 1', 'curl -O https://example.com/a', 'curl -sSLO https://example.com/a', 'wget https://example.com', 'http --download example.com',
+    'npm install', 'node --test', 'make', 'sort -o out a', 'uniq a b'], INROOT)
   // (c) A shell given a script file is judged as the file run directly; -c, stdin and options that read other files are not.
   open(['bash script.sh', 'sh ./build.sh arg', 'bash -e script.sh', 'bash -eu tools/test-all.sh --quick', 'zsh run.zsh', 'dash x.sh'])
-  reaches(['bash script.sh', 'sh ./build.sh', 'bash tools/test-all.sh'], INROOT)
+  floored(['bash script.sh', 'sh ./build.sh', 'bash tools/test-all.sh'], INROOT)
   floored(['bash -c ls', 'bash -s', 'bash', 'sh', 'cat a | bash', 'cat a | bash script.sh', 'bash < a.sh', 'bash -lc ls', 'bash -ic x', 'bash --rcfile x script.sh', 'bash $F', 'bash "$F"',
     'bash -o pipefail script.sh', 'echo ls > a.sh; bash a.sh', 'bash <<EOF\nls\nEOF', 'busybox sh x', 'zsh -c ls', 'sh -c "ls"'])
   // (d) A long line never reaches the raw matchers, and a line just under the cap does not stall them.
@@ -824,7 +850,7 @@ test('review r1: a relative path into a protected folder is the floor behind a w
     'gfind -files0-from list.txt -exec chmod 000 {} +',
   ]) assert.notEqual(f(c), undefined, c)
   // Not a reach into a checkout: the same shapes elsewhere, a read of the clone's own files, a find that stays in the clone.
-  for (const c of ['git -C ../other pull', 'nohup git status', 'pushd ../other && git status', "find . -name '*.ts' -exec grep -l floor {} +", 'find /tmp/clone -name x -exec ls {} +', 'cd /tmp/clone && ls ../other', 'env FOO=1 git status', 'git --work-tree=../other status', 'find -L . -exec ls {} +', 'find -- . -exec ls {} +', 'git -C ../other status', 'nohup git -C .. --work-tree=other status', 'timeout 5 git --work-tree=../other status', 'find . -files0-from list.txt', 'ls | find . -name x', 'gfind . -name x -exec ls {} +']) assert.equal(f(c), undefined, c)
+  for (const c of ['git -C ../other pull', 'nohup git status', 'pushd ../other && git status', "find . -name '*.ts' -exec grep -l floor {} +", 'find /tmp/clone -name x -exec ls {} +', 'cd /tmp/clone && ls ../other', 'env FOO=1 git status', 'git --work-tree=../other status', 'find -L . -exec ls {} +', 'find -- . -exec ls {} +', 'git -C ../other status', 'timeout 5 git --work-tree=../other status', 'find . -files0-from list.txt', 'ls | find . -name x', 'gfind . -name x -exec ls {} +']) assert.equal(f(c), undefined, c)
 })
 test('review r1: pushd with no folder, +N, -N or -n is an unknown folder; cd with no folder is home', () => {
   const o = { home: '/Users/x', roots: ['/tmp/ai-manager'], cwd: '/tmp/clone' }

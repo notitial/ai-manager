@@ -159,7 +159,9 @@ async function promptObserve($: any, e: any, r: any): Promise<void> {
   while (checks.size > CHECKS_MAX) checks.delete(checks.keys().next().value as string)
 }
 
-// The floor's options: The mod's own code in the live checkout (tools/callboard, and its real path when the checkout is reached through a link), and the folders
+// The parts of the live checkout that steer sessions: the mod's own code, the file every lead and lane loads, the manager's role and the rule it links into ~/.claude.
+const LIVE_ROOTS = ['tools/callboard', 'CLAUDE.md', 'docs/manager', 'rules']
+// The floor's options: those parts of the live checkout (and their real paths when the checkout is reached through a link), and the folders
 // the hooks and rules under ~/.claude are linked into (the toolkit's live checkout): an edit there is an edit of the guards themselves.
 // cwdKnown: cwd is the folder the engine said the call ran in. When it said none, the floor reads every relative path as having an unknown base.
 export async function promptFloorOpts($: any, tool: string, input: any, cwd: string, home: string, cwdKnown = true): Promise<pr.FloorOpts> {
@@ -168,9 +170,9 @@ export async function promptFloorOpts($: any, tool: string, input: any, cwd: str
   try {
     const co = c.liveCheckout($.plugin.root)
     if (co) {
-      o.roots = [`${co}/tools/callboard`]
+      o.roots = LIVE_ROOTS.map((r) => `${co}/${r}`)
       const real = await realR($, co)
-      if (typeof real !== 'string' && real.path !== co) o.roots.push(`${real.path}/tools/callboard`)
+      if (typeof real !== 'string' && real.path !== co) o.roots.push(...LIVE_ROOTS.map((r) => `${real.path}/${r}`))
     }
   } catch {}
   for (const r of await linkedRoots($, home)) if (!o.roots!.includes(r)) o.roots!.push(r)
@@ -196,9 +198,10 @@ export async function promptFloorOpts($: any, tool: string, input: any, cwd: str
   return o
 }
 
-// The `hooks` or `rules` folder in the real path of each entry of ~/.claude/hooks and ~/.claude/rules that is a link out of ~/.claude, and the guard folders beside it in
-// the same checkout (agents, skills, and the GitHub guard and workspace lock under tools). Best effort: a failed list or realpath adds nothing.
-const GUARD_SIBLINGS = ['agents', 'skills', 'tools/github-mcp', 'tools/workspace-lock']
+// The `hooks` or `rules` folder in the real path of each entry of ~/.claude/hooks and ~/.claude/rules that is a link out of ~/.claude, and the folders beside it in the same
+// checkout that ~/.claude also links to or loads code from (agents, skills, and tools: the status line, the shell init, the GitHub guard, the workspace lock).
+// Best effort: a failed list or realpath adds nothing.
+const GUARD_SIBLINGS = ['agents', 'skills', 'tools']
 async function linkedRoots($: any, home: string): Promise<string[]> {
   const out = new Set<string>()
   const own = `${home.toLowerCase()}/.claude`

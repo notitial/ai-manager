@@ -788,6 +788,7 @@ const GIT_TREE_READ = /^(stash|worktree|submodule|bisect|sparse-checkout)$/
 function judgeGit(args: Word[], cur: B[], j: J): Res {
   let eff = cur
   let nC = 0
+  let tree = false
   let i = 0
   for (; i < args.length && args[i].t.startsWith('-'); i++) {
     const t = args[i].t
@@ -796,7 +797,7 @@ function judgeGit(args: Word[], cur: B[], j: J): Res {
       const v = args[++i]
       if (!v) return SETT
       // -C applies in turn (-C .. -C app): the folder it leads to is not followed past the first.
-      if (++nC > 1) return SETT
+      if (++nC > 1 || tree) return SETT
       eff = v.dyn ? [null] : capB(eff.map((b) => cdTo(b, v.t)))
     } else if (t === '-c') {
       const v = args[++i]
@@ -807,6 +808,11 @@ function judgeGit(args: Word[], cur: B[], j: J): Res {
     } else if (/^--(git-dir|work-tree|namespace|super-prefix|attr-source)(=|$)/.test(t)) {
       const v = t.includes('=') ? { ...mkWord(), t: t.slice(t.indexOf('=') + 1) } : args[++i]
       if (!v) return SETT
+      // -C together with --work-tree or --git-dir: which folder wins depends on the order, so the call is not placed.
+      if (/^--(git-dir|work-tree)/.test(t)) {
+        if (nC > 0) return SETT
+        tree = true
+      }
       if (t.startsWith('--work-tree')) eff = v.dyn ? [null] : capB(eff.map((b) => cdTo(b, v.t)))
       else if (v.dyn) eff = [null]
     } else if (/^--exec-path/.test(t)) return SETT
@@ -963,7 +969,7 @@ function wrapScan(args: Word[], it: Item, cur: B[], j: J, reparse: boolean): Flo
 const GH_VAL = /^(-R|--repo|--hostname|-b|--body|-t|--title|-B|--base|-H|--head|-l|--label|-a|--assignee|-m|--milestone|-F|--body-file|-q|--jq|-r|--reviewer|--json|-L|--limit|-s|--state|--author|-A|--search|-S|--branch)$/
 // gh: what changes gh's own settings or runs code (config, extensions, aliases), changes GitHub-side settings, secrets, access or keys, or starts a paid run through a comment.
 // A merge, a delete or any other write reaches the tiers.
-function judgeGh(args: Word[]): FloorCategory | undefined {
+function judgeGh(args: Word[], cur: B[], o: FloorOpts): FloorCategory | undefined {
   if (args.some((w) => w.dyn && w.t.startsWith('-'))) return 'settings'
   const t = args.map((w) => w.t)
   // The words that are not options or the values of options that take one (-R o/r, --body x).
@@ -985,6 +991,8 @@ function judgeGh(args: Word[]): FloorCategory | undefined {
     if (pw[1]?.dyn || pw.slice(2).some(opaque)) return 'settings'
     // A comment, review, edit or new PR or issue that mentions @claude starts a paid run: the mod caps that only through the GitHub server's tools.
     if ((g === 'pr' || g === 'issue') && rest.some((x) => /^(comment|review|edit|create)$/.test(x)) && t.some((x) => /@claude/i.test(x))) return 'settings'
+    // A checkout, a sync, a clone or a download rewrites the folder it runs in: the floor in, under or above a protected one, or where the folder is not known.
+    if (((g === 'pr' && rest[0] === 'checkout') || (g === 'repo' && /^(sync|clone)$/.test(rest[0] ?? '')) || (g === 'gist' && rest[0] === 'clone') || (g === 'run' && rest[0] === 'download')) && gitReach(cur, o)) return 'settings'
     if (g === 'repo' && rest.some((x) => /^(edit|archive|unarchive|rename|transfer|create|deploy-key)$/.test(x))) return 'settings'
     if ((g === 'secret' || g === 'variable') && rest.some((x) => /^(set|delete|remove)$/.test(x))) return 'settings'
     if (g === 'ruleset' && rest.length > 0 && !/^(list|view|check)$/.test(rest[0])) return 'settings'
@@ -1021,6 +1029,8 @@ function judgeGh(args: Word[]): FloorCategory | undefined {
   const write = m !== undefined ? m !== 'GET' && m !== 'HEAD' : fields.length > 0 || input
   if (!write) return undefined
   const ep = (endpoint ?? '').replace(/^https?:\/\/[^/]+\//i, '').replace(/^\/+/, '').replace(/[?#].*$/, '')
+  // A GraphQL call can change settings, rulesets, access or visibility: a mutation of those, or a query read from a file or a variable, is the floor (a merge or a branch write reaches the tiers).
+  if (ep === 'graphql' && (input || args.some((w) => w.dyn) || fields.some((f) => /(^|=)@/.test(f)) || t.some((x) => /mutation[\s\S]*(BranchProtection|Ruleset|Visibility|Collaborator|Repository|Secret|Webhook|DeployKey|Environment|Team|Member|Invitation|Pages|Token|Permission)/i.test(x)))) return 'settings'
   // A write to an endpoint that changes settings, secrets, access or keys.
   if (/(^|\/)(hooks|secrets|variables|rulesets|rules|protection|environments|keys|deploy_keys|collaborators|invitations|autolinks|actions\/(permissions|runners|secrets|variables|oidc)|dependabot\/secrets|codespaces\/secrets|webhooks|pages|teams|members|memberships|installations|transfer|settings|vulnerability-alerts|automated-security-fixes|private-vulnerability-reporting|topics|visibility)(\/|$)/.test(ep) || /^repos\/[^/]+\/[^/]+$/.test(ep) || /^(orgs|user)(\/|$)/.test(ep)) return 'settings'
   return undefined
@@ -1132,7 +1142,7 @@ function dispatch(v: string, verb: Word, args: Word[], it: Item, cur: B[], j: J,
   // hub wraps git: every verb is judged as git's (an unknown one is the floor).
   if (v === 'git' || v === 'hub') return judgeGit(args, cur, j)
   if (v === 'gh') {
-    const c = judgeGh(args)
+    const c = judgeGh(args, cur, j.o)
     return c ? { cat: c } : {}
   }
   if (v === 'curl' || v === 'wget') {
@@ -1291,8 +1301,26 @@ function judgeItem(it: Item, cur: B[], j: J): Res {
   if (!verb) return {}
   // A verb that is not written out, or may be a pattern, runs something unknown.
   if (verb.dyn || verb.glob) return SETT
-  return dispatch(baseName(verb.t), verb, ws.slice(k + 1), it, cur, j, false)
+  const v = baseName(verb.t)
+  const res = dispatch(v, verb, ws.slice(k + 1), it, cur, j, false)
+  // A verb that may write where it runs (curl or wget saving under the remote name, a package manager, a build, an unpacker) from a folder inside a protected one: only the
+  // read-only verbs below, and the ones judged above (git, gh, cd), run there.
+  if (!res.cat && !res.cd && cur.some((b) => b !== null && b !== '' && underRoot(b, j.o)) && inRootWrites(v, ws.slice(k + 1))) return SETT
+  return res
 }
+// Whether a verb run in a folder inside a protected one may write there without naming the file: not on the read-only list, curl saving under the remote name, wget with no
+// stdout output, httpie downloading, sort with an output file.
+function inRootWrites(v: string, args: Word[]): boolean {
+  const t = args.map((w) => w.t)
+  if (v === 'curl') return t.some((x) => /^-[A-Za-z]*[OJ][A-Za-z]*$/.test(x) || /^--(remote-name|remote-name-all|remote-header-name)$/.test(x))
+  if (v === 'wget') return !(t.some((x) => /^-[A-Za-z]*O-$/.test(x) || x === '--output-document=-') || (t.some((x) => /^-[A-Za-z]*O$/.test(x) || x === '--output-document') && t.includes('-')))
+  if (v === 'http' || v === 'https' || v === 'xh') return t.some((x) => /^(-d|--download)$/.test(x))
+  if (v === 'env') return args.length > 0
+  if (v === 'uniq') return t.filter((x) => !x.startsWith('-')).length > 1
+  if (v === 'sort') return t.some((x) => /^(-[A-Za-z]*o|--output)/.test(x))
+  return !IN_ROOT_OK.test(v)
+}
+const IN_ROOT_OK = /^(for|select|case|esac|return|exit|break|continue|wait|sleep|shift|let|read|ssh|env|printenv|sort|uniq|ls|cat|head|tail|less|more|grep|egrep|fgrep|rg|wc|echo|printf|pwd|true|false|test|\[|\[\[|stat|file|diff|cmp|cut|tr|basename|dirname|realpath|readlink|which|type|date|id|whoami|uname|hostname|jq|tree|du|df|find|git|gh|cd|pushd|popd|export|declare|typeset|readonly|local|unset|set|:)$/
 
 // Items in order, with the folders a relative path may be read against: a literal cd moves them, a cd that cannot be read makes them unknown (null), and a cd that may
 // not have run (after ; or ||, in a pipe) leaves the old folder possible as well. A subshell and a substitution give the folder back.

@@ -771,6 +771,11 @@ test('prompts: floor: a write into a guard folder of a checkout stays the floor,
     ['Write', { file_path: `${PIN}/hooks/guard.sh`, content: 'x' }],
     ['Edit', { file_path: `${PIN}/hooks/new.sh`, old_string: 'a', new_string: 'b' }],
     ['Bash', { command: `echo x >> ${PIN}/hooks/guard.sh` }],
+    // What ~/.claude also links to or runs from the same checkout: the status line, the shell init, agents, skills.
+    ['Write', { file_path: `${PIN}/tools/statusline.sh`, content: 'x' }],
+    ['Edit', { file_path: `${PIN}/tools/shell-init.zsh`, old_string: 'a', new_string: 'b' }],
+    ['Bash', { command: `echo x >> ${PIN}/agents/a.md` }],
+    ['Write', { file_path: `${PIN}/skills/s/SKILL.md`, content: 'x' }],
   ]
   let n = 0
   for (const [tool, input] of held) {
