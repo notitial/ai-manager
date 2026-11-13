@@ -9,7 +9,7 @@ export const events = (stdins: string[]) => allEvents(stdins).filter((e) => e.ev
 
 export const PERSON = { kind: 'composer' } as const
 // The usage line, which /callboard on gets too.
-export const USAGE = 'Use /callboard help, lanes, status, lead, lane [NAME], escalation [off], prompts, manager or off. Run /callboard help for the full list.'
+export const USAGE = 'Use /callboard help, lanes, status, lead, lane [NAME], escalation [off], manager or off. Run /callboard help for the full list.'
 export const lane = (args: string, origin: unknown = PERSON) => ({ command: 'callboard', args, origin }) as any
 export const statusText = async ($: any) => (await $.command.run(lane('status'))).text as string
 
