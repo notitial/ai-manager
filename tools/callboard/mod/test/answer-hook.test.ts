@@ -564,9 +564,9 @@ test('prompts: sweep: with no prompts folder the tick makes no process call for 
 // ---- /callboard escalation ----
 const EXPECT_Q = prm.ESCALATION_QUESTION
 const ESC_VALUE = { scope: 'all', asks: false, asksScope: 'all', savedAt: T0 }
-test('prompts: /callboard config shows escalation OFF (default ON), help has no floor line, and the prompts word is the usage line', async ($, on) => {
+test('prompts: /callboard config shows escalation OFF (its default), help has no floor line, and the prompts word is the usage line', async ($, on) => {
   await started($, on, [])
-  expect((await $.command.run(lane('config'))).text).toContain('| Escalation | OFF | ON |')
+  expect((await $.command.run(lane('config'))).text).toContain('| Escalation | OFF |')
   expect((await $.command.run(lane('help'))).text).not.toContain('Floor')
   const usage = (await $.command.run(lane('prompts'))).text
   expect(usage).toContain('Run /callboard help for the full list.')
@@ -698,7 +698,7 @@ test('prompts: the config row reads a value an earlier version stored (a narrowe
   h.store.set('answering', { scope: 'LEAD', asks: true, savedAt: T0 })
   expect((await $.command.run(lane('config'))).text).toContain('| Escalation | ON |')
   pfs.set(OFF_FILE, { text: '', mtimeSec: T0 / 1000 })
-  expect((await $.command.run(lane('config'))).text).toContain('| Escalation | OFF | ON |')
+  expect((await $.command.run(lane('config'))).text).toContain('| Escalation | OFF |')
 })
 
 // ---- review fixes ----

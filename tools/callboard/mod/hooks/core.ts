@@ -498,9 +498,8 @@ const CONFIG_VALUE: Record<ConfigField, (c: Config) => string> = {
 }
 // The sentence that confirms a change keeps the lower-case words.
 const CONFIG_LABEL = (f: ConfigField, c: Config): string => `${CONFIG_NAME[f]} ${CONFIG_VALUE[f](c)}`.toLowerCase()
-// Escalation is not in the stored settings: the person's own command switches it on, and with nothing stored it is off. The table's default for it is on, so a Mac with
-// escalation off shows the Default column.
-export const ESCALATION_DEFAULT = true
+// Escalation is not in the stored settings: the person's own command switches it on, and with nothing stored it is off, which is its default.
+export const ESCALATION_DEFAULT = false
 // /callboard config: one row per setting. The Default column appears only while some setting differs from its default: it holds a check mark on a row at its default and
 // the default value on a changed row.
 export function configText(cfg: Config, escalation: boolean = ESCALATION_DEFAULT): string {

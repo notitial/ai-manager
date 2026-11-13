@@ -1438,10 +1438,11 @@ test('v13.2 parseCommandArgs: config forms; out of range, unknown and trailing j
 test('v13.2 config texts: no Default column while every setting is at its default, else a check mark or the default value; the level cross-check', () => {
   const D = c.parseConfig(undefined).cfg
   const head = ['**Callboard settings**', '', '| Setting | Value |', '|---|---|']
-  assert.equal(c.configText(D), [...head, '| Keepalive | ON |', '| Ping after | 50 min |', '| Stop after | 3 h |', '| Idle level | 300k |', '| Working level | 400k |', '| Check-ins | ON |', '| Escalation | ON |'].join('\n'))
+  assert.equal(c.configText(D), [...head, '| Keepalive | ON |', '| Ping after | 50 min |', '| Stop after | 3 h |', '| Idle level | 300k |', '| Working level | 400k |', '| Check-ins | ON |', '| Escalation | OFF |'].join('\n'))
   const withDefault = ['**Callboard settings**', '', '| Setting | Value | Default |', '|---|---|---|']
-  assert.equal(c.configText({ ...D, keepalive: false, pingAfterMin: 45, workingK: 450, checkin: false }, true), [...withDefault, '| Keepalive | OFF | ON |', '| Ping after | 45 min | 50 min |', '| Stop after | 3 h | ✓ |', '| Idle level | 300k | ✓ |', '| Working level | 450k | 400k |', '| Check-ins | OFF | ON |', '| Escalation | ON | ✓ |'].join('\n'))
-  assert.equal(c.configText(D, false), [...withDefault, '| Keepalive | ON | ✓ |', '| Ping after | 50 min | ✓ |', '| Stop after | 3 h | ✓ |', '| Idle level | 300k | ✓ |', '| Working level | 400k | ✓ |', '| Check-ins | ON | ✓ |', '| Escalation | OFF | ON |'].join('\n'))
+  assert.equal(c.configText({ ...D, keepalive: false, pingAfterMin: 45, workingK: 450, checkin: false }, true), [...withDefault, '| Keepalive | OFF | ON |', '| Ping after | 45 min | 50 min |', '| Stop after | 3 h | ✓ |', '| Idle level | 300k | ✓ |', '| Working level | 450k | 400k |', '| Check-ins | OFF | ON |', '| Escalation | ON | OFF |'].join('\n'))
+  assert.equal(c.configText(D, false), c.configText(D))
+  assert.equal(c.configText({ ...D, pingAfterMin: 45 }, false), [...withDefault, '| Keepalive | ON | ✓ |', '| Ping after | 45 min | 50 min |', '| Stop after | 3 h | ✓ |', '| Idle level | 300k | ✓ |', '| Working level | 400k | ✓ |', '| Check-ins | ON | ✓ |', '| Escalation | OFF | ✓ |'].join('\n'))
   assert.equal(c.configSetText('pingAfterMin', { ...D, pingAfterMin: 45 }), 'Callboard setting changed: ping after 45 min. It applies to every session on this Mac within a minute.')
   assert.equal(c.CONFIG_USAGE, 'Use /callboard config [keepalive on|off, ping 30-55, stop 1-8, idle 150-800, working IDLE-900, checkin on|off, reset].')
   assert.equal(c.CONFIG_NOT_PERSON, 'Only you can change callboard settings: type /callboard config yourself.')
