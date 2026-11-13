@@ -17,7 +17,7 @@ import {
 import { sha, dirOk, readSmallR, statR, where, run, INSTALL, TEE, rmF, log, submitOwn, logq } from './base.ts'
 import { registryEntries, idleCheck } from './store.ts'
 import type { RegRow } from './store.ts'
-import { leadsFor, conductorsReaching, managersLive, homeOf, grantOf } from './grants.ts'
+import { leadsFor, conductorsReaching, managersLive, grantOf } from './grants.ts'
 import { leadBase, leadRun } from './lanes.ts'
 import { ensureTimer } from './tick.ts'
 import {
@@ -27,7 +27,6 @@ import {
   promptsOff,
   promptNewId,
   ledgerRowsFor,
-  promptFloorOpts,
   capOf,
   labelHash,
 } from './answer-hook.ts'
@@ -286,13 +285,10 @@ async function promptAnswerTool($: any, e: any, answer: boolean): Promise<{ resu
     pick = { index: opt - 1, label: labels[opt - 1] }
   } else if (answer && decision === 'answer') return refuse('bad-input')
   // The decision is judged on the copy the tier read. A truncated copy cannot be allowed (the rubric: seen whole), and cannot be put to the person either: it is
-  // denied, asking the lane for a cleaner call. A floor call is never answered, whichever way.
+  // denied, asking the lane for a cleaner call. A dialog is never answered, whichever way.
   if (answer) {
+    if (pr.isDialog(q.tool)) return refuse('dialog')
     if (q.truncated && decision === 'allow') return refuse('truncated')
-    if (!q.truncated) {
-      const fo = await promptFloorOpts($, q.tool, q.input, q.cwd ?? q.repo, homeOf(t.p), q.cwd !== undefined, q.level === 'lane' && q.lane !== undefined && q.ownReport !== undefined ? { lane: q.lane, path: q.ownReport } : undefined)
-      if (pr.floorCheck(q.tool, q.input, fo) !== undefined) return refuse('floor')
-    }
     if (promptWindowShut(q, stand, sid, now)) return refuse('window')
   }
   const cap = answer && decision === 'allow' ? pr.claudeCap(q.tool, q.input) : undefined

@@ -1,17 +1,17 @@
 // The prompt-answering hook: request files, the wait for a decision, the apply step, the relay, the ledger glue and the sweeps.
-// Trust rules held here: the floor at answer time and again at apply; no decision without a ledger row; the relay reads only the person's own answer.
+// Trust rules held here: a dialog is never answered, at answer time or at apply; no decision without a ledger row; the relay reads only the person's own answer.
 import * as c from '../core.ts'
 import * as pr from '../prompts.ts'
 import { grants, checks, openReqs, doneIds, unclosed, askingSids, relayAskedTurn, mem } from '../mem.ts'
-import { run, MKDIR, dirOk, INSTALL, TEE, MV, rmF, where, facts, sha, statR, realR, REALPATH, readSmallR, pause, RMDIR } from './base.ts'
-import { loadLanes, registryEntries, registryOf } from './store.ts'
+import { run, MKDIR, dirOk, INSTALL, TEE, MV, rmF, where, facts, sha, statR, readSmallR, pause, RMDIR } from './base.ts'
+import { registryEntries, registryOf } from './store.ts'
 import { leadsFor, homeOf, presenceCheck } from './grants.ts'
 import { reportLaneOf, sessionRoot } from './lanes.ts'
 import type { Bound } from './lanes.ts'
 import { promptLinkOnce, promptReachTiers, promptStand } from './answer-tiers.ts'
 import { getLane } from '../state.ts'
 
-// ---- prompt answering (ADR 0004): the hook, the floor, the files and the switch. Off by default; nothing here lets an agent write a decision. ----
+// ---- prompt answering (ADR 0004): the hook, the files and the switch. Off by default; nothing here lets an agent write a decision. ----
 // A PermissionRequest hook in the asking session: it refuses what no agent may answer, writes a request file and waits. The decision comes from
 // prompt_answer or the person, and the hook applies it under every check of pr.applyCheck.
 const UUIDGEN = '/usr/bin/uuidgen'
@@ -23,7 +23,6 @@ const CHECK_TTL_MS = 60_000
 const CHECKS_MAX = 256
 const SWEEP_EVERY_MS = 60_000
 const SWEEP_DIRS_MAX = 64
-const PERSON_HOLDS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit'])
 
 const UNCLOSED_TRIES = 5
 // What a request's hook has done about its closing row: `closed` once one is in the ledger (or the sweep wrote it), `pending` the row it still owes.
@@ -157,100 +156,6 @@ async function promptObserve($: any, e: any, r: any): Promise<void> {
   checks.set(key, { toolUseId: e.tool_use_id, at: now, approver: e.approver, dup, facts: { decision: r.decision, reason: r.reason, rule: r.rule, hook: r.hook, setting: r.setting, plugin: r.plugin, ceiling: r.ceiling } })
   for (const [k, v] of checks) if (now - v.at > CHECK_TTL_MS) checks.delete(k)
   while (checks.size > CHECKS_MAX) checks.delete(checks.keys().next().value as string)
-}
-
-// cwdKnown: cwd is the folder the engine said the call ran in. When it said none, the floor reads every relative path as having an unknown base.
-// A lane's own report (a lane signs by writing it), for the floor: the path and its real path, only when everything about it checks out. In the asking session (`sid`)
-// the path is the one its lane record gives, the one lane_retire reads. A prompt_answer in a tier's session has only the request, which carries that path (`path`);
-// it must still read as `<repo>/.archive/<lane>/REPORT.md` of the request's own lane and be the path a lane record of that name gives. Anything that does not check out gives undefined, and the floor holds as before.
-async function ownReportOf($: any, own: { lane: string; sid?: string; path?: string }, file: { filePath: unknown; cwd: string | undefined }): Promise<pr.FloorOpts['ownReport']> {
-  try {
-    let path = own.path
-    if (own.sid !== undefined) {
-      const l = await reportLaneOf($, own.sid)
-      if (!l || l.name !== own.lane) return undefined
-      path = c.reportPath(l)
-    } else {
-      // A tier has only the request: the path it names must be the one a lane record of that name gives.
-      const lanes = await loadLanes($)
-      if (typeof lanes === 'string' || !lanes.some((x) => x.name === own.lane && c.reportPath(x) === path)) return undefined
-    }
-    const tail = `/.archive/${own.lane}/REPORT.md`
-    const repo = path !== undefined && path.endsWith(tail) ? path.slice(0, -tail.length) : undefined
-    const p = await where($)
-    if (path === undefined || repo === undefined || pr.ownReportPath(repo, own.lane) !== path || !p) return undefined
-    // Only a call that names the report pays for the file system checks, and only it gets the exception.
-    if (!pr.namesOwnReport(file.filePath, file.cwd, path)) return undefined
-    // The repo is its own real path: a folder that was swapped for a link since the lane was made gets no exception.
-    const real = await realR($, repo)
-    if (typeof real === 'string' || real.path !== repo) return undefined
-    // The file is ours and plain (a link or a second hard link would write somewhere else), or not made yet.
-    const st = await statR($, path)
-    if (st === 'error' || (st !== 'absent' && (st.kind !== 'file' || st.nlink !== 1 || st.uid !== p.uid))) return undefined
-    return { path, real: `${real.path === '/' ? '' : real.path}${tail}` }
-  } catch {
-    return undefined
-  }
-}
-
-// own: the session's lane, for its own report (see ownReportOf); only a write by a file tool uses it.
-export async function promptFloorOpts($: any, tool: string, input: any, cwd: string, home: string, cwdKnown = true, own?: { lane: string; sid?: string; path?: string }): Promise<pr.FloorOpts> {
-  const o: pr.FloorOpts = { home, roots: [], cwd, ...(cwdKnown ? {} : { cwdUnknown: true }) }
-  const isGit = tool.startsWith('mcp__git-mcp__')
-  try {
-    const co = c.liveCheckout($.plugin.root)
-    if (co) {
-      o.roots = [co]
-      const real = await realR($, co)
-      if (typeof real !== 'string' && real.path !== co) o.roots.push(real.path)
-    }
-  } catch {}
-  // The folders the hooks and rules under ~/.claude are linked into (the toolkit's live checkout): an edit there is an edit of the guards themselves.
-  if (PERSON_HOLDS.has(tool) || tool === 'Bash' || isGit) for (const r of await linkedRoots($, home)) if (!o.roots!.includes(r)) o.roots!.push(r)
-  if (PERSON_HOLDS.has(tool) || isGit) {
-    const real: string[] = []
-    // A git call acts on its `path`, or on the folder the session runs in.
-    for (const raw of isGit ? [typeof input?.path === 'string' ? input.path : cwd] : [input?.file_path, input?.notebook_path, input?.path]) {
-      if (typeof raw !== 'string') continue
-      const abs0 = raw === '~' || raw.startsWith('~/') ? home + raw.slice(1) : raw
-      const abs = abs0.startsWith('/') ? abs0 : `${cwd}/${abs0}`
-      let r = await realR($, abs)
-      if (r === 'absent') {
-        // A file not made yet: its folder's real path, and the name.
-        const slash = abs.lastIndexOf('/')
-        const d = await realR($, abs.slice(0, slash) || '/')
-        r = typeof d === 'string' ? d : { path: `${d.path === '/' ? '' : d.path}${abs.slice(slash)}` }
-      }
-      if (typeof r === 'string') o.unresolved = true
-      else real.push(r.path)
-    }
-    o.real = real
-  }
-  if (own && PERSON_HOLDS.has(tool)) {
-    const r = await ownReportOf($, own, { filePath: input?.file_path, cwd: o.cwdUnknown === true ? undefined : cwd })
-    if (r) o.ownReport = r
-  }
-  return o
-}
-
-// The folder above `hooks` or `rules` in the real path of each entry of ~/.claude/hooks and ~/.claude/rules that is a link out of ~/.claude. Best effort: a
-// failed list or realpath adds nothing. A folder found this way is as wide as the link's own parent, which errs toward the floor.
-async function linkedRoots($: any, home: string): Promise<string[]> {
-  const out = new Set<string>()
-  const own = `${home.toLowerCase()}/.claude`
-  for (const sub of ['hooks', 'rules']) {
-    try {
-      const names = ((await $.fs.list(`${home}/.claude/${sub}`).catch(() => [])) as { name: string }[]).map((f) => f.name).filter((n) => /^[A-Za-z0-9._-]{1,100}$/.test(n)).slice(0, 64)
-      if (names.length === 0) continue
-      const r = await run($, [REALPATH, '--', ...names.map((n) => `${home}/.claude/${sub}/${n}`)], undefined, { LC_ALL: 'C' })
-      for (const line of String(r.stdout).split('\n')) {
-        const m = /^(\/.+?)\/(?:hooks|rules)\/[^/]+$/.exec(line.trim())
-        const low = m?.[1].toLowerCase()
-        if (m && low !== own && !low!.startsWith(`${own}/`)) out.add(m[1])
-      }
-    } catch {}
-  }
-  return [...out]
 }
 
 // The lane's own lead (a live lead of the repo that is not the lane), by sid and name; undefined for a lead's own prompt or when none is live.
@@ -515,15 +420,9 @@ async function promptHook($: any, e: any, nextOnce: (x: any) => Promise<any>, si
         return beneath
       }
     }
-    // 6. The floor.
-    // The floor reads relative paths against the folder the engine says the call ran in (a shell keeps its cd between calls), not the folder the session started in.
-    const ecwd = typeof e.cwd === 'string' && e.cwd.startsWith('/') ? e.cwd : undefined
-    const fo = await promptFloorOpts($, tool, input, ecwd ?? cwd, homeOf(p), ecwd !== undefined, cov.level === 'lane' && cov.lane !== undefined ? { lane: cov.lane, sid } : undefined)
-    const floor = pr.floorCheck(tool, input, fo)
-    // What the floor read besides the input: the audit compares it between a floor row and a later request of the same input.
-    const ctx = (await sha($, JSON.stringify(fo)).catch(() => '')).slice(0, 16)
-    if (floor !== undefined) {
-      await ledgerAdd($, { ...base, ...(ctx ? { ctx } : {}), kind: 'floor', code: floor })
+    // 6. A dialog of another kind is the person's alone: a row, no request, nobody asked.
+    if (pr.isDialog(tool)) {
+      await ledgerAdd($, { ...base, kind: 'dialog' })
       return beneath
     }
     // 7. A live tier: the lead of a lane, or a conductor or the manager (a lead's own prompt starts at the conductor). Nobody in reach, or an asker that the
@@ -547,7 +446,7 @@ async function promptHook($: any, e: any, nextOnce: (x: any) => Promise<any>, si
     const id = await promptNewId($)
     const nonce = await promptNewId($)
     const capped = pr.capInput(input)
-    const req: pr.Request = { id, sid, pid: own.pid, procStart: own.procStart, level: cov.level, lane: cov.lane ?? cov.self, ...(leadName ? { leadName } : {}), ...(cov.level === 'lane' && lead === undefined ? { noLead: true } : {}), repo: cwd, tool, ...(ecwd !== undefined ? { cwd: ecwd } : {}), inputHash: hash, ...(fo.ownReport !== undefined ? { ownReport: fo.ownReport.path } : {}), raisedBy: judged.raisedBy, at: started, expiresAt: started + pr.EXPIRES_MS, nonce, input: capped.input, truncated: capped.truncated }
+    const req: pr.Request = { id, sid, pid: own.pid, procStart: own.procStart, level: cov.level, lane: cov.lane ?? cov.self, ...(leadName ? { leadName } : {}), ...(cov.level === 'lane' && lead === undefined ? { noLead: true } : {}), repo: cwd, tool, inputHash: hash, raisedBy: judged.raisedBy, at: started, expiresAt: started + pr.EXPIRES_MS, nonce, input: capped.input, truncated: capped.truncated }
     const text = pr.requestText(req)
     if (new TextEncoder().encode(text).length > pr.REQUEST_MAX || !(await promptPut($, `${dir}/${id}.request.json`, text))) {
       await ledgerAdd($, { ...base, kind: 'abandoned', code: 'hook-failed' })
@@ -557,11 +456,11 @@ async function promptHook($: any, e: any, nextOnce: (x: any) => Promise<any>, si
     reqDir.id = id
     openReqs.set(tid as string, { id, dir })
     if (doneIds.has(tid as string)) await promptDone($, { tool_use_id: tid })
-    const row = { ...base, ...(ctx ? { ctx } : {}), id, tier: [...reach].sort((x, y) => pr.TIER_RANK[x.level] - pr.TIER_RANK[y.level])[0].level }
+    const row = { ...base, id, tier: [...reach].sort((x, y) => pr.TIER_RANK[x.level] - pr.TIER_RANK[y.level])[0].level }
     // Without a `requested` row no decision could ever pass the ledger check: the dialog is left to the person.
     if (!(await ledgerAdd($, { ...row, kind: 'requested', nonce }))) throw new Error('ledger-unwritable')
     st.requested = true
-    return await promptWait($, beneath, signal, { sid, tid: tid as string, id, nonce, dir, input, tool, cwd, ecwd, home: homeOf(p), p, started, row, req, leadName, cap: pr.claudeCap(tool, input), st })
+    return await promptWait($, beneath, signal, { sid, tid: tid as string, id, nonce, dir, input, tool, cwd, home: homeOf(p), p, started, row, req, leadName, cap: pr.claudeCap(tool, input), st })
   } catch (err) {
     // A failing hook answers nothing: the dialog stays (the caller returns what the chain beneath gives).
     if (!st.closed) {
@@ -582,7 +481,7 @@ async function promptHook($: any, e: any, nextOnce: (x: any) => Promise<any>, si
   }
 }
 
-type WaitCtx = { sid: string; tid: string; id: string; nonce: string; dir: string; input: unknown; tool: string; cwd: string; home: string; p: { uid: number; root: string; own?: string }; started: number; row: Omit<pr.LedgerRow, 't' | 'kind'>; req: pr.Request; leadName?: string; cap?: { kind: pr.CapKind; target: string }; ecwd?: string; st: CloseState }
+type WaitCtx = { sid: string; tid: string; id: string; nonce: string; dir: string; input: unknown; tool: string; cwd: string; home: string; p: { uid: number; root: string; own?: string }; started: number; row: Omit<pr.LedgerRow, 't' | 'kind'>; req: pr.Request; leadName?: string; cap?: { kind: pr.CapKind; target: string }; st: CloseState }
 
 // The wait. Each poll: a click, the switch, the dialog's own row, the relay, expiry, then a decision file. The awake clock adds each gap,
 // capped. A relay (a tier put the prompt to the person) makes the wait `withPerson`: expiry at 2 hours, a 10 s poll, and no 20-minute deny.
@@ -785,7 +684,6 @@ async function promptApply($: any, w: WaitCtx, d: pr.Decision, awake: number, gr
   try {
     liveHash = await sha($, pr.canonical(w.input))
   } catch {}
-  const fo = await promptFloorOpts($, w.tool, w.input, w.ecwd ?? w.cwd, w.home, w.ecwd !== undefined, w.req.level === 'lane' && w.req.lane !== undefined ? { lane: w.req.lane, sid: w.sid } : undefined)
   let byOk = false
   // The tier of the presence-checked stand that matches the decision's author: the name an answer prints comes from here, never from the decision file.
   let tier: pr.Tier | undefined
@@ -813,8 +711,8 @@ async function promptApply($: any, w: WaitCtx, d: pr.Decision, awake: number, gr
   const ledger = d.decision === 'answer' && d.answer && lh === undefined ? 'unreadable' : await ledgerHas($, w.p, w.id, w.nonce, { code: d.decision, by: d.by.sid, ...(d.via ? { via: d.via } : {}), ...(d.answer && lh !== undefined ? { opt: String(d.answer.index), lh } : {}) })
   // Only a call that carries an `@claude` body, and only once the other checks would let the decision through, reads the cap.
   const cap = w.cap && ledger === 'found' && d.decision === 'allow' && d.via !== 'person' ? await capOf($, w.p, w.cap) : undefined
-  const out = pr.applyCheck({ req: w.req, decision: d, liveHash, awakeMs: awake, expiresAt: pr.expiresAfter(relay !== undefined), floor: pr.floorCheck(w.tool, w.input, fo), byOk, ...(relay ? { relay } : {}), ...(w.tool === pr.QUESTION_TOOL ? { question: { labels: pr.questionLabels(w.input) } } : {}), ledger, graceMs, cap })
-  // The two drops that rest on those lookups are held for the next poll when one failed; the final codes (id, hash, nonce, expired, floor, cap) never are.
+  const out = pr.applyCheck({ req: w.req, decision: d, liveHash, awakeMs: awake, expiresAt: pr.expiresAfter(relay !== undefined), dialog: pr.isDialog(w.tool), byOk, ...(relay ? { relay } : {}), ...(w.tool === pr.QUESTION_TOOL ? { question: { labels: pr.questionLabels(w.input) } } : {}), ledger, graceMs, cap })
+  // The two drops that rest on those lookups are held for the next poll when one failed; the final codes (id, hash, nonce, expired, dialog, cap) never are.
   return unsure && 'drop' in out && (out.drop === 'by-sid' || out.drop === 'relay') ? { out: { hold: 'lookup' } } : { out, ...(tier ? { tier } : {}) }
 }
 

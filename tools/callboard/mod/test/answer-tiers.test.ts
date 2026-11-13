@@ -106,7 +106,7 @@ test('prompts: prompt_answer writes the decision file and its answered row; the 
   expect(answered()).toEqual([expect.objectContaining({ kind: 'answered', id: TID, nonce: 'n-1', code: 'allow', tier: 'lead', lane: 'svc-api', tool: 'Bash', pattern: 'ssh', hash: THASH, why: 'read only, seen whole' })])
   // The row carries the id as ledgerLine writes it, the needle the hook greps for.
   expect([...pfs.values()].some((v) => v.text.includes(`"id":"${TID}"`))).toBe(true)
-  expect(prm.applyCheck({ req: { id: TID, nonce: q.nonce, inputHash: THASH, sid: LANESID }, decision: d, liveHash: THASH, awakeMs: 30_000, expiresAt: prm.EXPIRES_MS, floor: undefined, byOk: true, ledger: 'found', graceMs: 0 })).toEqual({ ok: true })
+  expect(prm.applyCheck({ req: { id: TID, nonce: q.nonce, inputHash: THASH, sid: LANESID }, decision: d, liveHash: THASH, awakeMs: 30_000, expiresAt: prm.EXPIRES_MS, dialog: false, byOk: true, ledger: 'found', graceMs: 0 })).toEqual({ ok: true })
   expect(JSON.stringify(ledgerRows())).not.toContain('uptime')
 })
 
@@ -176,19 +176,10 @@ test('prompts: a truncated input can be denied but never allowed', async ($, on)
   expect(said(await $.tool.call(answerCall({ decision: 'deny', why: 'cannot see it all, and it looks wrong' })))).toContain('Recorded: deny')
 })
 
-test('prompts: prompt_answer never answers a floor call, allow or deny', async ($, on) => {
+test('prompts: prompt_answer never answers a dialog, allow or deny', async ($, on) => {
   await tier($, on)
-  const floorCalls: [string, unknown][] = [
-    ['Bash', { command: 'echo x >> ~/.claude/hooks/guard.sh' }],
-    ['Bash', { command: 'git config core.hooksPath /tmp/h' }],
-    ['Bash', { command: 'eval "$X"' }],
-    ['Write', { file_path: '/Users/x/.claude/settings.json', content: '{}' }],
-    ['ExitPlanMode', {}],
-  ]
-  for (const [tool, input] of floorCalls) {
-    putQ({ tool, input })
-    for (const decision of ['allow', 'deny']) expect(said(await $.tool.call(answerCall({ decision })))).toContain(refusal('floor'))
-  }
+  putQ({ tool: 'ExitPlanMode', input: {} })
+  for (const decision of ['allow', 'deny']) expect(said(await $.tool.call(answerCall({ decision })))).toContain(refusal('dialog'))
   expect(decFile()).toBeUndefined()
   expect(answered()).toEqual([])
 })
@@ -198,8 +189,9 @@ for (const [name, tool, input] of [
   ['a force push', 'mcp__git-mcp__git_push', { path: SVC, force: true }],
   ['a push to main', 'mcp__git-mcp__git_push', { path: SVC, branch: 'main' }],
   ['a delete', 'Bash', { command: 'rm -rf /tmp/build' }],
+  ['an edit of settings', 'Write', { file_path: '/Users/x/.claude/settings.json', content: '{}' }],
 ] as [string, string, unknown][])
-  test(`prompts: prompt_answer answers what left the floor: ${name}`, async ($, on) => {
+  test(`prompts: prompt_answer answers a call a hook does not stop: ${name}`, async ($, on) => {
     await tier($, on)
     putQ({ tool, input })
     expect(said(await $.tool.call(answerCall({ decision: 'allow' })))).toContain('Recorded: allow')
@@ -222,16 +214,16 @@ test('prompts: the comment cap: 2 --comments per PR refuse the next allow; a den
   expect(answered().at(-1)).toMatchObject({ code: 'allow', cap: 'comments', target: 'acme/app#7' })
 })
 
-test('prompts: one full review per PR: an @claude body that is not the --comments form is a full review, whatever else it says', async ($, on) => {
+test('prompts: one full review per PR: a body that starts the review command and is not the --comments form is a full review, whatever else it says', async ($, on) => {
   await tier($, on)
-  putQ({ tool: 'mcp__github__add_issue_comment', input: { ...PCOMMENT, body: '@claude review --comments\nand also @claude review' }, raisedBy: 'guard' })
+  putQ({ tool: 'mcp__github__add_issue_comment', input: { ...PCOMMENT, body: '@claude review\nand also --comments' }, raisedBy: 'guard' })
   putLedger([retRow({ cap: 'full' })])
   expect(said(await $.tool.call(answerCall()))).toContain(refusal('cap'))
   putQ({ tool: 'mcp__github__create_pull_request', input: { owner: 'acme', repo: 'app', title: 't', head: 'h', base: 'b', body: 'ok' }, raisedBy: 'guard' })
   expect(said(await $.tool.call(answerCall()))).toContain('Recorded: allow')
 })
 
-test('prompts: a ledger that cannot be read counts as over the cap, and a call with no @claude body never reads it', async ($, on) => {
+test('prompts: a ledger that cannot be read counts as over the cap, and a comment that does not start the review command never reads it', async ($, on) => {
   await tier($, on)
   putQ({ tool: 'mcp__github__add_issue_comment', input: PCOMMENT, raisedBy: 'guard' })
   putLedger([retRow()])

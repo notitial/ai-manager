@@ -11,43 +11,39 @@ const PR_TOOL = 'mcp__github__add_issue_comment'
 const IN = { owner: 'Acme', repo: 'App', issue_number: 7, body: '@claude review --comments' }
 
 // ---- the standing comment cap ----
-test('claudeCap: only the GitHub guard\'s tools, only a body that mentions @claude', () => {
+test('claudeCap: only an issue comment whose body starts the review command', () => {
   assert.deepEqual(p.claudeCap(PR_TOOL, IN), { kind: 'comments', target: 'acme/app#7' })
   assert.equal(p.claudeCap(PR_TOOL, { ...IN, body: 'thanks, looks good' }), undefined)
+  assert.equal(p.claudeCap(PR_TOOL, { ...IN, body: 'please @claude review' }), undefined)
+  assert.equal(p.claudeCap(PR_TOOL, { ...IN, body: '@claude, do it' }), undefined)
   assert.equal(p.claudeCap('Bash', IN), undefined)
   assert.equal(p.claudeCap('mcp__github__get_file_contents', IN), undefined)
   assert.equal(p.claudeCap(PR_TOOL, undefined), undefined)
   assert.equal(p.claudeCap(PR_TOOL, 'x'), undefined)
 })
-test('claudeCap: every body with @claude counts; extra text cannot make a full review look like a --comments', () => {
+test('claudeCap: --comments is the follow-up form, any other review start is a full review', () => {
   const kind = (body: string) => p.claudeCap(PR_TOOL, { ...IN, body })?.kind
   assert.equal(kind('@claude review --comments'), 'comments')
-  assert.equal(kind('  @CLAUDE   Review  --Comments\nplease'), 'comments')
+  assert.equal(kind('  @CLAUDE review --Comments\nplease'), 'comments')
+  assert.equal(kind('@claude review --commentsX'), 'comments')
   assert.equal(kind('@claude review'), 'full')
-  assert.equal(kind('@claude review --commentsX'), 'full')
-  assert.equal(kind('please @claude review --comments'), 'full')
-  assert.equal(kind('@claude review --comments\n@claude review'), 'full')
-  assert.equal(kind('@claude, do it'), 'full')
-  // A mention in any field counts, nested too, and a deep one is not hidden.
-  assert.equal(p.claudeCap('mcp__github__update_pull_request', { owner: 'a', repo: 'b', pullNumber: 3, body: 'x', title: '@claude fix' })?.kind, 'full')
-  let deep: any = '@claude go'
-  for (let i = 0; i < 30; i++) deep = { x: deep }
-  assert.equal(p.claudeCap(PR_TOOL, { ...IN, body: 'x', extra: deep })?.kind, 'full')
+  assert.equal(kind('@claude reviewer, hello'), 'full')
+  assert.equal(kind('@claude review the --comments'), 'full')
 })
-test('claudeCap: every GitHub write tool counts, a reading tool does not, and two different numbers in one call read as unknown', () => {
-  assert.equal(p.claudeCap('mcp__github__create_issue', { owner: 'a', repo: 'b', title: 't', body: '@claude fix' })?.kind, 'full')
-  assert.equal(p.claudeCap('mcp__github__pull_request_review_write', { owner: 'a', repo: 'b', pullNumber: 2, body: '@claude' })?.target, 'a/b#2')
-  assert.equal(p.claudeCap('mcp__github__get_file_contents', IN), undefined)
+test('claudeCap: no other GitHub tool counts, whatever it carries', () => {
+  assert.equal(p.claudeCap('mcp__github__create_issue', { owner: 'a', repo: 'b', title: 't', body: '@claude review' }), undefined)
+  assert.equal(p.claudeCap('mcp__github__create_pull_request', { owner: 'a', repo: 'b', title: '@claude review', body: '@claude review' }), undefined)
+  assert.equal(p.claudeCap('mcp__github__update_pull_request', { owner: 'a', repo: 'b', pullNumber: 3, body: '@claude review --comments' }), undefined)
+  assert.equal(p.claudeCap('mcp__github__pull_request_review_write', { owner: 'a', repo: 'b', pullNumber: 2, body: '@claude review' }), undefined)
+  assert.equal(p.claudeCap('mcp__github__add_reply_to_pull_request_comment', { owner: 'a', repo: 'b', pullNumber: 9, commentId: 1, body: '@claude review' }), undefined)
   assert.equal(p.claudeCap('mcp__github__search_issues', IN), undefined)
-  assert.equal(p.claudeCap(PR_TOOL, { owner: 'a', repo: 'b', issue_number: 12, pullNumber: 9001, body: '@claude review' })?.target, 'unknown#unknown')
-  assert.equal(p.claudeCap(PR_TOOL, { owner: 'a', repo: 'b', issue_number: 12, number: 12, body: '@claude review' })?.target, 'a/b#12')
-  assert.equal(p.claudeCap(PR_TOOL, { owner: 'a', repo: 'b', issue_number: 'x', body: '@claude review' })?.target, 'unknown#unknown')
 })
-test('claudeCap: the target is owner/repo#number lowercased; a PR open has no number; a missing or odd owner counts together as unknown', () => {
-  assert.equal(p.claudeCap('mcp__github__create_pull_request', { owner: 'a', repo: 'b', body: '@claude hi' })?.target, 'a/b#new')
-  assert.equal(p.claudeCap('mcp__github__add_reply_to_pull_request_comment', { owner: 'A', repo: 'B', pullNumber: 9, commentId: 1, body: '@claude' })?.target, 'a/b#9')
-  assert.equal(p.claudeCap(PR_TOOL, { repo: 'b', issue_number: 1, body: '@claude' })?.target, 'unknown#1')
-  assert.equal(p.claudeCap(PR_TOOL, { owner: 'a/../b', repo: 'b', issue_number: 1, body: '@claude' })?.target, 'unknown#1')
+test('claudeCap: the target is owner/repo#number lowercased; a missing or odd owner or number counts together as unknown', () => {
+  assert.equal(p.claudeCap(PR_TOOL, { owner: 'A', repo: 'B', issue_number: 9, body: '@claude review' })?.target, 'a/b#9')
+  assert.equal(p.claudeCap(PR_TOOL, { repo: 'b', issue_number: 1, body: '@claude review' })?.target, 'unknown#1')
+  assert.equal(p.claudeCap(PR_TOOL, { owner: 'a/../b', repo: 'b', issue_number: 1, body: '@claude review' })?.target, 'unknown#1')
+  assert.equal(p.claudeCap(PR_TOOL, { owner: 'a', repo: 'b', issue_number: 'x', body: '@claude review' })?.target, 'unknown#unknown')
+  assert.equal(p.claudeCap(PR_TOOL, { owner: 'a', repo: 'b', body: '@claude review' })?.target, 'unknown#unknown')
 })
 test('capState: 2 --comments and 1 full review per repo and PR, from returned allow rows of both months; another PR, a deny and another kind do not count', () => {
   const row = (o: Partial<p.LedgerRow> = {}): p.LedgerRow => ({ t: 'x', kind: 'returned', code: 'allow', cap: 'comments', target: 'acme/app#7', ...o })
@@ -66,7 +62,7 @@ test('parseRows: rows only, garbage lines skipped', () => {
   assert.deepEqual(rows.map((r) => r.kind), ['returned', 'answered'])
 })
 test('apply: a cap that is over, or could not be read, drops the decision (the prompt stays the person\'s); no cap leaves it alone', () => {
-  const base = { req: { id: ID, nonce: 'n1', inputHash: H, sid: SID_A }, decision: { id: ID, inputHash: H, decision: 'allow' as const, why: 'ok', by: { level: 'lead', sid: SID_B, name: 'L' }, at: 1, nonce: 'n1' }, liveHash: H, awakeMs: 60_000, expiresAt: p.EXPIRES_MS, floor: undefined, byOk: true, ledger: 'found' as const, graceMs: 0 }
+  const base = { req: { id: ID, nonce: 'n1', inputHash: H, sid: SID_A }, decision: { id: ID, inputHash: H, decision: 'allow' as const, why: 'ok', by: { level: 'lead', sid: SID_B, name: 'L' }, at: 1, nonce: 'n1' }, liveHash: H, awakeMs: 60_000, expiresAt: p.EXPIRES_MS, dialog: false, byOk: true, ledger: 'found' as const, graceMs: 0 }
   assert.deepEqual(p.applyCheck({ ...base, cap: 'over' }), { drop: 'cap' })
   assert.deepEqual(p.applyCheck({ ...base, cap: 'unreadable' }), { drop: 'cap' })
   assert.deepEqual(p.applyCheck({ ...base, cap: 'ok' }), { ok: true })
@@ -76,14 +72,14 @@ test('apply: a cap that is over, or could not be read, drops the decision (the p
   assert.deepEqual(p.applyCheck(base), { ok: true })
   // The cap outranks the early hold (nothing is held that can never land), and every earlier check outranks the cap.
   assert.deepEqual(p.applyCheck({ ...base, cap: 'over', awakeMs: 5000 }), { drop: 'cap' })
-  assert.deepEqual(p.applyCheck({ ...base, cap: 'over', floor: 'settings' }), { drop: 'floor' })
+  assert.deepEqual(p.applyCheck({ ...base, cap: 'over', dialog: true }), { drop: 'dialog' })
   assert.deepEqual(p.applyCheck({ ...base, cap: 'over', ledger: 'missing' }), { hold: 'ledger' })
 })
 
 // ---- the request and escalate files ----
 const REQ = { id: ID, sid: SID_A, pid: 4300, procStart: 'Tue Oct 27 20:37:50 2026', level: 'lane', lane: 'svc-api', leadName: 'LEAD', repo: '/w/svc', tool: 'Bash', inputHash: H, raisedBy: 'rule', at: 1, expiresAt: 2, nonce: 'n1', input: { command: 'ls' }, truncated: false }
 test('parseRequest: the exact shape only, at most REQUEST_MAX bytes', () => {
-  assert.deepEqual(p.parseRequest(JSON.stringify(REQ)), { ...REQ, agentType: undefined, cwd: undefined })
+  assert.deepEqual(p.parseRequest(JSON.stringify(REQ)), { ...REQ, agentType: undefined })
   assert.equal(p.parseRequest(JSON.stringify({ ...REQ, lane: undefined, leadName: undefined }))?.lane, undefined)
   for (const bad of [{ id: 'x' }, { sid: 'x' }, { pid: 'x' }, { pid: 1.5 }, { level: 'conductor' }, { inputHash: 'abc' }, { raisedBy: 'hook' }, { at: 'x' }, { expiresAt: null }, { truncated: 'no' }, { nonce: '' }, { lane: 3 }, { tool: 4 }, { procStart: 1 }]) assert.equal(p.parseRequest(JSON.stringify({ ...REQ, ...bad })), undefined, JSON.stringify(bad))
   assert.equal(p.parseRequest('not json'), undefined)
@@ -171,10 +167,10 @@ test('the notice and the rubric: fixed text, no approval, no tool names in the r
   assert.ok(p.RUBRIC.includes("Deny only if you're certain it's wrong"))
   assert.ok(!/ssh|SELECT \*.*prompt_|mcp__/.test(p.RUBRIC.replace('`SELECT *` on a table of people', '')))
   assert.ok(p.LEAD_PROMPT_BRIEFING.includes(p.RUBRIC))
-  assert.ok(p.LEAD_PROMPT_BRIEFING.includes('never reach you'))
+  assert.ok(p.LEAD_PROMPT_BRIEFING.includes('stopped by a hook before it reaches you'))
 })
 test('every refusal the tools give has its text', () => {
-  for (const code of ['bad-input', 'off', 'unknown-request', 'own-request', 'closed', 'decided', 'escalated', 'floor', 'truncated', 'cap', 'write-failed']) assert.ok((p.PROMPT_REFUSE[code] ?? '').length > 10, code)
+  for (const code of ['bad-input', 'off', 'unknown-request', 'own-request', 'closed', 'decided', 'escalated', 'dialog', 'truncated', 'cap', 'write-failed']) assert.ok((p.PROMPT_REFUSE[code] ?? '').length > 10, code)
 })
 
 test('capInput: a redaction that hides text a shell could run marks the input truncated, so it cannot be allowed', () => {
@@ -184,13 +180,6 @@ test('capInput: a redaction that hides text a shell could run marks the input tr
   assert.equal(p.capInput({ password: 'a;b', note: 'x' }).truncated, true)
   assert.equal(p.capInput({ password: 'plain' }).truncated, false)
 })
-test('request cwd: an optional string; a request with a cwd that is not text is not a request', () => {
-  const q = JSON.parse(JSON.stringify(REQ))
-  assert.equal(p.parseRequest(JSON.stringify({ ...q, cwd: '/w/svc/sub' }))?.cwd, '/w/svc/sub')
-  assert.equal(p.parseRequest(JSON.stringify(q))?.cwd, undefined)
-  assert.equal(p.parseRequest(JSON.stringify({ ...q, cwd: 3 })), undefined)
-})
-
 // ---- PR 3: tiers, windows, the relay and the light link ----
 const SID_C = '2b1b2c3d-0000-4000-8000-123456789abc'
 const tr = (level: p.TierLevel, sid: string): p.Tier => ({ level, sid, name: level.toUpperCase() })
@@ -274,7 +263,7 @@ test('relayLostStep: two clear nos in a row lose the relay; a yes resets; a fail
   assert.deepEqual(p.relayLostStep(s.noCount, 'no'), { noCount: 2, lost: true })
 })
 test('apply with a relay: only the person\'s answer through it stands; any other decision, and a forged via, is dropped', () => {
-  const base = { req: { id: ID, nonce: 'n-1', inputHash: H, sid: SID_A }, liveHash: H, awakeMs: 40_000, expiresAt: p.EXPIRES_MS, floor: undefined, byOk: true, ledger: 'found' as const, graceMs: 0 }
+  const base = { req: { id: ID, nonce: 'n-1', inputHash: H, sid: SID_A }, liveHash: H, awakeMs: 40_000, expiresAt: p.EXPIRES_MS, dialog: false, byOk: true, ledger: 'found' as const, graceMs: 0 }
   const dec = (over: Record<string, unknown> = {}) => ({ id: ID, inputHash: H, decision: 'allow' as const, why: 'ok', by: { level: 'manager', sid: SID_C, name: 'M' }, at: 1, nonce: 'n-1', ...over }) as p.Decision
   const relay = { sid: SID_C, nonce: 'n-1' }
   // No relay: a normal decision applies, a decision that claims to be the person's does not.

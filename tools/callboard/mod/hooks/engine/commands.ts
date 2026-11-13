@@ -690,7 +690,7 @@ async function escalationCommand($: any, sid: string, code: c.OriginCode, op: pr
     if (plainRow && !(await ledgerRestore($, before))) await logq($, sid, 'error', 'escalation-ledger-restore')
     return { text: 'Escalation could not be turned on: the ledger did not answer. Nothing changed.' }
   }
-  return { text: `${pr.escalationState(value, await promptsOff($))} ${c.FLOOR_LINE}` }
+  return { text: `${pr.escalationState(value, await promptsOff($))} ${c.DIALOG_LINE}` }
 }
 
 export async function commandRun($: any, e: any) {

@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { audit, render, eachLine, floorShape, labelFromText, percentile, LEDGER_MAX_BYTES } from './prompt-audit.mjs'
+import { audit, render, eachLine, labelFromText, percentile, LEDGER_MAX_BYTES } from './prompt-audit.mjs'
 
 const SCRIPT = new URL('./prompt-audit.mjs', import.meta.url).pathname
 const H = (c) => c.repeat(64)
@@ -118,7 +118,7 @@ test('a: an answered row with no requested row, and one later than the return, a
 test('a: dropped rows with a forgery code are anomalies, the ordinary codes are not', () => {
   const fx = fixture()
   const bad = ['no-answered-row', 'id', 'hash', 'nonce', 'by-sid', 'kind', 'answer']
-  const fine = ['expired', 'ledger-unreadable', 'file', 'shape', 'floor']
+  const fine = ['expired', 'ledger-unreadable', 'file', 'shape', 'dialog']
   const rows = [ON()]
   bad.forEach((code, i) => rows.push(R('requested', BASE + i, { ...T, id: uid(10 + i), nonce: uid(110 + i), tier: 'lead' }), R('dropped', BASE + 1000 + i, { ...T, id: uid(10 + i), code }), R('abandoned', BASE + 2000 + i, { id: uid(10 + i), code: 'swept' })))
   fine.forEach((code, i) => rows.push(R('requested', BASE + i, { ...T, id: uid(30 + i), nonce: uid(130 + i), tier: 'lead' }), R('dropped', BASE + 1000 + i, { ...T, id: uid(30 + i), code }), R('abandoned', BASE + 2000 + i, { id: uid(30 + i), code: 'swept' })))
@@ -311,45 +311,20 @@ test('c: --since keeps old transcripts out', () => {
   assert.deepEqual(run(fx, { since: BASE - 3600_000 }).anomalies, [])
 })
 
-test('d: a floor row for the same tool, hash and floor context makes a later request an anomaly', () => {
+test('d: a request for a dialog tool is an anomaly; a merge, a settings edit or a machine-ops call is not one', () => {
   const fx = fixture()
-  const C1 = 'c'.repeat(16)
-  const rows = [ON(), R('floor', BASE - 1000, { ...T, ctx: C1, code: 'settings' }), ...clean(uid(1), BASE, uid(101), { ctx: C1 })]
-  ledger(fx, rows)
-  assert.deepEqual(rules(run(fx)), ['floor-row-then-asked'])
-  const other = [ON(), R('floor', BASE - 1000, { ...T, hash: H('b'), ctx: C1, code: 'settings' }), ...clean(uid(1), BASE, uid(101), { ctx: C1 })]
-  ledger(fx, other)
-  assert.deepEqual(run(fx).anomalies, [])
-})
-test('the same input asked under another floor context is not an anomaly; rows with no context are a note', () => {
-  const fx = fixture()
-  // A call floored in one context, the identical call asked in another.
-  const changed = [ON(), R('floor', BASE - 1000, { ...T, ctx: 'a'.repeat(16), code: 'settings' }), ...clean(uid(1), BASE, uid(101), { ctx: 'b'.repeat(16) })]
-  ledger(fx, changed)
-  let rep = run(fx)
-  assert.deepEqual(rep.anomalies, [])
-  assert.deepEqual(rep.notes.filter((n) => /floor context/.test(n)), [])
-  // Rows from before the context was recorded cannot be compared: a note, not an anomaly.
-  const old = [ON(), R('floor', BASE - 1000, { ...T, code: 'settings' }), ...clean()]
-  ledger(fx, old)
-  rep = run(fx)
-  assert.deepEqual(rep.anomalies, [])
-  assert.ok(rep.notes.some((n) => /1 request\(s\) share a tool and input hash with a floor row that recorded no floor context/.test(n)), rep.notes.join('|'))
-})
-
-test('d: a request that looks like a floor item by its path is an anomaly; a merge or a machine-ops call is not one', () => {
-  const fx = fixture()
-  const merge = clean(uid(1), BASE, uid(101), { tool: 'mcp__github__merge_pull_request', pattern: 'mcp__github__merge_pull_request x/y #3', hash: H('c') })
-  const branch = clean(uid(2), BASE + 1000, uid(102), { tool: 'mcp__github__update_pull_request_branch', pattern: 'mcp__github__update_pull_request_branch x/y #3', hash: H('d') })
+  const dialog = clean(uid(1), BASE, uid(101), { tool: 'ExitPlanMode', pattern: 'ExitPlanMode', hash: H('c') })
+  const merge = clean(uid(2), BASE + 1000, uid(102), { tool: 'mcp__github__merge_pull_request', pattern: 'mcp__github__merge_pull_request x/y #3', hash: H('d') })
   const settings = clean(uid(3), BASE + 2000, uid(103), { tool: 'Edit', pattern: 'Edit .claude/settings.json', hash: H('e') })
-  const ok = clean(uid(4), BASE + 3000, uid(104), { tool: 'Edit', pattern: 'Edit src/app.ts', hash: H('f') })
-  ledger(fx, [ON(), ...merge, ...branch, ...settings, ...ok])
+  ledger(fx, [ON(), ...dialog, ...merge, ...settings])
   const rep = run(fx)
-  assert.deepEqual(rules(rep), ['floor-shape-asked'])
-  assert.deepEqual(rep.anomalies.map((a) => a.id), [uid(3)])
-  assert.equal(floorShape('mcp__machine-ops__reboot', 'x'), undefined)
-  assert.equal(floorShape('mcp__github__merge_pull_request', 'x'), undefined)
-  assert.equal(floorShape('Bash', 'git'), undefined)
+  assert.deepEqual(rules(rep), ['dialog-asked'])
+  assert.deepEqual(rep.anomalies.map((a) => a.id), [uid(1)])
+})
+test('d: a dialog row is read and is not an anomaly', () => {
+  const fx = fixture()
+  ledger(fx, [ON(), R('dialog', BASE - 1000, { ...T, tool: 'ExitPlanMode', pattern: 'ExitPlanMode' }), ...clean()])
+  assert.deepEqual(run(fx).anomalies, [])
 })
 
 test('e: a request with no earlier answering-on row is an anomaly', () => {
@@ -682,11 +657,6 @@ test('a4: a total byte budget for transcripts: running out of it is a problem', 
   assert.equal(rep.problems.length, 1)
   assert.match(rep.problems[0], /byte budget of 200/)
   assert.match(render(rep), /INCOMPLETE: 1 problem/)
-})
-
-test('review: a project hooks folder or settings.json is not a floor path; the hook\'s own paths are', () => {
-  for (const p of ['Edit src/hooks/useAuth.ts', 'Edit .vscode/settings.json', 'Write app/settings.json', 'Edit hooks/a.sh']) assert.equal(floorShape('Edit', p), undefined, p)
-  for (const p of ['Edit .claude/settings.json', 'Edit .claude/settings.local.json', 'Edit .claude/hooks/guard.sh', 'Edit .git/hooks/pre-commit', 'Edit .husky/pre-push', 'Edit .githooks/x', 'Edit .claude/callboard/state', 'Write .mcp.json']) assert.match(String(floorShape('Edit', p)), /^path in /, p)
 })
 
 test('review: every way of not reading a transcript makes the run incomplete, not a clean result', () => {

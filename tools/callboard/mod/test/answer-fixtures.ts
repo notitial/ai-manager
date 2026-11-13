@@ -2,7 +2,7 @@ import * as prm from '../hooks/prompts'
 import { h, PROMPTS_DIR, ROOT, SID, T0, extraStat, leadFiles, pdirs, pfs } from './harness'
 import { APISID, APP2, COND, LEADPATH, LEADPS, LEADSID, PIN, SVC, attacher, condOn, condPresenceOf, dirStat, doLane, lead, leadAt, leadFileText, leadReg, leadSelfReg, ownReg, putCond, regAs } from './fixtures'
 
-// ---- ADR 0004 prompt answering: the hook, the floor, the files and the switch ----
+// ---- ADR 0004 prompt answering: the hook, the files and the switch ----
 // A lane under a live lead (the attach helpers), the switch on for all, an ask rule beneath, and the engine's PermissionRequest chain beneath returning {}.
 export const PRQ = { command: 'ssh host uptime' }
 export const PDIR = `${PROMPTS_DIR}/${SID}`

@@ -22,7 +22,7 @@
 //   answered / returned rows of a question's answer carry code: "answer", opt (the chosen option's index, as a string) and lh (the first 16 hex of SHA-256(id + "\n" + label), the label redacted
 //              and trimmed); the labels themselves are in prompts/questions-YYYY-MM.jsonl, { t, id, lane, repo, tier, by, header, question, options, label, via? }
 //   answered / returned rows of the person's own answer carry via: "person", short and by = the relaying tier's session id (no prompt_answer call exists for them)
-//   floor <category>, not-judgeable, no-tier, escalated, answering-on, answering-off   no request of their own
+//   dialog, not-judgeable, no-tier, escalated, answering-on, answering-off   no request of their own
 //
 // Rule c (a hook-sourced decision in a transcript that the ledger never saw), and its blind spot. A result line's
 // `permissionDecision.source: "hook"` does not say which hook event decided: PreToolUse guards allow and deny with the same source. Real
@@ -63,23 +63,14 @@ const QUESTION_DAYS = 90
 const LABEL_MAX = 256
 
 const ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
-const KINDS = new Set(['requested', 'answered', 'escalated', 'dropped', 'returned', 'superseded', 'expired-denied', 'off', 'abandoned', 'floor', 'not-judgeable', 'no-tier', 'answering-on', 'answering-off', 'relayed', 'relay-lost', 'relay-left', 'relay-late', 'deny-unclear', 'lead-offer', 'lead-offer-void'])
-const FIELDS = ['code', 'id', 'lane', 'repo', 'tool', 'pattern', 'hash', 'ctx', 'tier', 'why', 'nonce', 'tuid', 'by', 'via', 'short', 'opt', 'lh']
+const KINDS = new Set(['requested', 'answered', 'escalated', 'dropped', 'returned', 'superseded', 'expired-denied', 'off', 'abandoned', 'dialog', 'not-judgeable', 'no-tier', 'answering-on', 'answering-off', 'relayed', 'relay-lost', 'relay-left', 'relay-late', 'deny-unclear', 'lead-offer', 'lead-offer-void'])
+const FIELDS = ['code', 'id', 'lane', 'repo', 'tool', 'pattern', 'hash', 'tier', 'why', 'nonce', 'tuid', 'by', 'via', 'short', 'opt', 'lh']
 const ENDS = new Set(['returned', 'superseded', 'expired-denied', 'off', 'abandoned'])
 // A `dropped` row with one of these codes is a decision the hook refused as forged or wrong: an anomaly. The others are ordinary.
 const DROP_ANOMALY = new Set(['no-answered-row', 'id', 'hash', 'nonce', 'by-sid', 'kind', 'answer'])
 
-// The small built-in floor check of rule d, best effort. A ledger row never holds arguments (patternOf keeps a command's first word,
-// a tool's repository and number, a file's repo-relative path), so only a shape visible in `tool` and `pattern` can be recognised: a write tool
-// whose path is one the hook's own floor holds (.claude/settings*, .claude/hooks, callboard's folder, .git, .husky, .githooks); a hooks folder or a settings.json of
-// a project is not one.
-const FLOOR_PATH_RE = /(^|\/)(\.claude\/(settings[^/]*|hooks(\/|$)|callboard(\/|$))|callboard\/(prompts|cue|leads|open)(\/|$)|\.git(\/|$)|\.husky(\/|$)|\.githooks(\/|$)|\.mcp\.json$|install\.conf$)/
-const WRITE_TOOL_RE = /^(Edit|Write|MultiEdit|NotebookEdit)\b/
-export function floorShape(tool, pattern) {
-  if (typeof tool !== 'string') return undefined
-  if (WRITE_TOOL_RE.test(tool) && typeof pattern === 'string' && FLOOR_PATH_RE.test(pattern.replace(/^\S+\s+/, ''))) return `path in ${pattern}`
-  return undefined
-}
+// A tool whose call is a dialog of its own: no agent answers it, so a request for one is an anomaly (rule d).
+const DIALOG_TOOLS = new Set(['ExitPlanMode'])
 
 class AuditError extends Error {}
 
@@ -657,26 +648,13 @@ function noteBenign(g, { abandoned, lostRaces, dropsFine }) {
   for (const d of g.dropped) if (!DROP_ANOMALY.has(d.code)) dropsFine.push({ id: g.id, t: d.t, code: d.code ?? '' })
 }
 
-// d. the floor.
-function ruleFloor({ rows, groups, flag, notes }) {
-  let floorCtxUnknown = 0
-  const floorRows = rows.filter((r) => r.kind === 'floor' && r.hash !== undefined && r.tool !== undefined)
+// d. a dialog: the plan-mode exit stays the person's, so a request or an answer for one means the mod's own rule was bypassed.
+function ruleDialog({ groups, flag }) {
   for (const g of groups) {
     const probe = g.rows.find((r) => (r.kind === 'requested' || r.kind === 'answered' || r.kind === 'returned') && r.tool !== undefined)
-    if (!probe) continue
-    const touched = g.requested.length > 0 || g.answered.length > 0
-    if (!touched) continue
-    const hit = probe.hash !== undefined ? floorRows.find((f) => f.tool === probe.tool && f.hash === probe.hash && Math.abs(f.ms - probe.ms) <= DAY_MS) : undefined
-    // The floor reads the folder and the real paths as well as the input: the same input is floored under one and asked under another. Both rows
-    // record a hash of that context; the same input in the same context is the anomaly. A row without one (written before it was recorded) is only a note.
-    if (hit && hit.ctx !== undefined && probe.ctx !== undefined) {
-      if (hit.ctx === probe.ctx) flag('d', 'floor-row-then-asked', `request ${g.id} (${probe.tool}) shares its tool, input hash and floor context with a floor row (${hit.code ?? '?'}) within 24 h`, { id: g.id, t: probe.t })
-    } else if (hit) floorCtxUnknown++
-    const shape = floorShape(probe.tool, probe.pattern ?? '')
-    if (shape) flag('d', 'floor-shape-asked', `request ${g.id} was asked of an agent but looks like a floor item (${shape})`, { id: g.id, t: probe.t })
+    if (!probe || !DIALOG_TOOLS.has(probe.tool)) continue
+    if (g.requested.length > 0 || g.answered.length > 0) flag('d', 'dialog-asked', `request ${g.id} (${probe.tool}) was asked of an agent but is a dialog`, { id: g.id, t: probe.t })
   }
-
-  if (floorCtxUnknown > 0) notes.push(`${floorCtxUnknown} request(s) share a tool and input hash with a floor row that recorded no floor context; not counted as anomalies (the folder may differ)`)
 }
 
 // e. a request must be raised while answering is on: the latest answering-on or answering-off row at its time says on (not the first answering-on row ever written, which a later off outlives).
@@ -995,7 +973,7 @@ export function audit({ root, projects, since, now = Date.now(), projectsExplici
   const abandonedNoId = rows.filter((r) => r.kind === 'abandoned' && r.id === undefined && inRange(r.ms))
   for (const r of abandonedNoId) abandoned.push({ id: '', t: r.t, code: r.code ?? '', tool: r.tool ?? '' })
 
-  ruleFloor(ctx)
+  ruleDialog(ctx)
   ruleAnsweringOn(ctx)
   const files = ruleStaleRequestFiles(ctx, rootReal, entries)
   ruleClosedWithoutRow(ctx, files)
