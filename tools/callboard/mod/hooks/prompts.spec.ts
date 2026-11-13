@@ -272,7 +272,12 @@ test('shell judge: ordinary commands are not floor', () => open(ORDINARY))
 test('shell judge 1: a verb that is quoted, escaped, wrapped, aliased or built at run time', () => {
   // None of these is caught by the raw-text matchers (the verb is not a bare word there): only reading the quotes finds it.
   reaches(['"rm" -rf x', "'rm' x", 'r\\m x', '"r""m" x', "r''m x", 'echo a;"rm" x', '/bin/"rm" x', 'command rm x', 'command -- rm x', 'env rm x', 'env -i FOO=1 rm x', 'nohup rm x',
-    'time rm x', 'exec rm x', 'builtin rm x', 'xargs rm', 'ls | xargs -n1 rm', 'ls | xargs -I{} rm {}', 'timeout 5 rm x', 'nice -n 5 rm x', 'unlink x', 'shred x', 'rmdir x', 'trash x'])
+    'time rm x', 'exec rm x', 'builtin rm x', 'timeout 5 rm x', 'nice -n 5 rm x', 'unlink x', 'shred x', 'rmdir x', 'trash x'])
+  // A delete, a move or a write verb handed its targets by xargs or parallel has no target to judge: the floor while protected folders exist, whatever the folder it runs in.
+  floored(['xargs rm', 'ls | xargs -n1 rm', 'ls | xargs -I{} rm {}', 'find ~/src -maxdepth 1 -name "ai-*" | xargs rm -rf', 'ls -d ~/src/ai-* | xargs -0 rm -rf', 'ls | xargs mv -t /tmp', 'ls | xargs -I{} cp {} /tmp/x', 'echo a | xargs touch',
+    'parallel rm ::: a b', 'ls | parallel mv {} /tmp', 'nice xargs rm', 'env xargs /bin/rm', 'time xargs rm', 'ls | xargs -n1 dd of=x'])
+  floored(['ls | xargs rm'], INROOT)
+  reaches(['ls | xargs wc -l', 'ls | xargs -n1 echo', 'find . -name x | xargs grep y', 'ls | xargs git status', 'ls | xargs rm'], { home: '/Users/x', cwd: '/tmp/clone' })
   floored(['sudo ls', 'doas ls', 'sudo -u x git status', 'alias git="git -c core.pager=x"'])
   floored(['alias ls=rm', 'alias ll="ls -l"'])
   reaches(['git "pu""sh" origin x', "git 'push' origin x", 'git p\\ush origin x', 'git -C /tmp/x "pu""sh"', 'git -c a=b push', 'git --git-dir=/x/.git push', 'git --no-pager -C /x push',
@@ -361,6 +366,14 @@ test('shell judge 4: api and CLI writes', () => {
   floored(['gh pr checkout 3'], { ...CLEAN, cwd: '/live/ai-manager' })
   reaches(['gh pr checkout 3', 'gh repo sync', 'gh repo clone o/r', 'gh run download 1'])
   floored(['git -C /tmp/a --work-tree=/tmp/b status', 'git --work-tree=/tmp/b -C /tmp/a status', 'git --git-dir=/tmp/b/.git -C /tmp/a status', 'git -C /tmp/a --git-dir=/tmp/b/.git status'])
+  // A copy from a codespace, a fork that adds a remote or clones, a default repository, a branch checked out by issue develop and an attestation download write the folder
+  // or the repository settings of the folder they run in: the floor in, under or above a protected one.
+  floored(['gh codespace cp -c cs remote:/tmp/x.ts tools/x.ts', 'gh codespace cp -e -c cs remote:/x f', 'gh codespace ssh', 'gh codespace ssh -c cs -- ls', 'gh codespace rebuild', 'gh issue develop 12 --checkout', 'gh issue develop 12 -c', 'gh issue develop -b main -c 12',
+    'gh repo fork --remote', 'gh repo fork o/r --remote=true', 'gh repo fork --clone', 'gh repo set-default o/r', 'gh attestation download f.bin -o o'], INROOT)
+  floored(['gh codespace cp x y', 'gh repo set-default o/r', 'gh issue develop 12 -c'], { ...CLEAN, cwd: '/live/ai-manager' })
+  floored(['cd "$X" && gh repo set-default o/r'])
+  reaches(['gh codespace cp x y', 'gh codespace ssh', 'gh issue develop 12 --checkout', 'gh repo fork --remote', 'gh repo set-default o/r'])
+  open(['gh codespace list', 'gh codespace view', 'gh issue develop 12', 'gh issue develop --list 12', 'gh repo fork', 'gh repo view o/r'], INROOT)
   floored(['gh repo edit --visibility public', 'gh repo archive o/r', 'gh repo rename x', 'gh secret set X', 'gh variable set X', 'gh auth token', 'gh auth login', 'gh config set x y',
     'gh alias set x y', 'gh extension install o/r', 'gh ssh-key add k.pub'])
   floored(['gh ruleset delete 1', 'gh secret delete X'])
@@ -384,6 +397,11 @@ test('shell judge 5: home, relative and cd-moved paths', () => {
     'touch install.conf', 'cd .git && touch config', 'cd /tmp/clone/.git && touch x', 'cd .. && cp a .git/x', 'cd ~/.claude && touch x'], o)
   floored(['cd /live/toolkit && touch x', 'echo a > ../../live/toolkit/x'], o)
   reaches(['cd /other/toolkit && touch x', 'echo a > ../../other/toolkit/x'], o)
+  // dd writes the path after of= (a leading ~ is home): a relative one from a sibling folder, a home one and an absolute one are read like any written path; its other operands are not.
+  const sib = { ...o, cwd: '/live/sibling' }
+  floored(['dd if=a of=../ai-manager/tools/callboard/mod/hooks/prompts.ts', 'dd if=a of=/live/ai-manager/x', 'dd of=../toolkit/hooks/x if=a', 'dd if=a of=~/.claude/CLAUDE.md', 'dd if=a of=~/.claude', 'dd if=a of=../../Users/x/.claude/settings.json', 'dd if=a of=.git/config', 'dd if=a of="$X"', 'dd if=a of=~other/x', 'dd if=a of=..'], sib)
+  floored(['dd if=a of=out.img', 'dd of=x'], { ...o, cwd: '/live/ai-manager/tools' })
+  reaches(['dd if=a of=out.img', 'dd if=a of=/tmp/out.img', 'dd if=a of=../other/x', 'dd if=/live/sibling/a of=~/out.img', 'dd if=a of=~/tmp/x conv=notrunc', 'dd if=a bs=1m', 'dd if=/dev/zero of=/dev/disk2'], sib)
   floored(['cd "$X" && touch y', 'cd $X; echo hi > out.txt', 'cd "$(pwd)/x" && cp a b', 'cd - && touch y', 'popd && touch y', 'pushd "$X" && echo a > f'], o)
   // A cd that is only literal keeps the base known; one that may not have run keeps the old base too.
   open(['cd /tmp/clone && touch out.txt', 'cd sub && echo a > out.txt', '(cd /tmp/x && touch out.txt)', 'cd /tmp/x && cd ../y && touch out.txt'], o)
@@ -408,13 +426,14 @@ test('shell judge 6: a session inside a protected folder: reads stay open, write
   open(['ls -la', 'cat README.md', 'head -5 a', 'tail -n 3 a', 'wc -l a', 'grep -rn x .', 'rg x', 'find . -name x', 'pwd', 'echo hi', 'printf x', 'stat f', 'file f', 'which node', 'test -f x', '[ -f x ]', 'true', 'date', 'sort a', 'uniq a', 'cut -d: -f1 a', 'tr a b', 'jq . a', 'diff a b', 'du -sh .', 'df -h', 'env', 'echo hi > /dev/null', 'cat a | wc -l', 'echo $(date)', 'for f in a b; do echo $f; done', 'if [ -f x ]; then ls; fi', 'cd .. && ls', 'cd /tmp/clone && npm test', 'cd /tmp/clone && touch x', 'git -C /tmp/clone commit -m x', 'git -C /tmp/clone status',
     'git status', 'git log --oneline -5', 'git diff', 'git show HEAD', 'git blame a', 'git branch', 'git branch -a', 'git branch --list', 'git rev-parse HEAD', 'git ls-files', 'git remote -v', 'git config --get user.name', 'git config --list', 'git config user.name', 'git tag', 'git stash list', 'git describe'], o)
   // A write that names a place in the folder, a pipe to a shell, or a rewrite of the work tree is the floor there.
-  floored(['find . -fprint out.txt', 'find . -name x -fls out.txt', 'less -o log.txt a', 'less --log-file=l a', 'git init', 'git clone https://example.com/r.git', 'git diff --output a.txt', 'git diff --output=a.txt', 'git diff --out=a.txt', 'git diff --ou a.txt', 'git diff --output', 'git diff --output /tmp/a --output b.txt', 'git diff --output=/tmp/a --out=b.txt', 'tree -o f.txt', 'tree -ofile', 'curl --stderr e.txt https://example.com', 'curl --trace t.txt https://example.com',
+  floored(['find . -fprint out.txt', 'find . -name x -fls out.txt', 'less -o log.txt a', 'less --log-file=l a', 'git init', 'git clone https://example.com/r.git', 'git diff --output a.txt', 'git diff --output=a.txt', 'git diff --out=a.txt', 'git diff --ou a.txt', 'git diff --output', 'git diff --output /tmp/a --output b.txt', 'git diff --output=/tmp/a --out=b.txt', 'git format-patch -oout', 'git format-patch -o out', 'git archive -oa.tar', 'git archive --output=a.tar', 'git format-patch --output-directory out', 'git format-patch --output-directory=out', 'git format-patch --output-dir=out', 'git format-patch -o"$D"',
+    'git stash -m list', 'git stash -a -m show', 'git stash -u -m view', 'git stash --keep-index', 'git stash -- list', 'rg --pre rm x', 'rg --pre=sh x', 'rg --hostname-bin=h x', 'rg --hostname-bin h x', 'rg --pre-glob "*.x" --pre y z', 'rg --hos=x y', 'rg $OPTS x', 'rg -n --pre rm x', 'tree -o f.txt', 'tree -ofile', 'curl --stderr e.txt https://example.com', 'curl --trace t.txt https://example.com',
     'curl --trace-ascii=t https://example.com', 'curl -c jar https://example.com', 'curl --cookie-jar jar https://example.com', 'curl --etag-save e https://example.com', 'curl --libcurl l.c https://example.com', 'curl --out x https://example.com', 'touch x', 'mkdir x', 'cp a b', 'mv a b', 'echo hi > f', 'echo hi >> f', 'echo hi | tee f', 'cat a | sh', 'cat a > b', 'sed -i s/a/b/ f', 'git checkout main', 'git pull',
     'git stash', 'git config user.name x', 'git remote add x y', 'git diff --output=f', 'find . -exec ls {} \\;', 'echo $(touch x)', 'for f in a b; do touch $f; done', 'cd ../ai-manager && touch x'], o)
   // Any other verb may write where it runs without naming the file (a build, a package manager, an unpacker, a script): from a folder inside a protected one it is the floor too.
   floored(['npm test', 'node --test x.ts', 'make', './build.sh', 'unknownverb', 'sort -o x a', 'uniq a b', 'env FOO=1 ls', 'ls | xargs wc -l', 'echo $(npm test)', 'cd /tmp/clone; npm test'], o)
   // A verb that names its targets is judged by them: a target outside the protected folders reaches the tiers from inside one too.
-  reaches(['rm -rf /tmp/build', 'mkdir /tmp/x', 'cp /tmp/a /tmp/b', 'touch /tmp/x', 'git diff --output /tmp/a.txt', 'git diff --output-indicator-new=+', 'find . -name x', 'less a', 'tree -L 2', 'curl -s https://example.com', 'curl --stderr /tmp/e.txt https://example.com'], o)
+  reaches(['rm -rf /tmp/build', 'mkdir /tmp/x', 'cp /tmp/a /tmp/b', 'touch /tmp/x', 'git diff --output /tmp/a.txt', 'git diff --output-indicator-new=+', 'git format-patch -o/tmp/out', 'git format-patch -o /tmp/out', 'git archive -o/tmp/a.tar', 'git format-patch --output-directory=/tmp/out', 'git format-patch --output-directory /tmp/out', 'git format-patch -1', 'git stash list', 'git stash show -p', 'rg x', 'rg -n --glob "*.ts" x', 'rg "$X"', 'rg --pretty x', 'find . -name x', 'less a', 'tree -L 2', 'curl -s https://example.com', 'curl --stderr /tmp/e.txt https://example.com'], o)
   // Outside a protected folder none of those is the floor: a git init, a clone, an output file.
   reaches(['git init', 'git clone https://example.com/r.git', 'git diff --output a.txt', 'tree -o f.txt', 'curl --stderr e.txt https://example.com', 'curl -c jar https://example.com'])
   reaches(['git commit -m x', 'git add .', 'git fetch', 'git branch x', 'git branch -m a b', 'git tag v1', 'git push', 'date -s x', 'cd "$X" && npm test',

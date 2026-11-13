@@ -859,11 +859,11 @@ function judgeGit(args: Word[], cur: B[], j: J): Res {
   const R = (cat: FloorCategory): Res => ({ cat })
   // The shapes whose flags decide it cannot be judged when a flag is spelled by a variable.
   if (GIT_COND.test(verb) && rest.some(opaque)) return SETT
-  // An output file: --output, or any abbreviation of it, with the file glued on or as the next word (none readable is the floor).
+  // An output file or folder: --output or --output-directory, or any abbreviation of one, with the value glued on or as the next word (none readable is the floor).
   // git takes the last one, so every one is judged.
   for (let oi = 0; oi < fl.length; oi++) {
     const ow = fl[oi]
-    if (!(ow.t.startsWith('--') && ((n) => n.length >= 2 && 'output'.startsWith(n))(ow.t.slice(2).split('=')[0]))) continue
+    if (!(ow.t.startsWith('--') && ((n) => n.length >= 2 && ['output', 'output-directory'].some((f) => f.startsWith(n)))(ow.t.slice(2).split('=')[0]))) continue
     const ov = ow.t.includes('=') ? { ...ow, t: ow.t.slice(ow.t.indexOf('=') + 1) } : fl[oi + 1]
     if (!ov) return SETT
     const c = wpath(ov, eff, j)
@@ -871,10 +871,9 @@ function judgeGit(args: Word[], cur: B[], j: J): Res {
   }
   if (GIT_PATHS.has(verb)) {
     for (const w of rest) {
-      if (!w.t.startsWith('-')) {
-        const c = wpath(w, eff, j)
-        if (c) return R(c)
-      }
+      // The short -o with its value glued on (format-patch -oDIR, archive -oFILE) is the value read as a word of its own.
+      const c = !w.t.startsWith('-') ? wpath(w, eff, j) : /^-o./s.test(w.t) ? wpath({ ...w, t: w.t.slice(2) }, eff, j) : undefined
+      if (c) return R(c)
     }
   }
   if (verb === 'clone') {
@@ -926,8 +925,9 @@ function judgeGit(args: Word[], cur: B[], j: J): Res {
       return {}
     }
   }
-  // A call that rewrites the work tree, where the work tree holds protected code (the live checkout, or a folder above it): it could swap the mod's own code. The listing forms read.
-  if (GIT_TREE.test(verb) && !(GIT_TREE_READ.test(verb) && /^(list|show|status|summary|log|visualize|view)$/.test(pos[0] ?? '')) && gitReach(eff, j.o)) return SETT
+  // A call that rewrites the work tree, where the work tree holds protected code (the live checkout, or a folder above it): it could swap the mod's own code. The listing forms read:
+  // a subcommand that is the first word after the verb (an option first, as in stash -m list, is a push).
+  if (GIT_TREE.test(verb) && !(GIT_TREE_READ.test(verb) && /^(list|show|status|summary|log|visualize|view)$/.test(rest[0]?.t ?? '')) && gitReach(eff, j.o)) return SETT
   return {}
 }
 
@@ -1033,8 +1033,21 @@ function judgeGh(args: Word[], cur: B[], o: FloorOpts): FloorCategory | undefine
     if (pw[1]?.dyn || pw.slice(2).some(opaque)) return 'settings'
     // A comment, review, edit or new PR or issue that mentions @claude starts a paid run: the mod caps that only through the GitHub server's tools.
     if ((g === 'pr' || g === 'issue') && rest.some((x) => /^(comment|review|edit|create)$/.test(x)) && t.some((x) => /@claude/i.test(x))) return 'settings'
-    // A checkout, a sync, a clone or a download rewrites the folder it runs in: the floor in, under or above a protected one, or where the folder is not known.
-    if (((g === 'pr' && rest[0] === 'checkout') || (g === 'repo' && /^(sync|clone)$/.test(rest[0] ?? '')) || (g === 'gist' && rest[0] === 'clone') || (g === 'run' && rest[0] === 'download') || (g === 'release' && rest[0] === 'download')) && gitReach(cur, o)) return 'settings'
+    // A checkout, a sync, a clone, a download or a copy from a codespace rewrites the folder it runs in, and a fork with a remote, a default repository or a branch checked out
+    // rewrites the repository's own settings or tree: the floor in, under or above a protected folder, or where the folder is not known.
+    const sub = rest[0] ?? ''
+    if (
+      ((g === 'pr' && sub === 'checkout') ||
+        (g === 'repo' && (/^(sync|clone|set-default)$/.test(sub) || (sub === 'fork' && t.some((x) => /^--(remote|clone)/.test(x))))) ||
+        (g === 'gist' && sub === 'clone') ||
+        (g === 'run' && sub === 'download') ||
+        (g === 'release' && sub === 'download') ||
+        (g === 'attestation' && sub === 'download') ||
+        (g === 'codespace' && /^(cp|ssh|rebuild)$/.test(sub)) ||
+        (g === 'issue' && sub === 'develop' && t.some((x) => /^(--checkout|-[A-Za-z]*c[A-Za-z]*)$/.test(x)))) &&
+      gitReach(cur, o)
+    )
+      return 'settings'
     if (g === 'repo' && rest.some((x) => /^(edit|archive|unarchive|rename|transfer|create|deploy-key)$/.test(x))) return 'settings'
     if ((g === 'secret' || g === 'variable') && rest.some((x) => /^(set|delete|remove)$/.test(x))) return 'settings'
     if (g === 'ruleset' && rest.length > 0 && !/^(list|view|check)$/.test(rest[0])) return 'settings'
@@ -1247,6 +1260,9 @@ function dispatch(v: string, verb: Word, args: Word[], it: Item, cur: B[], j: J,
   // env -C DIR (or --chdir) runs the command in another folder; not followed, so the command is the floor.
   if (v === 'env' && args.some((w) => w.t === '-C' || /^--chdir/.test(w.t) || /^-[A-Za-z]*C./.test(w.t))) return SETT
   if (SH_WRAP.test(v)) {
+    // xargs and parallel hand a command words it reads at run time (a list on stdin, ::: arguments): a delete, a move or a write verb under them has no target to judge, so it is the
+    // floor while protected folders exist.
+    if (/^(xargs|parallel)$/.test(v) && (o.roots?.length ?? 0) > 0 && args.some((w) => !w.dyn && (SH_RM.test(baseName(w.t)) || SH_WRITE.test(baseName(w.t))))) return SETT
     if (noWrap) return {}
     const c = wrapScan(args, it, cur, j, false)
     return c ? { cat: c } : {}
@@ -1299,6 +1315,20 @@ function dispatch(v: string, verb: Word, args: Word[], it: Item, cur: B[], j: J,
           if (c) return { cat: c }
         }
       }
+    }
+    return {}
+  }
+  // dd writes the file after of=: that text is the path (a leading ~ is the home folder), judged like any other written path. Its other operands read or set sizes.
+  if (v === 'dd') {
+    for (const w of args) {
+      if (!w.t.startsWith('of=')) continue
+      let t = w.t.slice(3)
+      if (t.startsWith('~')) {
+        if (!(t === '~' || t.startsWith('~/')) || !o.home) return SETT
+        t = o.home + t.slice(1)
+      }
+      const c = wpath({ ...w, t }, cur, j)
+      if (c) return { cat: c }
     }
     return {}
   }
@@ -1362,6 +1392,8 @@ function inRootWrites(v: string, args: Word[]): boolean {
   if (v === 'wget') return !(t.some((x) => /^-[A-Za-z]*O-$/.test(x) || x === '--output-document=-') || (t.some((x) => /^-[A-Za-z]*O$/.test(x) || x === '--output-document') && t.includes('-')))
   if (v === 'http' || v === 'https' || v === 'xh') return t.some((x) => /^(-d|--download)$/.test(x))
   if (v === 'env') return args.length > 0
+  // rg runs a program on every file it searches with --pre (and one that tells hostnames with --hostname-bin).
+  if (v === 'rg') return args.some((w) => longPre(w.t, ['pre', 'hostname-bin'], 3) || opaque(w))
   if (v === 'find') return t.some((x) => /^-(fprint0?|fprintf|fls)$/.test(x))
   if (v === 'less') return t.some((x) => /^(-[A-Za-z]*[oO]|--log-file|--LOG-FILE)/.test(x))
   if (v === 'tree') return t.some((x) => /^-[A-Za-z]*o/.test(x) || /^--o/.test(x))
