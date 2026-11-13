@@ -95,7 +95,6 @@ import {
   conductorReach,
   conductorsLive,
   leadsInReach,
-  claimLanes,
   reservedGet,
   findLead,
   psOne,
@@ -292,7 +291,7 @@ async function removeRecord($: any, e: unknown, me: string, key: string, name: s
         if (rec.sid !== undefined && rec.sid !== mode.victim) return { no: 'changed' }
       } else {
         if (rec.sid !== mode.sid || (rec.parked !== undefined) !== mode.parked) return { no: 'changed' }
-        // The record the question or the check saw: not one remade under the name, nor one a claim re-pointed at another lead meanwhile.
+        // The record the question or the check saw: not one remade under the name, nor one re-pointed at another lead meanwhile.
         if (rec.leadName !== mode.seen.leadName || (rec.adopted === true) !== (mode.seen.adopted === true) || rec.lead !== mode.seen.lead || rec.leadSid !== mode.seen.leadSid) return { no: 'changed' }
         const rows = await registryEntries($)
         if (!rows) return { no: 'registry-unreadable', why: c.reasonWhy('registry-unreadable') }
@@ -923,9 +922,7 @@ export async function laneTable($: any, sid: string) {
   const conductors = base.g.level === 'manager' ? await conductorsLive($, base.live, sid).catch(() => 'error' as const) : undefined
   const leads = await leadsInReach($, base.live, base.g).catch(() => [])
   const text = c.laneListText(base.lanes.filter((l) => c.inReach(base.g, l)), base.live.map(regEntry), await $.clock.now(), { level: base.g.level, name: base.g.name, conductors, leads })
-  // A lead's own list shows only the lanes that name it; the ones that name a lead no live session carries are told by name, for the person's /callboard claim.
-  const orphans = (await claimLanes($, base.live, base.lanes, base.g, sid).catch(() => [])).map((l) => l.name)
-  return { text: orphans.length > 0 ? `${text}\n\n${c.CLAIM_HINT(orphans)}` : text }
+  return { text }
 }
 
 const OBS_CLEAR_TOOLS = ['terminate', 'retire', 'park', 'unpark', 'resume'].map((v) => `mcp__callboard__lane_${v}`)

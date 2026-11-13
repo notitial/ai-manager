@@ -31,14 +31,8 @@ import type { Asked } from './base.ts'
 import { editStore, registryEntries, keptLanes, loadLanes } from './store.ts'
 import {
   cfgGet,
-  claimBlocked,
-  claimLanes,
   epochOf,
   homeOf,
-  ownWrite,
-  grantOf,
-  otherNames,
-  leadLiveFor,
   leadBusy,
   reservedGet,
   managersLive,
@@ -68,8 +62,6 @@ import {
 } from './grants.ts'
 import type { CondOut } from './grants.ts'
 import {
-  leadCore,
-  laneLive,
   strayRecord,
   detach,
   attachPlan,
@@ -121,80 +113,6 @@ async function checkinCommand($: any, sid: string, code: c.OriginCode, op: c.Che
   await logq($, sid, 'checkin-pause', `${op === 'on' ? 'on' : `${op.pauseMs / 60_000}m`}:${code}`)
   if (until !== null) return { text: c.checkinPausedText(until, now) }
   return { text: (await cfgGet($, sid)).checkin ? c.CHECKIN_ON_TEXT : c.CHECKIN_ON_BUT_OFF }
-}
-
-// What /callboard claim would claim now: the lead's grant and name, and the claimable records of its one store. A record still names a lead no live session carries.
-type ClaimPlan = { g: c.Grant; lanes: c.Lane[]; key: string; repo: string }
-async function claimPlan($: any, sid: string): Promise<{ text: string } | ClaimPlan> {
-  const base = await leadCore($, sid)
-  if ('err' in base) return { text: base.err[0] === 'off' ? c.CLAIM_NOT_LEAD : c.CLAIM_UNREADABLE }
-  if (base.g.level !== 'lead') return { text: c.CLAIM_NOT_LEAD }
-  if (base.g.name === '') return { text: c.CLAIM_UNNAMED }
-  const blocked = await claimBlocked($, base.live, sid, base.g.pins[0])
-  if (blocked) return { text: blocked === 'unreadable' ? c.CLAIM_UNREADABLE : c.CLAIM_OTHER_UNNAMED }
-  // A lane the lead made that a live session carries is left out: its stored hash would break (an attached record's does not hold the lead name).
-  const lanes = await claimLanes($, base.live, base.lanes, base.g, sid)
-  if (lanes.length === 0) return { text: c.CLAIM_NONE }
-  // One repo has one store: every claimable record comes from it.
-  return { g: base.g, lanes, key: lanes[0].src!, repo: base.g.pins[0] }
-}
-
-// /callboard claim: the person's own command (a prompt or the phone), in a lead. One dialog names the lanes, the lead names they carry and the claiming lead; a yes
-// re-points those records at this lead's name, in one write inside the store lock (all or none). Each record is checked again there: it still names the same lead,
-// that name is still carried by no live session, no live session carries a lane the lead made (its stored hash would break), and the grant is the same.
-async function claimCommand($: any, sid: string, code: c.OriginCode, busy: () => Promise<{ text: string }>): Promise<{ text: string }> {
-  if (!c.originIsPerson(code)) {
-    await logq($, sid, 'refused', `claim-not-person:${code}`)
-    return { text: c.CLAIM_NOT_PERSON }
-  }
-  const plan = await claimPlan($, sid)
-  if ('text' in plan) return plan
-  const epoch = epochOf(sid)
-  const p = await where($)
-  const names = plan.lanes.map((l) => l.name)
-  const olds = [...new Set(plan.lanes.map((l) => l.leadName!))]
-  const r = await askOnce($, sid, c.claimQuestion(names, plan.repo, olds, plan.g.name, p ? homeOf(p) : undefined), c.CLAIM_YES, c.CLAIM_NO, c.HEADER.claim)
-  if (r === 'busy') return busy()
-  if (r === 'timed-out') return { text: `Nothing changed: ${await timedOut($, sid)}.` }
-  if (r !== 'yes') {
-    await log($, sid, 'refused', 'claim-not-confirmed')
-    return { text: 'Cancelled. Nothing changed.' }
-  }
-  const again = await claimPlan($, sid)
-  const same = !('text' in again) && again.key === plan.key && again.g.name === plan.g.name && again.lanes.map((l) => l.name).join() === names.join() && again.lanes.every((l, i) => l.leadName === plan.lanes[i].leadName)
-  if (!same || epochOf(sid) !== epoch) return { text: c.claimRefusedText('changed') }
-  const w = await ownWrite($, sid, () => editStore($, plan.key, async (file) => {
-    const parsed = file.state === 'ok' ? c.parseStore(file.text) : undefined
-    if (!parsed) return { no: 'store-unreadable' }
-    if (!parsed.ok) return { no: parsed.reason }
-    const rows = await registryEntries($)
-    if (!rows) return { no: 'registry-unreadable' }
-    const rowsJ = rows.map((x) => x.j)
-    if (grantOf(sid)?.level !== 'lead' || epochOf(sid) !== epoch || c.leadNameOf(rowsJ, sid) !== plan.g.name) return { no: 'grant-changed' }
-    const live = otherNames(rows, sid).map((n) => n.toLowerCase())
-    const hit = new Set(names)
-    const want = new Map(plan.lanes.map((l) => [l.name, l.leadName]))
-    const recs = parsed.store.lanes.filter((l) => hit.has(l.name))
-    if (recs.length !== names.length) return { no: 'changed' }
-    const held = await claimBlocked($, rows, sid, plan.repo)
-    if (held) return { no: held === 'unreadable' ? 'registry-unreadable' : 'other-lead-unnamed' }
-    for (const l of recs) {
-      if (l.leadName !== want.get(l.name) || live.includes(l.leadName!.toLowerCase()) || leadLiveFor(rows, l, sid)) return { no: 'changed' }
-      if (!l.adopted) {
-        const busyLane = await laneLive($, rows, l)
-        if (busyLane) return { no: busyLane }
-      }
-    }
-    const t = c.storeText({ ...parsed.store, lanes: parsed.store.lanes.map((l) => (hit.has(l.name) ? { ...l, leadName: plan.g.name } : l)) })
-    if ('no' in t) return t
-    return { text: t.text, landed: (s) => !!s && names.every((n) => s.lanes.some((l) => l.name === n && l.leadName === plan.g.name)) }
-  })).catch(() => ({ no: 'store-busy' }))
-  if ('no' in w) {
-    await log($, sid, 'error', `claim-refused ${w.no}`)
-    return { text: c.claimRefusedText(w.no) }
-  }
-  await log($, sid, 'lanes-claimed', String(names.length))
-  return { text: c.claimedText(names, plan.g.name) }
 }
 
 async function laneCommand($: any, sid: string, code: c.OriginCode, arg: c.CommandArg, busy: () => Promise<{ text: string }>): Promise<{ text: string }> {
@@ -836,7 +754,6 @@ export async function commandRun($: any, e: any) {
   // A busy request is logged once, by the busy line below (same key, so a loop is de-duplicated); the person's own commands always get their line.
   if (verb !== 'status' && (!dialogOpen.has(sid) || c.originIsPerson(code))) await logq($, sid, 'command', `${verb}:${code}`)
   if (verb === 'lane' || verb === 'lane-off') return laneCommand($, sid, code, arg as c.CommandArg, busy)
-  if (arg === 'claim') return claimCommand($, sid, code, busy)
   if (typeof arg === 'object' && 'manager' in arg) return managerCommand($, sid, code, arg.manager, busy)
   // The conductor list (add, remove) and the conductor grant.
   if (typeof arg === 'object' && 'conductor' in arg) {
