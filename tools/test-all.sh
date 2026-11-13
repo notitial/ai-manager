@@ -49,12 +49,14 @@ suite() {  # suite <name> <slow:0|1> <needs> <command>; needs is one or more com
 # /usr/bin/python3 (for link-extension.sh). CALLBOARD_SKIP_MOD_TESTS=1 skips `claude plugin test mod` inside the callboard
 # suite (the slow part); the row still shows pass, so run this without it before any change to
 # tools/callboard/mod. CI does not set it.
+# rule-text needs node 22.18 or later: it checks that rules/callboard.md quotes the mod's fixed texts exactly.
 # usage-watcher-install needs macOS (plutil), the Command Line Tools and /usr/bin/python3 3.9 or later.
 suites() {
   suite callboard              1 'node claude /usr/bin/python3' 'bash tools/callboard/test.sh'
   suite usage-watcher          0 /usr/bin/python3           '/usr/bin/python3 -I tools/usage-watcher/test_watch.py'
   suite usage-watcher-install  0 'plutil /usr/bin/python3'  'bash tools/usage-watcher/test-install.sh'
   suite session-peers          0 'jq python3'               'bash tools/session-peers/test-peers.sh'
+  suite rule-text              0 node                       'node tools/check-rule-text.mjs'
 }
 
 LISTING=1

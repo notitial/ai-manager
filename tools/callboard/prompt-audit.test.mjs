@@ -1234,3 +1234,18 @@ test('labelFromText: the label of the quoted pair, undefined when the pair is ab
   assert.equal(labelFromText('"Allow x?"="Say "hi" now"', 'Allow x?'), null)
   assert.equal(labelFromText(`"Allow x?"="${'a'.repeat(300)}"`, 'Allow x?'), 'a'.repeat(256))
 })
+
+// Two more pieces the audit mirrors from the mod, compared as they are written in the sources: the id shape of a ledger row, and the hash that stands for a chosen label.
+test('the audit reads an id as the mod writes it, and hashes a label by the mod\'s formula', () => {
+  const mod = readFileSync(new URL('./mod/hooks/core.ts', import.meta.url), 'utf8')
+  const answering = readFileSync(new URL('./mod/hooks/engine/answer-hook.ts', import.meta.url), 'utf8')
+  const mine = readFileSync(new URL('./prompt-audit.mjs', import.meta.url), 'utf8')
+  const idRe = /const ID_RE = (\/.+\/)\n/.exec(mine)
+  const sidRe = /export const SID_RE = (\/.+\/)\n/.exec(mod)
+  assert.ok(idRe && sidRe, 'both id patterns were found')
+  assert.equal(idRe[1], sidRe[1])
+  const theirs = /async function labelHash\([^)]*\)[^{]*\{\s*return \(await sha\(\$, (`[^`]+`)\)\)(\.slice\(0, 16\))\s*\}/.exec(answering)
+  const ours = /const labelHash = [^\n]*update\((`[^`]+`)\)\.digest\('hex'\)(\.slice\(0, 16\))/.exec(mine)
+  assert.ok(theirs && ours, 'both label hashes were found')
+  assert.deepEqual(ours.slice(1), theirs.slice(1))
+})

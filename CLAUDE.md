@@ -15,16 +15,19 @@ mod, a usage watcher, a session lister and the manager's project skills. ai-tool
 
 No repo-wide build or lint. `bash tools/test-all.sh` is the entry point: it runs every suite below and prints a
 pass/fail table (`--quick` skips the slow `callboard` suite, `NAME…` runs only those). Its suites: `callboard`,
-`usage-watcher`, `usage-watcher-install`, `session-peers`; keep its list in step with this one.
+`usage-watcher`, `usage-watcher-install`, `session-peers`, `rule-text`; keep its list in step with this one.
 
 - `tools/callboard/` — `bash tools/callboard/test.sh` after changing anything under it. Needs node 22.18 or later
   and the `claude` CLI (`claude plugin validate`, `claude plugin test`). CI (`.github/workflows/ci.yml`) runs
   `claude plugin test mod` too, in full. `CALLBOARD_SKIP_MOD_TESTS=1` skips it for a quick local run (it is the slow
   part, about 2 minutes); run the script without it before any PR that touches `tools/callboard/mod`. The mod tests
-  drive a fake clock through thousands of 2 s ticks: a test that simulates 30 minutes or more is declared with
-  `longTest` in `mod/test/mod.cases.ts`, which gives it a 60 s limit in place of the kit's 5 s, so a slow runner does
-  not fail it. The kit kills a test file's run after 10 minutes, so the tests are split over four files
-  (`mod-N.test.ts`) that it runs side by side; see the top of `mod.cases.ts`.
+  drive a fake clock through thousands of 2 s ticks: a test that takes a second or more (it ticks through 30 simulated minutes or
+  more) is declared with `longTest` (from `mod/test/harness.ts`), which gives it a 60 s limit in place of the kit's 5 s, so a slow
+  runner does not fail it. A long quiet stretch that is not the point of a test is jumped with `advanceQuiet`
+  (`mod/test/fixtures.ts`). The kit runs each `*.test.ts` file in its own process, side by side, and kills one after
+  10 minutes: the tests sit in topic files (`mod/test/<topic>.test.ts`) over a shared harness (`harness.ts`, with the
+  state object `h`, and `fixtures.ts`). A test goes in the file of its topic; one that needs a state the harness does
+  not reset gets its setup in its own body.
 - `tools/usage-watcher/` — `/usr/bin/python3 -I tools/usage-watcher/test_watch.py` after changing `watch.py`;
   `bash tools/usage-watcher/test-install.sh` after changing `install.sh`.
 - `tools/session-peers/` — `bash tools/session-peers/test-peers.sh` after changing `peers.sh` (needs jq and python3).
@@ -52,7 +55,7 @@ Copy these when adding something like them, each with the test beside it:
 
 - `tools/callboard/mod/hooks/core.ts` + `core.spec.ts` — mod logic as pure functions with no engine calls;
   the files under `mod/hooks/engine/` feed it values and act on what it returns (`register.ts` only wires them; layout:
-  ADR 0005). Engine-level cases go in `mod/test/mod.cases.ts`.
+  ADR 0005). Engine-level cases go in the matching topic file under `mod/test/`.
 - `tools/callboard/prompt-audit.mjs` + `prompt-audit.test.mjs` — a read-only node script: header comment with usage and
   exit codes, fixtures built in a temp dir, `node --test`.
 - `tools/session-peers/peers.sh` + `test-peers.sh` — a small bash tool: usage in the header, strict argument parsing,
