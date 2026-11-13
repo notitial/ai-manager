@@ -210,10 +210,11 @@ export const orderBusy = new Set<string>()
 
 export const renameChecked = new Map<string, number>()
 
-// The saved manager grant, manager:<sid> = { name, savedAt }: written at the person's yes and once a day while the manager runs; removed by
-// leadDrop (off) and by a Cancel on the restore question. A failed write is logged and tried again a day later; a drop while the write was in flight deletes the
-// key again.
+// The saved manager grant, manager:<sid> = { name, cwd, savedAt }: written at the person's yes (or a silent restore) and every MANAGER_REFRESH_MS while the
+// manager runs; removed by leadDrop (off) and by a Cancel on the restore question. A failed write is logged and tried again at the next refresh; a drop while the
+// write was in flight deletes the key again. managerCwd: the folder the session started in, read when the grant was made (none when it could not be read).
 export const managerSavedAt = new Map<string, number>()
+export const managerCwd = new Map<string, string>()
 
 export type MgrPending = { hint: c.ManagerHint; tries: number; asking?: boolean }
 export const managerRestorePending = new Map<string, MgrPending>()

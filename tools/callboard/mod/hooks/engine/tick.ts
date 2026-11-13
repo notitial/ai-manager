@@ -197,7 +197,7 @@ async function tick($: any) {
       const savedAt = leadSavedAt.get(sid)
       // A lead's pin only: a later non-lead grant must never save a lead hint without a pin.
       const pin = pinOf(sid)
-      if (pin !== undefined && c.leadRefreshDue(savedAt, await $.clock.now())) await levelSave($, sid, LEAD, pin)
+      if (pin !== undefined && c.leadRefreshDue(savedAt, await $.clock.now(), LEAD.refreshMs)) await levelSave($, sid, LEAD, pin)
       await presenceTouch($, sid).catch(logFail($, sid, 'presence'))
       await presencePrune($).catch(logFail($, sid, 'presence-prune'))
       await leadRenameTick($, sid).catch(logFail($, sid, 'lead-rename'))

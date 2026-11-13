@@ -16,6 +16,7 @@ import {
   leadGranting,
   managerRestorePending,
   conductorHome,
+  managerCwd,
   conductorApproved,
   rebindPending,
   leadEpoch,
@@ -285,9 +286,11 @@ async function laneCommand($: any, sid: string, code: c.OriginCode, arg: c.Comma
 // Any origin, as /callboard lead: the dialog is the gate the person answers, and another origin is named in its question. Refused before the dialog and again
 // after a yes: in a bound lane, in a lead, in a session that ever was a lead (its lane tools stay declared: manager-after-lead), and while another live
 // session holds a valid manager file (manager-exists). The grant lives in memory, and the person's yes also saves manager:<sid> (levelSave), so the
-// same conversation asks again when it starts or resumes (managerRestoreAsk runs this function with restore set: the restore question, and its own log lines).
+// same conversation asks again when it starts or resumes (managerRestoreAsk runs this function with restore set: the restore question, and its own log lines;
+// `saved` is the hint it restores from: when it names this session's start folder and is younger than MANAGER.silentGraceMs, nothing is asked and every other
+// check runs as after a yes).
 // After the grant the presence file must be written (one per machine rests on it), and a second manager that won the same moment makes both step back.
-export async function managerCommand($: any, sid: string, code: c.OriginCode, want: string | undefined, busy: () => Promise<{ text: string }>, restore = false, alive: () => boolean = () => true): Promise<{ text: string }> {
+export async function managerCommand($: any, sid: string, code: c.OriginCode, want: string | undefined, busy: () => Promise<{ text: string }>, restore = false, alive: () => boolean = () => true, saved?: c.ManagerHint): Promise<{ text: string }> {
   await reservedGet($, sid, true)
   // With no NAME, a session whose registry name (one row) is already reserved keeps it; otherwise MANAGER. An unreadable registry
   // gives MANAGER here and is refused by the check below.
@@ -313,8 +316,14 @@ export async function managerCommand($: any, sid: string, code: c.OriginCode, wa
   if (before) return refuse(before)
   // A restore whose pending entry went while these checks ran (an /callboard off, a manager grant by hand) asks nothing.
   if (restore && !alive()) return { text: '' }
+  // The folder the session started in: saved with the grant, and for a restore the folder the saved grant must name for it to come back with no question. A folder
+  // that cannot be read is none (the grant is saved without one, and a restore asks).
+  const root = await withTimeout($, sessionRoot($), c.ENGINE_CALL_TIMEOUT_MS).catch(() => undefined)
+  const here = typeof root === 'string' && root !== '' ? root : undefined
+  const silent = restore && saved !== undefined && c.managerSilentOk(saved, here, await $.clock.now(), MANAGER.silentGraceMs)
   let live: Awaited<ReturnType<typeof registryEntries>>
   return grantDialog($, sid, MANAGER, {
+    silent,
     question: restore ? c.MANAGER_RESTORE_QUESTION : c.askedFrom(c.MANAGER_QUESTION, code),
     yes: c.MANAGER_YES,
     no: c.MANAGER_NO,
@@ -357,6 +366,8 @@ export async function managerCommand($: any, sid: string, code: c.OriginCode, wa
         return { text: c.MANAGER_FAILED }
       }
       grants.set(sid, { level: 'manager', pins: [], name })
+      if (here !== undefined) managerCwd.set(sid, here)
+      else managerCwd.delete(sid)
       // A grant the person made while a restore question was still pending stands; the pending restore ends here.
       managerRestorePending.delete(sid)
     },
@@ -374,7 +385,7 @@ export async function managerCommand($: any, sid: string, code: c.OriginCode, wa
       if ((await managersLive($, live, sid)).length > 0) return stepBack('manager-exists')
       if (epochOf(sid) !== grantEpoch) return { text: MANAGER.offText }
     },
-    onLog: [restore ? 'manager-restored' : 'manager-on', restore ? '' : code],
+    onLog: [restore ? 'manager-restored' : 'manager-on', restore ? (silent ? 'silent' : '') : code],
     toast: restore ? c.MANAGER_RESTORED_TOAST : undefined,
     briefArg: name,
     // The rename cannot run inside the command: the tick runs it (as attach), unless the session already carries the name (a launch with -n NAME).

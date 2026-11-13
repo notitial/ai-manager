@@ -19,6 +19,10 @@ export type LevelDesc = {
   hint: string
   savedAt: Map<string, number>
   saveEpochCheck: boolean
+  // How often the saved grant is rewritten while the grant is on (its savedAt is the last time it was known live), and how long after that savedAt a restore asks no
+  // question (0: never; only the manager's saved grant is restored that way, managerRestoreTry).
+  refreshMs: number
+  silentGraceMs: number
   unsaved: string
   hintDelete: string
   saved(sid: string, pin?: string): object | undefined
@@ -60,6 +64,9 @@ export type GrantDialog = {
   person: boolean
   on: () => boolean
   pin?: string
+  // silent: no question is asked (the manager's restore inside its grace period); every check after the click runs as after a yes. An open dialog of the
+  // session makes it busy, as a second question would be.
+  silent?: boolean
   // A question that is not the grant's own (the manager's restore) ends its own way when the answer is not yes.
   onNotYes?: (r: Asked) => Promise<{ text: string }>
   // The checks that read the marks, with no await: the marks are read and set with nothing between.
@@ -100,7 +107,7 @@ export async function heldNo($: any, sid: string, wants: c.Level, marks: boolean
   return c.holderNo(wants, holdsOf(sid, (marks && laneBinding.has(sid)) || (await $.state.get(lane)).value != null, marks))
 }
 
-// The saved grant, written at the grant and again once a day (c.leadRefreshDue): a failed write is logged and tried again a day later.
+// The saved grant, written at the grant and again every refreshMs (c.leadRefreshDue): a failed write is logged and tried again at the next refresh.
 export async function levelSave($: any, sid: string, d: LevelDesc, pin?: string) {
   const epoch = epochOf(sid)
   const fields = d.saved(sid, pin)

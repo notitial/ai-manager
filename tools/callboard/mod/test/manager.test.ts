@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { LEAD_MANAGER_TEXT, MANAGER_RESTORE_QUESTION, MANAGER_RESTORED_TOAST, MANAGER_UNANSWERED_TOAST, HINT_REFRESH_MS, REASON_TEXT, MANAGER_QUESTION, MANAGER_ON_TEXT, MANAGER_ALREADY, MANAGER_H2, managerRefusalText, managerBriefingNote, terminateQuestion, retireQuestion, removeQuestion } from '../hooks/core'
+import { LEAD_MANAGER_TEXT, MANAGER_RESTORE_QUESTION, MANAGER_RESTORED_TOAST, MANAGER_UNANSWERED_TOAST, MANAGER_REFRESH_MS, MANAGER_SILENT_GRACE_MS, REASON_TEXT, MANAGER_QUESTION, MANAGER_ON_TEXT, MANAGER_ALREADY, MANAGER_H2, managerRefusalText, managerBriefingNote, terminateQuestion, retireQuestion, removeQuestion } from '../hooks/core'
 import { h, GOOD, LANESDIR, NO, PS_TABLE, ROOT, SID, T0, YES, colorRuns, extraStat, laneSeed, leadFiles, lockLog, longTest, psCalls, psDead, psFail, renames, seen, statErr, storeFiles, toasts, toolDefs } from './harness'
 import { APISID, COMPOSE, HOME, LEADPATH, LEADPS, LEADSID, MGR_NOAPI, MGR_SESS, MIN, NEWSID, OTHER, OTHERLEAD, OTHERMGR, PIN, QUIET, REPORT_OK, SELFPATH, STATUS_NONE, TURN, attacher, checkins, ckLane, ckLead, ckText, cue, cueSession, dirStat, doLane, grantAt, idleFor, killed, lane, leadAt, leadFileText, leadReg, leadSelfReg, listCall, logged, madeLane, mgrAt, mgrCall, mgrFile, mgrRow, newTrace, noArchiveRm, noteRows, nudges, ownReg, putStore, regAs, started, statusTable, statusText, storeNames, ticks, unanswered, waitFor } from './fixtures'
 
@@ -735,6 +735,8 @@ test('a session that was the manager is refused /callboard lane before the dialo
 
 // ---- the manager restore dialog ----
 const MGRKEY = `manager:${SID}`
+// The folder the harness session starts in ($.session.root()), saved with the grant.
+const MGRCWD = '/data/x/work/lab'
 const mgrLogs = (stdins: string[]) => logged(stdins).filter((x) => x.startsWith('manager-'))
 // A session that starts with a saved manager grant. Its row carries the name MANAGER, so the grant needs no rename.
 const MSELF = (over: Record<string, unknown> = {}) => leadSelfReg({ name: 'MANAGER', ...over })
@@ -765,7 +767,7 @@ test('manager restore: the same conversation asks once when it starts, with the 
   expect(h.askCount).toBe(1)
   expect(await statusText($)).toBe(statusTable(['Lane', 'NONE'], ['Manager', 'ON'], ['Check-ins', 'ON']))
   expect(JSON.parse(leadFiles.get(SELFPATH)!.text)).toEqual({ sid: SID, pid: 4400, procStart: LEADPS, level: 'manager', name: 'MANAGER' })
-  expect(h.store.get(MGRKEY)).toEqual({ name: 'MANAGER', savedAt: expect.any(Number) })
+  expect(h.store.get(MGRKEY)).toEqual({ name: 'MANAGER', cwd: MGRCWD, savedAt: expect.any(Number) })
   expect((h.store.get(MGRKEY) as any).savedAt).toBeGreaterThan(T0)
   expect(toasts).toContain(MANAGER_RESTORED_TOAST)
   expect(mgrLogs(stdins).some((x) => x.startsWith('manager-restore-rejected') || x.startsWith('manager-on'))).toBe(false)
@@ -863,7 +865,7 @@ test('manager restore: a reserved name other than MANAGER restores under that na
   await ticks(3)
   await waitFor(() => mgrLogs(stdins).includes('manager-restored:'))
   expect(JSON.parse(leadFiles.get(SELFPATH)!.text).name).toBe('HARBOR')
-  expect(h.store.get(MGRKEY)).toEqual({ name: 'HARBOR', savedAt: expect.any(Number) })
+  expect(h.store.get(MGRKEY)).toEqual({ name: 'HARBOR', cwd: MGRCWD, savedAt: expect.any(Number) })
   expect((h.store.get(MGRKEY) as any).savedAt).toBeGreaterThan(T0)
 })
 test('manager restore: a session that is a lane is not asked (lane-holder) and keeps the saved grant', async ($, on) => {
@@ -925,7 +927,7 @@ test('manager restore: the person\'s own /callboard manager while a restore wait
   await ticks(5)
   expect(h.askCount).toBe(asked)
   expect(mgrLogs(stdins).some((x) => x.startsWith('manager-restore'))).toBe(false)
-  expect(h.store.get(MGRKEY)).toEqual({ name: 'MANAGER', savedAt: T0 })
+  expect(h.store.get(MGRKEY)).toEqual({ name: 'MANAGER', cwd: MGRCWD, savedAt: T0 })
   expect(await statusText($)).toBe(statusTable(['Lane', 'NONE'], ['Manager', 'ON'], ['Check-ins', 'ON']))
 })
 
@@ -933,7 +935,7 @@ test('manager restore: a manager that still holds the grant in memory (a compact
   const stdins: string[] = []
   await mgrAt($, on, stdins, { clock: true })
   expect(h.askCount).toBe(1)
-  expect(h.store.get(MGRKEY)).toEqual({ name: 'MANAGER', savedAt: h.nowMs })
+  expect(h.store.get(MGRKEY)).toEqual({ name: 'MANAGER', cwd: MGRCWD, savedAt: h.nowMs })
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   await ticks(5)
   expect(h.askCount).toBe(1)
@@ -966,9 +968,9 @@ test('manager restore: a lead grant that the person cancels in a session with a 
 test('manager restore: the saved grant is written at the person\'s yes and removed by /callboard off; Cancel on the grant dialog saves nothing', async ($, on) => {
   const stdins: string[] = []
   await mgrAt($, on, stdins, { clock: true })
-  expect(h.store.get(MGRKEY)).toEqual({ name: 'MANAGER', savedAt: T0 })
-  // The daily refresh is c.leadRefreshDue (core.spec); a 24 h jump of the mock clock fires 43,200 ticks and overruns the test limit.
-  expect(HINT_REFRESH_MS).toBe(24 * 3_600_000)
+  expect(h.store.get(MGRKEY)).toEqual({ name: 'MANAGER', cwd: MGRCWD, savedAt: T0 })
+  // The refresh cadence is c.leadRefreshDue with the level's refreshMs (core.spec, and the golden save tests).
+  expect(MANAGER_REFRESH_MS).toBe(5 * MIN)
   expect((await $.command.run(lane('off'))).text).toContain('Manager is now off.')
   expect(h.store.has(MGRKEY)).toBe(false)
   h.askAnswer = NO
@@ -997,4 +999,199 @@ test('manager restore: a saved grant that fails the parse is deleted with no que
   expect(h.store.has(MGRKEY)).toBe(false)
   expect(h.store.has('manager:11111111-0000-4000-8000-123456789abc')).toBe(false)
   expect(mgrLogs(stdins)).toContain('manager-restore-rejected:invalid')
+})
+
+// ---- the silent restore: a saved grant that names this folder and is younger than the grace period comes back with no question ----
+// The restore is decided at the second tick (4 s after the start, the mock clock's time), so a hint saved `age` before that is `age` old when it is judged.
+const DECIDED = T0 + 4000
+const silentHint = (age: number, over: Record<string, unknown> = {}) => ({ name: 'MANAGER', cwd: MGRCWD, savedAt: DECIDED - age, ...over })
+const silentRestarter = ($: any, on: any, stdins: string[], raw: unknown, opts: { sess?: Record<string, string>; seed?: () => void; bound?: boolean } = {}) => mgrRestarter($, on, stdins, { ...opts, raw })
+const restoredSilently = async (stdins: string[]) => {
+  await ticks(2)
+  await waitFor(() => mgrLogs(stdins).includes('manager-restored:silent'))
+  expect(h.askCount).toBe(0)
+}
+const asksInstead = async (stdins: string[]) => {
+  await ticks(3)
+  await waitFor(() => mgrLogs(stdins).includes('manager-restored:'))
+  expect(h.askCount).toBe(1)
+  expect(h.lastQuestion).toBe(MANAGER_RESTORE_QUESTION)
+}
+
+test('manager silent restore: the same session id and folder back within the grace period is the manager again with no dialog, a toast, the presence file and a refreshed saved grant', async ($, on) => {
+  const stdins: string[] = []
+  await silentRestarter($, on, stdins, silentHint(10 * MIN))
+  await restoredSilently(stdins)
+  expect(toasts).toContain(MANAGER_RESTORED_TOAST)
+  expect(await statusText($)).toBe(statusTable(['Lane', 'NONE'], ['Manager', 'ON'], ['Check-ins', 'ON']))
+  expect(JSON.parse(leadFiles.get(SELFPATH)!.text)).toEqual({ sid: SID, pid: 4400, procStart: LEADPS, level: 'manager', name: 'MANAGER' })
+  expect(h.store.get(MGRKEY)).toEqual({ name: 'MANAGER', cwd: MGRCWD, savedAt: DECIDED })
+  expect(mgrLogs(stdins).some((x) => x.startsWith('manager-restore-rejected') || x.startsWith('manager-on'))).toBe(false)
+  await ticks(5)
+  expect(h.askCount).toBe(0)
+})
+
+test('manager silent restore: at the window edge, 59 min 59 s since the saved grant restores with no dialog (60 min 00 s asks, next test)', async ($, on) => {
+  expect(MANAGER_SILENT_GRACE_MS).toBe(60 * MIN)
+  const stdins: string[] = []
+  await silentRestarter($, on, stdins, silentHint(MANAGER_SILENT_GRACE_MS - 1000))
+  await restoredSilently(stdins)
+})
+test('manager silent restore: a saved grant exactly 60 minutes old asks', async ($, on) => {
+  const stdins: string[] = []
+  await silentRestarter($, on, stdins, silentHint(MANAGER_SILENT_GRACE_MS))
+  await asksInstead(stdins)
+  expect(mgrLogs(stdins)).not.toContain('manager-restored:silent')
+})
+test('manager silent restore: a saved grant older than the grace period asks (the dialog, as before)', async ($, on) => {
+  const stdins: string[] = []
+  await silentRestarter($, on, stdins, silentHint(3 * 60 * MIN))
+  await asksInstead(stdins)
+  expect(toasts).toContain(MANAGER_RESTORED_TOAST)
+  expect(mgrLogs(stdins)).not.toContain('manager-restored:silent')
+})
+test('manager silent restore: a saved grant for another folder asks', async ($, on) => {
+  const stdins: string[] = []
+  await silentRestarter($, on, stdins, silentHint(MIN, { cwd: '/data/x/work/other' }))
+  await asksInstead(stdins)
+})
+test('manager silent restore: a saved grant with no folder (the older shape) asks', async ($, on) => {
+  const stdins: string[] = []
+  await silentRestarter($, on, stdins, { name: 'MANAGER', savedAt: DECIDED - MIN })
+  await asksInstead(stdins)
+})
+test('manager silent restore: a saved grant whose folder is not a clean path asks', async ($, on) => {
+  const stdins: string[] = []
+  await silentRestarter($, on, stdins, silentHint(MIN, { cwd: `${MGRCWD}/../lab` }))
+  await asksInstead(stdins)
+})
+test('manager silent restore: a saved grant dated in the future, inside the clock skew, is no time known live: it asks', async ($, on) => {
+  const stdins: string[] = []
+  await silentRestarter($, on, stdins, silentHint(-30_000))
+  await asksInstead(stdins)
+})
+test('manager silent restore: a saved grant dated more than a minute ahead is invalid: no grant, no dialog, the key goes', async ($, on) => {
+  const stdins: string[] = []
+  await silentRestarter($, on, stdins, silentHint(-2 * MIN))
+  await ticks(3)
+  expect(h.askCount).toBe(0)
+  expect(mgrLogs(stdins)).toContain('manager-restore-rejected:invalid')
+  expect(mgrLogs(stdins).some((x) => x.startsWith('manager-restored'))).toBe(false)
+  expect(h.store.has(MGRKEY)).toBe(false)
+  expect(await statusText($)).toBe(STATUS_NONE)
+})
+test('manager silent restore: a session folder that cannot be read asks', async ($, on) => {
+  const stdins: string[] = []
+  await silentRestarter($, on, stdins, silentHint(MIN))
+  h.cwdThrows = 1
+  await asksInstead(stdins)
+})
+
+// Every other check still runs, and a refusal stays a refusal: no silent grant.
+test('manager silent restore: another live manager on the Mac refuses (manager-exists): no grant, no dialog, the key stays', async ($, on) => {
+  const stdins: string[] = []
+  await silentRestarter($, on, stdins, silentHint(MIN), { sess: { ...MSELF(), ...mgrRow() }, seed: () => mgrFile() })
+  await ticks(3)
+  expect(h.askCount).toBe(0)
+  expect(mgrLogs(stdins)).toContain('manager-restore-rejected:manager-exists')
+  expect(mgrLogs(stdins).some((x) => x.startsWith('manager-restored'))).toBe(false)
+  expect(h.store.get(MGRKEY)).toEqual(silentHint(MIN))
+  expect(leadFiles.has(SELFPATH)).toBe(false)
+  expect(await statusText($)).toBe(STATUS_NONE)
+})
+test('manager silent restore: a name no longer reserved refuses (manager-name)', async ($, on) => {
+  const stdins: string[] = []
+  await silentRestarter($, on, stdins, silentHint(MIN, { name: 'HARBOR' }))
+  await ticks(3)
+  expect(h.askCount).toBe(0)
+  expect(mgrLogs(stdins)).toContain('manager-restore-rejected:manager-name')
+  expect(await statusText($)).toBe(STATUS_NONE)
+})
+test('manager silent restore: a lane (bound) refuses (lane-holder), and a lead refuses (lead-holder)', async ($, on) => {
+  const stdins: string[] = []
+  await silentRestarter($, on, stdins, silentHint(MIN), { bound: true })
+  await ticks(3)
+  expect(h.askCount).toBe(0)
+  expect(mgrLogs(stdins)).toContain('manager-restore-rejected:lane-holder')
+  expect(mgrLogs(stdins).some((x) => x.startsWith('manager-restored'))).toBe(false)
+  expect(leadFiles.has(SELFPATH)).toBe(false)
+})
+test('manager silent restore: a lead refuses (lead-holder)', async ($, on) => {
+  const stdins: string[] = []
+  await silentRestarter($, on, stdins, silentHint(MIN, { cwd: PIN }), { sess: MSELF({ name: 'LEAD', cwd: PIN }), seed: () => { extraStat.set(`${PIN}/.git`, dirStat); h.callerCwd = PIN; h.store.set(`lead:${SID}`, { pin: PIN, savedAt: T0 - 60_000 }) } })
+  await ticks(3)
+  expect(mgrLogs(stdins)).toContain('manager-restore-rejected:lead-holder')
+  expect(mgrLogs(stdins).some((x) => x.startsWith('manager-restored'))).toBe(false)
+})
+test('manager silent restore: a --bg worker row (not the person\'s) refuses (not-person)', async ($, on) => {
+  const stdins: string[] = []
+  await silentRestarter($, on, stdins, silentHint(MIN), { sess: MSELF({ kind: 'background' }) })
+  await ticks(4)
+  expect(h.askCount).toBe(0)
+  expect(mgrLogs(stdins)).toContain('manager-restore-rejected:not-person')
+  expect(mgrLogs(stdins).some((x) => x.startsWith('manager-restored'))).toBe(false)
+  expect(await statusText($)).toBe(STATUS_NONE)
+})
+test('manager silent restore: a busy session or a draft waits for the idle conditions, then restores with no dialog', async ($, on) => {
+  const stdins: string[] = []
+  await silentRestarter($, on, stdins, silentHint(MIN), { sess: MSELF({ status: 'busy' }) })
+  h.draftNow = 'half a sentence'
+  await ticks(4)
+  expect(mgrLogs(stdins).some((x) => x.startsWith('manager-restored'))).toBe(false)
+  h.sessions = MSELF()
+  await ticks(4)
+  expect(mgrLogs(stdins).some((x) => x.startsWith('manager-restored'))).toBe(false)
+  h.draftNow = ''
+  await h.clock!.advance(2000)
+  await waitFor(() => mgrLogs(stdins).includes('manager-restored:silent'))
+  expect(h.askCount).toBe(0)
+})
+test('manager silent restore: the re-check after the grant still runs: a manager that came up in the same moment makes the restore step back', async ($, on) => {
+  const stdins: string[] = []
+  await silentRestarter($, on, stdins, silentHint(MIN), { sess: { ...MSELF(), ...mgrRow() } })
+  // The other manager's file appears while this one's own file is being written.
+  h.mvHook = (target: string) => {
+    if (target !== SELFPATH) return
+    mgrFile()
+  }
+  await ticks(3)
+  await waitFor(() => mgrLogs(stdins).includes('manager-restore-rejected:manager-exists'))
+  h.mvHook = undefined
+  expect(mgrLogs(stdins).some((x) => x.startsWith('manager-restored'))).toBe(false)
+  expect(await statusText($)).toBe(STATUS_NONE)
+  expect(leadFiles.has(SELFPATH)).toBe(false)
+  expect(h.askCount).toBe(0)
+})
+test('manager silent restore: the person\'s /callboard off while the restore waits for the idle conditions ends it: nothing restored', async ($, on) => {
+  const stdins: string[] = []
+  await silentRestarter($, on, stdins, silentHint(MIN), { sess: MSELF({ status: 'busy' }) })
+  expect((await $.command.run(lane('off'))).text).toContain('Its saved manager grant was removed.')
+  h.sessions = MSELF()
+  await ticks(5)
+  expect(await statusText($)).toBe(STATUS_NONE)
+  expect(h.store.has(MGRKEY)).toBe(false)
+  expect(h.askCount).toBe(0)
+})
+
+test('manager silent restore: a fresh-looking hint written by a same-user process for this session and folder DOES restore silently (the accepted residual, ADR 0002)', async ($, on) => {
+  const stdins: string[] = []
+  // Nothing in the key tells a hint the mod wrote from one another process wrote: only its shape, its age, the session id and the folder.
+  await silentRestarter($, on, stdins, { name: 'MANAGER', cwd: MGRCWD, savedAt: DECIDED - 1000, extra: 'forged' })
+  await restoredSilently(stdins)
+  expect(await statusText($)).toBe(statusTable(['Lane', 'NONE'], ['Manager', 'ON'], ['Check-ins', 'ON']))
+})
+
+test('manager silent restore: the saved grant is rewritten every 5 minutes while the manager is on, and not before', async ($, on) => {
+  const stdins: string[] = []
+  await mgrAt($, on, stdins, { clock: true })
+  expect(h.store.get(MGRKEY)).toEqual({ name: 'MANAGER', cwd: MGRCWD, savedAt: T0 })
+  await h.clock!.advance(MANAGER_REFRESH_MS - 4000)
+  expect((h.store.get(MGRKEY) as { savedAt: number }).savedAt).toBe(T0)
+  await h.clock!.advance(2000)
+  await h.clock!.advance(2000)
+  await waitFor(() => (h.store.get(MGRKEY) as { savedAt: number }).savedAt === T0 + MANAGER_REFRESH_MS)
+  await h.clock!.advance(MANAGER_REFRESH_MS - 2000)
+  expect((h.store.get(MGRKEY) as { savedAt: number }).savedAt).toBe(T0 + MANAGER_REFRESH_MS)
+  await h.clock!.advance(2000)
+  await waitFor(() => (h.store.get(MGRKEY) as { savedAt: number }).savedAt === T0 + 2 * MANAGER_REFRESH_MS)
 })

@@ -30,6 +30,7 @@ import {
   conductorRestorePending,
   conductorReadAt,
   managerSavedAt,
+  managerCwd,
   laneBinding,
   ownWriting,
   laneNotices,
@@ -117,14 +118,17 @@ export const pinOf = (sid: string): string | undefined => {
 
 export const leadBusy = (sid: string) => grants.has(sid) || leadGranting.has(sid)
 
-// The three levels as one record each, read by levels.ts. lead:<sid> = { pin, savedAt }, manager:<sid> = { name, savedAt } and conductor:<sid> = { home, repos:
-// approved, savedAt }: written at the grant, and for the conductor at each add or remove in this session and after a ratchet, and once a day. A write that ends
+// The three levels as one record each, read by levels.ts. lead:<sid> = { pin, savedAt }, manager:<sid> = { name, cwd?, savedAt } and conductor:<sid> = { home, repos:
+// approved, savedAt }: written at the grant, and for the conductor at each add or remove in this session and after a ratchet, and again every refreshMs (a day; the
+// manager's, which is what a silent restore reads as the last time it was live, 5 minutes). A write that ends
 // after a drop deletes its key again, even when a new grant came meanwhile (saveEpochCheck), for all three levels.
 export const LEAD: LevelDesc = {
   level: 'lead',
   hint: c.LEAD_HINT_PREFIX,
   savedAt: leadSavedAt,
   saveEpochCheck: true,
+  refreshMs: c.HINT_REFRESH_MS,
+  silentGraceMs: 0,
   unsaved: 'lead-unsaved',
   hintDelete: 'lead-hint-delete',
   saved: (_sid, pin) => ({ pin }),
@@ -146,11 +150,14 @@ export const MANAGER: LevelDesc = {
   hint: c.MANAGER_HINT_PREFIX,
   savedAt: managerSavedAt,
   saveEpochCheck: true,
+  refreshMs: c.MANAGER_REFRESH_MS,
+  silentGraceMs: c.MANAGER_SILENT_GRACE_MS,
   unsaved: 'manager-unsaved',
   hintDelete: 'manager-hint-delete',
   saved: (sid) => {
     const g = grants.get(sid)
-    return g?.level === 'manager' ? { name: g.name } : undefined
+    const cwd = managerCwd.get(sid)
+    return g?.level === 'manager' ? { name: g.name, ...(cwd !== undefined ? { cwd } : {}) } : undefined
   },
   held: (sid) => grants.get(sid)?.level === 'manager',
   pending: managerRestorePending,
@@ -170,6 +177,8 @@ export const CONDUCTOR: LevelDesc = {
   hint: c.CONDUCTOR_HINT_PREFIX,
   savedAt: conductorSavedAt,
   saveEpochCheck: true,
+  refreshMs: c.HINT_REFRESH_MS,
+  silentGraceMs: 0,
   unsaved: 'conductor-unsaved',
   hintDelete: 'conductor-hint-delete',
   saved: (sid) => {
@@ -339,6 +348,7 @@ export function leadDrop($: any, sid: string): Promise<boolean> {
   // The manager's saved-grant clock goes too. Its pending restore and saved grant do not: a Cancel on a lead's or a conductor's question, or a
   // failed manager grant, must not delete a mark the person never answered (managerForget, from /callboard off and the restore's Cancel, does).
   managerSavedAt.delete(sid)
+  managerCwd.delete(sid)
   // The saved grant goes too, so the session is not lead again after a restart.
   const unsave = Promise.resolve()
     .then(() => $.store.delete(`${c.LEAD_HINT_PREFIX}${sid}`))
@@ -359,7 +369,7 @@ export async function grantDialog($: any, sid: string, d: LevelDesc, g: GrantDia
   const seq = offSeq.get(sid) ?? 0
   const offNow = () => (offSeq.get(sid) ?? 0) !== seq
   const label = d.level.charAt(0).toUpperCase() + d.level.slice(1)
-  const r = await askOnce($, sid, g.question, g.yes, g.no, g.header)
+  const r = g.silent ? (dialogOpen.has(sid) ? 'busy' : 'yes') : await askOnce($, sid, g.question, g.yes, g.no, g.header)
   if (r === 'busy') return g.busy()
   if (r !== 'yes') {
     if (g.onNotYes) return g.onNotYes(r)
@@ -1175,8 +1185,10 @@ export async function managerForget($: any, sid: string): Promise<boolean> {
 // A session whose saved manager grant is there when it starts is asked once whether to restore it, as the conductor's widened list is (conductorRestoreAsk): only
 // in a person's session (a registry row of kind interactive: never a --bg worker), and only once the session is idle with an empty prompt box. A session that
 // still holds the grant in memory (a compaction) is never asked. Manager: the usual grant with every usual check again after the yes (one per Mac, a reserved
-// name, not a lane, lead or conductor). Cancel: the saved grant goes. No answer: it stays, nothing is restored. A check that fails: logged, nothing restored, the
-// saved grant stays. The tries count only the ticks before the registry shows the session's own row.
+// name, not a lane, lead or conductor). A saved grant that names the folder the session started in and was saved less than MANAGER.silentGraceMs ago
+// (c.managerSilentOk, judged in managerCommand) is granted with no question and every one of those checks; any silent-only condition that fails asks as
+// before. Cancel: the saved grant goes. No answer: it stays, nothing is restored. A check that fails: logged, nothing restored, the saved grant stays. The tries
+// count only the ticks before the registry shows the session's own row.
 const MANAGER_RESTORE_TRIES = 15
 
 async function managerRestoreAsk($: any, me: string, pend: MgrPending) {
@@ -1186,7 +1198,7 @@ async function managerRestoreAsk($: any, me: string, pend: MgrPending) {
     await managerCommand($, me, 'prompt', pend.hint.name, async () => {
       busy = true
       return { text: '' }
-    }, true, () => managerRestorePending.get(me) === pend)
+    }, true, () => managerRestorePending.get(me) === pend, pend.hint)
   } finally {
     pend.asking = false
   }
@@ -1196,7 +1208,7 @@ async function managerRestoreAsk($: any, me: string, pend: MgrPending) {
 export async function managerTick($: any, sid: string) {
   if (grants.get(sid)?.level === 'manager') {
     managerRestorePending.delete(sid)
-    if (c.leadRefreshDue(managerSavedAt.get(sid), await $.clock.now())) await levelSave($, sid, MANAGER)
+    if (c.leadRefreshDue(managerSavedAt.get(sid), await $.clock.now(), MANAGER.refreshMs)) await levelSave($, sid, MANAGER)
     return
   }
   const pend = managerRestorePending.get(sid)
@@ -1701,7 +1713,7 @@ export async function conductorTick($: any, sid: string) {
   }
   if (grants.get(sid)?.level !== 'conductor') return
   const now = await $.clock.now()
-  if (c.leadRefreshDue(conductorSavedAt.get(sid), now)) await levelSave($, sid, CONDUCTOR)
+  if (c.leadRefreshDue(conductorSavedAt.get(sid), now, CONDUCTOR.refreshMs)) await levelSave($, sid, CONDUCTOR)
   const last = conductorReadAt.get(sid)
   if (c.dueEvery(last, now, CONDUCTOR_REFRESH_MS)) {
     conductorReadAt.set(sid, now)

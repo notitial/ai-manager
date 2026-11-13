@@ -2451,6 +2451,27 @@ test('v15.3 parseManagerHint takes only a clean name and a savedAt of the last 3
   assert.ok(c.parseManagerHint({ ...ok, savedAt: NOW + 59_000 }, NOW))
 })
 
+test('the saved manager grant: an optional clean cwd, the refresh cadence and the silent-restore window', () => {
+  const NOW = 1_700_000_000_000
+  const ok = { name: 'MANAGER', savedAt: NOW - 1000, cwd: '/Users/x/code/repo' }
+  assert.deepEqual(c.parseManagerHint(ok, NOW), ok)
+  for (const cwd of [5, '', 'relative', '/a/../b', '/a//b', '/a\nb']) assert.deepEqual(c.parseManagerHint({ ...ok, cwd }, NOW), { name: 'MANAGER', savedAt: NOW - 1000 }, JSON.stringify(cwd))
+  assert.equal(c.MANAGER_REFRESH_MS, 5 * 60_000)
+  assert.equal(c.MANAGER_SILENT_GRACE_MS, 60 * 60_000)
+  assert.equal(c.leadRefreshDue(1000, 1000 + c.MANAGER_REFRESH_MS - 1, c.MANAGER_REFRESH_MS), false)
+  assert.equal(c.leadRefreshDue(1000, 1000 + c.MANAGER_REFRESH_MS, c.MANAGER_REFRESH_MS), true)
+  const G = c.MANAGER_SILENT_GRACE_MS
+  const hint = { name: 'MANAGER', savedAt: NOW, cwd: '/Users/x/code/repo' }
+  assert.equal(c.managerSilentOk(hint, '/Users/x/code/repo', NOW, G), true)
+  assert.equal(c.managerSilentOk(hint, '/Users/x/code/repo', NOW + G - 1000, G), true)
+  assert.equal(c.managerSilentOk(hint, '/Users/x/code/repo', NOW + G, G), false)
+  assert.equal(c.managerSilentOk(hint, '/Users/x/code/repo', NOW - 1, G), false)
+  assert.equal(c.managerSilentOk(hint, '/Users/x/code/other', NOW, G), false)
+  assert.equal(c.managerSilentOk(hint, undefined, NOW, G), false)
+  assert.equal(c.managerSilentOk({ name: 'MANAGER', savedAt: NOW }, '/Users/x/code/repo', NOW, G), false)
+  assert.equal(c.managerSilentOk(hint, '/Users/x/code/repo', NOW, 0), false)
+})
+
 test('v15.3 the stop texts', () => {
   assert.equal(c.stoppedText('retire', 'API', 4242, 'removed'), 'lane API retired and removed: SIGTERM sent to process 4242. Its .archive/API/ folder and report stay.')
   assert.equal(c.stoppedText('terminate', 'API', 4242, 'removed'), 'lane API terminated and removed: SIGTERM sent to process 4242. Its .archive/API/ folder and report stay.')

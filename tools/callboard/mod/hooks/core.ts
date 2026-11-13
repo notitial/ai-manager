@@ -1203,7 +1203,8 @@ export const LEAD_KEPT = ' Lead may come back after a restart. If it does, run /
 // The toast when a session a store record names did not rebind (the lead was told it would).
 export const rebindFailedToast = (name: string): string => `Lane ${name} did not rebind automatically. Run /callboard lane to restore it.`
 // The saved grant is rewritten once a day while lead is on (and at once when this process has no time for it), so it lapses only 30 days after the session closed.
-export const leadRefreshDue = (savedAt: number | undefined, now: number): boolean => savedAt === undefined || now - savedAt >= HINT_REFRESH_MS
+// `every` is the level's refresh cadence (LevelDesc.refreshMs; the manager's is MANAGER_REFRESH_MS).
+export const leadRefreshDue = (savedAt: number | undefined, now: number, every = HINT_REFRESH_MS): boolean => savedAt === undefined || now - savedAt >= every
 
 // The /callboard off answer when there was nothing to turn off.
 export const OFF_NOTHING = 'Nothing to turn off: this session is not a lane or a lead.'
@@ -1942,18 +1943,29 @@ export const managerAlreadyText = (name: string, want: string | undefined): stri
   want === undefined || want === name || !isManagerName(name) ? MANAGER_ALREADY : `Manager is already on in this session; the name stays ${name}.`
 export const MANAGER_FAILED = 'Manager could not be set up.'
 
-// The saved manager grant, manager:<sid> in $.store, as the conductor's: written when the person approves /callboard manager, removed by
-// /callboard off and by a Cancel on the restore question, and offered back through that question when the same conversation starts again (never after a
-// compaction, which keeps the grant in memory). A file any same-uid process can write, so only a clean name and a savedAt of the last 30 days (not more than a
-// minute ahead) are taken; a name is judged again at the restore (managerNameRefusal), and the grant itself comes only from the person's answer.
-export type ManagerHint = { name: string; savedAt: number }
+// The saved manager grant, manager:<sid> in $.store, as the conductor's: written when the person approves /callboard manager, rewritten every
+// MANAGER_REFRESH_MS while the manager runs (so its savedAt is the last time it was known live), removed by /callboard off and by a Cancel on the restore
+// question, and offered back when the same conversation starts again (never after a compaction, which keeps the grant in memory). It comes back with no
+// question only inside MANAGER_SILENT_GRACE_MS of that savedAt, in the session's own start folder (cwd, optional: an older hint has none and always asks;
+// managerSilentOk); every other case gets the restore question. A file any same-uid process can write, so only a clean name, a clean cwd and a savedAt of
+// the last 30 days (not more than a minute ahead) are taken; a name is judged again at the restore (managerNameRefusal), and outside the grace period the
+// grant comes only from the person's answer. Inside it, a same-user process that writes a fresh-looking hint for the same session id and folder gets a
+// silent restore (ADR 0002).
+export type ManagerHint = { name: string; savedAt: number; cwd?: string }
 export function parseManagerHint(raw: unknown, now: number): ManagerHint | undefined {
   if (!isObj(raw)) return undefined
-  const { name, savedAt } = raw
+  const { name, savedAt, cwd } = raw
   if (typeof name !== 'string' || !NAME_RE.test(name)) return undefined
   if (!hintAgeOk(savedAt, now)) return undefined
-  return { name, savedAt }
+  return typeof cwd === 'string' && isCleanAbs(cwd) ? { name, savedAt, cwd } : { name, savedAt }
 }
+// How often the saved manager grant is rewritten while the manager runs, and how long after its savedAt a restart in the same folder is restored with no question.
+export const MANAGER_REFRESH_MS = 5 * 60_000
+export const MANAGER_SILENT_GRACE_MS = HOUR_MS
+// Whether a saved manager grant comes back with no question: it names the folder the session started in now, and it was saved at most `graceMs` ago (a savedAt
+// in the future is no time known live). A `graceMs` of 0 never.
+export const managerSilentOk = (hint: ManagerHint, cwd: string | undefined, now: number, graceMs: number): boolean =>
+  hint.cwd !== undefined && cwd === hint.cwd && now >= hint.savedAt && now - hint.savedAt < graceMs
 export const MANAGER_RESTORE_QUESTION = 'Restore this session as the manager of every lane on this machine? You made it the manager here earlier and callboard saved that; click Cancel if you did not. It can resume, compact, stop, retire and remove lanes in any repo. Every stop and remove asks you. Cancel removes the saved manager grant.'
 export const MANAGER_RESTORED_TOAST = 'Manager is on again.'
 export const MANAGER_UNANSWERED_TOAST = 'Manager not restored: the question was not answered. Run /callboard manager.'

@@ -2,7 +2,7 @@
 // text, log lines, toasts, tool declarations, refusal codes) and not as internals. Cells that look odd are pinned as they are and marked.
 // No text of an info print (status, config, lanes, help, escalation) is pinned here: those change on their own.
 import { expect, test } from 'claude-code/testing'
-import { CONDUCTOR_KEPT, CONDUCTOR_ON_TEXT, CONDUCTOR_TOOLS, HINT_MAX_AGE_MS, HINT_REFRESH_MS, LEAD_KEPT, MANAGER_KEPT, MANAGER_ON_TEXT, MANAGER_RESTORED_TOAST, MANAGER_TOOLS, MANAGER_UNANSWERED_TOAST, REASON_TEXT, TIMED_OUT_LEAD_OFF_TOAST, TIMED_OUT_TOAST, conductorBriefingNote, conductorRestoredToast, conductorUnansweredToast, leadBriefingNote, leadRestoredToast, managerBriefingNote } from '../hooks/core'
+import { CONDUCTOR_KEPT, CONDUCTOR_ON_TEXT, CONDUCTOR_TOOLS, HINT_MAX_AGE_MS, HINT_REFRESH_MS, LEAD_KEPT, MANAGER_KEPT, MANAGER_REFRESH_MS, MANAGER_ON_TEXT, MANAGER_RESTORED_TOAST, MANAGER_TOOLS, MANAGER_UNANSWERED_TOAST, REASON_TEXT, TIMED_OUT_LEAD_OFF_TOAST, TIMED_OUT_TOAST, conductorBriefingNote, conductorRestoredToast, conductorUnansweredToast, leadBriefingNote, leadRestoredToast, managerBriefingNote } from '../hooks/core'
 import { h, NO, ROOT, SID, T0, YES, extraStat, laneSeed, leadFiles, statErr, toasts, toolDefs } from './harness'
 import { APP2, COND, FAR, LANE_HINT, LEADKEY, LEADPS, OTHERLEAD, PIN, SELFPATH, STORE_LANE, allEvents, condRun, condSelf, dirStat, lane, leadFileText, leadReg, listCall, logged, mgrFile, mgrRow, noteRows, putCond, putStore, sleepMs, started, ticks, unanswered, waitFor } from './fixtures'
 
@@ -46,6 +46,7 @@ const LV = {
     note: leadBriefingNote(COND),
     offText: 'Lead is now off.',
     kept: LEAD_KEPT,
+    refreshMs: HINT_REFRESH_MS,
     restoreRejected: 'lead-restore-rejected',
     hint: (savedAt: number) => ({ pin: COND, savedAt }),
   },
@@ -62,12 +63,13 @@ const LV = {
     note: conductorBriefingNote('', COND, [PIN, APP2]),
     offText: 'Conductor is now off.',
     kept: CONDUCTOR_KEPT,
+    refreshMs: HINT_REFRESH_MS,
     restoreRejected: 'conductor-restore-rejected',
     hint: (savedAt: number) => ({ home: COND, repos: [PIN], savedAt }),
   },
   manager: {
     key: `manager:${SID}`,
-    saved: { name: 'MANAGER', savedAt: T0 },
+    saved: { name: 'MANAGER', cwd: COND, savedAt: T0 },
     presence: { sid: SID, pid: 4400, procStart: LEADPS, level: 'manager', name: 'MANAGER' },
     atGrant: { sid: SID, pid: 4400, procStart: LEADPS, level: 'manager', name: 'MANAGER' },
     onLog: 'manager-on:prompt',
@@ -77,6 +79,7 @@ const LV = {
     note: managerBriefingNote('MANAGER'),
     offText: 'Manager is now off.',
     kept: MANAGER_KEPT,
+    refreshMs: MANAGER_REFRESH_MS,
     restoreRejected: 'manager-restore-rejected',
     hint: (savedAt: number) => ({ name: 'MANAGER', savedAt }),
   },
@@ -176,18 +179,18 @@ for (const level of LEVELS) {
     expect(h.store.get(L.key)).toEqual(L.saved)
   })
 
-  // Without the mock clock a command runs the timer's step once, and h.nowMs moves at once: a day is one assignment.
-  test(`save: the ${level} key is rewritten once a day from its last save, and not before`, async ($, on) => {
+  // Without the mock clock a command runs the timer's step once, and h.nowMs moves at once: the refresh interval (a day; the manager's is 5 minutes) is one assignment.
+  test(`save: the ${level} key is rewritten every ${L.refreshMs / 60_000} minutes from its last save, and not before`, async ($, on) => {
     await world($, on, [], { clock: false })
     await grant($, level)
     expect(h.store.get(L.key)).toEqual(L.saved)
-    h.nowMs = T0 + HINT_REFRESH_MS - 1
+    h.nowMs = T0 + L.refreshMs - 1
     await $.command.run(lane('status'))
     await sleepMs(50)
     expect(h.store.get(L.key)).toEqual(L.saved)
-    h.nowMs = T0 + HINT_REFRESH_MS
+    h.nowMs = T0 + L.refreshMs
     await $.command.run(lane('status'))
-    await waitFor(() => (h.store.get(L.key) as { savedAt: number }).savedAt === T0 + HINT_REFRESH_MS)
+    await waitFor(() => (h.store.get(L.key) as { savedAt: number }).savedAt === T0 + L.refreshMs)
     expect({ ...(h.store.get(L.key) as object), savedAt: T0 }).toEqual(L.saved)
   })
 
