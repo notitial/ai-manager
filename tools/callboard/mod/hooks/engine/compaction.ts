@@ -518,7 +518,7 @@ export async function keepaliveTick($: any, sid: string, submitsAtStart: number)
 // the nudge throttle; then one nudge is recorded. A fresh nudge already pending is answered nudged as it stands (its time is kept, so the lead cannot
 // stretch its 10 minutes); a pending one of another kind (size, idle, cache) becomes a lead nudge (the order text, not its own).
 export async function leadNudge($: any, sid: string, now: number, answer: Answer, refuse: (reason: string) => Promise<void>) {
-  // A cue's path: the plain registry, as every cue check (a lead's cue never reaches a session whose row is only in another config folder).
+  // A cue's path: the session registry, as every cue check.
   if (!(await personRow($, sid, regOnce($)))) return refuse('not-interactive')
   const read = await $.state.get(nudgeDueRef)
   const pending = read.value as c.NudgeDue | null | undefined

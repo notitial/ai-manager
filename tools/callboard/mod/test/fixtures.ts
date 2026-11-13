@@ -563,7 +563,7 @@ export const condPresenceOf = (sid: string, pid: number, name: string, repos: st
 export const HOOK_BUDGET_MS = 10_000
 export const sleeps = (argv: string[][]) => argv.filter((a) => a[0] === '/bin/sleep')
 
-// ---- stuck lanes: an attached lane no live session carries can be removed; a lead's rename carries the lanes its session joined; /callboard claim ----
+// ---- stuck lanes: an attached lane no live session carries can be removed; a lead's rename carries the lanes its session owns ----
 // A lane a session joined whose session is gone (a lead's records of lanes it was joined to) could not be retired or terminated: only /callboard lane off in the gone session
 // detached it. A lead that was renamed lost the lanes naming its old name.
 export const GONE_ATT = (name = 'ATT', extra: Record<string, unknown> = {}) => attRec(SID, name, { leadName: 'LEAD', ...extra })

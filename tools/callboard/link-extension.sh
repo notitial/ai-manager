@@ -7,7 +7,8 @@
 #                                          entries inside the extensions folder and its .obsolete keys
 # The version comes from extension/package.json. A link into this checkout under another version's name (left by a
 # version bump) is removed. A real folder, or a link to anywhere else, under any notitial.callboard-panels-* name is
-# never touched: the script stops and names it, so an old copy can't shadow the link.# VS Code deletes, at each start, every extension folder that extensions.json doesn't list, so the link alone does not
+# never touched: the script stops and names it, so an old copy can't shadow the link.
+# VS Code deletes, at each start, every extension folder that extensions.json doesn't list, so the link alone does not
 # survive a restart. The entry carries no metadata, which keeps VS Code from deleting through the link. The files are
 # VS Code's own: the script refuses a linked or malformed one and keeps the first old copy as <name>.callboard.bak. It
 # also clears this id's keys in .obsolete. A change needs VS Code quit (Cmd+Q): with it running, --apply refuses and

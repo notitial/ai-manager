@@ -606,7 +606,7 @@ export const HINT_REFRESH_MS = 24 * HOUR_MS
 // `manager` with an optional NAME, one word; managerNameRefusal judges the name, so a bad one gets its own fixed refusal, not the usage line.
 // `conductor` and anything after it is the conductor command (parseConductorArgs); a form it does not know is its own usage text.
 // `reserve` and anything after it is this machine's reserved-names command (parseReserveArgs); a form it does not know is its own usage text.
-export type CommandArg = 'off' | 'status' | 'lead' | 'lanes' | 'claim' | 'lane-off' | { lane: string | undefined } | { config: ConfigOp } | { checkin: CheckinOp } | { manager: string | undefined } | { conductor: ConductorOp } | { reserve: ReserveOp }
+export type CommandArg = 'off' | 'status' | 'lead' | 'lanes' | 'lane-off' | { lane: string | undefined } | { config: ConfigOp } | { checkin: CheckinOp } | { manager: string | undefined } | { conductor: ConductorOp } | { reserve: ReserveOp }
 
 // /callboard with no argument and /callboard help: one row per subcommand the handler accepts, in laneListText's table style. Who: who may run it ("You" is the
 // person, typing it or answering its dialog).
@@ -621,7 +621,6 @@ const HELP_ROWS: [string, string, string][] = [
   ['manager [NAME]', 'Make this session the manager, after you confirm.', 'Anyone'],
   ['config [SETTING VALUE]', 'Show the settings, or change one (reset restores the defaults).', 'Anyone to show, you to change'],
   ['reserve [remove] [NAME]', 'Show the names reserved on this Mac, or add or remove one.', 'Anyone to show, you to change'],
-  ['claim', 'Take over the lanes of a lead that is gone.', 'You'],
   ['checkin pause Nm|h', 'Pause check-ins for N minutes or hours; checkin on resumes them.', 'You, in a lead or manager'],
   ['rest', 'Stop keepalive pings in this idle gap.', 'Anyone'],
   ['off', 'Turn lead, conductor, manager and lane off for this session.', 'Anyone, after you confirm'],
@@ -639,7 +638,7 @@ export function parseCommandArgs(args: unknown): CommandArg | undefined {
   if (typeof args !== 'string') return undefined
   // Runs of spaces or tabs count as one space (a doubled space is a typo); a newline still makes the line unknown.
   const a = args.trim().replace(/[ \t]+/g, ' ')
-  if (a === 'off' || a === 'status' || a === 'lead' || a === 'lanes' || a === 'claim') return a
+  if (a === 'off' || a === 'status' || a === 'lead' || a === 'lanes') return a
   if (a === 'manager') return { manager: undefined }
   const mg = /^manager ([^ \n]{1,80})$/.exec(a)
   if (mg) return { manager: mg[1] }
@@ -797,7 +796,7 @@ export const OFF_YES = 'Turn off'
 export const OFF_NO = 'Cancel'
 
 // The chip above each dialog (the engine allows 12 characters), so the person sees which feature is asking.
-export const HEADER = { enable: 'Callboard', lead: 'Enable Lead', restore: 'Restore Lane', stop: 'Stop Lane', attach: 'Join Lane', manager: 'Manager', conductor: 'Conductor', claim: 'Claim Lanes' } as const
+export const HEADER = { enable: 'Callboard', lead: 'Enable Lead', restore: 'Restore Lane', stop: 'Stop Lane', attach: 'Join Lane', manager: 'Manager', conductor: 'Conductor' } as const
 
 // Where a /callboard command came from, as fixed codes and words; never a plugin's own name or text.
 export type OriginCode = 'prompt' | 'phone' | 'plugin' | 'session' | 'other'
@@ -978,31 +977,6 @@ export const afterSignalFailedText = (verb: 'retire' | 'park' | 'terminate', nam
   (verb === 'park'
     ? 'Call lane_list: a parked lane shows as parked; if it does not, lane_unpark can still reopen it by its saved session.'
     : `Call lane_list, then lane_${verb} again if the lane is still listed.`)
-// ---- A lead's lanes after its name changed or its session ended: the rename carry and /callboard claim ----
-// Reach is by name: a lead reaches a lane that names it. A lead that is renamed keeps the lanes that session itself joined (the attached records naming its
-// session id): its tick moves their lead name along. Records it cannot prove are its own (a lane it made carries no lead session id), and any record whose lead
-// name no live session carries any more, wait for the person: /callboard claim names them in a dialog and re-points them at the claiming lead's name.
-export const CLAIM_YES = 'Claim'
-export const CLAIM_NO = 'Cancel'
-export const CLAIM_NOT_PERSON = 'Only you can claim lanes: type /callboard claim yourself.'
-export const CLAIM_NOT_LEAD = 'Claim needs the lead grant: run /callboard lead in this session first.'
-export const CLAIM_UNNAMED = 'This lead has no usable name, so no lane could name it. Give the session a name with /rename first.'
-export const CLAIM_NONE = 'No lane in this repo names a lead that is not running. Nothing to claim.'
-export const CLAIM_OTHER_UNNAMED = 'Another live lead in this repo has no usable name, so it cannot be told from a lead that is gone. Give it a name with /rename first. Nothing changed.'
-export const CLAIM_UNREADABLE = 'The lane list or the session list could not be read. Nothing changed.'
-export const claimQuestion = (lanes: string[], repo: string, olds: string[], lead: string, home?: string): string =>
-  `Claim lane${lanes.length === 1 ? '' : 's'} ${lanes.join(', ')} in ${homePath(repo, home)} for lead ${lead}? ${lanes.length === 1 ? 'It names' : 'They name'} ${olds.length === 1 ? 'a lead' : 'leads'} that ${olds.length === 1 ? 'is' : 'are'} not running (${olds.join(', ')}). ${lanes.length === 1 ? 'It answers' : 'They answer'} ${lead} afterwards.`
-export const claimedText = (lanes: string[], lead: string): string => `Claimed ${lanes.length} lane${lanes.length === 1 ? '' : 's'} for ${lead}: ${lanes.join(', ')}. Run lane_list to see ${lanes.length === 1 ? 'it' : 'them'}.`
-export const claimRefusedText = (code: string): string => `Nothing claimed: ${code}.`
-export const CLAIM_HINT = (names: string[]): string => `Not in your list: ${names.join(', ')} ${names.length === 1 ? 'names' : 'name'} a lead that is not running. The person can type /callboard claim to make ${names.length === 1 ? 'it' : 'them'} yours.`
-// The records a lead may claim: the lanes a lead made or joined in its own repo (a store lane, repo equal to its pin) whose lead name is neither its own nor
-// carried by any live session in any letter case. The caller passes the live session names and checks each record again inside the store lock.
-export function claimable(lanes: Lane[], g: Grant, liveNames: string[]): Lane[] {
-  if (g.level !== 'lead' || g.name === '' || g.pins.length !== 1) return []
-  const live = new Set(liveNames.filter((n) => typeof n === 'string').map((n) => n.toLowerCase()))
-  return lanes.filter((l) => l.src !== undefined && l.repo === g.pins[0] && l.leadName !== undefined && l.leadName !== g.name && !live.has(l.leadName.toLowerCase()))
-}
-
 export const removedNoSessionText = (verb: 'retire' | 'terminate', name: string): string => `lane ${name} ${verb === 'retire' ? 'retired' : 'terminated'} and removed: it had no live session. Its .archive/${name}/ folder and report stay.`
 
 // The report's last line is the signature: `status: done <session id of the writer>`. Older reports of earlier sessions

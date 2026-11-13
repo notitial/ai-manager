@@ -94,7 +94,7 @@ import {
   lockStore,
 } from './store.ts'
 import type { RegRow, Reg } from './store.ts'
-import { sessionRoot, leadToolsOnce, promptToolsRegister, leadCore, readReport, laneLive } from './lanes.ts'
+import { sessionRoot, leadToolsOnce, promptToolsRegister, leadCore, readReport } from './lanes.ts'
 import type { Bound } from './lanes.ts'
 import { interactive, busyAgents, personRow, backgroundShells } from './compaction.ts'
 import { managerCommand } from './commands.ts'
@@ -1009,11 +1009,11 @@ async function attentionNotice($: any, sid: string, items: c.AttentionItem[], su
   await log($, sid, sent === 'ok' ? label : sent === 'timeout' ? `${label}-unconfirmed` : `${label}-failed`, `${codes}:${fresh.length}`)
 }
 
-// ---- the rename carry and /callboard claim (see c.claimable) ----
+// ---- the rename carry ----
 // A lead that is renamed keeps the lanes its own session made or joined: once a lead's registry name (c.leadNameOf) differs from the one cached at its grant, the
 // records of its repo that name its session id (c.leadOwns: `lead` of an attached record, `leadSid` of a made one) and its old name take the new name, in one store
 // write under the lock. A record it cannot prove is its own (a lane made before records carried `leadSid`; a lead that restarted has another session id) is left
-// to /callboard claim. A rename that
+// as it is. A rename that
 // leaves no usable name carries nothing and keeps the old name cached, so the next valid name still finds the records. Checked at most every RENAME_CHECK_MS.
 const RENAME_CHECK_MS = 10_000
 
@@ -1055,28 +1055,6 @@ export async function leadRenameTick($: any, sid: string) {
     if (r.text !== '') await log($, sid, 'lead-rename-carried', String(mine.length))
   }
   if (grants.get(sid) === g) grants.set(sid, { ...g, name: cur })
-}
-
-// The names of every live session but this one: a lead renamed only in letter case (Twin to TWIN) still has its made lanes to claim, and the registry already
-// guarantees no other row carries its name in any case (c.leadNameOf).
-export const otherNames = (live: RegRow[], sid: string): string[] => live.flatMap((r) => (typeof r.j.name === 'string' && r.j.sessionId !== sid ? [r.j.name] : []))
-
-// A claim is held back while another live lead of the repo has no usable name (its lanes would look like a gone lead's), or while the registry or the presence
-// files cannot be read; undefined when it may go on. Run for the plan and again inside the store lock.
-export async function claimBlocked($: any, live: RegRow[], sid: string, pin: string): Promise<string | undefined> {
-  const errs = { error: false }
-  const leads = (await leadsFor($, live, pin, pin, errs)).filter((x) => x.sid !== sid)
-  if (errs.error) return 'unreadable'
-  const rows = live.map((r) => r.j)
-  return leads.some((x) => c.leadNameOf(rows, x.sid) === undefined) ? 'other-unnamed' : undefined
-}
-// An attached record whose lead session is live is that lead's, whatever name it carries now.
-export const leadLiveFor = (live: RegRow[], l: { adopted?: true | boolean; lead?: string }, own: string): boolean => l.adopted === true && l.lead !== undefined && l.lead !== own && live.some((r) => r.j.sessionId === l.lead)
-// The records /callboard claim would take now: claimable, minus an attached record whose lead is another live session and a lane the lead made that a live session carries.
-export async function claimLanes($: any, live: RegRow[], lanes: c.Lane[], g: c.Grant, sid: string): Promise<c.Lane[]> {
-  const out: c.Lane[] = []
-  for (const l of c.claimable(lanes, g, otherNames(live, sid))) if (!leadLiveFor(live, l, sid) && (l.adopted || (await laneLive($, live, l)) === undefined)) out.push(l)
-  return out
 }
 
 // /callboard off: the pending restore and the saved grant go. Resolves false when the delete failed (the reply then says the manager may come back).

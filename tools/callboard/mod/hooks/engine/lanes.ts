@@ -94,7 +94,6 @@ import {
   conductorReach,
   conductorsLive,
   leadsInReach,
-  claimLanes,
   reservedGet,
   findLead,
   psOne,
@@ -113,8 +112,8 @@ const stopCallKey = (sid: string, verb: string, lane: unknown) => `${sid}\n${ver
 // ---- the lane's briefing (c.laneBriefing) ----
 // The facts of a binding just written, kept at once without a lead; then the lead. Only a lead with a valid presence file for the lane's own repo counts (never
 // one of a parent repo, nor any lead of a lane with no repo): for a record naming its lead, the live lead with that registry name and no other; else the
-// lead session id the record holds (`leadSid` of a made one, then the one the caller passes: an attached record's `lead` or the rename cue's), else the one
-// lead of that repo. It is named only as c.laneLeadOf allows. The lead is added only to the entry
+// lead session id the record holds (`leadSid` of a made one while that lead is live, else the one the caller passes: an attached record's `lead` or the rename
+// cue's), else the one lead of that repo. It is named only as c.laneLeadOf allows. The lead is added only to the entry
 // this call kept, so a detach meanwhile leaves nothing behind. A failure keeps the generic lead wording and is logged as lane-lead; c.laneBriefing checks
 // every field again.
 export async function keepLaneFacts($: any, sid: string, l: c.Lane, attached: boolean, leadSid: string | undefined, reg: Reg = () => registryEntries($)) {
@@ -126,7 +125,7 @@ export async function keepLaneFacts($: any, sid: string, l: c.Lane, attached: bo
     if (!live) return
     const leads = await leadsFor($, live, l.folder, l.repo)
     const rows = live.map((r) => r.j)
-    const ownSid = l.leadSid ?? leadSid
+    const ownSid = l.leadSid !== undefined && leads.some((x) => x.sid === l.leadSid) ? l.leadSid : leadSid
     const lead = l.leadName !== undefined ? leads.find((x) => c.leadNameOf(rows, x.sid) === l.leadName) : ownSid !== undefined ? leads.find((x) => x.sid === ownSid) : leads.length === 1 ? leads[0] : undefined
     const known = lead ? c.laneLeadOf(rows, lead.sid) : undefined
     if (known && laneBrief.get(sid) === base) laneBrief.set(sid, { ...base, lead: known })
@@ -288,7 +287,7 @@ async function removeRecord($: any, e: unknown, me: string, key: string, name: s
         if (rec.sid !== undefined && rec.sid !== mode.victim) return { no: 'changed' }
       } else {
         if (rec.sid !== mode.sid || (rec.parked !== undefined) !== mode.parked) return { no: 'changed' }
-        // The record the question or the check saw: not one remade under the name, nor one a claim re-pointed at another lead meanwhile.
+        // The record the question or the check saw: not one remade under the name, nor one re-pointed at another lead meanwhile.
         if (rec.leadName !== mode.seen.leadName || (rec.adopted === true) !== (mode.seen.adopted === true) || rec.lead !== mode.seen.lead || rec.leadSid !== mode.seen.leadSid) return { no: 'changed' }
         const rows = await registryEntries($)
         if (!rows) return { no: 'registry-unreadable', why: c.reasonWhy('registry-unreadable') }
@@ -640,8 +639,7 @@ async function modelSet($: any, model: c.LaneModel): Promise<boolean> {
   }
 }
 
-// The folder the session started in ($.session.root(), engine 2.1.316). An engine without root() fails the call, and the live folder ($.session.cwd()) is
-// read instead; a root() read that fails on an engine that has it reads cwd() the same way.
+// The folder the session started in ($.session.root()); a root() read that fails reads the live folder ($.session.cwd()) instead.
 export async function sessionRoot($: any): Promise<any> {
   try {
     return await $.session.root()
@@ -925,9 +923,7 @@ export async function laneTable($: any, sid: string) {
   const conductors = base.g.level === 'manager' ? await conductorsLive($, base.live, sid).catch(() => 'error' as const) : undefined
   const leads = await leadsInReach($, base.live, base.g).catch(() => [])
   const text = c.laneListText(base.lanes.filter((l) => c.inReach(base.g, l)), base.live.map(regEntry), await $.clock.now(), { level: base.g.level, name: base.g.name, conductors, leads })
-  // A lead's own list shows only the lanes that name it; the ones that name a lead no live session carries are told by name, for the person's /callboard claim.
-  const orphans = (await claimLanes($, base.live, base.lanes, base.g, sid).catch(() => [])).map((l) => l.name)
-  return { text: orphans.length > 0 ? `${text}\n\n${c.CLAIM_HINT(orphans)}` : text }
+  return { text }
 }
 
 const OBS_CLEAR_TOOLS = ['terminate', 'retire', 'park', 'unpark', 'resume'].map((v) => `mcp__callboard__lane_${v}`)

@@ -1137,7 +1137,7 @@ test('helpText is a header and a three-column table with one row per subcommand,
   const lines = c.helpText().split('\n')
   assert.deepEqual(lines.slice(0, 4), ['**Callboard commands**', '', '| Command | What it does | Who |', '|---|---|---|'])
   const words = lines.slice(4).map((l) => /^\| ([^ \\|]+)/.exec(l)![1])
-  assert.deepEqual(words, ['lanes', 'status', 'lead', 'lane', 'escalation', 'prompts', 'conductor', 'manager', 'config', 'reserve', 'claim', 'checkin', 'rest', 'off', 'help'])
+  assert.deepEqual(words, ['lanes', 'status', 'lead', 'lane', 'escalation', 'prompts', 'conductor', 'manager', 'config', 'reserve', 'checkin', 'rest', 'off', 'help'])
   assert.ok(lines.includes('| lane \\[NAME\\] | Make this session a lane, named NAME if given; lane off takes it out of its lane. | You |'))
   for (const l of lines.slice(4)) assert.equal(l.replace(/\\\|/g, '').split('|').length, 5, l)
   assert.match(c.HELP_USAGE, /manager/)
@@ -2462,36 +2462,16 @@ test('v15.4 the mod waits only through pause(): the only $.clock.sleep left are 
   assert.ok(hits.every((l) => l.includes('Promise.race(')), hits.join('\n'))
 })
 
-// ---- stuck lanes: refusal text, claimable ----
+// ---- stuck lanes: refusal text ----
 test('stuck lanes: the adopted-record refusal names no route that needs the gone session', () => {
   const t = c.reasonWhy('adopted-record')
   assert.equal(t, 'adopted-record: an attached lane keeps its own session: no rename, start or open. Use lane_resume to prompt it. lane_retire or lane_terminate ends it.')
   assert.ok(!t.includes('/callboard lane off'))
 })
 
-test('stuck lanes: claimable takes the store lanes of the lead\'s own repo that name a lead no live session carries, in any letter case', () => {
-  const lane = (name: string, leadName?: string, extra: Record<string, unknown> = {}) => ({ name, folder: '/w/repo', brief: '/w/repo/B.md', repo: '/w/repo', src: 'k', ...(leadName ? { leadName } : {}), ...extra })
-  const lanes = [lane('legacy'), lane('mine', 'NEW'), lane('dead', 'old-aa'), lane('alive', 'ALIVE'), lane('other-case', 'Twin'), lane('far', 'old-bb', { repo: '/w/repo/sub' }), lane('nosrc', 'old-cc', { src: undefined })]
-  const names = (g: c.Grant, live: string[]) => c.claimable(lanes, g, live).map((l) => l.name)
-  assert.deepEqual(names(c.leadGrant('/w/repo', 'NEW'), ['NEW', 'ALIVE', 'twin']), ['dead'])
-  assert.deepEqual(names(c.leadGrant('/w/repo', 'NEW'), ['NEW', 'ALIVE', 'TWIN', 'OLD-AA']), [])
-  // A lead with no usable name, a conductor and the manager claim nothing.
-  assert.deepEqual(names(c.leadGrant('/w/repo', ''), []), [])
-  assert.deepEqual(names({ level: 'conductor', pins: ['/w/repo'], name: 'C' }, []), [])
-  assert.deepEqual(names({ level: 'manager', pins: [], name: 'MANAGER' }, []), [])
-})
-
-test('stuck lanes: the claim question names the lanes, the old lead names and the claiming lead', () => {
-  assert.equal(c.claimQuestion(['A', 'B'], '/Users/x/code/app', ['old-aa'], 'NEW', '/Users/x'), 'Claim lanes A, B in ~/code/app for lead NEW? They name a lead that is not running (old-aa). They answer NEW afterwards.')
-  assert.equal(c.claimQuestion(['A'], '/Users/x/code/app', ['p', 'q'], 'NEW', '/Users/x'), 'Claim lane A in ~/code/app for lead NEW? It names leads that are not running (p, q). It answers NEW afterwards.')
-  assert.equal(c.parseCommandArgs('claim'), 'claim')
-  assert.equal(c.parseCommandArgs(' claim  '), 'claim')
-  assert.equal(c.parseCommandArgs('claim x'), undefined)
-})
-
-test('stuck lanes: claimable, given the live names without the claimer\'s own, still offers a lane the lead made under its old letter case', () => {
-  const lane = { name: 'M', folder: '/w/repo', brief: '/w/repo/B.md', repo: '/w/repo', src: 'k', leadName: 'Twin' }
-  assert.deepEqual(c.claimable([lane], c.leadGrant('/w/repo', 'TWIN'), []).map((l) => l.name), ['M'])
+test('parseCommandArgs: claim is not a command any more', () => {
+  assert.equal(c.parseCommandArgs('claim'), undefined)
+  assert.equal(c.parseCommandArgs(' claim  '), undefined)
 })
 
 // Byte pins for the texts that carry a number typed into them (15 minutes, 30 minutes, 12 resumes per hour, 100k, 8000, 16, 1 MB), and for the four fixed
