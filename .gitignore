@@ -17,6 +17,9 @@
 # Written by Claude Code when it loads the callboard mod from a live checkout; nothing in the repo reads it
 tools/callboard/mod/tsconfig.json
 
+# Marker that arms the toolkit's protected-paths hook for this checkout (made by the person, never committed)
+.protected-checkout
+
 # Orchestrator lock runtime state (created on acquire; never committed)
 .workspace-lock/
 
