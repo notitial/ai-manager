@@ -889,7 +889,7 @@ export async function leadBase($: any, e: unknown, sid: string) {
   if ((e as { agentId?: string }).agentId !== undefined) return { err: SUBAGENT }
   // The manager has eight tools (c.MANAGER_TOOLS: five lane tools and the three prompt tools); every other lane tool refuses it, declared or not.
   if (grantOf(sid)?.level === 'manager' && !c.MANAGER_TOOLS.includes(String((e as { tool?: unknown }).tool))) return { err: ['manager-tool', c.REASON_TEXT['manager-tool']] as const }
-  // The conductor has six (c.CONDUCTOR_TOOLS: three lane tools and the three prompt tools).
+  // The conductor has seven (c.CONDUCTOR_TOOLS: three lane tools, lead_open and the three prompt tools).
   if (grantOf(sid)?.level === 'conductor' && !c.CONDUCTOR_TOOLS.includes(String((e as { tool?: unknown }).tool))) return { err: ['conductor-tool', c.REASON_TEXT['conductor-tool']] as const }
   return leadCore($, sid)
 }
@@ -1211,10 +1211,10 @@ export async function laneCreateCall($: any, e: any, next: any) {
 }
 
 // The exchange with the panels extension through <root>/open (lane_open, lane_unpark): the folder must be private, an answer left over goes first, the request is
-// written, then OPEN_POLL_MAX polls of OPEN_POLL_MS each read the answer. kind names the request file (<name>.open or <name>.reopen), its log line and its refusal codes.
+// written, then OPEN_POLL_MAX polls of OPEN_POLL_MS each read the answer. kind names the request file (<name>.open, .reopen or .lead), its log line and its refusal codes.
 // { sid }: the window answered ok; otherwise the deny to return. A request no window answered is taken back.
-async function openExchange($: any, sid: string, name: string, kind: 'open' | 'reopen', text: string, timeoutWhy: string, no: (reason: string, why: string) => Promise<{ deny: string }>): Promise<{ deny: string } | { sid: string }> {
-  const table = kind === 'open' ? c.OPEN_TEXT_BY_CODE : c.REOPEN_TEXT_BY_CODE
+export async function openExchange($: any, sid: string, name: string, kind: 'open' | 'reopen' | 'lead', text: string, timeoutWhy: string, no: (reason: string, why: string) => Promise<{ deny: string }>): Promise<{ deny: string } | { sid: string }> {
+  const table = kind === 'open' ? c.OPEN_TEXT_BY_CODE : kind === 'lead' ? c.LEAD_OPEN_TEXT_BY_CODE : c.REOPEN_TEXT_BY_CODE
   const p = await where($)
   if (!p) return no('no-paths', 'no-paths')
   const result = `${p.root}/open/${name}.result`

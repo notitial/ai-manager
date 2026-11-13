@@ -2,6 +2,8 @@
 // Open requests from a lead session (ADR 0002). The lead's lane_open tool writes <LANE>.open into
 // ~/.claude/callboard/open; this window opens the lane's panel when the lane is in a lane store and its
 // folder is a workspace folder of this window, then writes <LANE>.result (`ok <sid>` or `error <code>`).
+// A conductor's lead_open writes <NAME>.lead (ADR 0006): no lane record exists, so the request names the repo, and this window
+// opens a panel only when that repo is its first workspace folder, answering on <NAME>.result the same way.
 // Every file is a filter: any process of the same user can write here, so the limits below do not rely on the file.
 
 const fsp = require('node:fs/promises')
@@ -16,6 +18,9 @@ const MIN_GAP_MS = 10_000
 const MAX_SKEW_MS = 5000
 const RESULT_KEEP_MS = 600_000
 const REQUEST_TEXT = 'open\n'
+// <NAME>.lead: `lead <nonce, 32 hex> <repo real path>`, one line.
+const LEAD_MAX = 1024
+const LEAD_RE = /^lead [0-9a-f]{32} (\/[\x21-\x7e]{1,500})\n$/
 const OPEN_BUDGET = 6
 const OPEN_BUDGET_MS = 60_000
 const LIVE_PER_REPO = 8
@@ -112,7 +117,7 @@ async function allLanes({ storeDir, uid, home } = {}) {
   return out
 }
 
-function createSpool({ dir, uid = process.getuid(), loadLanes, openLane, closeLane, reopenLane, workspaceFolders, liveInRepo, now = Date.now }) {
+function createSpool({ dir, uid = process.getuid(), home = os.homedir(), loadLanes, openLane, closeLane, reopenLane, workspaceFolders, liveInRepo, now = Date.now }) {
   let seq = 0
   let busy = false
   const lastOpen = new Map()
@@ -150,11 +155,9 @@ function createSpool({ dir, uid = process.getuid(), loadLanes, openLane, closeLa
 
   const drop = (file) => fsp.unlink(file).catch(() => undefined)
 
-  // The front half the three request kinds share, in this order: look at the file, the file test (plain, ours, 0600, one link, at most maxBytes), the age test,
-  // the lane list, the lane, the window's folder, the claim by rename, the inode check, the bounded read, and the claimed file dropped. It returns { code } for
-  // the refusal to give back, or { lane, body, t } (body is undefined when the claimed file was not the one first looked at). answers: a refusal for the lane
-  // list or an unknown lane is also answered on <LANE>.result; a close request answers nothing.
-  async function claim(name, ext, maxBytes, answers) {
+  // The front half every request kind shares: look at the file, the file test (plain, ours, 0600, one link, at most maxBytes) and the age test. It returns
+  // { code } for the refusal to give back (a bad or stale file is dropped), or { file, st, t }.
+  async function look(name, ext, maxBytes) {
     const file = path.join(dir, `${name}.${ext}`)
     const st = await fsp.lstat(file).catch(() => undefined)
     if (!st) return { code: 'gone' }
@@ -167,22 +170,12 @@ function createSpool({ dir, uid = process.getuid(), loadLanes, openLane, closeLa
       await drop(file)
       return { code: 'stale' }
     }
-    let lanes
-    try {
-      lanes = await loadLanes()
-    } catch {
-      await drop(file)
-      if (answers) await writeResult(name, 'error lanes-file\n')
-      return { code: 'lanes-file' }
-    }
-    const lane = lanes.find((l) => l.name === name)
-    if (!lane) {
-      await drop(file)
-      if (answers) await writeResult(name, 'error unknown-lane\n')
-      return { code: 'unknown-lane' }
-    }
-    // Another window may hold the folder: leave the file for it, and answer nothing.
-    if (!(workspaceFolders() || []).includes(lane.folder)) return { code: 'not-mine' }
+    return { file, st, t }
+  }
+
+  // The back half: the claim by rename (the request is handled once, and the 1 s rescan never reopens it), the inode check, the bounded read, and the claimed
+  // file dropped. { code } when the rename lost; otherwise { body }, undefined when the claimed file was not the one first looked at.
+  async function take(name, file, st, maxBytes) {
     const taken = path.join(dir, `.${name}.${process.pid}.${++seq}.taken`)
     try {
       await fsp.rename(file, taken)
@@ -192,7 +185,33 @@ function createSpool({ dir, uid = process.getuid(), loadLanes, openLane, closeLa
     const moved = await fsp.lstat(taken).catch(() => undefined)
     const body = moved && moved.isFile() && moved.ino === st.ino && moved.size <= maxBytes ? await fsp.readFile(taken, 'utf8').catch(() => undefined) : undefined
     await drop(taken)
-    return { lane, body, t }
+    return { body }
+  }
+
+  // The three lane request kinds in this order: look, the lane list, the lane, the window's folder, take. It returns { code } for the refusal to give back, or
+  // { lane, body, t }. answers: a refusal for the lane list or an unknown lane is also answered on <LANE>.result; a close request answers nothing.
+  async function claim(name, ext, maxBytes, answers) {
+    const f = await look(name, ext, maxBytes)
+    if (f.code) return f
+    let lanes
+    try {
+      lanes = await loadLanes()
+    } catch {
+      await drop(f.file)
+      if (answers) await writeResult(name, 'error lanes-file\n')
+      return { code: 'lanes-file' }
+    }
+    const lane = lanes.find((l) => l.name === name)
+    if (!lane) {
+      await drop(f.file)
+      if (answers) await writeResult(name, 'error unknown-lane\n')
+      return { code: 'unknown-lane' }
+    }
+    // Another window may hold the folder: leave the file for it, and answer nothing.
+    if (!(workspaceFolders() || []).includes(lane.folder)) return { code: 'not-mine' }
+    const got = await take(name, f.file, f.st, maxBytes)
+    if (got.code) return got
+    return { lane, body: got.body, t: f.t }
   }
 
   // The half an open and a reopen share once the request is read: the gap since this lane's last open, the live sessions in its repo, the budget of opens a
@@ -228,9 +247,13 @@ function createSpool({ dir, uid = process.getuid(), loadLanes, openLane, closeLa
     }
     const adm = await admit(name, lane, t)
     if (adm.code) return adm.code
-    const prevOpen = adm.prev
+    return openPanel(name, lane.folder, t, adm.prev)
+  }
+
+  // Opens the panel in the folder and answers on <NAME>.result: `ok <sid>`, or `error <code>`.
+  async function openPanel(name, folder, t, prevOpen) {
     try {
-      const sid = await openLane(lane.folder)
+      const sid = await openLane(folder)
       if (!SID_RE.test(String(sid))) throw new Error('no sid')
       await writeResult(name, `ok ${sid}\n`)
       return 'opened'
@@ -241,6 +264,35 @@ function createSpool({ dir, uid = process.getuid(), loadLanes, openLane, closeLa
       await writeResult(name, `error ${code}\n`)
       return code
     }
+  }
+
+  // A lead request, <NAME>.lead, written by a conductor's lead_open: `lead <nonce> <repo>`. No lane record names the repo, so the request does. It is read first,
+  // without following a link and without claiming it: a request for another window's repo is left where it is, and answers nothing. Only a repo that is this window's first
+  // workspace folder, is its own real path and is no broad folder is claimed (renamed, checked by inode, read again, and the same text required), so a request
+  // is handled once. Then the same limits as an open (the gap per name, 8 live sessions in the repo, 6 opens a minute) and the same panel open, which refuses
+  // while an unnamed panel of ours sits in the folder. The nonce is not read here: the request only opens a window.
+  async function handleLead(name) {
+    const f = await look(name, 'lead', LEAD_MAX)
+    if (f.code) return f.code
+    const text = await readOwned(f.file, uid, { modeBad: (mode) => (mode & 0o777) !== 0o600, max: LEAD_MAX })
+    const m = text === undefined ? null : LEAD_RE.exec(text)
+    if (!m) {
+      await drop(f.file)
+      await writeResult(name, 'error bad-request\n')
+      return 'bad-request'
+    }
+    const repo = m[1]
+    if (!clean(repo) || pinRefusal(repo, home) !== undefined || reservedHit(name) || !(workspaceFolders() || []).includes(repo)) return 'not-mine'
+    if ((await fsp.realpath(repo).catch(() => '')) !== repo) return 'not-mine'
+    const got = await take(name, f.file, f.st, LEAD_MAX)
+    if (got.code) return got.code
+    if (got.body !== text) {
+      await writeResult(name, 'error bad-request\n')
+      return 'bad-request'
+    }
+    const adm = await admit(name, { repo }, f.t)
+    if (adm.code) return adm.code
+    return openPanel(name, repo, f.t, adm.prev)
   }
 
   // A close request: <LANE>.close, three lines (session id, pid, lane name), written by the mod after a stop signal. The lane must be in the lane list and
@@ -291,8 +343,8 @@ function createSpool({ dir, uid = process.getuid(), loadLanes, openLane, closeLa
     }
   }
 
-  // The request kinds a scan handles, by file suffix (the suffixes exclude each other); a name that fails NAME_RE is left alone.
-  const KINDS = [['.close', handleClose], ['.reopen', handleReopen], ['.open', handle]]
+  // The request kinds a scan handles, by file suffix (the suffixes exclude each other: .open is last, and no other suffix ends in it); a name that fails NAME_RE is left alone.
+  const KINDS = [['.close', handleClose], ['.reopen', handleReopen], ['.lead', handleLead], ['.open', handle]]
   async function scan() {
     if (busy) return []
     busy = true
@@ -323,7 +375,7 @@ function createSpool({ dir, uid = process.getuid(), loadLanes, openLane, closeLa
     return { dispose: () => clearInterval(timer) }
   }
 
-  return { scan, handle, handleClose, handleReopen, start }
+  return { scan, handle, handleClose, handleReopen, handleLead, start }
 }
 
 module.exports = { createSpool, readStores, allLanes, REQUEST_TEXT }
