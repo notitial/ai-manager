@@ -9,7 +9,7 @@ export const events = (stdins: string[]) => allEvents(stdins).filter((e) => e.ev
 
 export const PERSON = { kind: 'composer' } as const
 // The usage line, which /callboard on gets too.
-export const USAGE = 'Use /callboard help, lanes, status, lead, lane [NAME], escalation [off], prompts, manager or off. Run /callboard help for the full list.'
+export const USAGE = 'Use /callboard help, lanes, status, lead, lane [NAME], escalation [off], manager or off. Run /callboard help for the full list.'
 export const lane = (args: string, origin: unknown = PERSON) => ({ command: 'callboard', args, origin }) as any
 export const statusText = async ($: any) => (await $.command.run(lane('status'))).text as string
 
@@ -236,19 +236,25 @@ export const dropRec = (name: string) => putStore((storeJson().lanes as { name: 
 export const listCall = () => ({ tool: 'mcp__callboard__lane_list' }) as any
 
 export const listed = async ($: any) => (await $.tool.call(listCall())).result as string
-// The list is one table under a plain header line (the fix pass, 2026-11-11): the lead and the repo sit on the first row of their group. A row is [lane, folder, session,
-// waiting]; four columns means the table has a Folder column. The Usage cell is added here: `no reading` for a live lane, a dash for the rest. noNote drops the lanes-changed note, which follows the table after a blank line.
+// The list is one table under a plain header line: each repo and lead is a bold group row (`**repo · LEAD**`), its lanes follow with a `↳`. A row is [lane, folder, session,
+// waiting]; four columns means the table has a Folder column. A named lead is the live one that lists (session `lead`, no reading); `Any lead` has no session. The figure
+// cells are added here: `?` for a live row with no reading, empty for the rest. noNote drops the lanes-changed note, which follows the table after a blank line.
 export const ANY: [string, string] = ['Any lead', 'app']
 const LEADHEAD = '**Lead LEAD** · live'
+const NO_READING = ['?', '?', '?', '?', '–']
 export const mdTable = (groups: Array<[string, string, string[][]]>, head = LEADHEAD) => {
   const withFolder = groups.some(([, , rows]) => rows.some((r) => r.length === 4))
-  const cols = ['Lead', 'Repo', 'Lane', ...(withFolder ? ['Folder'] : []), 'Session', 'Usage', 'Waiting']
+  const cols = ['Lane', ...(withFolder ? ['Folder'] : []), 'Session', 'Context', '5h', '7d', 'Cost', 'Read', 'Waiting']
+  const row = (cells: string[]) => `| ${cells.join(' | ')} |`
   return [
     head,
     '',
-    `| ${cols.join(' | ')} |`,
+    row(cols),
     `|${cols.map(() => '---').join('|')}|`,
-    ...groups.flatMap(([lead, repo, rows]) => rows.map((r, k) => `| ${[k === 0 ? lead : '', k === 0 ? repo : '', ...r.slice(0, -1), r[r.length - 2] === 'live' ? 'no reading' : '–', r[r.length - 1]].join(' | ')} |`)),
+    ...groups.flatMap(([lead, repo, rows]) => [
+      row([`**${repo} · ${lead}**`, ...(withFolder ? [''] : []), lead === 'Any lead' ? '' : 'lead', ...(lead === 'Any lead' ? ['', '', '', '', ''] : NO_READING), '']),
+      ...rows.map((r) => row([`↳ ${r[0]}`, ...(r.length === 4 ? [r[1]] : []), r[r.length - 2], ...(r[r.length - 2] === 'live' ? NO_READING : ['', '', '', '', '']), r[r.length - 1]])),
+    ]),
   ].join('\n')
 }
 export const mdBox = (who: [string, string], rows: string[][], head = LEADHEAD) => mdTable([[who[0], who[1], rows]], head)

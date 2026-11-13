@@ -44,7 +44,7 @@ test('check-in: a lane signed done is not told, quiet or gone; a parked lane and
   await ckLead($, on, [], {}, [{ name: 'LAB', folder: `${PIN}/lab`, brief: `${PIN}/lab/B.md`, createdAt: 1 }, ckLane(), { ...madeLane('PARKED'), sid: OTHERLEAD, parked: 5 }])
   h.reportFile = { text: `notes\nstatus: done ${OTHER}\n`, mtimeSec: T0 / 1000 }
   await idleFor(36 * MIN)
-  expect((await bareList($)).split('\n').slice(4).map((l) => l.split('|')[3].trim())).toEqual(['LAB', 'API', 'PARKED'])
+  expect((await bareList($)).split('\n').filter((l) => l.startsWith('| ↳ ')).map((l) => l.split('|')[1].trim().slice(2))).toEqual(['LAB', 'API', 'PARKED'])
   h.sessions = leadSelfReg()
   await idleFor(20 * MIN)
   expect(checkins()).toEqual([])

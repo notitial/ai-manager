@@ -6,6 +6,12 @@ import * as c from './core.ts'
 
 const reserved = createRequire(import.meta.url)('../../extension/reserved.js') as { reservedHit: (name: string) => boolean; pinRefusal: (pin: string, home: string) => string | undefined }
 
+// One table row, for the lane-list goldens: cells joined the way the table prints them (an empty cell is two spaces between bars).
+const tr = (...cells: string[]): string => `| ${cells.join(' | ')} |`
+const NU = ['', '', '', '', '']
+const LANE_HEAD = ['Lane', 'Session', 'Context', '5h', '7d', 'Cost', 'Read', 'Waiting']
+const headRows = (head: string[]): string[] => [tr(...head), `|${head.map(() => '---').join('|')}|`]
+
 test('parseCue accepts only the five verbs with one final newline', () => {
   assert.deepEqual(c.parseCue('retire\n'), { ok: true, cue: { verb: 'retire' } })
   assert.deepEqual(c.parseCue('start\n'), { ok: true, cue: { verb: 'start' } })
@@ -1142,15 +1148,18 @@ test('noticeAllowed takes its own cap; the old default stays 3', () => {
   assert.equal(c.LANES_NOTICES_PER_HOUR, 12)
 })
 
-test('helpText is a header and a three-column table with one row per subcommand, markdown-escaped; HELP_USAGE names the full list', () => {
+test('helpText is a header and a two-column table with one row per subcommand, markdown-escaped; HELP_USAGE names the full list', () => {
   const lines = c.helpText().split('\n')
-  assert.deepEqual(lines.slice(0, 4), ['**Callboard commands**', '', '| Command | What it does | Who |', '|---|---|---|'])
-  const words = lines.slice(4).map((l) => /^\| ([^ \\|]+)/.exec(l)![1])
-  assert.deepEqual(words, ['lanes', 'status', 'lead', 'lane', 'escalation', 'prompts', 'conductor', 'manager', 'config', 'reserve', 'checkin', 'rest', 'off', 'help'])
-  assert.ok(lines.includes('| lane \\[NAME\\] | Make this session a lane, named NAME if given; lane off takes it out of its lane. | You |'))
-  for (const l of lines.slice(4)) assert.equal(l.replace(/\\\|/g, '').split('|').length, 5, l)
+  assert.deepEqual(lines.slice(0, 4), ['**Callboard commands**', '', '| Command | What it does |', '|---|---|'])
+  const rows = lines.slice(4)
+  const words = rows.map((l) => /^\| ([^ \\|]+)/.exec(l)![1])
+  assert.deepEqual(words, ['lanes', 'status', 'lead', 'lane', 'escalation', 'conductor', 'manager', 'config', 'reserve', 'checkin', 'rest', 'off', 'help'])
+  assert.ok(lines.includes('| lane \\[NAME\\] | Make this session a lane, named NAME if given; lane off takes it out of its lane. |'))
+  for (const l of rows) assert.equal(l.replace(/\\\|/g, '').split('|').length, 4, l)
+  assert.ok(!c.helpText().includes('Floor'))
+  assert.ok(!c.FLOOR_LINE.includes('optional'))
   assert.match(c.HELP_USAGE, /manager/)
-  assert.match(c.HELP_USAGE, /prompts/)
+  assert.doesNotMatch(c.HELP_USAGE, /prompts/)
   assert.ok(c.HELP_USAGE.endsWith('Run /callboard help for the full list.'))
 })
 
@@ -1169,11 +1178,11 @@ test('inReach follows the reach rule of leadLane and laneListText writes one fix
   assert.equal(c.laneListText(ofRepo(all, c.leadGrant('/w/repo')), [{ sessionId: S3_SID, name: 'M', cwd: '/w/repo/m' }], 0), [
     '**Lead** · live',
     '',
-    '| Lead | Repo | Lane | Folder | Session | Usage | Waiting |',
-    '|---|---|---|---|---|---|---|',
-    '| Any lead | repo | R | r | none | – | – |',
-    '|  |  | M | m | live | no reading | – |',
-    '|  |  | ATT | a | none | – | – |',
+    ...headRows(['Lane', 'Folder', 'Session', 'Context', '5h', '7d', 'Cost', 'Read', 'Waiting']),
+    tr('**repo · Any lead**', '', '', ...NU, ''),
+    tr('↳ R', 'r', 'none', ...NU, '–'),
+    tr('↳ M', 'm', 'live', '?', '?', '?', '?', '–', '–'),
+    tr('↳ ATT', 'a', 'none', ...NU, '–'),
   ].join('\n'))
   assert.equal(c.laneListText([], [], 0), '| Lanes |\n|---|\n| no lanes in this repo |')
 })
@@ -1430,11 +1439,14 @@ test('v13.2 parseCommandArgs: config forms; out of range, unknown and trailing j
   for (const bad of ['configs', 'config\nping 50', 'Config', 'CONFIG reset']) assert.equal(c.parseCommandArgs(bad), undefined, JSON.stringify(bad))
 })
 
-test('v13.2 config texts: a Setting, Value and Default table, yes on unchanged fields; the level cross-check', () => {
+test('v13.2 config texts: no Default column while every setting is at its default, else a check mark or the default value; the level cross-check', () => {
   const D = c.parseConfig(undefined).cfg
-  const head = ['**Callboard settings**', '', '| Setting | Value | Default |', '|---|---|---|']
-  assert.equal(c.configText(D), [...head, '| keepalive | on | yes |', '| ping after | 50 min | yes |', '| stop after | 3 h | yes |', '| idle level | 300k | yes |', '| working level | 400k | yes |', '| check-ins | on | yes |', '| conductor leads | on | yes |'].join('\n'))
-  assert.equal(c.configText({ ...D, keepalive: false, pingAfterMin: 45, workingK: 450, checkin: false }), [...head, '| keepalive | off | no |', '| ping after | 45 min | no |', '| stop after | 3 h | yes |', '| idle level | 300k | yes |', '| working level | 450k | no |', '| check-ins | off | no |', '| conductor leads | on | yes |'].join('\n'))
+  const head = ['**Callboard settings**', '', '| Setting | Value |', '|---|---|']
+  assert.equal(c.configText(D), [...head, '| Keepalive | ON |', '| Ping after | 50 min |', '| Stop after | 3 h |', '| Idle level | 300k |', '| Working level | 400k |', '| Check-ins | ON |', '| Conductor leads | ON |', '| Escalation | OFF |'].join('\n'))
+  const withDefault = ['**Callboard settings**', '', '| Setting | Value | Default |', '|---|---|---|']
+  assert.equal(c.configText({ ...D, keepalive: false, pingAfterMin: 45, workingK: 450, checkin: false }, true), [...withDefault, '| Keepalive | OFF | ON |', '| Ping after | 45 min | 50 min |', '| Stop after | 3 h | ✓ |', '| Idle level | 300k | ✓ |', '| Working level | 450k | 400k |', '| Check-ins | OFF | ON |', '| Conductor leads | ON | ✓ |', '| Escalation | ON | OFF |'].join('\n'))
+  assert.equal(c.configText(D, false), c.configText(D))
+  assert.equal(c.configText({ ...D, pingAfterMin: 45 }, false), [...withDefault, '| Keepalive | ON | ✓ |', '| Ping after | 45 min | 50 min |', '| Stop after | 3 h | ✓ |', '| Idle level | 300k | ✓ |', '| Working level | 400k | ✓ |', '| Check-ins | ON | ✓ |', '| Conductor leads | ON | ✓ |', '| Escalation | OFF | ✓ |'].join('\n'))
   assert.equal(c.configSetText('pingAfterMin', { ...D, pingAfterMin: 45 }), 'Callboard setting changed: ping after 45 min. It applies to every session on this Mac within a minute.')
   assert.equal(c.CONFIG_USAGE, 'Use /callboard config [keepalive on|off, ping 30-55, stop 1-8, idle 150-800, working IDLE-900, checkin on|off, conductor-leads on|off, reset].')
   assert.equal(c.CONFIG_NOT_PERSON, 'Only you can change callboard settings: type /callboard config yourself.')
@@ -1564,12 +1576,12 @@ test('watchText: a sid or parked change hashes the same; any other change, and a
   assert.equal(c.watchText('bad', ''), 'bad\n')
 })
 
-test('laneListText: a parked lane shows parked, and a live session wins', () => {
+test('laneListText: a parked lane shows parked with empty figures, and a live session wins', () => {
   const made = { name: 'M', folder: '/w/repo/m', brief: '/w/repo/m/B.md', repo: '/w/repo', src: 'k', sid: V13_SID, parked: 5 }
-  const head = '**Lead** · live\n\n| Lead | Repo | Lane | Folder | Session | Usage | Waiting |\n|---|---|---|---|---|---|---|\n| Any lead | repo | M | m | '
-  assert.equal(c.laneListText([made], [], 0), `${head}parked | – | – |`)
-  assert.equal(c.laneListText([made], [{ sessionId: S3_SID, name: 'M' }], 0), `${head}live | no reading | – |`)
-  assert.equal(c.laneListText([{ ...made, parked: undefined }], [], 0), `${head}none | – | – |`)
+  const head = ['**Lead** · live', '', ...headRows(['Lane', 'Folder', 'Session', 'Context', '5h', '7d', 'Cost', 'Read', 'Waiting']), tr('**repo · Any lead**', '', '', ...NU, '')]
+  assert.equal(c.laneListText([made], [], 0), [...head, tr('↳ M', 'm', 'parked', ...NU, '–')].join('\n'))
+  assert.equal(c.laneListText([made], [{ sessionId: S3_SID, name: 'M' }], 0), [...head, tr('↳ M', 'm', 'live', '?', '?', '?', '?', '–', '–')].join('\n'))
+  assert.equal(c.laneListText([{ ...made, parked: undefined }], [], 0), [...head, tr('↳ M', 'm', 'none', ...NU, '–')].join('\n'))
 })
 
 test('rebindRefusal: one store record names the session, it sits in the folder, the name is free and a hint agrees', () => {
@@ -1833,14 +1845,17 @@ test('v13.6 laneListText groups by repo, then by the lead each lane names; a lea
   assert.equal(c.laneListText([a, b, old, two], rows, 7 * 60_000 + 59_000), [
     '**Lead** · live',
     '',
-    '| Lead | Repo | Lane | Folder | Session | Usage | Waiting |',
-    '|---|---|---|---|---|---|---|',
-    '| LEADA | one | A1 | a | live | no reading | 6m |',
-    '| LEADB (not live) | one | B1 | b | none | – | – |',
-    '| Any lead | one | OLD | o | none | – | – |',
-    '| LEADA | two | T1 | t | none | – | – |',
+    ...headRows(['Lane', 'Folder', 'Session', 'Context', '5h', '7d', 'Cost', 'Read', 'Waiting']),
+    tr('**one · LEADA**', '', 'lead', '?', '?', '?', '?', '–', ''),
+    tr('↳ A1', 'a', 'live', '?', '?', '?', '?', '–', '6m'),
+    tr('**one · LEADB (not live)**', '', '', ...NU, ''),
+    tr('↳ B1', 'b', 'none', ...NU, '–'),
+    tr('**one · Any lead**', '', '', ...NU, ''),
+    tr('↳ OLD', 'o', 'none', ...NU, '–'),
+    tr('**two · LEADA**', '', 'lead', '?', '?', '?', '?', '–', ''),
+    tr('↳ T1', 't', 'none', ...NU, '–'),
   ].join('\n'))
-  const w = (over: Record<string, unknown>) => c.laneListText([a], [{ sessionId: CK, name: 'A1', cwd: '/w/one/a', status: 'waiting', waitingFor: 'input needed', statusUpdatedAt: 0, ...over }], 120_000).split('\n')[4]
+  const w = (over: Record<string, unknown>) => c.laneListText([a], [{ sessionId: CK, name: 'A1', cwd: '/w/one/a', status: 'waiting', waitingFor: 'input needed', statusUpdatedAt: 0, ...over }], 120_000).split('\n')[5]
   assert.match(w({}), / 2m \|$/)
   assert.match(w({ statusUpdatedAt: 200_000 }), / \? \|$/)
   assert.match(w({ statusUpdatedAt: undefined }), / \? \|$/)
@@ -1859,10 +1874,11 @@ test('laneListText: the manager view is one table under a plain Manager header l
   assert.equal(text, [
     '**Manager HARBOR** · live',
     '',
-    '| Lead | Repo | Lane | Session | Usage | Waiting |',
-    '|---|---|---|---|---|---|',
-    '| LEAD-B | app-one | LANE-A | none | – | – |',
-    '| Any lead | app-two | LANE-B | live | no reading | 12m |',
+    ...headRows(LANE_HEAD),
+    tr('**app-one · LEAD-B**', 'lead', '?', '?', '?', '?', '–', ''),
+    tr('↳ LANE-A', 'none', ...NU, '–'),
+    tr('**app-two · Any lead**', '', ...NU, ''),
+    tr('↳ LANE-B', 'live', '?', '?', '?', '?', '–', '12m'),
   ].join('\n'))
   assert.equal(c.laneListText([], [], 0, { level: 'manager', name: 'HARBOR' }), '| Lanes |\n|---|\n| no lanes in this repo |')
 })
@@ -1870,7 +1886,7 @@ test('laneListText: the manager view is one table under a plain Manager header l
 test('laneListText: the lead view is one table with a Lead header line, no Manager line and no quote mark', () => {
   const lanes = [boxLane('LANE-A', '/w/app-one', '/w/app-one', 'LEAD-B')]
   const text = c.laneListText(lanes, [], 0, { level: 'lead', name: 'LEAD-B' })
-  assert.equal(text, ['**Lead LEAD-B** · live', '', '| Lead | Repo | Lane | Session | Usage | Waiting |', '|---|---|---|---|---|---|', '| LEAD-B (not live) | app-one | LANE-A | none | – | – |'].join('\n'))
+  assert.equal(text, ['**Lead LEAD-B** · live', '', ...headRows(LANE_HEAD), tr('**app-one · LEAD-B (not live)**', '', ...NU, ''), tr('↳ LANE-A', 'none', ...NU, '–')].join('\n'))
   assert.ok(!text.includes('Manager'))
   assert.ok(!text.includes('>'))
   assert.equal(c.laneListText(lanes, [], 0).split('\n').slice(1).join('\n'), text.split('\n').slice(1).join('\n'))
@@ -1879,10 +1895,10 @@ test('laneListText: the lead view is one table with a Lead header line, no Manag
 test('v14.1 laneListText: a Folder column appears in the table only when one of its lanes is outside the repo root, relative to the repo with . for the root', () => {
   const rootOnly = c.laneListText([boxLane('R1', '/w/repo', '/w/repo'), boxLane('R2', '/w/repo', '/w/repo')], [], 0)
   assert.ok(!rootOnly.includes('Folder'))
-  assert.equal(rootOnly.split('\n')[2], '| Lead | Repo | Lane | Session | Usage | Waiting |')
-  assert.deepEqual(rootOnly.split('\n').slice(4), ['| Any lead | repo | R1 | none | – | – |', '|  |  | R2 | none | – | – |'])
+  assert.equal(rootOnly.split('\n')[2], tr(...LANE_HEAD))
+  assert.deepEqual(rootOnly.split('\n').slice(4), [tr('**repo · Any lead**', '', ...NU, ''), tr('↳ R1', 'none', ...NU, '–'), tr('↳ R2', 'none', ...NU, '–')])
   const mixed = c.laneListText([boxLane('R1', '/w/repo', '/w/repo'), boxLane('API', '/w/repo/api', '/w/repo'), boxLane('DEEP', '/w/repo/a/b', '/w/repo')], [], 0)
-  assert.equal(mixed, ['**Lead** · live', '', '| Lead | Repo | Lane | Folder | Session | Usage | Waiting |', '|---|---|---|---|---|---|---|', '| Any lead | repo | R1 | . | none | – | – |', '|  |  | API | api | none | – | – |', '|  |  | DEEP | a/b | none | – | – |'].join('\n'))
+  assert.equal(mixed, ['**Lead** · live', '', ...headRows(['Lane', 'Folder', 'Session', 'Context', '5h', '7d', 'Cost', 'Read', 'Waiting']), tr('**repo · Any lead**', '', '', ...NU, ''), tr('↳ R1', '.', 'none', ...NU, '–'), tr('↳ API', 'api', 'none', ...NU, '–'), tr('↳ DEEP', 'a/b', 'none', ...NU, '–')].join('\n'))
   const twoLeads = c.laneListText([boxLane('R1', '/w/repo', '/w/repo', 'LEADA'), boxLane('API', '/w/repo/api', '/w/repo', 'LEADB')], [], 0)
   assert.equal(twoLeads.split('\n').filter((l) => l.includes('Folder')).length, 1)
 })
@@ -1893,20 +1909,21 @@ test('v14.1 laneListText: markdown characters in a repo or folder name are escap
   assert.equal(text, [
     '**Manager M\\|\\*** · live',
     '',
-    '| Lead | Repo | Lane | Folder | Session | Usage | Waiting |',
-    '|---|---|---|---|---|---|---|',
-    '| LEADA (not live) | a\\|b\\*c\\_d\\`e\\>f | X | x\\|y | none | – | – |',
+    ...headRows(['Lane', 'Folder', 'Session', 'Context', '5h', '7d', 'Cost', 'Read', 'Waiting']),
+    tr('**a\\|b\\*c\\_d\\`e\\>f · LEADA (not live)**', '', '', ...NU, ''),
+    tr('↳ X', 'x\\|y', 'none', ...NU, '–'),
   ].join('\n'))
-  assert.equal(c.laneListText([boxLane('X', `${repo}/x`, repo)], [], 0).split('\n')[4], '| Any lead | a\\|b\\*c\\_d\\`e\\>f | X | x | none | – | – |')
+  assert.equal(c.laneListText([boxLane('X', `${repo}/x`, repo)], [], 0).split('\n')[4], tr('**a\\|b\\*c\\_d\\`e\\>f · Any lead**', '', '', ...NU, ''))
 })
 
-test('v15.3 laneListText: the Repo cell names the repo by its folder name only, in every view; control characters are dropped', () => {
+test('v15.3 laneListText: the group row names the repo by its folder name only, in every view; control characters are dropped', () => {
   const at = (repo: string, level: 'lead' | 'manager' | 'conductor' = 'lead') => c.laneListText([boxLane('X', repo, repo, 'LEADA')], [], 0, { level }).split('\n')
-  assert.equal(at('/Users/x/code/app')[4], '| LEADA (not live) | app | X | none | – | – |')
-  assert.equal(at('/Users/x/code/app/')[4], '| LEADA (not live) | app | X | none | – | – |')
-  assert.equal(at('/Users/x/co\u0007de')[4], '| LEADA (not live) | code | X | none | – | – |')
-  assert.equal(at('/w/' + 'a'.repeat(60))[4], `| LEADA (not live) | ${'a'.repeat(40)} | X | none | – | – |`)
-  assert.ok(at('/Users/x/code/app', 'manager').includes('| LEADA (not live) | app | X | none | – | – |'))
+  const group = (repo: string) => tr(`**${repo} · LEADA (not live)**`, '', ...NU, '')
+  assert.equal(at('/Users/x/code/app')[4], group('app'))
+  assert.equal(at('/Users/x/code/app/')[4], group('app'))
+  assert.equal(at('/Users/x/co\u0007de')[4], group('code'))
+  assert.equal(at('/w/' + 'a'.repeat(60))[4], group('a'.repeat(40)))
+  assert.ok(at('/Users/x/code/app', 'manager').includes(group('app')))
   assert.ok(!c.laneListText([boxLane('X', '/Users/x/code/app', '/Users/x/code/app', 'LEADA')], [], 0, { level: 'manager', name: 'M' }).includes('/Users/x'))
   // Two repos of one folder name read alike; the row order and the lanes tell them apart.
   assert.equal(at('/w/a/app')[4], at('/w/b/app')[4])
@@ -2233,24 +2250,27 @@ test('v15 S6c (49): a live conductor adds a Conductor column to the manager tabl
   assert.equal(nested, [
     '**Manager M** · live',
     '',
-    '| Conductor | Lead | Repo | Lane | Folder | Session | Usage | Waiting |',
-    '|---|---|---|---|---|---|---|---|',
-    '| C\\*1 | Any lead | app | A | a | none | – | – |',
-    '| – | Any lead | x | B | b | none | – | – |',
+    ...headRows(['Conductor', 'Lane', 'Folder', 'Session', 'Context', '5h', '7d', 'Cost', 'Read', 'Waiting']),
+    tr('C\\*1', '**app · Any lead**', '', '', ...NU, ''),
+    tr('', '↳ A', 'a', 'none', ...NU, '–'),
+    tr('–', '**x · Any lead**', '', '', ...NU, ''),
+    tr('', '↳ B', 'b', 'none', ...NU, '–'),
   ].join('\n'))
   assert.ok(!nested.includes('>'))
   assert.equal(c.laneListText([a, b], [], 0, { level: 'manager', name: 'M', conductors: [] }), flat)
-  assert.ok(c.laneListText([a], [], 0, { level: 'manager', name: 'M', conductors: [{ repos: ['/w/app'] }] }).includes('| a conductor | Any lead | app | A | a |'))
+  assert.ok(c.laneListText([a], [], 0, { level: 'manager', name: 'M', conductors: [{ repos: ['/w/app'] }] }).includes(tr('a conductor', '**app · Any lead**', '', '', ...NU, '')))
   assert.ok(c.laneListText([a], [], 0, { level: 'manager', name: 'M', conductors: 'error' }).endsWith('|\n\n(conductors could not be read)'))
   assert.ok(!c.laneListText([a], [], 0, { level: 'manager', name: 'M', conductors: 'error' }).includes('Conductor'))
   assert.ok(!c.laneListText([a], [], 0, { level: 'lead', conductors: 'error' }).includes('conductors'))
   // A conductor's name sits on its first row only; a conductor whose repos have no rows is one row with dashes; a repo two conductors list shows once, under the first.
   const two = c.laneListText([a, { ...a, name: 'A2', folder: '/w/app', leadName: 'L' }], [], 0, { level: 'manager', name: 'M', conductors: [{ name: 'C1', repos: ['/w/app'] }, { name: 'C2', repos: ['/w/app', '/w/none'] }, { name: 'C3', repos: [] }] })
   assert.deepEqual(two.split('\n').slice(4), [
-    '| C1 | Any lead | app (also C2) | A | a | none | – | – |',
-    '|  | L (not live) | app (also C2) | A2 | . | none | – | – |',
-    '| C2 | – | – | – | – | – | – | – |',
-    '| C3 | – | – | – | – | – | – | – |',
+    tr('C1', '**app (also C2) · Any lead**', '', '', ...NU, ''),
+    tr('', '↳ A', 'a', 'none', ...NU, '–'),
+    tr('', '**app (also C2) · L (not live)**', '', '', ...NU, ''),
+    tr('', '↳ A2', '.', 'none', ...NU, '–'),
+    tr('C2', ...Array(9).fill('–')),
+    tr('C3', ...Array(9).fill('–')),
   ])
 })
 
@@ -2258,13 +2278,14 @@ test('laneListText: a live lead\'s state is written beside its name, in every ro
   const a = { name: 'LANE-A', folder: '/w/app', brief: '/w/app/B.md', repo: '/w/app', leadName: 'LEAD-A' }
   const rows = [{ sessionId: S3_SID, name: 'LEAD-A' }]
   const at = (lead: c.LiveLead) => c.laneListText([a], rows, 600_000, { level: 'manager', name: 'M', leads: [lead] }).split('\n')[4]
-  assert.equal(at({ name: 'LEAD-A', repo: '/w/app', state: 'busy' }), '| LEAD-A (busy) | app | LANE-A | none | – | – |')
-  assert.equal(at({ name: 'LEAD-A', repo: '/w/app', state: 'idle' }), '| LEAD-A (idle) | app | LANE-A | none | – | – |')
-  assert.equal(at({ name: 'LEAD-A', repo: '/w/app', state: 'waiting', since: 360_000 }), '| LEAD-A (waiting 4m) | app | LANE-A | none | – | – |')
-  assert.equal(at({ name: 'LEAD-A', repo: '/w/app', state: 'waiting' }), '| LEAD-A (waiting) | app | LANE-A | none | – | – |')
-  assert.equal(at({ name: 'LEAD-A', repo: '/w/app', state: 'waiting', since: 700_000 }), '| LEAD-A (waiting) | app | LANE-A | none | – | – |')
-  assert.equal(at({ name: 'LEAD-A', repo: '/w/app', state: 'unknown' }), '| LEAD-A | app | LANE-A | none | – | – |')
-  assert.equal(at({ name: 'LEAD-A', repo: '/w/other', state: 'busy' }), '| LEAD-A | app | LANE-A | none | – | – |')
+  const row = (suffix: string) => tr(`**app · LEAD-A**${suffix}`, 'lead', '?', '?', '?', '?', '–', '')
+  assert.equal(at({ name: 'LEAD-A', repo: '/w/app', state: 'busy' }), row(' (busy)'))
+  assert.equal(at({ name: 'LEAD-A', repo: '/w/app', state: 'idle' }), row(' (idle)'))
+  assert.equal(at({ name: 'LEAD-A', repo: '/w/app', state: 'waiting', since: 360_000 }), row(' (waiting 4m)'))
+  assert.equal(at({ name: 'LEAD-A', repo: '/w/app', state: 'waiting' }), row(' (waiting)'))
+  assert.equal(at({ name: 'LEAD-A', repo: '/w/app', state: 'waiting', since: 700_000 }), row(' (waiting)'))
+  assert.equal(at({ name: 'LEAD-A', repo: '/w/app', state: 'unknown' }), row(''))
+  assert.equal(at({ name: 'LEAD-A', repo: '/w/other', state: 'busy' }), row(''))
   assert.equal(c.laneListText([a], rows, 0, { level: 'lead', name: 'LEAD-A', leads: [{ name: 'LEAD-A', repo: '/w/app', state: 'busy' }] }), c.laneListText([a], rows, 0, { level: 'lead', name: 'LEAD-A' }))
 })
 
@@ -2278,18 +2299,18 @@ test('leadStateOf: waiting needs a reason, idle needs none, a status the registr
   assert.deepEqual(c.leadStateOf({ sessionId: S3_SID }), { state: 'unknown' })
 })
 
-test('laneListText: a live lead with no lanes is one row with dashes in the lane cells; one a lane row already names, and a lead\'s own view, add nothing', () => {
+test('laneListText: a live lead with no lanes is a group row alone; one a lane row already names, and a lead\'s own view, add nothing', () => {
   const a = { name: 'LANE-A', folder: '/w/app', brief: '/w/app/B.md', repo: '/w/app', leadName: 'LEAD-A' }
   const leads = [{ name: 'LEAD-A', repo: '/w/app' }, { name: 'LEAD-C', repo: '/w/app' }, { name: 'LEAD-B', repo: '/w/other' }, { name: 'LEAD-C', repo: '/w/app' }]
   const text = c.laneListText([a], [], 0, { level: 'manager', name: 'M', leads })
   assert.equal(text, [
     '**Manager M** · live',
     '',
-    '| Lead | Repo | Lane | Session | Usage | Waiting |',
-    '|---|---|---|---|---|---|',
-    '| LEAD-A (not live) | app | LANE-A | none | – | – |',
-    '| LEAD-C | app | – | – | no reading | – |',
-    '| LEAD-B | other | – | – | no reading | – |',
+    ...headRows(LANE_HEAD),
+    tr('**app · LEAD-A (not live)**', '', ...NU, ''),
+    tr('↳ LANE-A', 'none', ...NU, '–'),
+    tr('**app · LEAD-C**', 'lead', '?', '?', '?', '?', '–', ''),
+    tr('**other · LEAD-B**', 'lead', '?', '?', '?', '?', '–', ''),
   ].join('\n'))
   assert.equal(c.laneListText([a], [], 0, { level: 'lead', name: 'LEAD-A', leads }), c.laneListText([a], [], 0, { level: 'lead', name: 'LEAD-A' }))
   assert.equal(c.laneListText([a], [], 0, { leads }), c.laneListText([a], [], 0))
@@ -2301,13 +2322,12 @@ test('laneListText: with no lanes at all, live leads are still listed; a conduct
   assert.equal(c.laneListText([], [], 0, { level: 'conductor', name: 'C', leads }), [
     '**Conductor C** · live',
     '',
-    '| Lead | Repo | Lane | Session | Usage | Waiting |',
-    '|---|---|---|---|---|---|',
-    '| LEAD-B | two | – | – | no reading | – |',
-    '| LEAD-A | one | – | – | no reading | – |',
+    ...headRows(LANE_HEAD),
+    tr('**two · LEAD-B**', 'lead', '?', '?', '?', '?', '–', ''),
+    tr('**one · LEAD-A**', 'lead', '?', '?', '?', '?', '–', ''),
   ].join('\n'))
   const nested = c.laneListText([], [], 0, { level: 'manager', name: 'M', leads, conductors: [{ name: 'C', repos: ['/w/one'] }] })
-  assert.deepEqual(nested.split('\n').slice(4), ['| C | LEAD-A | one | – | – | no reading | – |', '| – | LEAD-B | two | – | – | no reading | – |'])
+  assert.deepEqual(nested.split('\n').slice(4), [tr('C', '**one · LEAD-A**', 'lead', '?', '?', '?', '?', '–', ''), tr('–', '**two · LEAD-B**', 'lead', '?', '?', '?', '?', '–', '')])
   assert.equal(c.laneListText([], [], 0, { level: 'manager', name: 'M', leads: [] }), '| Lanes |\n|---|\n| no lanes in this repo |')
   assert.equal(c.laneListText([], [], 0, { level: 'conductor', name: 'C' }), '| Lanes |\n|---|\n| no lanes in its repos |')
 })
@@ -2671,62 +2691,65 @@ test('parseUsage: a file of this session, this pid and start time reads back; ev
   for (const [why, text, row] of bad) assert.equal(c.parseUsage(text, U_SID, row ?? U_ROW, U_NOW), undefined, why)
 })
 
-test('usageCell: context, windows, cost and age in that order; a passed reset shows ?, a missing figure is left out, no file is no reading', () => {
+test('usageCells: context, 5h, 7d, cost and age, one cell each; a passed reset shows ?, a missing figure is a dash, no file is ? in every figure column', () => {
   const r = c.parseUsage(uText(), U_SID, U_ROW, U_NOW)
-  assert.equal(c.usageCell(r, U_NOW), 'ctx 142k · 5h 34% · 7d 61% · $3.10 · 2m ago')
-  assert.equal(c.usageCell(r, Date.UTC(2026, 10, 12, 15)), 'ctx 142k · 5h ? · 7d 61% · $3.10 · 183m ago'.replace('183m', '3h'))
-  assert.equal(c.usageCell(c.parseUsage(uText({ tokens: 900, windows: [], at: U_NOW - 5000 }), U_SID, U_ROW, U_NOW), U_NOW), 'ctx 900 · $3.10 · <1m ago')
-  assert.equal(c.usageCell(c.parseUsage(uText({ tokens: 1_250_000, cost: null, windows: [{ kind: 'seven_day', pct: 33.6, resetsAt: null }] }), U_SID, U_ROW, U_NOW), U_NOW), 'ctx 1.3M · 7d 34% · 2m ago')
-  assert.equal(c.usageCell(c.parseUsage(uText({ tokens: 999_600, windows: [], cost: null }), U_SID, U_ROW, U_NOW), U_NOW), 'ctx 1.0M · 2m ago')
-  assert.equal(c.usageCell(undefined, U_NOW), 'no reading')
+  assert.deepEqual(c.usageCells(r, U_NOW), ['142k', '34%', '61%', '$3.10', '2m'])
+  assert.deepEqual(c.usageCells(r, Date.UTC(2026, 10, 12, 15)), ['142k', '?', '61%', '$3.10', '3h'])
+  assert.deepEqual(c.usageCells(c.parseUsage(uText({ tokens: 900, windows: [], at: U_NOW - 5000 }), U_SID, U_ROW, U_NOW), U_NOW), ['900', '–', '–', '$3.10', '<1m'])
+  assert.deepEqual(c.usageCells(c.parseUsage(uText({ tokens: 1_250_000, cost: null, windows: [{ kind: 'seven_day', pct: 33.6, resetsAt: null }] }), U_SID, U_ROW, U_NOW), U_NOW), ['1.3M', '–', '34%', '–', '2m'])
+  assert.deepEqual(c.usageCells(c.parseUsage(uText({ tokens: 999_600, windows: [], cost: null }), U_SID, U_ROW, U_NOW), U_NOW), ['1.0M', '–', '–', '–', '2m'])
+  assert.deepEqual(c.usageCells(undefined, U_NOW), ['?', '?', '?', '?', '–'])
 })
 
-test('laneListText: the Usage column in each view; the footnote only when two rows show windows; a lane that is not live shows a dash', () => {
+test('laneListText: the figure columns in each view; the footnote only when two rows show windows; a lane that is not live leaves its figures empty', () => {
   const read = (over: Record<string, unknown>, row = U_ROW) => c.parseUsage(uText(over), U_SID, row, U_NOW)!
   const S_A = 'aa1b2c3d-0000-4000-8000-123456789abc'
   const S_B = 'bb1b2c3d-0000-4000-8000-123456789abc'
   const S_L = 'cc1b2c3d-0000-4000-8000-123456789abc'
-  const usage = new Map([[S_A, read({})], [S_B, read({ windows: [], tokens: 90_000, cost: 0.4 })], [S_L, read({ windows: [{ kind: 'five_hour', pct: 34, resetsAt: null }], tokens: null, cost: null })]])
+  const S_Y = 'dd1b2c3d-0000-4000-8000-123456789abc'
+  const usage = new Map([[S_A, read({})], [S_B, read({ windows: [], tokens: 90_000, cost: 0.4 })], [S_L, read({ windows: [{ kind: 'five_hour', pct: 34, resetsAt: null }], tokens: null, cost: null })], [LEAD, read({ tokens: 210_000, cost: 4.1 })]])
   const a = { name: 'LANE-A', folder: '/w/app', brief: '/w/app/B.md', repo: '/w/app', leadName: 'LEAD-A' }
   const b = { name: 'LANE-B', folder: '/w/app', brief: '/w/app/B.md', repo: '/w/app', leadName: 'LEAD-A' }
   const p = { name: 'LANE-P', folder: '/w/app', brief: '/w/app/B.md', repo: '/w/app', leadName: 'LEAD-A', parked: 5 }
   const entries = [{ sessionId: S_A, name: 'LANE-A', cwd: '/w/app' }, { sessionId: S_B, name: 'LANE-B', cwd: '/w/app' }, { sessionId: LEAD, name: 'LEAD-A', cwd: '/w/app' }, { sessionId: S_L, name: 'LEAD-Z', cwd: '/w/two' }]
-  const lead = c.laneListText([a, b, p], entries, U_NOW, { level: 'lead', name: 'LEAD-A', usage })
+  const lead = c.laneListText([a, b, p], entries, U_NOW, { level: 'lead', name: 'LEAD-A', self: LEAD, usage })
   assert.equal(lead, [
     '**Lead LEAD-A** · live',
     '',
-    '| Lead | Repo | Lane | Session | Usage | Waiting |',
-    '|---|---|---|---|---|---|',
-    '| LEAD-A | app | LANE-A | live | ctx 142k · 5h 34% · 7d 61% · $3.10 · 2m ago | – |',
-    '|  |  | LANE-B | live | ctx 90k · $0.40 · 2m ago | – |',
-    '|  |  | LANE-P | parked | – | – |',
+    ...headRows(LANE_HEAD),
+    tr('**app · LEAD-A**', 'lead', '210k', '34%', '61%', '$4.10', '2m', ''),
+    tr('↳ LANE-A', 'live', '142k', '34%', '61%', '$3.10', '2m', '–'),
+    tr('↳ LANE-B', 'live', '90k', '–', '–', '$0.40', '2m', '–'),
+    tr('↳ LANE-P', 'parked', ...NU, '–'),
+    '',
+    c.USAGE_FOOTNOTE,
   ].join('\n'))
   // One row with windows: no footnote.
-  assert.ok(!lead.includes(c.USAGE_FOOTNOTE))
-  const conductor = c.laneListText([a], entries, U_NOW, { level: 'conductor', name: 'C', usage, leads: [{ name: 'LEAD-Z', repo: '/w/two', sid: S_L }, { name: 'LEAD-Y', repo: '/w/three', sid: LEAD }] })
+  assert.ok(!c.laneListText([b, p], entries, U_NOW, { level: 'lead', name: 'LEAD-A', usage }).includes(c.USAGE_FOOTNOTE))
+  const conductor = c.laneListText([a], entries, U_NOW, { level: 'conductor', name: 'C', usage, leads: [{ name: 'LEAD-A', repo: '/w/app', sid: LEAD }, { name: 'LEAD-Z', repo: '/w/two', sid: S_L }, { name: 'LEAD-Y', repo: '/w/three', sid: S_Y }] })
   assert.equal(conductor, [
     '**Conductor C** · live',
     '',
-    '| Lead | Repo | Lane | Session | Usage | Waiting |',
-    '|---|---|---|---|---|---|',
-    '| LEAD-A | app | LANE-A | live | ctx 142k · 5h 34% · 7d 61% · $3.10 · 2m ago | – |',
-    '| LEAD-Z | two | – | – | 5h 34% · 2m ago | – |',
-    '| LEAD-Y | three | – | – | no reading | – |',
+    ...headRows(LANE_HEAD),
+    tr('**app · LEAD-A**', 'lead', '210k', '34%', '61%', '$4.10', '2m', ''),
+    tr('↳ LANE-A', 'live', '142k', '34%', '61%', '$3.10', '2m', '–'),
+    tr('**two · LEAD-Z**', 'lead', '–', '34%', '–', '–', '2m', ''),
+    tr('**three · LEAD-Y**', 'lead', '?', '?', '?', '?', '–', ''),
     '',
     c.USAGE_FOOTNOTE,
   ].join('\n'))
-  const manager = c.laneListText([a], entries, U_NOW, { level: 'manager', name: 'M', usage, leads: [{ name: 'LEAD-Z', repo: '/w/two', sid: S_L }], conductors: [{ name: 'C', repos: ['/w/two'] }] })
+  const manager = c.laneListText([a], entries, U_NOW, { level: 'manager', name: 'M', usage, leads: [{ name: 'LEAD-A', repo: '/w/app', sid: LEAD }, { name: 'LEAD-Z', repo: '/w/two', sid: S_L }], conductors: [{ name: 'C', repos: ['/w/two'] }] })
   assert.deepEqual(manager.split('\n').slice(2), [
-    '| Conductor | Lead | Repo | Lane | Session | Usage | Waiting |',
-    '|---|---|---|---|---|---|---|',
-    '| C | LEAD-Z | two | – | – | 5h 34% · 2m ago | – |',
-    '| – | LEAD-A | app | LANE-A | live | ctx 142k · 5h 34% · 7d 61% · $3.10 · 2m ago | – |',
+    ...headRows(['Conductor', ...LANE_HEAD]),
+    tr('C', '**two · LEAD-Z**', 'lead', '–', '34%', '–', '–', '2m', ''),
+    tr('–', '**app · LEAD-A**', 'lead', '210k', '34%', '61%', '$4.10', '2m', ''),
+    tr('', '↳ LANE-A', 'live', '142k', '34%', '61%', '$3.10', '2m', '–'),
     '',
     c.USAGE_FOOTNOTE,
   ])
-  // No readings at all: every live row says so and there is no footnote.
+  // No readings at all: every live row shows ? in its figure columns and there is no footnote.
   const none = c.laneListText([a, p], entries, U_NOW, { level: 'lead', name: 'LEAD-A' })
-  assert.deepEqual(none.split('\n').slice(4), ['| LEAD-A | app | LANE-A | live | no reading | – |', '|  |  | LANE-P | parked | – | – |'])
+  assert.deepEqual(none.split('\n').slice(4), [tr('**app · LEAD-A**', 'lead', '?', '?', '?', '?', '–', ''), tr('↳ LANE-A', 'live', '?', '?', '?', '?', '–', '–'), tr('↳ LANE-P', 'parked', ...NU, '–')])
 })
 
 test('leadOpenArgs: a clean repo path, a lane-style name that is not reserved, a task, a model; the first fault is the reason', () => {

@@ -933,10 +933,10 @@ export async function laneTable($: any, sid: string) {
   const lanes = base.lanes.filter((l) => c.inReach(base.g, l))
   const entries = base.live.map(regEntry)
   const now = await $.clock.now()
-  // The Usage column reads the live lanes' files, and the lead rows' in a conductor's or the manager's list; any read that fails leaves a row at no reading.
-  const wanted = [...lanes.map((l) => { const one = c.laneSession(entries, l, ''); return one.ok ? one.entry.sessionId : '' }), ...leads.map((x) => x.sid ?? '')]
+  // The figure columns read the live lanes' files, the lead's own in its own list, and the leads' in a conductor's or the manager's list; any read that fails leaves a row at no reading.
+  const wanted = [...(base.g.level === 'lead' ? [sid] : []), ...lanes.map((l) => { const one = c.laneSession(entries, l, ''); return one.ok ? one.entry.sessionId : '' }), ...leads.map((x) => x.sid ?? '')]
   const usage = await usageReadings($, wanted.flatMap((sid) => entries.filter((e) => e.sessionId === sid)), now).catch(() => new Map<string, c.UsageReading>())
-  const text = c.laneListText(lanes, entries, now, { level: base.g.level, name: base.g.name, conductors, leads, usage })
+  const text = c.laneListText(lanes, entries, now, { level: base.g.level, name: base.g.name, self: sid, conductors, leads, usage })
   return { text }
 }
 
