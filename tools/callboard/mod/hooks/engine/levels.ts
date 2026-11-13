@@ -5,9 +5,7 @@ import * as c from '../core.ts'
 import { logq, logFail } from './base.ts'
 import type { Asked } from './base.ts'
 import { briefed, grants, leadEpoch, leadGranting, leadRestorePending, conductorRestorePending, leadDeclared, conductorDeclared, managerDeclared, laneBinding } from '../mem.ts'
-
-// $.state keys declared again where they are used: `claude plugin validate` reads a key in the file that uses it.
-const lane = { plugin: 'callboard', key: 'lane' } as const
+import { getLane } from '../state.ts'
 
 // A drop of the grant (leadDrop) moves the epoch: work begun under the old one sees it and stops.
 export const epochOf = (sid: string) => leadEpoch.get(sid) ?? 0
@@ -104,7 +102,7 @@ export function holdsOf(sid: string, inLane: boolean, marks: boolean): c.Holds {
 
 // The code a grant of `wants` is refused with, read now: the lane state first, then the memory, as holderNo orders them.
 export async function heldNo($: any, sid: string, wants: c.Level, marks: boolean): Promise<string | undefined> {
-  return c.holderNo(wants, holdsOf(sid, (marks && laneBinding.has(sid)) || (await $.state.get(lane)).value != null, marks))
+  return c.holderNo(wants, holdsOf(sid, (marks && laneBinding.has(sid)) || (await getLane($)).value != null, marks))
 }
 
 // The saved grant, written at the grant and again every refreshMs (c.leadRefreshDue): a failed write is logged and tried again at the next refresh.

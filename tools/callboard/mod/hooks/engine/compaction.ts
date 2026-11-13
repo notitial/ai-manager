@@ -51,26 +51,7 @@ import type { Bound } from './lanes.ts'
 import { ensureTimer } from './tick.ts'
 import { promptDone, promptRelayPost, promptAskingClear, promptRelayTurnEnd } from './answer-hook.ts'
 import { promptMidTurnNotice, promptMidFallback } from './answer-tiers.ts'
-
-const counters = { plugin: 'callboard', key: 'counters' } as const
-const request = { plugin: 'callboard', key: 'request' } as const
-const nudgeDueRef = { plugin: 'callboard', key: 'nudgeDue' } as const
-const interactiveRef = { plugin: 'callboard', key: 'interactive' } as const
-// When the tick last sent this session a nudge: the grant's start. Only the tick's nudge submit sets it; any stored request_compact, a prompt that is
-// not the mod's own, and /callboard off clear it.
-const nudgedAtRef = { plugin: 'callboard', key: 'nudgedAt' } as const
-// When a lead, conductor or manager last ordered this lane to compact (c.ORDER_MS).
-const orderedAtRef = { plugin: 'callboard', key: 'orderedAt' } as const
-// The keepalive ping: when the last main-agent turn ended, when the last real one ended (not started by a ping, a nudge, a notice or the lanes-changed
-// turn), and when the tick last tried a ping. Kept in the session state: a reload keeps them (the cache is still warm), a restart loses them (unknown: no ping).
-const turnEndRef = { plugin: 'callboard', key: 'turnEndAt' } as const
-const realEndRef = { plugin: 'callboard', key: 'realEndAt' } as const
-const pingAtRef = { plugin: 'callboard', key: 'pingAt' } as const
-// `/callboard rest`: when it was typed. A real turn that starts clears it (turn.start), so the next real turn ends it; one typed while a turn runs holds past that turn's end. A reload keeps it.
-const restRef = { plugin: 'callboard', key: 'restAt' } as const
-// $.state keys declared again where they are used: `claude plugin validate` reads a key in the file that uses it.
-const lane = { plugin: 'callboard', key: 'lane' } as const
-const lastTurn = { plugin: 'callboard', key: 'lastTurnAt' } as const
+import { getCounters, getInteractive, getLane, getNudgeDue, getNudgedAt, getOrderedAt, getPingAt, getRealEnd, getRequest, getRest, getTurnEnd, setCounters, setLane, setLastTurn, setNudgeDue, setNudgedAt, setOrderedAt, setPingAt, setRealEnd, setRequest, setRest, setTurnEnd } from '../state.ts'
 
 export const TOOL = 'request_compact'
 const BUSY_AGENT = ['pending', 'running', 'waiting']
@@ -78,14 +59,14 @@ const BUSY_AGENT = ['pending', 'running', 'waiting']
 const HINT_DELETE_MAX = 50
 
 export async function counts($: any): Promise<Counters> {
-  return ((await $.state.get(counters)).value ?? {}) as Counters
+  return ((await getCounters($)).value ?? {}) as Counters
 }
 
 // Read-modify-write on the counters, read as late as possible and written only if unchanged.
 export async function bump($: any, fn: (ct: Counters) => Counters) {
   for (let i = 0; i < 3; i++) {
-    const cur = await $.state.get(counters)
-    const res = await $.state.set(counters, fn((cur.value ?? {}) as Counters), { ifVersion: cur.version })
+    const cur = await getCounters($)
+    const res = await setCounters($, fn((cur.value ?? {}) as Counters), { ifVersion: cur.version })
     if (res.isSet !== false) return
   }
   throw new Error('counters-conflict')
@@ -94,7 +75,7 @@ export async function bump($: any, fn: (ct: Counters) => Counters) {
 // A session takes lead cues, and may use request_compact with `on-cue`, only when the mod bound it to a lane. A `now` request for itself has its own
 // gate (requestGate).
 export async function isEligible($: any): Promise<boolean> {
-  return (await $.state.get(lane)).value != null
+  return (await getLane($)).value != null
 }
 // Whether a stored request may still run its way: one the nudge or the session itself granted, a bound lane's, or a lead's own on-cue
 // request while it still holds a lead grant (the manager's compact cue acts on it).
@@ -107,7 +88,7 @@ export async function requestOk($: any, sid: string, req: Request): Promise<bool
 // lane hint is never overwritten, so it keeps its Restore offer).
 export async function saveHint($: any, sid: string) {
   try {
-    const l = (await $.state.get(lane)).value
+    const l = (await getLane($)).value
     if (!l) return
     const body = { lane: l, counters: await counts($) }
     const sig = JSON.stringify(body)
@@ -206,7 +187,7 @@ async function markTurn($: any, sid: string) {
         size = 'no' in st ? (st.gone ? -1 : null) : st.f.size
       }
     } catch {}
-    const w = await $.state.set(lastTurn, { at, size })
+    const w = await setLastTurn($, { at, size })
     if (w?.isSet === false) throw new Error('not-set')
     lastTurnUnknown.delete(sid)
   } catch {
@@ -242,7 +223,7 @@ export async function backgroundShells($: any, sid: string, reg: Reg): Promise<'
 // A person's session: session.start said isInteractive, or the session has its own row in the session registry. A VS Code panel may report
 // isInteractive false (the engine sets it only under the REPL); a -p run or the SDK writes no row, so it stays out. Both are live checks.
 export async function interactive($: any, sid: string): Promise<boolean> {
-  if ((await $.state.get(interactiveRef)).value === true) return true
+  if ((await getInteractive($)).value === true) return true
   return (await registryOf($, sid)) !== undefined
 }
 
@@ -261,7 +242,7 @@ function mayNudge($: any, sid: string): Promise<boolean> {
 // Written only if nudgeDue is unchanged since the read: a lead nudge recorded meanwhile (by the tick, while this hook awaited) is never replaced. ping: the
 // keepalive step recorded it in place of a ping, so a drop is logged as a missed ping.
 async function recordNudge($: any, sid: string, kind: c.NudgeDue['kind'], now: number, ifVersion: number, ping = false, again = false) {
-  if ((await $.state.set(nudgeDueRef, { kind, at: now, ...(ping ? { ping: true } : {}), ...(again ? { again: true } : {}) }, { ifVersion })).isSet === false) {
+  if ((await setNudgeDue($, { kind, at: now, ...(ping ? { ping: true } : {}), ...(again ? { again: true } : {}) }, { ifVersion })).isSet === false) {
     await log($, sid, 'nudge-skipped', 'changed')
     return false
   }
@@ -271,7 +252,7 @@ async function recordNudge($: any, sid: string, kind: c.NudgeDue['kind'], now: n
 
 // A bound lane whose report is signed and current. Not a lane: false.
 async function laneSignedDone($: any, sid: string): Promise<boolean> {
-  if ((await $.state.get(lane)).value == null) return false
+  if ((await getLane($)).value == null) return false
   const l = await reportLaneOf($, sid)
   return !!l && (await retireReportCheck($, sid, l)) === undefined
 }
@@ -281,7 +262,7 @@ async function laneSignedDone($: any, sid: string): Promise<boolean> {
 // running. A check that cannot tell counts as working. The state does not change which level nudges (the size alone does); the cache nudge
 // still goes only to an idle one.
 async function thresholdState($: any, sid: string): Promise<'done' | 'working' | 'idle'> {
-  if ((await $.state.get(lane)).value != null) return (await laneSignedDone($, sid)) ? 'done' : 'working'
+  if ((await getLane($)).value != null) return (await laneSignedDone($, sid)) ? 'done' : 'working'
   if (await busyAgents($)) return 'working'
   if ((await backgroundShells($, sid, regOnce($))) !== undefined) return 'working'
   return 'idle'
@@ -290,8 +271,8 @@ async function thresholdState($: any, sid: string): Promise<'done' | 'working' |
 // The self-threshold, at the end of a main-agent answer of a person's (interactive) session: past the idle level, one `threshold` nudge is recorded.
 // The hook reads only the tokens and the cheap state; the tick picks the kind from the size and skips a lane signed done.
 async function thresholdNudge($: any, sid: string) {
-  if ((await $.state.get(request)).value) return
-  const dueRead = await $.state.get(nudgeDueRef)
+  if ((await getRequest($)).value) return
+  const dueRead = await getNudgeDue($)
   if (dueRead.value) return
   const now = await $.clock.now()
   const ct = await counts($)
@@ -311,18 +292,18 @@ async function thresholdNudge($: any, sid: string) {
 // its kind from the size alone (thresholdKind): none for a lane signed done; below the idle level it is dropped. It is cleared and stamped, and the grant (nudgedAt) set, before the submit (as the compaction
 // resume is), so a submit slower than the timeout still goes out once and is never retried; only a submit that threw takes the grant back.
 export async function nudgeTick($: any, sid: string) {
-  const read = await $.state.get(nudgeDueRef)
+  const read = await getNudgeDue($)
   const due = read.value as c.NudgeDue | null | undefined
   if (due == null) return
   const now = await $.clock.now()
   const drop = async (why: string) => {
-    await $.state.set(nudgeDueRef, null)
+    await setNudgeDue($, null)
     await log($, sid, 'nudge-dropped', why)
     // A nudge the keepalive step recorded in place of a ping: that gap gets no ping either.
     if (due.ping === true) await log($, sid, 'keepalive-skipped', 'nudge-dropped')
   }
   if (!c.nudgeDueFresh(due, now)) return drop('expired')
-  if ((await $.state.get(request)).value) return drop('request')
+  if ((await getRequest($)).value) return drop('request')
   if (!(await mayNudge($, sid))) return drop('not-interactive')
   const tokens = (await $.session.usage()).context.tokens ?? 0
   // A lead's nudge is an order: no context floor, and the 30-minute gap does not apply (the hourly cap does).
@@ -340,11 +321,11 @@ export async function nudgeTick($: any, sid: string) {
   const ct = await counts($)
   if (kind === 'lead' && (ct.lastNudgeMs ?? 0) >= due.at) return drop('nudge-limit')
   if (!c.nudgeAllowed(ct, now, kind === 'working', due.again === true || kind === 'lead')) return drop('nudge-limit')
-  if ((await $.state.set(nudgeDueRef, null, { ifVersion: read.version })).isSet === false) return
+  if ((await setNudgeDue($, null, { ifVersion: read.version })).isSet === false) return
   await bump($, (ct) => ({ ...ct, lastNudgeMs: now, lastNudgeKind: kind!, nudgeTimes: c.pushRecent(ct.nudgeTimes ?? [], now) }))
-  await $.state.set(nudgedAtRef, now)
+  await setNudgedAt($, now)
   const sent = await withTimeout($, submitOwn($, c.nudgeText(kind!, await cfgGet($, sid)), false).then(() => 'ok' as const, () => 'failed' as const), ACTION_TIMEOUT_MS)
-  if (sent === 'failed') await $.state.set(nudgedAtRef, null)
+  if (sent === 'failed') await setNudgedAt($, null)
   if (sent === 'failed') turnKind.delete(sid)
   await log($, sid, sent === 'ok' ? 'nudged' : sent === 'timeout' ? 'nudge-unconfirmed' : 'nudge-failed', kind!)
 }
@@ -372,8 +353,8 @@ async function midTurnNudge($: any, e: any): Promise<string | undefined> {
     // The cheap gate: most tool calls end here.
     const kind = c.thresholdKind(tokens, lv)
     if (!kind) return undefined
-    if ((await $.state.get(request)).value) return undefined
-    const read = await $.state.get(nudgeDueRef)
+    if ((await getRequest($)).value) return undefined
+    const read = await getNudgeDue($)
     const due = read.value as c.NudgeDue | null | undefined
     if (due != null && due.kind !== 'threshold') return undefined
     const ct = await counts($)
@@ -384,9 +365,9 @@ async function midTurnNudge($: any, e: any): Promise<string | undefined> {
     }
     const text = c.nudgeText(kind, lv)
     // Cleared by version when a nudge was recorded; else the claim is the stamp below, and midTurnBusy keeps a second hook of the same batch out.
-    if (due != null && (await $.state.set(nudgeDueRef, null, { ifVersion: read.version })).isSet === false) return undefined
+    if (due != null && (await setNudgeDue($, null, { ifVersion: read.version })).isSet === false) return undefined
     await bump($, (x) => ({ ...x, lastNudgeMs: now, lastNudgeKind: kind, nudgeTimes: c.pushRecent(x.nudgeTimes ?? [], now) }))
-    await $.state.set(nudgedAtRef, now)
+    await setNudgedAt($, now)
     midDelivered.add(sid)
     await logq($, sid, 'nudged', `${kind} mid-turn`)
     return text
@@ -403,8 +384,8 @@ async function midTurnNudge($: any, e: any): Promise<string | undefined> {
 // the idle turn like any nudge. Once only: that resend is not a mid-turn one, so it records nothing further; a request, a compaction (the compaction gap, or a size back
 // under the idle level), a lane signed done or a pending nudge of another kind send nothing (the tick's own checks).
 async function midTurnFallback($: any, sid: string) {
-  if ((await $.state.get(request)).value) return
-  const read = await $.state.get(nudgeDueRef)
+  if ((await getRequest($)).value) return
+  const read = await getNudgeDue($)
   if (read.value) return
   await recordNudge($, sid, 'threshold', await $.clock.now(), read.version, false, true)
 }
@@ -444,32 +425,32 @@ async function kaOnce($: any, sid: string, key: string, event: string, reason = 
 export async function keepaliveTick($: any, sid: string, submitsAtStart: number) {
   const k = await cfgGet($, sid)
   if (!k.keepalive || dialogOpen.has(sid)) return
-  const turnEnd = (await $.state.get(turnEndRef)).value
-  const realEnd = (await $.state.get(realEndRef)).value
+  const turnEnd = (await getTurnEnd($)).value
+  const realEnd = (await getRealEnd($)).value
   // Both come only from a turn.complete this session state saw: after a restart they are unknown (and the cache cold), so nothing is pinged until a turn ends.
   if (typeof turnEnd !== 'number' || typeof realEnd !== 'number') return
   const now = await $.clock.now()
   const gapStart = Math.max(turnEnd, lastSubmitAt.get(sid) ?? 0)
   const gap = now - gapStart
   if (gap < k.pingAfterMin * 60_000) return
-  const pingAt = (await $.state.get(pingAtRef)).value
+  const pingAt = (await getPingAt($)).value
   if (typeof pingAt === 'number' && pingAt >= gapStart) return
   // `/callboard rest`: the person left this session alone for this gap, so no ping and no cache nudge in its slot; the cache may expire.
-  const restAt = (await $.state.get(restRef)).value
+  const restAt = (await getRest($)).value
   if (typeof restAt === 'number') return kaOnce($, sid, `rest:${restAt}`, 'keepalive-skipped', 'rest')
   // Every interactive session, not only a lead, a lane or a session with callboard on; personRow below keeps it to a person's.
   // The Mac slept in this gap (lid closed, a dark wake): no ping; the next turn's gap pings as usual.
   if (mem.wokeAt !== undefined && mem.wokeAt >= gapStart) return kaOnce($, sid, `asleep:${gapStart}`, 'keepalive-skipped', 'asleep')
   if (now - realEnd >= k.stopAfterH * c.HOUR_MS) return kaOnce($, sid, `stopped:${realEnd}`, 'keepalive-stopped')
   if (gap > c.KEEPALIVE_COLD_MS) return kaOnce($, sid, `cold:${gapStart}`, 'keepalive-skipped', 'cold')
-  if ((await $.state.get(request)).value != null) return
-  const due = await $.state.get(nudgeDueRef)
+  if ((await getRequest($)).value != null) return
+  const due = await getNudgeDue($)
   if (due.value != null) return
   const reg = regOnce($)
   if ((await idleCheck($, sid, reg)) !== undefined) return
   if (!(await personRow($, sid, reg))) return
   if (mem.submits !== submitsAtStart) return
-  if ((await $.state.set(pingAtRef, now)).isSet === false) return
+  if ((await setPingAt($, now)).isSet === false) return
   const st = await thresholdState($, sid)
   if (st === 'done') return log($, sid, 'keepalive-skipped', 'lane-done')
   const tokens = (await $.session.usage()).context.tokens ?? 0
@@ -499,10 +480,10 @@ export async function keepaliveTick($: any, sid: string, submitsAtStart: number)
 export async function leadNudge($: any, sid: string, now: number, answer: Answer, refuse: (reason: string) => Promise<void>) {
   // A cue's path: the session registry, as every cue check.
   if (!(await personRow($, sid, regOnce($)))) return refuse('not-interactive')
-  const read = await $.state.get(nudgeDueRef)
+  const read = await getNudgeDue($)
   const pending = read.value as c.NudgeDue | null | undefined
   if (c.nudgeDueFresh(pending, now)) {
-    if (pending.kind !== 'lead') await $.state.set(nudgeDueRef, { kind: 'lead', at: pending.at }, { ifVersion: read.version })
+    if (pending.kind !== 'lead') await setNudgeDue($, { kind: 'lead', at: pending.at }, { ifVersion: read.version })
     await orderStamp($, sid, now)
     await answer('held', 'nudged')
     return log($, sid, 'nudge-pending', pending.kind)
@@ -514,9 +495,9 @@ export async function leadNudge($: any, sid: string, now: number, answer: Answer
   if (await busyAgents($)) return refuse('background-work')
   if (!c.nudgeAllowed(ct, now, false, true)) return refuse('nudge-limit')
   // A lane that already got this order's text is not sent it again; one whose nudge expired unsent (a long turn) is.
-  const ordered = (await $.state.get(orderedAtRef)).value
+  const ordered = (await getOrderedAt($)).value
   if (c.orderFresh(ordered, now) && (ct.lastNudgeMs ?? 0) >= ordered) return refuse('nudge-limit')
-  await $.state.set(nudgeDueRef, { kind: 'lead', at: now })
+  await setNudgeDue($, { kind: 'lead', at: now })
   await orderStamp($, sid, now, true)
   await answer('held', 'nudged')
   await log($, sid, 'nudge-due', 'lead')
@@ -524,8 +505,8 @@ export async function leadNudge($: any, sid: string, now: number, answer: Answer
 
 // Returns the stamp it spent, so a compaction the engine refused can put it back. The store delete is bounded: a store that does not answer must not hold up a compaction.
 async function orderSpend($: any, sid: string): Promise<number | null> {
-  const was = (await $.state.get(orderedAtRef).catch(() => ({ value: null }))).value
-  await $.state.set(orderedAtRef, null).catch(() => undefined)
+  const was = (await getOrderedAt($).catch(() => ({ value: null }))).value
+  await setOrderedAt($, null).catch(() => undefined)
   await withTimeout($, Promise.resolve($.store.delete(`${c.ORDER_PREFIX}${sid}`)).catch(logFail($, sid, 'order-mark')), c.ENGINE_CALL_TIMEOUT_MS)
   return typeof was === 'number' ? was : null
 }
@@ -534,8 +515,8 @@ async function orderSpend($: any, sid: string): Promise<number | null> {
 // stretch so a repeated lane_compact cannot stretch the deadline, and a copy in $.store under the lane's session id that the orderer reads at the deadline.
 // `restart`: the order is being sent again (the earlier one's nudge expired unsent), so its 15 minutes start over, for the lane and for the orderer's deadline.
 async function orderStamp($: any, sid: string, now: number, restart = false) {
-  if (!restart && c.orderFresh((await $.state.get(orderedAtRef)).value, now)) return
-  await $.state.set(orderedAtRef, now)
+  if (!restart && c.orderFresh((await getOrderedAt($)).value, now)) return
+  await setOrderedAt($, now)
   await $.store.set(`${c.ORDER_PREFIX}${sid}`, { at: now }).catch(logFail($, sid, 'order-mark'))
   await log($, sid, 'ordered')
 }
@@ -547,7 +528,7 @@ export async function restoreFromHint($: any, sid: string, now: number, stale: (
   if (raw === undefined) return
   const hint = c.parseHint(raw, now)
   if (!hint) return log($, sid, 'hint-rejected', 'invalid')
-  if (hint.lane && (await $.state.get(lane)).value == null) {
+  if (hint.lane && (await getLane($)).value == null) {
     const lanes = await loadLanes($)
     if (typeof lanes === 'string') return log($, sid, 'hint-rejected', lanes)
     const live = await registryEntries($)
@@ -597,14 +578,14 @@ export async function restoreFromHint($: any, sid: string, now: number, stale: (
     try {
       // Inside the mark: a birth rename cue takes the same mark before its own write, so this read cannot miss a binding written meanwhile.
       // A read that does not answer counts as a binding.
-      const held = await withTimeout($, $.state.get(lane), c.ENGINE_CALL_TIMEOUT_MS)
+      const held = await withTimeout($, getLane($), c.ENGINE_CALL_TIMEOUT_MS)
       if (held === 'timeout' || held?.value != null) {
         restoredOnce.add(sid)
         if (!rebound.has(sid)) toast($, c.restoreChangedToast(hint.lane.name))
         return void (await log($, sid, 'refused', 'restore-already-bound'))
       }
       const b = { name: rec.name, at: now, turns: -1, restored: true, rec: await sha($, c.recordText(rec)), ...(rec.adopted ? { adopted: true as const, lead: rec.lead } : {}) }
-      const setting = $.state.set(lane, b)
+      const setting = setLane($, b)
       const w = await withTimeout($, setting, c.ENGINE_CALL_TIMEOUT_MS)
       if (w === 'timeout') {
         // Not pending: a write that lands late is undone with its hint, so there would be nothing to retry.
@@ -630,8 +611,8 @@ export async function restoreFromHint($: any, sid: string, now: number, stale: (
 }
 
 export async function dropRequest($: any, sid: string, reason: string): Promise<boolean> {
-  if ((await $.state.get(request)).value) {
-    await $.state.set(request, null)
+  if ((await getRequest($)).value) {
+    await setRequest($, null)
     await log($, sid, 'dropped', reason)
     return true
   }
@@ -639,8 +620,8 @@ export async function dropRequest($: any, sid: string, reason: string): Promise<
 }
 
 export async function failRequest($: any, sid: string, reason: string, notice: boolean, ifVersion?: number) {
-  if (ifVersion === undefined) await $.state.set(request, null)
-  else if ((await $.state.set(request, null, { ifVersion })).isSet === false) return log($, sid, 'dropped', 'changed-meanwhile')
+  if (ifVersion === undefined) await setRequest($, null)
+  else if ((await setRequest($, null, { ifVersion })).isSet === false) return log($, sid, 'dropped', 'changed-meanwhile')
   await log($, sid, 'refused', reason)
   // No notice turn goes to the session for these (the person is at it, or the refusal is final): a toast says that the request ended and why.
   if (!notice) return void toast($, c.compactSkippedToast(reason))
@@ -678,12 +659,12 @@ export async function doCompact($: any, sid: string, req: Request, fromCue: bool
     await answer('held', blocked)
     return log($, sid, 'held', blocked)
   }
-  const live = (await $.state.get(request)).value as Request | null | undefined
+  const live = (await getRequest($)).value as Request | null | undefined
   if (!live || live.id !== req.id || live.phase !== 'armed' || !(await requestOk($, sid, live))) {
     await answer('refused', 'no-request')
     return log($, sid, 'dropped', 'cancelled-before-compact')
   }
-  await $.state.set(request, { ...req, phase: 'compacting', compactingMs: await $.clock.now() })
+  await setRequest($, { ...req, phase: 'compacting', compactingMs: await $.clock.now() })
   // A compaction that begins spends the order (whatever request began it): the orderer's deadline finds no stamp. A request that ends without one leaves it.
   const spent = await orderSpend($, sid)
   // The mark that survives a restart (c.CMP_PREFIX); set after `compacting`, so a tick in between cannot clear it as left behind.
@@ -723,14 +704,14 @@ export async function requestCompactCall($: any, e: any, next: any) {
   // A session holding a lead grant may ask on-cue too: only the manager's compact cue acts on it.
   const leadCue = !elig && v.req.mode === 'on-cue' && grants.get(sid)?.level === 'lead'
   const self = !elig && !leadCue && (await interactive($, sid))
-  const gate = leadCue ? 'lead' : c.requestGate(elig, v.req.mode, (await $.state.get(nudgedAtRef)).value, now, self)
+  const gate = leadCue ? 'lead' : c.requestGate(elig, v.req.mode, (await getNudgedAt($)).value, now, self)
   if (!gate) {
     await log($, sid, 'refused', 'not-eligible')
     return { deny: "request_compact is not enabled for this session: mode on-cue needs a lane, mode now a person's session." }
   }
   const ct = await counts($)
   // An on-cue request within c.ORDER_MS of an order from the lane's lead is ordered: it passes the context floor and counts as cued (the tick compacts it).
-  const ordered = gate === 'eligible' && v.req.mode === 'on-cue' && c.orderFresh((await $.state.get(orderedAtRef)).value, now)
+  const ordered = gate === 'eligible' && v.req.mode === 'on-cue' && c.orderFresh((await getOrderedAt($)).value, now)
   const early = c.compactAllowed(ct, (await $.session.usage()).context.tokens ?? 0, now, ordered)
   if (early) {
     await log($, sid, 'refused', early)
@@ -738,8 +719,8 @@ export async function requestCompactCall($: any, e: any, next: any) {
   }
   const sum = await sha($, v.req.continuation)
   // Any stored request spends the grant, before it is stored: a failure after this point leaves no grant behind.
-  await $.state.set(nudgedAtRef, null)
-  await $.state.set(request, {
+  await setNudgedAt($, null)
+  await setRequest($, {
     id: `${now}`,
     mode: v.req.mode,
     focus: v.req.focus,
@@ -758,12 +739,12 @@ export async function requestCompactCall($: any, e: any, next: any) {
 export async function turnComplete($: any, e: any, next: any) {
   const sid = await $.session.id()
   try {
-    const req = (await $.state.get(request)).value as Request | null | undefined
+    const req = (await getRequest($)).value as Request | null | undefined
     if (req && (e as { agentId?: string }).agentId === undefined) {
       if (req.phase === 'called') {
         if (e.reason !== 'answer') await dropRequest($, sid, 'turn-ended-badly')
         else {
-          await $.state.set(request, { ...req, phase: 'armed' })
+          await setRequest($, { ...req, phase: 'armed' })
           await log($, sid, 'armed', req.mode)
         }
       } else if (req.phase === 'armed' && req.mode === 'on-cue' && req.ordered !== true) {
@@ -780,8 +761,8 @@ export async function turnComplete($: any, e: any, next: any) {
     turnKind.delete(sid)
     try {
       const at = await $.clock.now()
-      await $.state.set(turnEndRef, at)
-      if (kind === undefined) await $.state.set(realEndRef, at)
+      await setTurnEnd($, at)
+      if (kind === undefined) await setRealEnd($, at)
     } catch {
       await logq($, sid, 'error', 'turn-end')
     }
@@ -820,8 +801,8 @@ export async function promptSubmit($: any, e: any, next: any) {
   }
   turnKind.delete(sid)
   // A prompt that is not the mod's own ends the nudge grant: it covers the nudge turn and the turns that follow without the person typing.
-  if ((await $.state.get(nudgedAtRef)).value != null) await $.state.set(nudgedAtRef, null)
-  const req = (await $.state.get(request)).value as Request | null | undefined
+  if ((await getNudgedAt($)).value != null) await setNudgedAt($, null)
+  const req = (await getRequest($)).value as Request | null | undefined
   if (req && req.phase !== 'compacting') {
     const dropped = await dropRequest($, sid, req.phase === 'compacted' ? 'user-message-cancelled-resume' : 'new-prompt')
     // A compaction that was queued (called, or armed for the turn's end) is cancelled by the person's message: said, not silent. A resume after a compaction is not a queued one.
@@ -849,11 +830,11 @@ export async function turnStart($: any, e: any, next: any) {
     else {
       turnKind.delete(sid)
       // A real turn ends a `/callboard rest`.
-      if (typeof (await $.state.get(restRef)).value === 'number') await $.state.set(restRef, null).catch(() => undefined)
+      if (typeof (await getRest($)).value === 'number') await setRest($, null).catch(() => undefined)
     }
     if (kind !== 'ping') await markTurn($, sid)
   }
-  const req = (await $.state.get(request)).value as Request | null | undefined
+  const req = (await getRequest($)).value as Request | null | undefined
   if (req && req.phase === 'armed' && req.mode === 'on-cue' && req.ordered !== true && (e as { agentId?: string }).agentId === undefined) await dropRequest($, await $.session.id(), 'new-turn')
   return next(e)
 }
@@ -861,11 +842,11 @@ export async function turnStart($: any, e: any, next: any) {
 export async function postCompact($: any, e: any, next: any) {
   const sid = await $.session.id()
   try {
-    const req = (await $.state.get(request)).value as Request | null | undefined
+    const req = (await getRequest($)).value as Request | null | undefined
     if (req && req.phase === 'compacting') {
       const doneAt = await $.clock.now()
       await bump($, (ct) => ({ ...ct, lastCompactMs: doneAt })).catch(() => log($, sid, 'error', 'postcompact-counter'))
-      await $.state.set(request, { ...req, phase: 'compacted', compactedMs: doneAt })
+      await setRequest($, { ...req, phase: 'compacted', compactedMs: doneAt })
       await log($, sid, 'compacted')
       await saveHint($, sid)
     }

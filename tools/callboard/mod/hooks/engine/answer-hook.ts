@@ -9,9 +9,7 @@ import { leadsFor, homeOf, presenceCheck } from './grants.ts'
 import { reportLaneOf, sessionRoot } from './lanes.ts'
 import type { Bound } from './lanes.ts'
 import { promptLinkOnce, promptReachTiers, promptStand } from './answer-tiers.ts'
-
-// $.state keys declared again where they are used: `claude plugin validate` reads a key in the file that uses it.
-const lane = { plugin: 'callboard', key: 'lane' } as const
+import { getLane } from '../state.ts'
 
 // ---- prompt answering (ADR 0004): the hook, the floor, the files and the switch. Off by default; nothing here lets an agent write a decision. ----
 // A PermissionRequest hook in the asking session: it refuses what no agent may answer, writes a request file and waits. The decision comes from
@@ -141,7 +139,7 @@ export async function promptsOff($: any): Promise<boolean> {
 async function promptCoverage($: any, sid: string): Promise<{ a: pr.Answering; level: 'lane' | 'lead'; lane?: string; self?: string; lead?: string } | undefined> {
   const a = pr.parseAnswering(await $.store.get(ANSWERING_KEY))
   if (!a) return undefined
-  const b = (await $.state.get(lane)).value as Bound | null | undefined
+  const b = (await getLane($)).value as Bound | null | undefined
   if (b && typeof b.name === 'string') return { a, level: 'lane', lane: b.name, ...(typeof b.lead === 'string' ? { lead: b.lead } : {}) }
   const g = grants.get(sid)
   return g?.level === 'lead' ? { a, level: 'lead', self: g.name } : undefined

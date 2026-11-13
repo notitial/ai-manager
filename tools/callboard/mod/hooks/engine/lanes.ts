@@ -99,12 +99,7 @@ import {
 import { briefOnce, epochOf } from './levels.ts'
 import { dropRequest, doCompact, isEligible, leadNudge, busyAgents, backgroundShells, counts, bump, interactive, saveHint } from './compaction.ts'
 import { ensureTimer } from './tick.ts'
-
-const lane = { plugin: 'callboard', key: 'lane' } as const
-const lastTurn = { plugin: 'callboard', key: 'lastTurnAt' } as const
-// $.state keys declared again where they are used: `claude plugin validate` reads a key in the file that uses it.
-const seen = { plugin: 'callboard', key: 'seen' } as const
-const request = { plugin: 'callboard', key: 'request' } as const
+import { getLane, getLastTurn, getRequest, getSeen, setLane } from '../state.ts'
 
 const stopCallKey = (sid: string, verb: string, lane: unknown) => `${sid}\n${verb}\n${String(lane)}`
 
@@ -413,11 +408,11 @@ export async function retireReportCheck($: any, sid: string, l: c.Lane): Promise
   // A failed write of the turn mark leaves the old one, which would pass: until a write succeeds the signature cannot be shown to be last.
   if (lastTurnUnknown.has(sid)) return 'report-unknown'
   const r = await readReport($, l)
-  return 'no' in r ? r.no : c.retireRefusal(r.text, sid, r.mtimeMs, r.size, (await $.state.get(lastTurn)).value)
+  return 'no' in r ? r.no : c.retireRefusal(r.text, sid, r.mtimeMs, r.size, (await getLastTurn($)).value)
 }
 
 export async function reportLaneOf($: any, sid: string): Promise<c.Lane | undefined> {
-  const b = (await $.state.get(lane)).value as { name: string; rec?: string } | null | undefined
+  const b = (await getLane($)).value as { name: string; rec?: string } | null | undefined
   if (!b) return undefined
   const hit = boundLane.get(sid)
   if (hit && hit.name === b.name && hit.rec === (b.rec ?? '')) return hit.l
@@ -483,7 +478,7 @@ async function birthRename(
     const t1 = t1r === 'timeout' ? NaN : t1r
     const stored = c.bindTurns(t0, t1)
     const b: Bound = { name: cue.name!, at: now, turns: stored ?? -1, rec }
-    const setting = $.state.set(lane, b)
+    const setting = setLane($, b)
     const w = await withTimeout($, setting, c.ENGINE_CALL_TIMEOUT_MS).catch(() => undefined)
     if (w === 'timeout') {
       undoLate($, sid, setting, b)
@@ -511,8 +506,8 @@ export async function handle($: any, sid: string, cue: c.Cue, answer: Answer) {
     await log($, sid, 'held', reason)
   }
   const now = await $.clock.now()
-  const bound = (await $.state.get(lane)).value as { name: string; turns?: number; rec?: string; adopted?: boolean; lead?: string } | null | undefined
-  const first = (await $.state.get(seen)).value ?? now
+  const bound = (await getLane($)).value as { name: string; turns?: number; rec?: string; adopted?: boolean; lead?: string } | null | undefined
+  const first = (await getSeen($)).value ?? now
   // One cue reads the registry and the lane list once.
   const reg = regOnce($)
   let lanesP: Promise<c.Lane[] | string> | undefined
@@ -554,13 +549,13 @@ export async function handle($: any, sid: string, cue: c.Cue, answer: Answer) {
     if (!live) return refuse('registry-unreadable')
     // A trusted conductor that lists the lead's repo also qualifies (conductorsTrusted).
     if (!(await managerTrusted($, live, sid)) && (await conductorsTrusted($, live, sid, pinOf(sid))).length === 0) return refuse('not-eligible')
-    const req = (await $.state.get(request)).value as Request | null | undefined
+    const req = (await getRequest($)).value as Request | null | undefined
     if (!req || req.viaLead !== true || req.mode !== 'on-cue' || req.phase !== 'armed') return refuse('no-request')
     return compactOwn(req)
   }
   if (!(await isEligible($))) return refuse('not-eligible')
   if (cue.verb === 'compact') {
-    const req = (await $.state.get(request)).value as Request | null | undefined
+    const req = (await getRequest($)).value as Request | null | undefined
     // With no request of its own the session is nudged to make one; any other phase (called, armed now, compacting, compacted) is no-request, as before.
     if (!req) return leadNudge($, sid, now, answer, refuse)
     if (req.mode !== 'on-cue' || req.phase !== 'armed') return refuse('no-request')
@@ -653,7 +648,7 @@ function undoLateWrite($: any, sid: string, setting: Promise<any>, b: Bound, und
   void setting
     .then(async (w) => {
       if (w?.isSet === false) return
-      const cur = (await $.state.get(lane)).value as Bound | null | undefined
+      const cur = (await getLane($)).value as Bound | null | undefined
       if (cur && cur.name === b.name && cur.at === b.at) {
         await undo(cur)
         await log($, sid, 'error', undoneCode)
@@ -727,7 +722,7 @@ export async function renameTick($: any, sid: string) {
   pendingRename.delete(sid)
   // The manager's rename, while its grant still names it (the outcome is logged either way).
   const g = grants.get(sid)
-  if (pr.manager ? !(g?.level === 'manager' && g.name === pr.name) : ((await $.state.get(lane)).value as { name?: string } | null | undefined)?.name !== pr.name) return
+  if (pr.manager ? !(g?.level === 'manager' && g.name === pr.name) : ((await getLane($)).value as { name?: string } | null | undefined)?.name !== pr.name) return
   const fail = async (why: string) => {
     await log($, sid, 'rename-failed', why)
     toast($, c.renameFailedToast(pr.name))
@@ -744,7 +739,7 @@ export async function renameTick($: any, sid: string) {
 
 // The cheap part, every tick with no time limit (a state read): the binding the sync is due for, if any; its key is set here.
 export async function sidSyncDue($: any, sid: string): Promise<Bound | undefined> {
-  const b = (await $.state.get(lane)).value as Bound | null | undefined
+  const b = (await getLane($)).value as Bound | null | undefined
   if (!b || typeof b.name !== 'string') return undefined
   const key = `${b.name}\n${b.at}\n${b.rec ?? ''}`
   if (sidSynced.get(sid) === key) return undefined
@@ -761,7 +756,7 @@ export async function sidSync($: any, sid: string, b: Bound & { name: string }) 
   if ((await sessionRoot($)) !== l.folder) return failed('wrong-folder')
   if (l.sid === sid && l.parked === undefined) return
   const same = async () => {
-    const now = (await $.state.get(lane)).value as Bound | null | undefined
+    const now = (await getLane($)).value as Bound | null | undefined
     return !!now && now.name === b.name && now.at === b.at && now.rec === b.rec ? undefined : { no: 'changed' }
   }
   const r = await editStore($, l.src, async (cur) => {
@@ -798,7 +793,7 @@ const REBIND_TRIES = 15
 // A rebind write that timed out and lands late is only taken back: the binding goes while it is still this one; the record, its sid and the hint stay,
 // so a later start or the Restore question can still bind it. Not detach, which would clear the sid and the hint for good.
 function rebindUndoLate($: any, sid: string, setting: Promise<any>, b: Bound) {
-  return undoLateWrite($, sid, setting, b, () => $.state.set(lane, null), 'late-rebind-undone', 'late-rebind')
+  return undoLateWrite($, sid, setting, b, () => setLane($, null), 'late-rebind-undone', 'late-rebind')
 }
 
 export async function rebindTick($: any, sid: string) {
@@ -816,7 +811,7 @@ export async function rebindTick($: any, sid: string) {
   }
   const retry = async (code: string) => (n >= REBIND_TRIES ? end(code) : undefined)
   // A session bound already (attached or restored before this tick) is left as it is, with no read; the check runs again inside the mark below.
-  if ((await $.state.get(lane)).value != null) return void rebindPending.delete(sid)
+  if ((await getLane($)).value != null) return void rebindPending.delete(sid)
   const lanes = await loadLanes($).catch(() => 'lanes-error')
   if (typeof lanes === 'string') return retry(lanes)
   const named = lanes.filter((l) => l.sid === sid)
@@ -846,12 +841,12 @@ export async function rebindTick($: any, sid: string) {
   let binding: Bound | undefined
   try {
     // As the restore: inside the mark, and a read that does not answer counts as a binding. A session that is bound already is left as it is.
-    const held = await withTimeout($, $.state.get(lane), c.ENGINE_CALL_TIMEOUT_MS)
+    const held = await withTimeout($, getLane($), c.ENGINE_CALL_TIMEOUT_MS)
     if (held === 'timeout' || held?.value != null) return void rebindPending.delete(sid)
     const b = { name: l.name, at: now, turns: -1, restored: true, rec: await sha($, c.recordText(l)), ...(l.adopted ? { adopted: true as const, lead: l.lead } : {}) }
     // A /callboard off since this tick began cancelled the rebind and cleared the record's sid: no binding is written after it.
     if (!rebindPending.has(sid) || (offSeq.get(sid) ?? 0) !== seq) return
-    const setting = $.state.set(lane, b)
+    const setting = setLane($, b)
     const w = await withTimeout($, setting, c.ENGINE_CALL_TIMEOUT_MS)
     if (w === 'timeout') {
       rebindUndoLate($, sid, setting, b)
@@ -959,7 +954,7 @@ async function leadByName($: any, e: unknown, sid: string): Promise<{ sid: strin
 export type Plan = { name: string; rename: boolean; repo: string; lead: string; cwd: string; key: string; leadName?: string; pick?: string }
 export async function attachPlan($: any, sid: string, want: string | undefined, pick?: string): Promise<Plan | { no: string } | { choices: string[] }> {
   await reservedGet($, sid, true)
-  if ((await $.state.get(lane)).value != null) return { no: 'already-bound' }
+  if ((await getLane($)).value != null) return { no: 'already-bound' }
   if (grants.get(sid)?.level === 'manager') return { no: 'manager-holder' }
   // Nor a conductor, nor a session that was one since it started.
   if (grants.get(sid)?.level === 'conductor' || conductorRestorePending.has(sid)) return { no: 'conductor-holder' }
@@ -1087,7 +1082,7 @@ export async function detach($: any, sid: string, b: Bound): Promise<{ sidKept: 
   sidSynced.delete(sid)
   laneBrief.delete(sid)
   laneBriefed.delete(sid)
-  await $.state.set(lane, null)
+  await setLane($, null)
   // Again after the write: facts kept while it was in flight go too.
   laneBrief.delete(sid)
   laneBriefed.delete(sid)
