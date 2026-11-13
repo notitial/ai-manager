@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
-import { HINT_PREFIX, conductorFileText, conductorAddQuestion, conductorRefusalText, conductorAddedText, CONDUCTOR_NOT_PERSON, CONDUCTOR_USAGE, conductorQuestion, conductorRestoreQuestion, conductorBriefing, conductorBriefingNote, conductorRestoredToast, conductorUnansweredToast, conductorFileBadToast, conductorNoReposToast, CONDUCTOR_ON_TEXT, CONDUCTOR_OFF_QUESTION, conductorStatus, leadBriefing, LANES_CHANGED_TEXT, reboundToast, REASON_TEXT, managerRefusalText, terminateQuestion, leadConductorText } from '../hooks/core'
-import { h, GOOD, LANESDIR, NO, PS_TABLE, ROOT, SID, T0, YES, condFiles, condStat, extraStat, laneSeed, leadFiles, longTest, psDead, realFails, realMap, seen, storeFiles, submitted, toasts, toolDefs } from './harness'
+import { HINT_PREFIX, usageFileText, conductorFileText, conductorAddQuestion, conductorRefusalText, conductorAddedText, CONDUCTOR_NOT_PERSON, CONDUCTOR_USAGE, conductorQuestion, conductorRestoreQuestion, conductorBriefing, conductorBriefingNote, conductorRestoredToast, conductorUnansweredToast, conductorFileBadToast, conductorNoReposToast, CONDUCTOR_ON_TEXT, CONDUCTOR_OFF_QUESTION, conductorStatus, leadBriefing, LANES_CHANGED_TEXT, reboundToast, REASON_TEXT, managerRefusalText, terminateQuestion, leadConductorText } from '../hooks/core'
+import { h, GOOD, LANESDIR, NO, PS_TABLE, ROOT, SID, T0, USAGE_DIR, YES, condFiles, condStat, extraStat, laneSeed, leadFiles, longTest, pdirs, pfs, psDead, realFails, realMap, seen, storeFiles, submitted, toasts, toolDefs } from './harness'
 import type { Trace } from './harness'
 import { APISID, APP2, COMPOSE, COND, CONDFILE, CSESS, FAR, LANE_HINT, LEADKEY, LEADPATH, LEADPS, LEADSID, MGR_SESS, MIN, NO_LANES, NO_LANES_COND, OTHER, OTHERLEAD, OTHERPATH, PIN, SELFPATH, STATUS_NONE, TURN, allEvents, attacher, briefings, ckLane, condAt, condOn, condPresenceOf, condRun, condSelf, cue, dirStat, doLane, grantAt, idleFor, killed, lane, leadAt, leadFileText, leadReg, leadSelfReg, listCall, listed, logged, madeLane, mgrAt, mgrCall, mgrFile, mgrRow, newTrace, noteRows, nudges, ownReg, putCond, putStore, regAs, renameThroughTick, selfAs, started, statusTable, statusText, ticks, unanswered, waitFor } from './fixtures'
 
@@ -855,10 +855,28 @@ test('laneless leads (manager): a live lead with no lanes gets a box under its r
   })
   const t = (await $.tool.call(listCall())).result as string
   expect(t.split('\n')[0]).toBe('**Manager MANAGER** · live')
-  expect(t).toMatch(/^\| LEAD-A \| app \| – \|( – \|)+ – \|$/m)
-  expect(t).toMatch(/^\| LEAD-B \| app2 \| – \|( – \|)+ – \|$/m)
+  expect(t).toMatch(/^\| LEAD-A \| app \| – \|( – \|)+ no reading \| – \|$/m)
+  expect(t).toMatch(/^\| LEAD-B \| app2 \| – \|( – \|)+ no reading \| – \|$/m)
   expect(t).toContain('| Any lead | app | ')
   expect(t.match(/^\| LEAD-[AB] \|/gm)?.length).toBe(2)
+  expect((await $.command.run(lane('lanes'))).text).toBe(t)
+})
+
+test('laneless leads (manager): the lead row shows the lead\'s own reading in the Usage column, a conductor\'s list too', async ($, on) => {
+  const reading = usageFileText(OTHERLEAD, 4243, LEADPS, T0 - 2 * MIN, { context: { tokens: 90_000 }, cost: { usd: 0.4 }, rateLimits: [] })!
+  await mgrAt($, on, [], {
+    sess: { ...MGR_SESS(), ...regAs(OTHERLEAD, 4243, 'LEAD-A'), ...regAs(COND2, 4244, 'LEAD-B') },
+    seed: () => {
+      extraStat.set(`${APP2}/.git`, dirStat)
+      leadPresenceOf(OTHERLEAD, 4243, PIN)
+      leadPresenceOf(COND2, 4244, APP2)
+      pdirs.add(USAGE_DIR)
+      pfs.set(`${USAGE_DIR}/${OTHERLEAD}.json`, { text: reading, mtimeSec: (T0 - 2 * MIN) / 1000 })
+    },
+  })
+  const t = (await $.tool.call(listCall())).result as string
+  expect(t).toMatch(/^\| LEAD-A \| app \| – \|( – \|)+ ctx 90k · \$0\.40 · 2m ago \| – \|$/m)
+  expect(t).toMatch(/^\| LEAD-B \| app2 \| – \|( – \|)+ no reading \| – \|$/m)
   expect((await $.command.run(lane('lanes'))).text).toBe(t)
 })
 
@@ -873,7 +891,7 @@ test('laneless leads (manager): inside a live conductor\'s Conductor box when th
   const t = (await $.tool.call(listCall())).result as string
   // The conductor's name is on its first row only; the laneless lead's row sits under it.
   expect(t).toMatch(/^\| CONDX \| Any lead \| app \| /m)
-  expect(t).toMatch(/^\|  \| LEAD-A \| app \| – \|( – \|)+ – \|$/m)
+  expect(t).toMatch(/^\|  \| LEAD-A \| app \| – \|( – \|)+ no reading \| – \|$/m)
 })
 
 test('laneless leads (conductor): a live lead of a listed repo is in the Conductor box, one of a repo it does not list is not; lane_list and /callboard lanes agree', async ($, on) => {
@@ -888,7 +906,7 @@ test('laneless leads (conductor): a live lead of a listed repo is in the Conduct
   })
   const t = (await $.tool.call(listCall())).result as string
   expect(t.split('\n')[0]).toBe('**Conductor COND** · live')
-  expect(t).toMatch(/^\| LEAD-A \| app \| – \|( – \|)+ – \|$/m)
+  expect(t).toMatch(/^\| LEAD-A \| app \| – \|( – \|)+ no reading \| – \|$/m)
   expect(t).not.toContain('LEAD-B')
   expect((await $.command.run(lane('lanes'))).text).toBe(t)
 })

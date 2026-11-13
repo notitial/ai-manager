@@ -88,9 +88,11 @@ const regDirOf = (path: string): { name: string; files: Record<string, string> }
 export const T0 = 1_700_000_000_000
 // ADR 0004 (prompt answering): a fake of ~/.claude/callboard/prompts, files by path, answering the argv shapes the hook and the ledger use.
 export const PROMPTS_DIR = '/Users/x/.claude/callboard/prompts'
-export const pfs = new Map<string, { text: string; mtimeSec: number; mode?: string; nlink?: number }>()
+export const pfs = new Map<string, { text: string; mtimeSec: number; mode?: string; nlink?: number; uid?: number }>()
 export const pdirs = new Set<string>()
-const isPromptPath = (p: unknown) => typeof p === 'string' && (p === PROMPTS_DIR || p.startsWith(`${PROMPTS_DIR}/`))
+// The usage folder (usage.ts) is kept in the same file fake.
+export const USAGE_DIR = '/Users/x/.claude/callboard/usage'
+const isPromptPath = (p: unknown) => typeof p === 'string' && (p === PROMPTS_DIR || p.startsWith(`${PROMPTS_DIR}/`) || p === USAGE_DIR || p.startsWith(`${USAGE_DIR}/`))
 function promptList(path: string) {
   const pre = path.endsWith('/') ? path : `${path}/`
   const names = new Map<string, { kind: string; size: number; mtimeMs: number }>()
@@ -117,7 +119,7 @@ function promptFs(a: string[], stdin: string | undefined, now: number): any | un
   if (a[0] === '/usr/bin/stat') {
     if (pdirs.has(last)) return ok(`501 700 2 Directory 21 64 ${now / 1000}\n`)
     const f = pfs.get(last)
-    return f ? ok(`501 ${f.mode ?? '600'} ${f.nlink ?? 1} Regular File 31 ${f.text.length} ${f.mtimeSec}\n`) : ok('', 1, `stat: ${last}: No such file or directory`)
+    return f ? ok(`${f.uid ?? 501} ${f.mode ?? '600'} ${f.nlink ?? 1} Regular File 31 ${f.text.length} ${f.mtimeSec}\n`) : ok('', 1, `stat: ${last}: No such file or directory`)
   }
   if (a[0] === '/usr/bin/install') {
     if (!pfs.has(last)) pfs.set(last, { text: '', mtimeSec: now / 1000 })
@@ -287,6 +289,8 @@ export const h = {
   tokensNow: 150_000,
   // Runs once inside the next session.usage call, to change state while a hook awaits it.
   usageHook: undefined,
+  // Fields of the next session.usage answers beyond the context tokens: cost, rateLimits.
+  usageExtra: undefined as Record<string, unknown> | undefined,
   agentsNow: [] as { status: string }[],
   resultStat: undefined,
   autoAnswer: 'ok -' as string | undefined,
@@ -447,6 +451,7 @@ function resetSession() {
   h.submitHook = undefined
   h.tokensNow = 150_000
   h.usageHook = undefined
+  h.usageExtra = undefined
   h.agentsNow = []
   submitted.length = 0
   toasts.length = 0
@@ -673,7 +678,7 @@ export function engine(on0: any, argvSeen: string[][], stdins: string[] = [], cl
     const hook = h.usageHook
     h.usageHook = undefined
     await hook?.()
-    return { value: { startedAt: 0, context: { tokens: h.tokensNow }, rateLimits: [] } }
+    return { value: { startedAt: 0, context: { tokens: h.tokensNow }, rateLimits: [], ...h.usageExtra } }
   })
   on('agent.list', () => {
     if (h.agentListThrows) throw new Error('agents')
@@ -681,6 +686,7 @@ export function engine(on0: any, argvSeen: string[][], stdins: string[] = [], cl
   })
   on('prompt.read', () => ({ value: { text: h.draftNow, cursor: 0 } }))
   on('session.end', () => ({ sessionId: SID }))
+  on('session.measure', (_: any, e: any) => ({ changed: e.changed }))
   on('prompt.submit', async (_: any, e: any) => {
     if (over()) return Promise.reject(new Error('test over'))
     const hook = h.submitHook

@@ -62,6 +62,7 @@ import {
 } from './compaction.ts'
 import { promptCloseTick, promptSweep } from './answer-hook.ts'
 import { promptNoticeTick } from './answer-tiers.ts'
+import { usageFlush } from './usage.ts'
 import { getRequest, getSeen, setInteractive, setRequest, setSeen } from '../state.ts'
 
 const RESUME_TTL_MS = 120_000
@@ -174,6 +175,8 @@ async function tick($: any) {
     if (typeof sid !== 'string' || !c.SID_RE.test(sid) || !p) return
     // Not awaited, so a slow store never holds the tick (reservedGet keeps the last good list meanwhile).
     void reservedGet($, sid).catch(() => undefined)
+    // The trailing write of a usage reading a measure left owed (usage.ts).
+    await usageFlush($, sid).catch(logFail($, sid, 'usage-write'))
     // None of these may stop the cue path below: each logs its own failure.
     const lr = leadRestorePending.get(sid)
     if (lr) await timedStep($, sid, leadRestore($, sid, lr.hint, lr.tries + 1), 'error', (r) => `lead-restore-${r}`)

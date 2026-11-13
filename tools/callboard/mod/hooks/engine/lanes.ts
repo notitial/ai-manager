@@ -101,6 +101,7 @@ import { briefOnce, epochOf } from './levels.ts'
 import { dropRequest, doCompact, isEligible, leadNudge, busyAgents, backgroundShells, counts, bump, interactive, saveHint } from './compaction.ts'
 import { ensureTimer } from './tick.ts'
 import { getLane, getLastTurn, getRequest, getSeen, setLane } from '../state.ts'
+import { usageReadings } from './usage.ts'
 
 const stopCallKey = (sid: string, verb: string, lane: unknown) => `${sid}\n${verb}\n${String(lane)}`
 
@@ -929,7 +930,13 @@ export async function laneTable($: any, sid: string) {
   // The manager's list gains a Conductor column naming each live conductor's repos.
   const conductors = base.g.level === 'manager' ? await conductorsLive($, base.live, sid).catch(() => 'error' as const) : undefined
   const leads = await leadsInReach($, base.live, base.g).catch(() => [])
-  const text = c.laneListText(base.lanes.filter((l) => c.inReach(base.g, l)), base.live.map(regEntry), await $.clock.now(), { level: base.g.level, name: base.g.name, conductors, leads })
+  const lanes = base.lanes.filter((l) => c.inReach(base.g, l))
+  const entries = base.live.map(regEntry)
+  const now = await $.clock.now()
+  // The Usage column reads the live lanes' files, and the lead rows' in a conductor's or the manager's list; any read that fails leaves a row at no reading.
+  const wanted = new Set([...lanes.map((l) => { const one = c.laneSession(entries, l, ''); return one.ok ? one.entry.sessionId : '' }), ...leads.map((x) => x.sid ?? '')])
+  const usage = await usageReadings($, entries.filter((e) => wanted.has(e.sessionId)), now).catch(() => new Map<string, c.UsageReading>())
+  const text = c.laneListText(lanes, entries, now, { level: base.g.level, name: base.g.name, conductors, leads, usage })
   return { text }
 }
 

@@ -87,12 +87,12 @@ export async function storePath($: any, key: string): Promise<string> {
   return `${(await where($))!.root}/lanes/${key}.json`
 }
 // absent: no file. bad: something is there that the loader would not trust or could not read. ok: a plain private file of ours, read with a bound.
-export async function readStoreFile($: any, path: string, uid: number): Promise<{ state: 'absent' | 'bad' | 'ok'; text: string }> {
+export async function readStoreFile($: any, path: string, uid: number, max = c.STORE_MAX_BYTES): Promise<{ state: 'absent' | 'bad' | 'ok'; text: string }> {
   const r0 = await run($, [STAT, '-f', STAT_FMT, '--', path], undefined, { LC_ALL: 'C' })
   if (r0.exitCode !== 0) return { state: /No such file or directory/.test(r0.stderr) ? 'absent' : 'bad', text: '' }
   const f = c.parseStat(r0.stdout)
-  if (!f || c.cueFileOk(f, uid) || f.size > c.STORE_MAX_BYTES) return { state: 'bad', text: '' }
-  const r = await run($, [HEAD, '-c', String(c.STORE_MAX_BYTES + 1), '--', path])
+  if (!f || c.cueFileOk(f, uid) || f.size > max) return { state: 'bad', text: '' }
+  const r = await run($, [HEAD, '-c', String(max + 1), '--', path])
   return r.exitCode === 0 ? { state: 'ok', text: r.stdout } : { state: 'bad', text: '' }
 }
 
