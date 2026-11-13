@@ -2769,9 +2769,10 @@ test('lead_open texts: the request line, the brief, the offer and the fixed reas
   const o: c.Offer = { v: 1, name: 'LEAD-A', repo: '/Users/x/app', model: 'sonnet', conductor: { sid: 's', pid: 7, start: 'Thu Nov 13 11:00:00 2026' }, at: 5, nonce }
   assert.deepEqual(JSON.parse(c.offerText(o)), o)
   assert.ok(c.offerText(o).length < c.OFFER_MAX)
-  for (const code of ['not-conductor', 'conductor-leads-off', 'bad-repo', 'not-in-reach', 'conductor-nested', 'name-in-open', 'leads-unreadable', 'lead-exists', 'offer-open', 'open-in-flight', 'open-rate', 'ledger-unreadable', 'offer-write', 'ledger-write', 'unsafe-offers-dir'])
+  for (const code of ['not-conductor', 'conductor-leads-off', 'bad-repo', 'not-in-reach', 'conductor-nested', 'name-in-open', 'leads-unreadable', 'lead-exists', 'offer-open', 'open-in-flight', 'open-rate', 'ledger-unreadable', 'offer-write', 'ledger-write', 'unsafe-offers-dir', 'config-unreadable'])
     assert.ok(c.reasonWhy(code).startsWith(`${code}: `), code)
   assert.match(c.leadOpenedText('LEAD-A', '12345678-aaaa-bbbb-cccc-dddddddddddd'), /^lead panel opened for LEAD-A as session 12345678;.*only they can make it a lead/)
+  assert.match(c.leadOpenedText('LEAD-A', '12345678-aaaa-bbbb-cccc-dddddddddddd', 'brief-chars'), /its brief could not be written \(brief-chars\), so the person must give it the task\./)
   assert.equal(c.LEAD_OPENS_PER_HOUR, 1)
   assert.equal(c.LEAD_OFFERS_PER_HOUR, 3)
 })

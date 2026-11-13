@@ -162,6 +162,7 @@ test('the window never answering takes the offer back and says a panel may still
   const r = JSON.stringify(await p)
   expect(r).toContain('no window answered in time')
   expect(offers()).toEqual([])
+  expect(mvs(argv, '/BRIEF.md')).toEqual([])
   expect(ledgerRows().map((x) => x.kind)).toEqual(['lead-offer', 'lead-offer-void'])
   h.openResult = undefined
   expect(await open($, `ok ${NEWSID}\n`)).toContain('lead panel opened')
@@ -187,6 +188,16 @@ test('config conductor-leads off makes the tool refuse and writes nothing; on le
   wroteNothing(argv)
   h.store.set('config', { conductorLeads: true, savedAt: h.nowMs })
   expect(await open($, `ok ${NEWSID}\n`)).toContain('lead panel opened')
+})
+
+test('a settings read that fails makes lead_open refuse and write nothing, the switch not being checkable', async ($, on) => {
+  const argv: string[][] = []
+  await conductor($, on, argv)
+  h.storeThrowSync = 'get'
+  const r = await open($)
+  h.storeThrowSync = undefined
+  expect(r).toContain(REASON_TEXT['config-unreadable'])
+  wroteNothing(argv)
 })
 
 test('only a conductor has lead_open: a lead that calls it is refused, and nothing is written', async ($, on) => {

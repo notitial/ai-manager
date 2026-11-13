@@ -864,6 +864,20 @@ export async function cfgGet($: any, sid: string, force = false): Promise<c.Conf
   return mem.cfg
 }
 
+// The switch read for a power the person can turn off: a forced read that says undefined when the store did not answer, so the caller refuses instead of using the cache.
+export async function cfgReadStrict($: any, sid: string): Promise<c.Config | undefined> {
+  try {
+    const raw = await withTimeout($, (async () => $.store.get(c.CONFIG_KEY))(), c.ENGINE_CALL_TIMEOUT_MS)
+    if (raw === 'timeout') throw new Error('timeout')
+    mem.cfg = c.parseConfig(raw).cfg
+    mem.cfgReadAt = await $.clock.now()
+    return mem.cfg
+  } catch {
+    await logq($, sid, 'error', 'config-read')
+    return undefined
+  }
+}
+
 export async function reservedGet($: any, sid: string, force = false): Promise<readonly string[]> {
   const now = await $.clock.now()
   if (!force && !c.dueEvery(mem.reservedReadAt, now, c.CONFIG_READ_MS)) return c.localReservedNames()

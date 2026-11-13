@@ -1372,6 +1372,7 @@ export const REASON_TEXT: Record<string, string> = {
   'conductor-tool': 'the conductor may only list lanes, compact leads and lanes, and force stop a lane.',
   'conductor-list': "none of the conductor's repos is in reach now (its list file is unreadable, or lists no repo it may reach). Ask the person to run /callboard conductor.",
   'not-conductor': 'lead_open is a conductor tool.',
+  'config-unreadable': 'the settings could not be read, so the person\'s conductor-leads switch cannot be checked. Retry in a moment.',
   'conductor-leads-off': 'the person turned conductor-led leads off (/callboard config conductor-leads). Ask them to turn it on.',
   'bad-repo': 'repo must be the absolute path of one of your repos.',
   'not-in-reach': 'that repo is not one of your repos now: it must be in the conductor list and approved, and be its own real path.',
@@ -1543,8 +1544,8 @@ export function leadOpenRate(rows: { kind: string; t: string; hash?: string }[],
   const mine = rows.filter((r) => r.hash === hash && recent(r))
   return mine.some((r) => r.kind === 'lead-grant') || mine.filter((r) => r.kind === 'lead-offer').length >= LEAD_OFFERS_PER_HOUR ? 'open-rate' : 'ok'
 }
-export const leadOpenedText = (name: string, sid: string): string =>
-  `lead panel opened for ${name} as session ${sid.slice(0, 8)}; its brief is written. Ask the person to type /callboard lead in that panel: only they can make it a lead. The panel stays unnamed until then, so no second panel opens in that repo.`
+export const leadOpenedText = (name: string, sid: string, briefError?: string): string =>
+  `lead panel opened for ${name} as session ${sid.slice(0, 8)}; ${briefError === undefined ? 'its brief is written' : `its brief could not be written (${briefError}), so the person must give it the task`}. Ask the person to type /callboard lead in that panel: only they can make it a lead. Until it is named, a second open in that repo is refused for about two minutes; at most three tries an hour.`
 
 // What lane_park and lane_unpark tell the lead model when they acted (the person approved the texts, 2026-11-01).
 export const parkedText = (name: string, pid: number) => `lane ${name} parked: SIGTERM sent to process ${pid}. The tab closes and the conversation is kept. lane_unpark ${name} reopens it.`

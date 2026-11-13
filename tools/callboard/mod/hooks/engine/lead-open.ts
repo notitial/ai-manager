@@ -6,7 +6,7 @@ import { conductorHome } from '../mem.ts'
 import { sha, where, statR, real, log, toast, rmF } from './base.ts'
 import { writeBrief, resultDirOk } from './store.ts'
 import type { RegRow } from './store.ts'
-import { leadsFor, cfgGet, reservedGet } from './grants.ts'
+import { leadsFor, cfgReadStrict, reservedGet } from './grants.ts'
 import { leadTool, leadBase, openExchange } from './lanes.ts'
 import { ledgerAdd, ledgerRowsFor, promptNewId } from './answer-hook.ts'
 import { promptLinkOnce } from './answer-tiers.ts'
@@ -23,7 +23,9 @@ export async function leadOpenCall($: any, e: any, next: any) {
     const base = await leadBase($, e, sid)
     if ('err' in base) return no(...base.err)
     if (base.g.level !== 'conductor') return no('not-conductor', c.reasonWhy('not-conductor'))
-    if (!(await cfgGet($, sid, true)).conductorLeads) return no('conductor-leads-off', c.reasonWhy('conductor-leads-off'))
+    const cfg = await cfgReadStrict($, sid)
+    if (!cfg) return no('config-unreadable', c.reasonWhy('config-unreadable'))
+    if (!cfg.conductorLeads) return no('conductor-leads-off', c.reasonWhy('conductor-leads-off'))
     if (opening.has(sid)) return no('open-in-flight', c.reasonWhy('open-in-flight'))
     // Another conductor's open of the same name is running: its request file would be replaced by this one's.
     const nm = typeof e.name === 'string' ? e.name.toLowerCase() : ''
@@ -74,7 +76,7 @@ async function openLead($: any, e: any, sid: string, base: { live: RegRow[]; lan
   const me = base.live.find((r) => r.j.sessionId === sid)?.j
   if (!me || !Number.isInteger(me.pid) || typeof me.procStart !== 'string') return no('registry-unreadable', c.reasonWhy('registry-unreadable'))
 
-  // The writes, in order: the ledger row, the offer (created only if absent), the brief, the request the extension reads. A failure takes back what was written.
+  // The writes, in order: the ledger row, the offer (created only if absent), the request the extension reads, and once the panel is open the brief. A failure takes back the offer and voids the row.
   const nonce = (await promptNewId($)).replace(/-/g, '')
   const voided = (code: string) => ledgerAdd($, { kind: 'lead-offer-void', hash: key, nonce, code })
   if (!(await ledgerAdd($, { kind: 'lead-offer', hash: key, repo, lane: a.name, nonce, by: sid }))) return no('ledger-write', c.reasonWhy('ledger-write'))
@@ -97,16 +99,16 @@ async function openLead($: any, e: any, sid: string, base: { live: RegRow[]; lan
   if (put !== 'ok') return fail('offer-write', c.reasonWhy('offer-write'))
   // From here the offer is ours: a throw (a host call that times out) takes it back like any other failure.
   try {
-    const wb = await writeBrief($, p.uid, c.briefPath(repo, a.name), c.leadBriefHead(a.name), c.leadBriefText(a.name, a.task))
-    if (wb) return await fail(wb, c.reasonWhy(wb))
     const r = await openExchange($, sid, a.name, 'lead', c.leadRequestText(nonce, repo), TIMEOUT_WHY, fail)
     if ('deny' in r) return r
     // The panel is open and nothing here grants it: the offer goes, and the hour is not spent (no lead-grant row).
     await rmF($, offer)
     await voided('panel-only')
+    // The brief comes last, so a failed open leaves none behind; a panel that opened without one is reported as such.
+    const wb = await writeBrief($, p.uid, c.briefPath(repo, a.name), c.leadBriefHead(a.name), c.leadBriefText(a.name, a.task))
     await log($, sid, 'lead-opened', a.name)
     toast($, `Conductor opened a panel for lead ${a.name} in ${c.folderName(repo)}. Type /callboard lead there to make it the lead.`)
-    return { result: c.leadOpenedText(a.name, r.sid) }
+    return { result: c.leadOpenedText(a.name, r.sid, wb || undefined) }
   } catch {
     return fail('offer-write', c.reasonWhy('offer-write'))
   }
