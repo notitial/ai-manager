@@ -36,7 +36,9 @@ const releaseSleeps = () => {
 }
 // kind interactive: the engine writes it for a panel or a terminal; the nudge needs it on the session's own row.
 export const AUTO_OWN = JSON.stringify({ sessionId: '0a1b2c3d-0000-4000-8000-123456789abc', cwd: '/data/x/work/lab', status: 'idle', pid: 4999, procStart: 'Tue Oct 27 20:37:50 2026', kind: 'interactive' })
-export const regFiles = (): Record<string, string> => (!h.ownEntryAuto || Object.values(h.sessions).some((t) => t.includes('"sessionId":"0a1b2c3d-0000-4000-8000-123456789abc"')) ? h.sessions : { ...h.sessions, '4999.json': AUTO_OWN })
+const regBase = (): Record<string, string> => (!h.ownEntryAuto || Object.values(h.sessions).some((t) => t.includes('"sessionId":"0a1b2c3d-0000-4000-8000-123456789abc"')) ? h.sessions : { ...h.sessions, '4999.json': AUTO_OWN })
+// h.extraSessions: rows added to whatever h.sessions holds (the live lead a cue test sends from), so a test that rewrites h.sessions keeps them.
+export const regFiles = (): Record<string, string> => (Object.keys(h.extraSessions).length === 0 ? regBase() : { ...regBase(), ...h.extraSessions })
 // What the live checkout's .git/HEAD holds when the mod reads it at session start (undefined: the read fails). Default: on main, which warns nothing.
 const MAIN_HEAD = 'ref: refs/heads/main\n'
 export const LANESDIR = '/Users/x/.claude/callboard/lanes'
@@ -227,6 +229,9 @@ export const h = {
   sessions: {} as Record<string, string>,
   // A process always has a registry entry of its own (the lock owner is named from it); a test that has none gets this one, unless it turns it off.
   ownEntryAuto: true,
+  extraSessions: {} as Record<string, string>,
+  cueLead: true,
+  cueLeadAdded: false,
   // When set, the test engine's clock.sleep (without the mock clock) returns at once and moves nowMs by the time asked, then runs this hook (what a retire or park waits on).
   fastSleep: undefined,
   // What a hook has used of its 10 s of own time on $.clock.sleep (a $ call, such as /bin/sleep through process.run, costs it nothing), and a switch that makes /bin/sleep fail.
@@ -356,9 +361,13 @@ export const h = {
   // A failed root() read makes the cwd() read that follows it fail too, so cwdThrows stays one failed folder read. rootMissing: an engine without root().
   cwdFailNext: false,
   rootMissing: false,
+  // session.root() does not answer while this is set (a folder read that times out).
+  rootHang: undefined as Promise<{ value: unknown }> | undefined,
   laneRegisterHang: undefined,
   // A write of a lead:<sid> key waits on this while it is set (the save of a grant in flight).
   leadSetHang: undefined,
+  // Runs before any $.store write lands (the key as its argument); a returned promise holds the write (a save in flight).
+  storeSetHook: undefined as ((key: string) => Promise<void> | void) | undefined,
   takenPlanted: false,
   storeWrites: 'ok' as 'ok' | 'fail' | 'ignore',
   storeDeleteFails: false,
@@ -428,6 +437,7 @@ function resetSession() {
   h.renameGate = undefined
   h.registerGate = undefined
   h.cwdThrows = 0
+  h.rootHang = undefined
   h.cwdFailNext = false
   h.laneRegisterHang = undefined
   h.draftNow = ''
@@ -443,6 +453,9 @@ function resetSession() {
   h.callerCwd = '/data/x/work/lab'
   h.callerRoot = undefined
   h.ownEntryAuto = true
+  h.extraSessions = {}
+  h.cueLead = true
+  h.cueLeadAdded = false
 }
 // The session registry, the process table and its calls.
 function resetRegistry() {
@@ -507,6 +520,7 @@ function resetStoreFiles() {
 function resetPluginState() {
   h.condSetHook = undefined
   h.leadSetHang = undefined
+  h.storeSetHook = undefined
   h.storeDeleteFails = false
   h.leadDeleteHang = undefined
   h.leadGetHang = undefined
@@ -750,6 +764,7 @@ export function engine(on0: any, argvSeen: string[][], stdins: string[] = [], cl
   const storeSet = async (e: any) => {
     if (over()) return { value: undefined }
     if (h.leadSetHang && String(e.key).startsWith('lead:')) await h.leadSetHang
+    if (h.storeSetHook) await h.storeSetHook(String(e.key))
     if (h.condSetHook && String(e.key).startsWith('conductor:')) {
       const hook = h.condSetHook
       h.condSetHook = undefined
@@ -777,6 +792,7 @@ export function engine(on0: any, argvSeen: string[][], stdins: string[] = [], cl
   })
   if (!h.rootMissing)
     on('session.root', () => {
+      if (h.rootHang) return h.rootHang
       if (h.cwdThrows > 0) {
         h.cwdThrows--
         h.cwdFailNext = true
@@ -1139,6 +1155,16 @@ export function engine(on0: any, argvSeen: string[][], stdins: string[] = [], cl
     const CUEDIR = '/Users/x/.claude/callboard/cue'
     if (h.takenPlanted && a[0] === '/usr/bin/stat' && a[a.length - 1].startsWith(`${CUEDIR}/${SID}.`) && a[a.length - 1].endsWith('.taken')) return ok(`501 600 1 Regular File 77 7 ${T0 / 1000}\n`)
     if (h.cueFile && a[0] === '/bin/mv' && a[1] === '-n') {
+      // A cue (but the birth rename) comes from a lead that is live in the repo every seeded lane sits in: with no presence file in the test, one is added when
+      // the cue is claimed (h.cueLead = false: a test of a cue with no live lead).
+      if (h.cueLead && !h.cueFile.text.startsWith('rename') && (leadFiles.size === 0 || h.cueLeadAdded)) {
+        const LEAD = { sessionId: '5a1b2c3d-0000-4000-8000-123456789abc', pid: 4242, procStart: 'Tue Oct 27 20:37:50 2026' }
+        // The repo of the first lane store the test seeded.
+        const repo = (JSON.parse([...storeFiles.values()][0] ?? '{}').repo as string | undefined) ?? '/data/x/work'
+        h.extraSessions = { '4242.json': JSON.stringify({ ...LEAD, name: 'LEAD', cwd: repo, status: 'idle', startedAt: T0 - 3_600_000, statusUpdatedAt: T0 - 60_000 }) }
+        leadFiles.set(`${ROOT}/leads/${LEAD.sessionId}.json`, { text: JSON.stringify({ sid: LEAD.sessionId, pid: LEAD.pid, procStart: LEAD.procStart, repo }), mtimeSec: Math.floor(h.nowMs / 1000) - 5 })
+        h.cueLeadAdded = true
+      }
       if (h.claimMvFails) return ok('', 1, 'mv: rename failed')
       if (h.takenPlanted) return ok('')
       if (h.cueFile.present && a[3] === `${CUEDIR}/${SID}.cue`) {

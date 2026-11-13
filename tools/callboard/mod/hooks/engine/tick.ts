@@ -29,7 +29,7 @@ import {
   managerTick,
   pinOf,
   watchInit,
-  leadSave,
+  LEAD,
   presenceTouch,
   presencePrune,
   leadRenameTick,
@@ -44,6 +44,7 @@ import {
   homeOf,
   conductorRestore,
 } from './grants.ts'
+import { levelSave } from './levels.ts'
 import { renameTick, rebindTick, sidSyncDue, sidSync, sweepTaken, claim, handle } from './lanes.ts'
 import {
   cmpClear,
@@ -196,7 +197,7 @@ async function tick($: any) {
       const savedAt = leadSavedAt.get(sid)
       // A lead's pin only: a later non-lead grant must never save a lead hint without a pin.
       const pin = pinOf(sid)
-      if (pin !== undefined && c.leadRefreshDue(savedAt, await $.clock.now())) await leadSave($, sid, pin)
+      if (pin !== undefined && c.leadRefreshDue(savedAt, await $.clock.now(), LEAD.refreshMs)) await levelSave($, sid, LEAD, pin)
       await presenceTouch($, sid).catch(logFail($, sid, 'presence'))
       await presencePrune($).catch(logFail($, sid, 'presence-prune'))
       await leadRenameTick($, sid).catch(logFail($, sid, 'lead-rename'))

@@ -28,14 +28,24 @@ test('a rename cue may carry the sending lead\'s session id, nothing else after 
   assert.equal(c.parseCue(c.cueLine('rename', 'a'.repeat(40), L)!).ok, true)
 })
 
-test('laneStatusLead names a checked lead of this lane only', () => {
+test('laneStatusLead gives the state of the lane-lead row: a checked lead of this lane only', () => {
   const L = '5a1b2c3d-0000-4000-8000-123456789abc'
   const f = { name: 'LAB', sid: L, attached: false, lead: { name: 'LEAD2', sid: L } }
-  assert.equal(c.laneStatusLead(f, 'LAB'), " This lane's lead: LEAD2.")
-  assert.equal(c.laneStatusLead(f, 'OTHER'), " This lane's lead: not named.")
-  assert.equal(c.laneStatusLead({ ...f, lead: undefined }, 'LAB'), " This lane's lead: not named.")
-  assert.equal(c.laneStatusLead({ ...f, lead: { name: 'bad name', sid: L } }, 'LAB'), " This lane's lead: not named.")
-  assert.equal(c.laneStatusLead(undefined, 'LAB'), " This lane's lead: not named.")
+  assert.equal(c.laneStatusLead(f, 'LAB'), 'LEAD2')
+  assert.equal(c.laneStatusLead(f, 'OTHER'), 'not named')
+  assert.equal(c.laneStatusLead({ ...f, lead: undefined }, 'LAB'), 'not named')
+  assert.equal(c.laneStatusLead({ ...f, lead: { name: 'bad name', sid: L } }, 'LAB'), 'not named')
+  assert.equal(c.laneStatusLead(undefined, 'LAB'), 'not named')
+})
+
+test('statusTableText is a Role and State table under a bold header, one row per fact, with the same states the old line had', () => {
+  assert.equal(c.statusTableText([['Lane', 'NONE'], ['Lead', 'OFF']]), ['**Callboard status**', '', '| Role | State |', '|---|---|', '| Lane | NONE |', '| Lead | OFF |'].join('\n'))
+  assert.equal(
+    c.statusTableText([['Lane', 'svc-api'], ['Conductor', c.conductorStatus(1)], ['Check-ins', c.checkinStatus(true, 90_001, 0)], ["This lane's lead", 'not named']]),
+    ['**Callboard status**', '', '| Role | State |', '|---|---|', '| Lane | svc-api |', '| Conductor | ON (1 repo) |', '| Check-ins | PAUSED for 2 more min |', "| This lane's lead | not named |"].join('\n'),
+  )
+  assert.equal(c.conductorStatus(0), 'ON (0 repos)')
+  assert.equal(c.conductorStatus(2), 'ON (2 repos)')
 })
 
 test('parseCue refuses everything else', () => {
@@ -207,7 +217,6 @@ test('v14.1 (2026-11-04, audit, L2) homePath: the home folder as ~, the full pat
 })
 
 test('the stop question names the lane and the process: short session id and pid', () => {
-  assert.equal(c.terminateQuestion('LABA', '0a1b2c3d-0000-4000-8000-123456789abc', 4242), "Force stop lane LABA's session (0a1b2c3d, pid 4242)? It ends at once, even mid-task.")
   assert.doesNotMatch(c.terminateQuestion('LABA', '0a1b2c3d-0000-4000-8000-123456789abc', 4242), /4000|123456789abc/)
   assert.equal(c.TERMINATE_YES, 'Force stop')
   assert.equal(c.TERMINATE_NO, 'Cancel')
@@ -1166,7 +1175,7 @@ test('inReach follows the reach rule of leadLane and laneListText writes one fix
     '|  |  | M | m | live | – |',
     '|  |  | ATT | a | none | – |',
   ].join('\n'))
-  assert.equal(c.laneListText([], [], 0), 'no lanes in this repo')
+  assert.equal(c.laneListText([], [], 0), '| Lanes |\n|---|\n| no lanes in this repo |')
 })
 
 test('the off question names the lane it also leaves, and the by-name note says until when', () => {
@@ -1176,7 +1185,6 @@ test('the off question names the lane it also leaves, and the by-name note says 
   assert.equal(c.askedFrom(c.offQuestionFor('API'), 'session'), `Asked from another session. ${c.OFF_QUESTION}\nIt also leaves lane API.`)
   assert.equal(c.STOPPABLE_BY_NAME('API'), ' A lead can still stop it by the name API until you rename it.')
   assert.equal(c.NO_LANE_RECORD, 'Nothing removed.')
-  assert.equal(c.LANE_RECORD_UNKNOWN, 'Could not check for a lane record. Try again.')
   assert.equal(c.DETACH_INCOMPLETE, 'Could not remove the lane record. Run /rename so the lead cannot reach this session by name.')
   assert.equal(c.renameFailedToast('API'), 'Rename failed. Run /rename API.')
   assert.equal(c.TIMED_OUT, 'the question timed out')
@@ -1418,10 +1426,11 @@ test('v13.2 parseCommandArgs: config forms; out of range, unknown and trailing j
   for (const bad of ['configs', 'config\nping 50', 'Config', 'CONFIG reset']) assert.equal(c.parseCommandArgs(bad), undefined, JSON.stringify(bad))
 })
 
-test('v13.2 config texts: one line with (default) on unchanged fields; the level cross-check', () => {
+test('v13.2 config texts: a Setting, Value and Default table, yes on unchanged fields; the level cross-check', () => {
   const D = c.parseConfig(undefined).cfg
-  assert.equal(c.configText(D), 'Callboard settings: keepalive on (default), ping after 50 min (default), stop after 3 h (default), idle level 300k (default), working level 400k (default), check-ins on (default).')
-  assert.equal(c.configText({ ...D, keepalive: false, pingAfterMin: 45, workingK: 450, checkin: false }), 'Callboard settings: keepalive off, ping after 45 min, stop after 3 h (default), idle level 300k (default), working level 450k, check-ins off.')
+  const head = ['**Callboard settings**', '', '| Setting | Value | Default |', '|---|---|---|']
+  assert.equal(c.configText(D), [...head, '| keepalive | on | yes |', '| ping after | 50 min | yes |', '| stop after | 3 h | yes |', '| idle level | 300k | yes |', '| working level | 400k | yes |', '| check-ins | on | yes |'].join('\n'))
+  assert.equal(c.configText({ ...D, keepalive: false, pingAfterMin: 45, workingK: 450, checkin: false }), [...head, '| keepalive | off | no |', '| ping after | 45 min | no |', '| stop after | 3 h | yes |', '| idle level | 300k | yes |', '| working level | 450k | no |', '| check-ins | off | no |'].join('\n'))
   assert.equal(c.configSetText('pingAfterMin', { ...D, pingAfterMin: 45 }), 'Callboard setting changed: ping after 45 min. It applies to every session on this Mac within a minute.')
   assert.equal(c.CONFIG_USAGE, 'Use /callboard config [keepalive on|off, ping 30-55, stop 1-8, idle 150-800, working IDLE-900, checkin on|off, reset].')
   assert.equal(c.CONFIG_NOT_PERSON, 'Only you can change callboard settings: type /callboard config yourself.')
@@ -1851,7 +1860,7 @@ test('laneListText: the manager view is one table under a plain Manager header l
     '| LEAD-B | app-one | LANE-A | none | – |',
     '| Any lead | app-two | LANE-B | live | 12m |',
   ].join('\n'))
-  assert.equal(c.laneListText([], [], 0, { level: 'manager', name: 'HARBOR' }), 'no lanes in this repo')
+  assert.equal(c.laneListText([], [], 0, { level: 'manager', name: 'HARBOR' }), '| Lanes |\n|---|\n| no lanes in this repo |')
 })
 
 test('laneListText: the lead view is one table with a Lead header line, no Manager line and no quote mark', () => {
@@ -1985,10 +1994,10 @@ test('v13.6 /callboard checkin: pause 1 minute to 24 hours, on, anything else th
   for (const bad of ['checkin', 'checkin pause', 'checkin pause 25h', 'checkin pause 1441m', 'checkin pause 0m', 'checkin pause 05m', 'checkin pause 2d', 'checkin pause 12:30', 'checkin off', 'checkin on now', 'checkin pause 2H'])
     assert.deepEqual(c.parseCommandArgs(bad), { checkin: 'bad' }, bad)
   for (const bad of ['checkins', 'Checkin on', 'checkin\non']) assert.equal(c.parseCommandArgs(bad), undefined, JSON.stringify(bad))
-  assert.equal(c.checkinStatus(true, undefined, 0), 'Check-ins: ON.')
-  assert.equal(c.checkinStatus(true, 90_001, 0), 'Check-ins: PAUSED for 2 more min.')
-  assert.equal(c.checkinStatus(true, 5, 5), 'Check-ins: ON.')
-  assert.equal(c.checkinStatus(false, 90_000, 0), 'Check-ins: OFF.')
+  assert.equal(c.checkinStatus(true, undefined, 0), 'ON')
+  assert.equal(c.checkinStatus(true, 90_001, 0), 'PAUSED for 2 more min')
+  assert.equal(c.checkinStatus(true, 5, 5), 'ON')
+  assert.equal(c.checkinStatus(false, 90_000, 0), 'OFF')
   assert.equal(c.checkinPausedText(2 * c.HOUR_MS, 0), 'Check-ins paused in this session for 120 min.')
 })
 
@@ -2038,18 +2047,14 @@ test('v14 the manager texts: the question, the buttons and header, the stop ques
   assert.equal(c.MANAGER_QUESTION, 'Let this session manage every lane on this machine? It can resume, compact, stop, retire and remove lanes in any repo. Every stop and remove asks you.')
   assert.deepEqual([c.MANAGER_YES, c.MANAGER_NO, c.HEADER.manager], ['Manager', 'Cancel', 'Manager'])
   assert.ok(c.HEADER.manager.length <= 12)
-  assert.equal(c.terminateQuestion('API', LEAD, 4242), `Force stop lane API's session (${LEAD.slice(0, 8)}, pid 4242)? It ends at once, even mid-task.`)
-  assert.equal(c.terminateQuestion('API', LEAD, 4242, '/Users/x/code/app'), `Force stop lane API's session in app (${LEAD.slice(0, 8)}, pid 4242)? It ends at once, even mid-task.`)
-  assert.equal(c.retireQuestion('API', '/Users/x/code/app'), 'Retire lane API in app?')
   // v15.3 (2026-11-06): the remove question of a lane_terminate on a lane no live session carries (one lane), with the parked sentence for a parked lane.
   const H = '/Users/x'
   assert.equal(c.removeQuestion('API', '/Users/x/code/app', false, H), 'Remove lane API in ~/code/app? It has no live session.')
   assert.equal(c.removeQuestion('API', '/Users/x/code/app', true, H), 'Remove lane API in ~/code/app? It has no live session. It is parked: its saved conversation is no longer reachable from callboard.')
   assert.equal(c.removeQuestion('API', '/Users/x/code/app', false), 'Remove lane API in /Users/x/code/app? It has no live session.')
-  // The stop questions say the record is removed, unless the lane is one a session joined.
-  assert.equal(c.terminateQuestion('API', LEAD, 4242, '/Users/x/code/app', true), `Force stop lane API's session in app (${LEAD.slice(0, 8)}, pid 4242)? It ends at once, even mid-task. The lane's record is then removed.`)
-  assert.equal(c.retireQuestion('API', '/Users/x/code/app', true), "Retire lane API in app? The lane's record is then removed.")
-  assert.equal(c.retireQuestion('API', '/Users/x/code/app', false), 'Retire lane API in app?')
+  // The stop questions say the lane's record is removed.
+  assert.equal(c.terminateQuestion('API', LEAD, 4242, '/Users/x/code/app'), `Force stop lane API's session in app (${LEAD.slice(0, 8)}, pid 4242)? It ends at once, even mid-task. The lane's record is then removed.`)
+  assert.equal(c.retireQuestion('API', '/Users/x/code/app'), "Retire lane API in app? The lane's record is then removed.")
   assert.equal(c.hasText('removed-elsewhere'), false)
   assert.equal(c.hasText('no-session-report'), false)
   for (const code of ['remove-args', 'mixed-repos', 'lanes-manager-only']) assert.equal(c.hasText(code), false, code)
@@ -2275,8 +2280,16 @@ test('laneListText: with no lanes at all, live leads are still listed; a conduct
   ].join('\n'))
   const nested = c.laneListText([], [], 0, { level: 'manager', name: 'M', leads, conductors: [{ name: 'C', repos: ['/w/one'] }] })
   assert.deepEqual(nested.split('\n').slice(4), ['| C | LEAD-A | one | – | – | – |', '| – | LEAD-B | two | – | – | – |'])
-  assert.equal(c.laneListText([], [], 0, { level: 'manager', name: 'M', leads: [] }), 'no lanes in this repo')
-  assert.equal(c.laneListText([], [], 0, { level: 'conductor', name: 'C' }), 'no lanes in its repos')
+  assert.equal(c.laneListText([], [], 0, { level: 'manager', name: 'M', leads: [] }), '| Lanes |\n|---|\n| no lanes in this repo |')
+  assert.equal(c.laneListText([], [], 0, { level: 'conductor', name: 'C' }), '| Lanes |\n|---|\n| no lanes in its repos |')
+})
+
+test('conductorReachText is a Repo and State table: each repo in reach, then each listed repo out of reach with its reason; the entries are escaped', () => {
+  assert.equal(
+    c.conductorReachText('/w/cond', ['/w/app2', '/w/app', '/data/far_repo'], undefined, [{ entry: '../gone', why: 'not-found' }, { entry: '../app3', why: 'unapproved' }]),
+    ['**Conductor** · on', '', '| Repo | State |', '|---|---|', '| ../app | in reach |', '| ../app2 | in reach |', '| /data/far\\_repo (not next to cond) | in reach |', '| ../gone | out of reach: not found |', '| ../app3 | out of reach: not approved in this session |'].join('\n'),
+  )
+  assert.equal(c.conductorReachText('/w/cond', ['/w/app'], undefined, []), ['**Conductor** · on', '', '| Repo | State |', '|---|---|', '| ../app | in reach |'].join('\n'))
 })
 
 test('v15 security review (F5, F7): the lead-conductor text binds messages to the sender name and makes a stop a pause; a folder name with $& is shown as typed', () => {
@@ -2323,8 +2336,8 @@ test('v15.1 (2026-11-05): this machine\'s reserved names', () => {
   assert.match(c.reserveAddRefusal('GREEN', [], 'lane GREEN')!, /lane GREEN carries it/)
   assert.equal(c.reserveAddRefusal('WARDEN', ['BLUE'], undefined), undefined)
   assert.match(c.reserveAddRefusal('BIUE', ['BLUE'], undefined)!, /looks like/, 'a look-alike letter folds')
-  assert.equal(c.reserveShowText([]), 'Reserved names: MANAGER (built in). None added on this machine.')
-  assert.equal(c.reserveShowText(['BLUE', 'GREEN']), 'Reserved names: MANAGER (built in); on this machine: BLUE, GREEN.')
+  assert.equal(c.reserveShowText([]), ['**Reserved names**', '', '| Name | Source |', '|---|---|', '| MANAGER | built in |', '', 'None added on this machine.'].join('\n'))
+  assert.equal(c.reserveShowText(['BLUE', 'GREEN']), ['**Reserved names**', '', '| Name | Source |', '|---|---|', '| MANAGER | built in |', '| BLUE | this machine |', '| GREEN | this machine |'].join('\n'))
   assert.match(c.reserveNotListedText('MANAGER'), /built in and cannot be removed/)
 })
 
@@ -2433,12 +2446,31 @@ test('v15.3 parseManagerHint takes only a clean name and a savedAt of the last 3
   assert.ok(c.parseManagerHint({ ...ok, savedAt: NOW + 59_000 }, NOW))
 })
 
+test('the saved manager grant: an optional clean cwd, the refresh cadence and the silent-restore window', () => {
+  const NOW = 1_700_000_000_000
+  const ok = { name: 'MANAGER', savedAt: NOW - 1000, cwd: '/Users/x/code/repo' }
+  assert.deepEqual(c.parseManagerHint(ok, NOW), ok)
+  for (const cwd of [5, '', 'relative', '/a/../b', '/a//b', '/a\nb']) assert.deepEqual(c.parseManagerHint({ ...ok, cwd }, NOW), { name: 'MANAGER', savedAt: NOW - 1000 }, JSON.stringify(cwd))
+  assert.equal(c.MANAGER_REFRESH_MS, 5 * 60_000)
+  assert.equal(c.MANAGER_SILENT_GRACE_MS, 60 * 60_000)
+  assert.equal(c.leadRefreshDue(1000, 1000 + c.MANAGER_REFRESH_MS - 1, c.MANAGER_REFRESH_MS), false)
+  assert.equal(c.leadRefreshDue(1000, 1000 + c.MANAGER_REFRESH_MS, c.MANAGER_REFRESH_MS), true)
+  const G = c.MANAGER_SILENT_GRACE_MS
+  const hint = { name: 'MANAGER', savedAt: NOW, cwd: '/Users/x/code/repo' }
+  assert.equal(c.managerSilentOk(hint, '/Users/x/code/repo', NOW, G), true)
+  assert.equal(c.managerSilentOk(hint, '/Users/x/code/repo', NOW + G - 1000, G), true)
+  assert.equal(c.managerSilentOk(hint, '/Users/x/code/repo', NOW + G, G), false)
+  assert.equal(c.managerSilentOk(hint, '/Users/x/code/repo', NOW - 1, G), false)
+  assert.equal(c.managerSilentOk(hint, '/Users/x/code/other', NOW, G), false)
+  assert.equal(c.managerSilentOk(hint, undefined, NOW, G), false)
+  assert.equal(c.managerSilentOk({ name: 'MANAGER', savedAt: NOW }, '/Users/x/code/repo', NOW, G), false)
+  assert.equal(c.managerSilentOk(hint, '/Users/x/code/repo', NOW, 0), false)
+})
+
 test('v15.3 the stop texts', () => {
   assert.equal(c.stoppedText('retire', 'API', 4242, 'removed'), 'lane API retired and removed: SIGTERM sent to process 4242. Its .archive/API/ folder and report stay.')
   assert.equal(c.stoppedText('terminate', 'API', 4242, 'removed'), 'lane API terminated and removed: SIGTERM sent to process 4242. Its .archive/API/ folder and report stay.')
   assert.equal(c.stoppedText('terminate', 'API', 4242, 'alive'), 'lane API terminated: SIGTERM sent to process 4242, but the session was still running 10 seconds later, so its record stays. Call lane_terminate again if it does not end.')
-  assert.equal(c.stoppedText('retire', 'API', 4242, 'kept'), 'lane API retired: SIGTERM sent to process 4242. The record stays because a session joined it. With that session gone, call lane_retire again to remove it.')
-  assert.equal(c.stoppedText('terminate', 'API', 4242, 'kept'), 'lane API terminated: SIGTERM sent to process 4242. The record stays because a session joined it. With that session gone, call lane_terminate again to remove it.')
   assert.equal(c.stoppedText('terminate', 'API', 4242, { unremoved: 'changed' }), 'lane API terminated: SIGTERM sent to process 4242. Its record could not be removed (changed); call lane_terminate again to remove it.')
   assert.equal(c.removedNoSessionText('retire', 'API'), 'lane API retired and removed: it had no live session. Its .archive/API/ folder and report stay.')
 })

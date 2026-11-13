@@ -1,8 +1,8 @@
 import { expect, test } from 'claude-code/testing'
 import { HINT_PREFIX, conductorFileText, conductorAddQuestion, conductorRefusalText, conductorAddedText, CONDUCTOR_NOT_PERSON, CONDUCTOR_USAGE, conductorQuestion, conductorRestoreQuestion, conductorBriefing, conductorBriefingNote, conductorRestoredToast, conductorUnansweredToast, conductorFileBadToast, conductorNoReposToast, CONDUCTOR_ON_TEXT, CONDUCTOR_OFF_QUESTION, conductorStatus, leadBriefing, LANES_CHANGED_TEXT, reboundToast, REASON_TEXT, managerRefusalText, terminateQuestion, leadConductorText } from '../hooks/core'
-import { h, GOOD, LANESDIR, NO, PS_TABLE, ROOT, SID, T0, YES, condFiles, condStat, extraStat, laneSeed, leadFiles, longTest, realFails, realMap, seen, storeFiles, submitted, toasts, toolDefs } from './harness'
+import { h, GOOD, LANESDIR, NO, PS_TABLE, ROOT, SID, T0, YES, condFiles, condStat, extraStat, laneSeed, leadFiles, longTest, psDead, realFails, realMap, seen, storeFiles, submitted, toasts, toolDefs } from './harness'
 import type { Trace } from './harness'
-import { APISID, APP2, COMPOSE, COND, CONDFILE, CSESS, FAR, LANE_HINT, LEADKEY, LEADPATH, LEADPS, LEADSID, MGR_SESS, MIN, OTHER, OTHERLEAD, OTHERPATH, PIN, SELFPATH, STATUS_NONE, TURN, allEvents, attacher, briefings, ckLane, condAt, condOn, condPresenceOf, condRun, condSelf, cue, dirStat, doLane, grantAt, idleFor, killed, lane, leadAt, leadFileText, leadReg, leadSelfReg, listCall, listed, logged, madeLane, mgrAt, mgrCall, mgrFile, mgrRow, newTrace, noteRows, nudges, ownReg, putCond, putStore, regAs, selfAs, started, statusText, ticks, unanswered, waitFor } from './fixtures'
+import { APISID, APP2, COMPOSE, COND, CONDFILE, CSESS, FAR, LANE_HINT, LEADKEY, LEADPATH, LEADPS, LEADSID, MGR_SESS, MIN, NO_LANES, NO_LANES_COND, OTHER, OTHERLEAD, OTHERPATH, PIN, SELFPATH, STATUS_NONE, TURN, allEvents, attacher, briefings, ckLane, condAt, condOn, condPresenceOf, condRun, condSelf, cue, dirStat, doLane, grantAt, idleFor, killed, lane, leadAt, leadFileText, leadReg, leadSelfReg, listCall, listed, logged, madeLane, mgrAt, mgrCall, mgrFile, mgrRow, newTrace, noteRows, nudges, ownReg, putCond, putStore, regAs, renameThroughTick, selfAs, started, statusTable, statusText, ticks, unanswered, waitFor } from './fixtures'
 
 const CONDSTORE = `${LANESDIR}/${'c'.repeat(64)}.json`
 const condEntries = () => JSON.parse(condFiles.get(CONDFILE) ?? '{"repos":[]}').repos as string[]
@@ -289,10 +289,10 @@ test('/callboard conductor asks once with every repo and the restart sentence; C
   expect(h.store.get(CONDKEY)).toEqual({ home: COND, repos: [PIN, APP2, FAR], savedAt: T0 })
   expect(noteRows().length).toBe(1)
   expect(noteRows()[0].text).toBe(conductorBriefingNote('', COND, [PIN, APP2, FAR]))
-  expect(await statusText($)).toBe('Lane: NONE. Conductor: ON (3 repos).')
+  expect(await statusText($)).toBe(statusTable(['Lane', 'NONE'], ['Conductor', 'ON (3 repos)']))
   expect(logged(stdins)).toContain('conductor-on:prompt')
   // Again with nothing new: no dialog, the reach.
-  expect((await condRun($, '')).text).toBe('Conductor is on for ../app, ../app2, ~/data/x/work/elsewhere/far-repo (not next to cond). Out of reach: ../gone (not found).')
+  expect((await condRun($, '')).text).toBe(['**Conductor** · on', '', '| Repo | State |', '|---|---|', '| ../app | in reach |', '| ../app2 | in reach |', '| ~/data/x/work/elsewhere/far-repo (not next to cond) | in reach |', '| ../gone | out of reach: not found |'].join('\n'))
   expect(h.askCount).toBe(1)
 })
 
@@ -326,7 +326,7 @@ test('starting a session in the conductor repo, with a list file and no saved gr
 test('a saved grant is restored with no question in a person\'s session; a --bg worker (row kind background) is not and keeps the key; a missing row is retried', async ($, on) => {
   const stdins: string[] = []
   await condRestarter($, on, stdins)
-  expect(await statusText($)).toBe('Lane: NONE. Conductor: ON (2 repos).')
+  expect(await statusText($)).toBe(statusTable(['Lane', 'NONE'], ['Conductor', 'ON (2 repos)']))
   expect(h.askCount).toBe(0)
   expect(h.appendRows.length).toBe(0)
   expect(condLogs(stdins)).toContain('conductor-restored:')
@@ -350,7 +350,7 @@ test('a person\'s row that arrives late is retried, and the restore lands althou
   for (let i = 0; i < 3 && !condLogs(stdins).includes('conductor-restored:'); i++) await h.clock!.advance(2000)
   expect(condLogs(stdins)).toContain('conductor-restored:')
   expect(condLogs(stdins).some((x) => x.startsWith('conductor-restore-rejected'))).toBe(false)
-  expect(await statusText($)).toBe('Lane: NONE. Conductor: ON (2 repos).')
+  expect(await statusText($)).toBe(statusTable(['Lane', 'NONE'], ['Conductor', 'ON (2 repos)']))
 })
 
 test('a restore whose file names a repo outside the approved list asks first, naming every repo and the new one; Conductor restores with all of them and saves them', async ($, on) => {
@@ -365,7 +365,7 @@ test('a restore whose file names a repo outside the approved list asks first, na
   // The new repos first, a fixed closing sentence.
   expect(h.lastQuestion).toBe("cond's conductor list changed since you approved it. New: ../app2. Restore this session as a conductor for these repos? ../app, ../app2. Cancel removes the saved conductor grant.")
   expect(h.lastHeader).toBe('Conductor')
-  expect(await statusText($)).toBe('Lane: NONE. Conductor: ON (2 repos).')
+  expect(await statusText($)).toBe(statusTable(['Lane', 'NONE'], ['Conductor', 'ON (2 repos)']))
   expect(h.store.get(CONDKEY)).toMatchObject({ home: COND, repos: [PIN, APP2] })
   expect(noteRows().length).toBe(1)
   expect(h.askCount).toBe(1)
@@ -391,7 +391,7 @@ test('a grant made while a restore question waits ends that restore; a later Can
   expect(h.askCount).toBe(asked)
   expect(condLogs(stdins).some((x) => x.startsWith('conductor-restore-cancelled'))).toBe(false)
   expect(h.store.get(CONDKEY)).toMatchObject({ home: COND, repos: [PIN, APP2] })
-  expect(await statusText($)).toBe('Lane: NONE. Conductor: ON (2 repos).')
+  expect(await statusText($)).toBe(statusTable(['Lane', 'NONE'], ['Conductor', 'ON (2 repos)']))
 })
 
 longTest('a restore dialog nobody answers restores nothing and keeps the key; its 90 s use up no retry ticks', async ($, on) => {
@@ -412,7 +412,7 @@ longTest('a restore dialog nobody answers restores nothing and keeps the key; it
 test('a restore where the file dropped a repo restores without it and asks nothing; with no approved repo left nothing is restored and the key is kept', async ($, on) => {
   const stdins: string[] = []
   await condRestarter($, on, stdins, { repos: [PIN, APP2], file: ['../app'] })
-  expect(await statusText($)).toBe('Lane: NONE. Conductor: ON (1 repo).')
+  expect(await statusText($)).toBe(statusTable(['Lane', 'NONE'], ['Conductor', 'ON (1 repo)']))
   expect(h.askCount).toBe(0)
   expect(h.store.get(CONDKEY)).toMatchObject({ repos: [PIN] })
   expect(condLogs(stdins)).toContain('conductor-ratchet:1')
@@ -432,16 +432,16 @@ test('in a running conductor an entry written into the file by hand is not reach
   await condOn($, on, stdins, { repos: ['../app'] })
   putCond(['../app', '../app2'])
   await $.tool.call(listCall())
-  expect(await statusText($)).toBe('Lane: NONE. Conductor: ON (1 repo).')
+  expect(await statusText($)).toBe(statusTable(['Lane', 'NONE'], ['Conductor', 'ON (1 repo)']))
   // Another origin never widens: no dialog, the reach and what is out.
-  expect((await condRun($, '', { kind: 'plugin', name: 'x' })).text).toBe('Conductor is on for ../app. Out of reach: ../app2 (not approved in this session).')
+  expect((await condRun($, '', { kind: 'plugin', name: 'x' })).text).toBe(['**Conductor** · on', '', '| Repo | State |', '|---|---|', '| ../app | in reach |', '| ../app2 | out of reach: not approved in this session |'].join('\n'))
   expect(h.askCount).toBe(1)
   expect((await condRun($, '')).text).toBe(CONDUCTOR_ON_TEXT)
   expect(h.askCount).toBe(2)
   // The repo not yet approved is named first.
   expect(h.lastQuestion).toBe(conductorQuestion(COND, [PIN, APP2], CHOME, [APP2]))
   expect(h.lastQuestion.startsWith('New since you approved: ../app2. Make this session a conductor')).toBe(true)
-  expect(await statusText($)).toBe('Lane: NONE. Conductor: ON (2 repos).')
+  expect(await statusText($)).toBe(statusTable(['Lane', 'NONE'], ['Conductor', 'ON (2 repos)']))
   expect(h.store.get(CONDKEY)).toMatchObject({ repos: [PIN, APP2] })
 })
 
@@ -530,7 +530,7 @@ test('a lead restore at start stands; the conductor restore ends lead-holder and
   const stdins: string[] = []
   await condRestarter($, on, stdins, { seed: () => h.store.set(LEADKEY, { pin: COND, savedAt: T0 - 60_000 }) })
   expect(condLogs(stdins)).toContain('conductor-restore-rejected:lead-holder')
-  expect(await statusText($)).toContain('Lead: ON')
+  expect(await statusText($)).toContain('| Lead | ON |')
   expect(h.store.has(CONDKEY)).toBe(true)
 })
 test('a lane restarted in the conductor repo (a store record naming the session) is not restored as a conductor, and its rebind still runs', async ($, on) => {
@@ -539,7 +539,7 @@ test('a lane restarted in the conductor repo (a store record naming the session)
   expect(condLogs(stdins)).toContain('conductor-restore-rejected:lane-holder')
   for (let i = 0; i < 3 && !toasts.includes(reboundToast('CL')); i++) await h.clock!.advance(2000)
   expect(toasts).toContain(reboundToast('CL'))
-  expect(await statusText($)).toContain('Lane: CL.')
+  expect(await statusText($)).toContain('| Lane | CL |')
 })
 
 test('/callboard off while the restore retries: no grant lands and the key is gone; /callboard lead (yes) while it retries: the lead stands', async ($, on) => {
@@ -558,7 +558,7 @@ test('/callboard lead while a conductor restore retries: the lead grant stands a
   h.ownEntryAuto = true
   await grantAt($, COND)
   await ticks(3)
-  expect(await statusText($)).toContain('Lead: ON')
+  expect(await statusText($)).toContain('| Lead | ON |')
   expect(condLogs(stdins)).toContain('conductor-restore-rejected:lead-holder')
 })
 test('/callboard off while a conductor restore waits on its tool registration: no conductor, and no saved grant', async ($, on) => {
@@ -587,7 +587,7 @@ test('a listed repo that is no longer a git root is left out at the grant and th
 test('a restore leaves out a repo that is no longer a git root', async ($, on) => {
   const stdins: string[] = []
   await condRestarter($, on, stdins, { seed: () => extraStat.delete(`${APP2}/.git`) })
-  expect(await statusText($)).toBe('Lane: NONE. Conductor: ON (1 repo).')
+  expect(await statusText($)).toBe(statusTable(['Lane', 'NONE'], ['Conductor', 'ON (1 repo)']))
   expect(h.store.get(CONDKEY)).toMatchObject({ repos: [PIN] })
 })
 
@@ -628,11 +628,11 @@ test('a remove elsewhere narrows the next lane_list at once; a repo re-added the
   const stdins: string[] = []
   await condOn($, on, stdins)
   putCond(['../app2'])
-  expect((await $.tool.call(listCall())).result).toBe('no lanes in its repos')
+  expect((await $.tool.call(listCall())).result).toBe(NO_LANES_COND)
   expect(h.store.get(CONDKEY)).toMatchObject({ repos: [APP2] })
   putCond(['../app', '../app2'])
-  expect((await $.tool.call(listCall())).result).toBe('no lanes in its repos')
-  expect(await statusText($)).toBe('Lane: NONE. Conductor: ON (1 repo).')
+  expect((await $.tool.call(listCall())).result).toBe(NO_LANES_COND)
+  expect(await statusText($)).toBe(statusTable(['Lane', 'NONE'], ['Conductor', 'ON (1 repo)']))
   expect(h.store.get(CONDKEY)).toMatchObject({ repos: [APP2] })
   expect(condLogs(stdins)).toContain('conductor-ratchet:1')
 })
@@ -654,7 +654,7 @@ test('the conductor\'s lane_terminate names the repo, refuses a second stop whil
   const n = h.askCount
   const first = $.tool.call(mgrCall('terminate', 'API'))
   await waitFor(() => h.askCount > n)
-  expect(h.lastQuestion).toBe(terminateQuestion('API', APISID, 4500, PIN, true))
+  expect(h.lastQuestion).toBe(terminateQuestion('API', APISID, 4500, PIN))
   expect(JSON.stringify(await $.tool.call(mgrCall('terminate', 'API')))).toContain('lane_terminate refused: busy')
   release(YES)
   expect((await first).result).toBe('lane API terminated and removed: SIGTERM sent to process 4500. Its .archive/API/ folder and report stay.')
@@ -794,7 +794,7 @@ test('the off question asked from another origin in a conductor session names th
   h.askAnswer = NO
   await $.command.run(lane('off', { kind: 'plugin', name: 'x' }))
   expect(h.lastQuestion).toBe(`Asked from another plugin. ${CONDUCTOR_OFF_QUESTION}`)
-  expect(await statusText($)).toBe('Lane: NONE. Conductor: ON (2 repos).')
+  expect(await statusText($)).toBe(statusTable(['Lane', 'NONE'], ['Conductor', 'ON (2 repos)']))
 })
 
 // ---- the Conductor box in the manager's list ----
@@ -911,7 +911,7 @@ test('laneless leads: a stale file, a lead without a registry row or without a n
 
 test('laneless leads: a lead\'s own list does not show the other leads of its repo', async ($, on) => {
   await leadAt($, on, [], { sess: { ...selfAs('LEAD-A'), ...regAs(OTHERLEAD, 4243, 'LEAD-B') }, seed: () => leadPresenceOf(OTHERLEAD, 4243, PIN) })
-  expect(await listed($)).toBe('no lanes in this repo')
+  expect(await listed($)).toBe(NO_LANES)
 })
 
 // ---- a lead takes a compact cue from its conductor ----
@@ -973,17 +973,92 @@ test('refused when the presence file\'s home is not a git root', async ($, on) =
   await refusedWith([], $, on, () => extraStat.delete(`${COND}/.git`))
 })
 
-test('an adopted lane with no live lead refuses a conductor\'s cue (no-lead) and still takes the manager\'s', async ($, on) => {
+test('an adopted lane with no live lead refuses a conductor\'s resume (no-lead), takes its compact, and still takes the manager\'s', async ($, on) => {
   await attacher($, on, [], { clock: true })
   await doLane($, 'lane svc-api')
   leadFiles.clear()
+  h.cueLead = false
   trustSeed()()
   h.sessions = { ...ownReg(), ...regAs(OTHERLEAD, 4243, 'CONDX') }
   expect(await cue(81, 'resume\n')).toBe('resume refused no-lead 81\n')
-  expect(await cue(82, 'compact\n')).toBe('compact refused no-lead 82\n')
+  expect(await cue(82, 'compact\n')).toBe('compact held nudged 82\n')
   mgrFile()
   h.sessions = { ...ownReg(), ...mgrRow() }
   expect(await cue(83, 'resume\n')).toBe('resume ok - 83\n')
+})
+
+// ---- a lane made by a lead takes a cue by the same rule as a joined one ----
+// A session bound to LABLANE by a birth rename (store of /data/x/work), with no live lead unless the test makes one (cue adds one while h.cueLead holds).
+const bornLane = async ($: any, on: any, setup?: () => void) => {
+  await renameThroughTick($, on, [], 1, undefined, async () => {
+    h.cueLead = false
+    setup?.()
+  })
+  expect((await $.command.run(lane('status'))).text).toContain('| Lane | LABLANE |')
+}
+// The cue each verb sends, one inode each; the answers are 'VERB refused CODE INO\n' or 'VERB ok - INO\n'.
+const bornCues = async (verbs: string[]) => {
+  const out: Record<string, string> = {}
+  let ino = 100
+  for (const v of verbs) out[v] = (await cue(ino++, `${v}\n`))!
+  return out
+}
+const REFUSED = (v: string, ino: number) => `${v} refused no-lead ${ino}\n`
+// A conductor (OTHERLEAD, CONDX) over /data/x/work: its presence file, saved grant, list file and registry row, as a lead sees them.
+const bornConductor = () => {
+  extraStat.set(`${COND}/.git`, dirStat)
+  putCond(['/data/x/work'])
+  h.store.set(`conductor:${OTHERLEAD}`, { home: COND, repos: ['/data/x/work'], savedAt: T0 - 60_000 })
+  condPresenceOf(OTHERLEAD, 4243, 'CONDX', ['/data/x/work'])
+  h.sessions = { ...h.sessions, ...regAs(OTHERLEAD, 4243, 'CONDX') }
+}
+
+test('a made lane with no live lead, no manager and no conductor takes no resume, compact, retire, park or start cue (no-lead)', async ($, on) => {
+  await bornLane($, on)
+  const r = await bornCues(['resume', 'compact', 'retire', 'park', 'start'])
+  expect(r).toEqual({ resume: REFUSED('resume', 100), compact: REFUSED('compact', 101), retire: REFUSED('retire', 102), park: REFUSED('park', 103), start: REFUSED('start', 104) })
+})
+
+test('a made lane takes its cues while a live lead of its repo is there', async ($, on) => {
+  await bornLane($, on)
+  h.cueLead = true
+  expect(await cue(110, 'resume\n')).toBe('resume ok - 110\n')
+  for (const v of ['compact', 'retire', 'park']) expect(await cue(111, `${v}\n`)).not.toContain('no-lead')
+})
+
+test('a made lane with no live lead takes resume, compact and retire from a trusted manager, and no other cue', async ($, on) => {
+  await bornLane($, on, () => {
+    mgrFile()
+    h.sessions = { ...h.sessions, ...mgrRow() }
+  })
+  expect(await cue(120, 'resume\n')).toBe('resume ok - 120\n')
+  for (const v of ['compact', 'retire']) expect(await cue(121, `${v}\n`)).not.toContain('no-lead')
+  expect(await cue(122, 'park\n')).toBe(REFUSED('park', 122))
+  expect(await cue(123, 'start\n')).toBe(REFUSED('start', 123))
+})
+
+test('a made lane with no live lead refuses every cue from an untrusted manager (a name that is not reserved, or a process that is gone): no-lead', async ($, on) => {
+  await bornLane($, on, () => {
+    mgrFile()
+    h.sessions = { ...h.sessions, ...mgrRow('LEAD2') }
+  })
+  const refused = { resume: REFUSED('resume', 100), compact: REFUSED('compact', 101), retire: REFUSED('retire', 102), park: REFUSED('park', 103), start: REFUSED('start', 104) }
+  expect(await bornCues(['resume', 'compact', 'retire', 'park', 'start'])).toEqual(refused)
+  h.sessions = { ...h.sessions, ...mgrRow() }
+  psDead.add('4243')
+  expect(await bornCues(['resume', 'compact', 'retire', 'park', 'start'])).toEqual(refused)
+})
+
+test('a made lane with no live lead takes compact from a trusted conductor of its repo, and no other cue', async ($, on) => {
+  await bornLane($, on, bornConductor)
+  expect(await cue(130, 'compact\n')).not.toContain('no-lead')
+  for (const v of ['resume', 'retire', 'park', 'start']) expect(await cue(131, `${v}\n`)).toBe(REFUSED(v, 131))
+})
+
+test('a conductor\'s compact reaches a made lane whose lead is gone, and an untrusted conductor\'s does not', async ($, on) => {
+  await bornLane($, on, bornConductor)
+  leadFiles.delete(`${ROOT}/leads/${OTHERLEAD}.json`)
+  expect(await cue(140, 'compact\n')).toBe(REFUSED('compact', 140))
 })
 
 // ---- a lead's briefing names its conductor ----
@@ -1073,14 +1148,14 @@ test('an add click that lands while a tool call reads the list is kept, not ratc
   expect(condLogs(stdins).filter((x) => x.startsWith('conductor-ratchet'))).toEqual([])
   // The stale read served its own call from the file it read; the next read reaches the added repo.
   await $.tool.call(listCall())
-  expect(await statusText($)).toContain(conductorStatus(3))
+  expect(await statusText($)).toContain(`| Conductor | ${conductorStatus(3)} |`)
   expect((h.store.get(CONDKEY) as { repos: string[] }).repos).toContain(APP3)
 })
 test('a hand-written list naming one repo twice (../app and its path) reaches it once; the presence file and the saved grant stay valid', async ($, on) => {
   await condAt($, on)
   putCond(['../app', PIN])
   expect((await condRun($, '')).text).toBe(CONDUCTOR_ON_TEXT)
-  expect(await statusText($)).toContain(conductorStatus(1))
+  expect(await statusText($)).toContain(`| Conductor | ${conductorStatus(1)} |`)
   expect((h.store.get(CONDKEY) as { repos: string[] }).repos).toEqual([PIN])
   expect(JSON.parse(leadFiles.get(SELFPATH)!.text).repos).toEqual([PIN])
 })
@@ -1092,7 +1167,7 @@ test('the same repos in another order after the grant dialog are no change', asy
     return YES
   }
   expect((await condRun($, '')).text).toBe(CONDUCTOR_ON_TEXT)
-  expect(await statusText($)).toContain(conductorStatus(2))
+  expect(await statusText($)).toContain(`| Conductor | ${conductorStatus(2)} |`)
 })
 test('the same repos in another order after the restore dialog are no change', async ($, on) => {
   const stdins: string[] = []
@@ -1103,7 +1178,7 @@ test('the same repos in another order after the restore dialog are no change', a
   }
   await h.clock!.advance(2000)
   await waitFor(() => condLogs(stdins).includes('conductor-restored:widened 1'))
-  expect(await statusText($)).toContain(conductorStatus(2))
+  expect(await statusText($)).toContain(`| Conductor | ${conductorStatus(2)} |`)
 })
 
 // ---- the conductor's list file and its writer: an unsafe folder, a swapped temp file, an add outside a conductor, an unreadable list ----
@@ -1141,7 +1216,7 @@ test('an add asked outside a conductor does not approve the repo for this sessio
   const r = (await condRun($, 'add app4')).text
   expect(r).toContain('../app4')
   expect(condEntries()).toContain('../app4')
-  expect(await statusText($)).toContain(conductorStatus(2))
+  expect(await statusText($)).toContain(`| Conductor | ${conductorStatus(2)} |`)
   expect((h.store.get(CONDKEY) as { repos: string[] }).repos).not.toContain(APP4)
 })
 test('a list file that becomes unreadable empties the reach: the presence file goes and status says 0 repos', async ($, on) => {
@@ -1151,5 +1226,5 @@ test('a list file that becomes unreadable empties the reach: the presence file g
   expect(JSON.stringify(await $.tool.call(listCall()))).toContain('refused')
   await h.clock!.advance(2000)
   await waitFor(() => !leadFiles.has(SELFPATH))
-  expect(await statusText($)).toContain(conductorStatus(0))
+  expect(await statusText($)).toContain(`| Conductor | ${conductorStatus(0)} |`)
 })

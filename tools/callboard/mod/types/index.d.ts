@@ -1,6 +1,6 @@
 // v14 (2026-11-04): lastNudgeKind, the kind of the last nudge sent (a soft one may be followed by one hard one inside the gap).
 export type Counters = { lastCompactMs?: number; startDone?: boolean; resumeTimes?: number[]; lastNudgeMs?: number; nudgeTimes?: number[]; lastNudgeKind?: 'lead' | 'idle' | 'working' | 'cache' }
-export type Lane = { name: string; at: number; turns?: number; restored?: boolean; rec?: string; adopted?: true; lead?: string; key?: string }
+export type Lane = { name: string; at: number; turns?: number; restored?: boolean; rec?: string; adopted?: true; lead?: string }
 export type Request = {
   id: string
   mode: 'now' | 'on-cue'

@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { refusalText, LANE_RECORD_UNKNOWN } from '../hooks/core'
+import { refusalText } from '../hooks/core'
 import { h, SESSIONS, SID, fsReads, killedPids, laneSeed, leadFiles, longTest, psConfirmCalls, psStartsAt, psStartsCalls, psStartsGone, regFacts, regFiles } from './harness'
 import { ATTLANE, ATTSESS, LEADSID, LEAD_LANES, OTHER, PIN, REPORT_OK, SELFPATH, TWIN, attRec, attacher, callCreate, creator, cue, cueSession, doLane, grantAt, killed, lead, leadAt, leadCall, leadReg, leadSelfReg, listCall, logged, noLaneWritten, ownReg, putStore, storeJson, storeLaneNames } from './fixtures'
 
@@ -256,15 +256,6 @@ test('two registry rows of this session: lane_create takes no lock and says so i
   h.sessions = { ...h.sessions, [own[0]]: own[1], '4888.json': JSON.stringify({ ...twin, pid: 4888 }) }
   const created = JSON.stringify(await callCreate($))
   expect(created).toContain('self-duplicate: two files in ~/.claude/sessions carry this session')
-})
-
-test('two registry rows of this session: lane off removes no leftover record on a name that may be the twin\'s', async ($, on) => {
-  await attacher($, on)
-  putStore([ATTLANE()])
-  const own = Object.entries(regFiles()).find(([, t]) => t.includes(SID))!
-  h.sessions = { ...h.sessions, [own[0]]: own[1], '4888.json': JSON.stringify({ ...JSON.parse(own[1]), pid: 4888 }) }
-  expect((await doLane($, 'lane off')).text).toBe(LANE_RECORD_UNKNOWN)
-  expect(storeJson().lanes.length).toBe(1)
 })
 
 test('two registry rows of this session: no presence file is written for its lead grant', async ($, on) => {
