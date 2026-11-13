@@ -1027,8 +1027,9 @@ function judgeGh(args: Word[], cur: B[], o: FloorOpts): FloorCategory | undefine
   if (posAll[0] === undefined) return undefined
   if (posAll[0].includes(DYN)) return 'settings'
   if (posAll[0] !== 'api') {
-    const g = posAll[0]
-    const rest = posAll.slice(1)
+    // gh's built-in aliases: co is pr checkout, cs is codespace.
+    const g = posAll[0] === 'co' ? 'pr' : posAll[0] === 'cs' ? 'codespace' : posAll[0]
+    const rest = posAll[0] === 'co' ? ['checkout', ...posAll.slice(1)] : posAll.slice(1)
     // The subcommand spelled by a variable or a substitution (even quoted) cannot be read; later words that may be options or several words are the same.
     if (pw[1]?.dyn || pw.slice(2).some(opaque)) return 'settings'
     // A comment, review, edit or new PR or issue that mentions @claude starts a paid run: the mod caps that only through the GitHub server's tools.
@@ -1044,7 +1045,7 @@ function judgeGh(args: Word[], cur: B[], o: FloorOpts): FloorCategory | undefine
         (g === 'release' && sub === 'download') ||
         (g === 'attestation' && sub === 'download') ||
         (g === 'codespace' && /^(cp|ssh|rebuild)$/.test(sub)) ||
-        (g === 'issue' && sub === 'develop' && t.some((x) => /^(--checkout|-[A-Za-z]*c[A-Za-z]*)$/.test(x)))) &&
+        (g === 'issue' && sub === 'develop' && t.some((x) => /^(--checkout|-[A-Za-z]*c[A-Za-z]*)(=|$)/.test(x)))) &&
       gitReach(cur, o)
     )
       return 'settings'
@@ -1408,8 +1409,8 @@ function inRootWrites(v: string, args: Word[]): boolean {
   if (v === 'wget') return !(t.some((x) => /^-[A-Za-z]*O-$/.test(x) || x === '--output-document=-') || (t.some((x) => /^-[A-Za-z]*O$/.test(x) || x === '--output-document') && t.includes('-')))
   if (v === 'http' || v === 'https' || v === 'xh') return t.some((x) => /^(-d|--download)$/.test(x))
   if (v === 'env') return args.length > 0
-  // rg runs a program on every file it searches with --pre (and one that tells hostnames with --hostname-bin).
-  if (v === 'rg') return args.some((w) => longPre(w.t, ['pre', 'hostname-bin'], 3) || opaque(w))
+  // rg runs a program on every file it searches with --pre (and one that tells hostnames with --hostname-bin); a word spelled by a variable, quoted or not, may be either.
+  if (v === 'rg') return args.some((w) => longPre(w.t, ['pre', 'hostname-bin'], 3) || w.dyn)
   if (v === 'find') return t.some((x) => /^-(fprint0?|fprintf|fls)$/.test(x))
   if (v === 'less') return t.some((x) => /^(-[A-Za-z]*[oO]|--log-file|--LOG-FILE)/.test(x))
   if (v === 'tree') return t.some((x) => /^-[A-Za-z]*o/.test(x) || /^--o/.test(x))
