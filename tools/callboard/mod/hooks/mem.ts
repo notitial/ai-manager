@@ -112,12 +112,14 @@ export const laneBriefed = new Map<string, string>()
 // cur: the hash of the store file as last read; told: the hash the lead has been told about (or was dropped); seen: the hash at the lead's last lane tool call.
 export type Watch = { path: string; sig?: string; cur: string; told: string; seen: string }
 export const watch = new Map<string, Watch>()
-// The usage file (usage.ts), per session: when it was last written, whether a measure is owed a write, and the write in flight.
-export const usageWrittenAt = new Map<string, number>()
-export const usageOwed = new Set<string>()
-export const usageWriting = new Map<string, Promise<void>>()
 export const laneNotices = new Map<string, number[]>()
 export const cappedLogged = new Set<string>()
+
+// ---- the usage file (usage.ts), per session ----
+// When it was last written, whether a write is owed (a measure came, or the last write did not land), and the write in flight.
+export const usageWrittenAt = new Map<string, number>()
+export const usageOwed = new Set<string>()
+export const usageWriting = new Map<string, Promise<boolean>>()
 
 // A store write of the lead's own (lane_create, a retire or terminate that removes a lane) is in flight: the tick leaves the list alone until watchOwn has taken the new state as known.
 export const ownWriting = new Map<string, number>()

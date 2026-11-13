@@ -1624,6 +1624,8 @@ export const USAGE_KEEP_MS = 24 * HOUR_MS
 // The sweep of usage files runs at most this often, and takes a file of a session no live row names only once it is this old (one written just before its row shows is never taken).
 export const USAGE_SWEEP_MS = 60_000
 export const USAGE_READS_MAX = 64
+// A sweep removes at most this many files; the rest wait for the next one.
+export const USAGE_SWEEP_MAX = 64
 const USAGE_WINDOWS_MAX = 4
 const USAGE_KINDS = { five_hour: '5h', seven_day: '7d' } as const
 type UsageKind = keyof typeof USAGE_KINDS
@@ -1636,11 +1638,13 @@ const usageNum = (x: unknown, max: number): x is number => typeof x === 'number'
 export function usageFileText(sid: string, pid: number, procStart: string, now: number, u: unknown): string | undefined {
   if (typeof u !== 'object' || u === null) return undefined
   const x = u as { context?: { tokens?: unknown }; cost?: { usd?: unknown }; rateLimits?: unknown }
+  const seen = new Set<unknown>()
   const windows = (Array.isArray(x.rateLimits) ? x.rateLimits : []).flatMap((w: { kind?: unknown; percentUsed?: unknown; resetsAt?: unknown } | null) => {
-    const ok = usageKind(w?.kind) && usageNum(w?.percentUsed, 100)
+    const ok = usageKind(w?.kind) && usageNum(w?.percentUsed, 100) && !seen.has(w.kind)
+    if (ok) seen.add(w.kind)
     return ok ? [{ kind: w.kind, pct: w.percentUsed, resetsAt: typeof w.resetsAt === 'string' && Number.isFinite(Date.parse(w.resetsAt)) ? w.resetsAt : null }] : []
   })
-  return JSON.stringify({ v: 1, sid, pid, procStart, at: now, tokens: usageNum(x.context?.tokens, 1e8) ? x.context.tokens : null, cost: usageNum(x.cost?.usd, 1e6) ? x.cost.usd : null, windows: windows.slice(0, USAGE_WINDOWS_MAX) })
+  return JSON.stringify({ v: 1, sid, pid, procStart, at: now, tokens: usageNum(x.context?.tokens, 1e8) && Number.isInteger(x.context.tokens) ? x.context.tokens : null, cost: usageNum(x.cost?.usd, 1e6) ? x.cost.usd : null, windows: windows.slice(0, USAGE_WINDOWS_MAX) })
 }
 // The reading in a file's text, or undefined. The file's own checks (a private file of ours, at most USAGE_FILE_MAX bytes) are the reader's; here the body must name
 // this session, the registry row's pid and start time, a past time within a day, and carry only known kinds, percentages 0 to 100 and at most four windows.
@@ -1654,7 +1658,7 @@ export function parseUsage(text: string, sid: string, row: { pid?: number; procS
   }
   if (j?.v !== 1 || j.sid !== sid || !Number.isInteger(row.pid) || j.pid !== row.pid || !sameStart(j.procStart, row.procStart)) return undefined
   if (!Number.isInteger(j.at) || j.at > now || now - j.at > USAGE_KEEP_MS) return undefined
-  if ((j.tokens !== null && !usageNum(j.tokens, 1e8)) || (j.cost !== null && !usageNum(j.cost, 1e6))) return undefined
+  if ((j.tokens !== null && !(usageNum(j.tokens, 1e8) && Number.isInteger(j.tokens))) || (j.cost !== null && !usageNum(j.cost, 1e6))) return undefined
   if (!Array.isArray(j.windows) || j.windows.length > USAGE_WINDOWS_MAX) return undefined
   const windows: UsageReading['windows'] = []
   for (const w of j.windows) {
@@ -1669,7 +1673,7 @@ export function parseUsage(text: string, sid: string, row: { pid?: number; procS
 export function usageCell(r: UsageReading | undefined, now: number): string {
   if (!r) return 'no reading'
   const ago = now - r.at
-  const tokens = r.tokens === undefined ? [] : [`ctx ${r.tokens < 1000 ? r.tokens : r.tokens < 1e6 ? `${Math.round(r.tokens / 1000)}k` : `${(r.tokens / 1e6).toFixed(1)}M`}`]
+  const tokens = r.tokens === undefined ? [] : [`ctx ${r.tokens < 1000 ? r.tokens : r.tokens < 999_500 ? `${Math.round(r.tokens / 1000)}k` : `${(r.tokens / 1e6).toFixed(1)}M`}`]
   const windows = r.windows.map((w) => `${USAGE_KINDS[w.kind]} ${w.resetsAt !== undefined && w.resetsAt <= now ? '?' : `${Math.round(w.pct)}%`}`)
   const cost = r.cost === undefined ? [] : [`$${r.cost.toFixed(2)}`]
   return [...tokens, ...windows, ...cost, `${ago < 60_000 ? '<1m' : ago < HOUR_MS ? `${Math.floor(ago / 60_000)}m` : `${Math.floor(ago / HOUR_MS)}h`} ago`].join(' · ')

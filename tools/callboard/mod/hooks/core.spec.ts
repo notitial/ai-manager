@@ -2600,7 +2600,11 @@ const uText = (over: Record<string, unknown> = {}) => JSON.stringify({ ...JSON.p
 test('usageFileText: the figures of session.usage and nothing else; a kind not listed is left out, a figure out of range reads as null', () => {
   const j = JSON.parse(c.usageFileText(U_SID, U_ROW.pid, U_ROW.procStart, U_NOW, { ...U_USAGE, email: 'a@b.c', rateLimits: [...U_USAGE.rateLimits, { kind: 'seven_day_opus', percentUsed: 5 }, { kind: 'constructor', percentUsed: 5 }] })!)
   assert.deepEqual(j, { v: 1, sid: U_SID, pid: 4242, procStart: U_ROW.procStart, at: U_NOW, tokens: 142_000, cost: 3.1, windows: [{ kind: 'five_hour', pct: 34, resetsAt: '2026-11-12T15:00:00.000Z' }, { kind: 'seven_day', pct: 61, resetsAt: '2026-11-17T12:00:00.000Z' }] })
+  assert.equal(JSON.parse(c.usageFileText(U_SID, 4242, 'x', U_NOW, { context: { tokens: 1.5 } })!).tokens, null)
   assert.deepEqual(JSON.parse(c.usageFileText(U_SID, 4242, 'x', U_NOW, { context: { tokens: -1 }, cost: { usd: 'free' }, rateLimits: [{ kind: 'five_hour', percentUsed: 101 }, { kind: 'seven_day', percentUsed: 7, resetsAt: 'soon' }, null] })!), { v: 1, sid: U_SID, pid: 4242, procStart: 'x', at: U_NOW, tokens: null, cost: null, windows: [{ kind: 'seven_day', pct: 7, resetsAt: null }] })
+  // A kind the engine lists twice is written once, the first, so the reader's duplicate check never drops a whole file.
+  const dup = JSON.parse(c.usageFileText(U_SID, 4242, 'x', U_NOW, { rateLimits: [{ kind: 'five_hour', percentUsed: 1 }, { kind: 'five_hour', percentUsed: 2 }] })!)
+  assert.deepEqual(dup.windows, [{ kind: 'five_hour', pct: 1, resetsAt: null }])
   assert.equal(c.usageFileText(U_SID, 4242, 'x', U_NOW, undefined), undefined)
   assert.ok(c.usageFileText(U_SID, 4242, 'x', U_NOW, {})!.length < c.USAGE_FILE_MAX)
 })
@@ -2630,6 +2634,7 @@ test('parseUsage: a file of this session, this pid and start time reads back; ev
     ['five windows', uText({ windows: w(5) })],
     ['windows not a list', uText({ windows: 'x' })],
     ['tokens not a number', uText({ tokens: '9' })],
+    ['tokens not a whole number', uText({ tokens: 0.5 })],
     ['cost negative', uText({ cost: -0.5 })],
     ['over the size limit', uText({ pad: 'x'.repeat(c.USAGE_FILE_MAX) })],
     ['not json', '{'],
@@ -2644,6 +2649,7 @@ test('usageCell: context, windows, cost and age in that order; a passed reset sh
   assert.equal(c.usageCell(r, Date.UTC(2026, 10, 12, 15)), 'ctx 142k · 5h ? · 7d 61% · $3.10 · 183m ago'.replace('183m', '3h'))
   assert.equal(c.usageCell(c.parseUsage(uText({ tokens: 900, windows: [], at: U_NOW - 5000 }), U_SID, U_ROW, U_NOW), U_NOW), 'ctx 900 · $3.10 · <1m ago')
   assert.equal(c.usageCell(c.parseUsage(uText({ tokens: 1_250_000, cost: null, windows: [{ kind: 'seven_day', pct: 33.6, resetsAt: null }] }), U_SID, U_ROW, U_NOW), U_NOW), 'ctx 1.3M · 7d 34% · 2m ago')
+  assert.equal(c.usageCell(c.parseUsage(uText({ tokens: 999_600, windows: [], cost: null }), U_SID, U_ROW, U_NOW), U_NOW), 'ctx 1.0M · 2m ago')
   assert.equal(c.usageCell(undefined, U_NOW), 'no reading')
 })
 

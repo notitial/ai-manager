@@ -1,12 +1,17 @@
 import { expect, test } from 'claude-code/testing'
-import { USAGE_FILE_MAX, USAGE_KEEP_MS, usageFileText } from '../hooks/core'
-import { SID, USAGE_DIR, extraStat, h, pdirs, pfs } from './harness'
+import { USAGE_FILE_MAX, USAGE_KEEP_MS, USAGE_SWEEP_MAX, usageFileText } from '../hooks/core'
+import { SID, USAGE_DIR, extraStat, h, pdirs, pfs, quiet } from './harness'
 import { ANY, LEADPS, OTHER, PIN, cueSession, dirStat, leadAt, leadSelfReg, listed, mdBox, noNote, putStore, started, ticks } from './fixtures'
 
 const MIN = 60_000
 const FILE = `${USAGE_DIR}/${SID}.json`
 const OTHER_FILE = `${USAGE_DIR}/${OTHER}.json`
 const FIGURES = { context: { tokens: 142_000 }, cost: { usd: 3.1 }, rateLimits: [{ kind: 'five_hour', percentUsed: 34, resetsAt: '2090-01-01T00:00:00.000Z' }] }
+// The measure hook does not wait for its write: wait for the mocks to go quiet.
+const measure = async ($: any) => {
+  await $.session.measure({ changed: ['cost'] } as any)
+  await quiet()
+}
 const body = () => JSON.parse(pfs.get(FILE)!.text)
 const put = (path: string, text: string, over: { mtimeSec?: number; mode?: string; nlink?: number; uid?: number } = {}) => pfs.set(path, { text, mtimeSec: (h.nowMs - 2 * MIN) / 1000, ...over })
 // A lane API whose session is OTHER (pid 4500) under a lead; the usage folder exists.
@@ -25,7 +30,7 @@ test('a measure writes the usage file with the figures of session.usage, through
   h.sessions = leadSelfReg()
   await started($, on, [], { clock: true, argv })
   h.usageExtra = FIGURES
-  await $.session.measure({ changed: ['cost'] } as any)
+  await measure($)
   expect(body()).toEqual({ v: 1, sid: SID, pid: 4400, procStart: LEADPS, at: body().at, tokens: 142_000, cost: 3.1, windows: [{ kind: 'five_hour', pct: 34, resetsAt: '2090-01-01T00:00:00.000Z' }] })
   expect(body().at).toBeGreaterThan(0)
   expect(body().at).toBeLessThanOrEqual(h.nowMs)
@@ -40,12 +45,12 @@ test('the usage file is written at most every 30 s: a measure inside the gap lea
   await started($, on, [], { clock: true, argv })
   h.usageExtra = FIGURES
   const writes = () => argv.filter((a) => a[0] === '/usr/bin/tee' && a[2].startsWith(`${USAGE_DIR}/`)).length
-  await $.session.measure({ changed: ['cost'] } as any)
+  await measure($)
   expect(writes()).toBe(1)
   h.usageExtra = { ...FIGURES, cost: { usd: 4 } }
-  await $.session.measure({ changed: ['cost'] } as any)
+  await measure($)
   h.usageExtra = { ...FIGURES, cost: { usd: 5 } }
-  await $.session.measure({ changed: ['cost'] } as any)
+  await measure($)
   expect(writes()).toBe(1)
   expect(body().cost).toBe(3.1)
   await ticks(10)
@@ -57,26 +62,39 @@ test('the usage file is written at most every 30 s: a measure inside the gap lea
   await ticks(30)
   expect(writes()).toBe(2)
   h.usageExtra = { ...FIGURES, cost: { usd: 6 } }
-  await $.session.measure({ changed: ['cost'] } as any)
+  await measure($)
   expect(writes()).toBe(3)
   expect(body().cost).toBe(6)
 })
 
-test('a session end removes the usage file and nothing is written after it', async ($, on) => {
+test('a session end removes the usage file and nothing is written after it, not even a trailing write a measure left owed', async ($, on) => {
   h.sessions = leadSelfReg()
   await started($, on, [], { clock: true })
-  await $.session.measure({ changed: ['cost'] } as any)
+  await measure($)
   expect(pfs.has(FILE)).toBe(true)
+  await measure($)
   await $.session.end({} as any)
   expect(pfs.has(FILE)).toBe(false)
   await ticks(20)
   expect(pfs.has(FILE)).toBe(false)
 })
 
+test('a write that could not land stays owed: the tick writes it once the registry shows one row of the session', async ($, on) => {
+  h.sessions = { ...leadSelfReg(), ...cueSession(SID, 'LEAD', PIN, { pid: 4401 }) }
+  await started($, on, [], { clock: true })
+  await measure($)
+  expect(pfs.has(FILE)).toBe(false)
+  h.sessions = leadSelfReg()
+  await ticks(10)
+  expect(pfs.has(FILE)).toBe(false)
+  await ticks(6)
+  expect(pfs.has(FILE)).toBe(true)
+})
+
 test('no usage file when the registry holds two rows of the session: the pid could be a twin\'s', async ($, on) => {
   h.sessions = { ...leadSelfReg(), ...cueSession(SID, 'LEAD', PIN, { pid: 4401 }) }
   await started($, on, [], { clock: true })
-  await $.session.measure({ changed: ['cost'] } as any)
+  await measure($)
   await ticks(2)
   expect([...pfs.keys()].filter((k) => k.startsWith(USAGE_DIR))).toEqual([])
 })
@@ -140,4 +158,16 @@ test('the sweep removes the file of a gone session once a minute old and any fil
   await ticks(2)
   const left = () => [...pfs.keys()].filter((k) => k.startsWith(`${USAGE_DIR}/`) && !k.endsWith(`/${SID}.json`)).map((k) => k.slice(USAGE_DIR.length + 1)).sort()
   expect(left()).toEqual([`${FRESH}.json`, `${OTHER}.json`, 'notes.json'].sort())
+})
+
+test('one sweep removes at most USAGE_SWEEP_MAX files; the next one takes the rest', async ($, on) => {
+  await leadAt($, on, [], { clock: true })
+  pdirs.add(USAGE_DIR)
+  const gone = (i: number) => `${USAGE_DIR}/${String(i).padStart(8, '0')}-0000-4000-8000-123456789abc.json`
+  for (let i = 0; i < USAGE_SWEEP_MAX + 6; i++) put(gone(i), 'x')
+  const left = () => [...pfs.keys()].filter((k) => k.startsWith(`${USAGE_DIR}/`) && !k.endsWith(`/${SID}.json`)).length
+  await ticks(2)
+  expect(left()).toBe(6)
+  await ticks(31)
+  expect(left()).toBe(0)
 })

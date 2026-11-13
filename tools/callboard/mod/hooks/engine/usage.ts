@@ -2,22 +2,25 @@
 // Trust rules held here: display only (no check, hold or answer depends on a reading); the writer holds no credential and writes through writeIn (private folder, 0600, one link);
 // a reader trusts only a private file of ours within the size bound, and a file that fails a check reads as no reading (core.ts, usage readings).
 import * as c from '../core.ts'
-import { where, dirOk, run, RM, log } from './base.ts'
+import { where, dirOk, run, RM, log, logFail } from './base.ts'
 import { mem, usageWrittenAt, usageOwed, usageWriting } from '../mem.ts'
 import { registryEntries, registryOf, writeIn, readStoreFile } from './store.ts'
 
-async function usageWrite($: any, sid: string) {
+// false: the file could not be written now (no single registry row, or the write failed), so the write stays owed.
+async function usageWrite($: any, sid: string): Promise<boolean> {
   // Exactly one registry row of this session: with two, the pid could be a twin's.
   const me = await registryOf($, sid)
-  if (!Number.isInteger(me?.pid) || typeof me?.procStart !== 'string') return
+  if (!Number.isInteger(me?.pid) || typeof me?.procStart !== 'string') return false
   const text = c.usageFileText(sid, me.pid, me.procStart, await $.clock.now(), await $.session.usage())
-  if (text === undefined) return
+  if (text === undefined) return true
   const w = await writeIn($, 'usage', `${sid}.json`, text)
   if ('err' in w) await log($, sid, 'error', 'usage-write')
+  return !('err' in w)
 }
 
 // Writes when a measure is owed and the last write is 30 s old; one that came sooner waits for the tick (the trailing write).
 export async function usageFlush($: any, sid: string) {
+  if (!c.SID_RE.test(sid)) return
   const now = await $.clock.now()
   if (!usageOwed.has(sid) || now - (usageWrittenAt.get(sid) ?? -Infinity) < c.USAGE_WRITE_MS) return
   usageOwed.delete(sid)
@@ -25,7 +28,8 @@ export async function usageFlush($: any, sid: string) {
   const p = usageWrite($, sid)
   usageWriting.set(sid, p)
   try {
-    await p
+    // A write that did not land is owed again, for the tick to try after the gap; not once the session has ended (usageDrop clears the stamp).
+    if (!(await p) && usageWrittenAt.has(sid)) usageOwed.add(sid)
   } finally {
     if (usageWriting.get(sid) === p) usageWriting.delete(sid)
   }
@@ -33,15 +37,19 @@ export async function usageFlush($: any, sid: string) {
 
 export async function usageMeasure($: any, e: any, next: any) {
   const sid = await $.session.id()
+  if (!c.SID_RE.test(sid)) return next(e)
   usageOwed.add(sid)
-  await usageFlush($, sid)
+  // Not awaited: a registry scan and a write must not hold the measure chain.
+  void usageFlush($, sid).catch(logFail($, sid, 'usage-write'))
   return next(e)
 }
 
 export async function usageDrop($: any, sid: string) {
+  if (!c.SID_RE.test(sid)) return
   usageOwed.delete(sid)
   usageWrittenAt.delete(sid)
   await usageWriting.get(sid)?.catch(() => undefined)
+  usageOwed.delete(sid)
   const p = await where($)
   if (p) await run($, [RM, '-f', '--', `${p.root}/usage/${sid}.json`])
 }
@@ -57,11 +65,14 @@ export async function usageSweep($: any) {
   const live = await registryEntries($)
   if (!live) return
   const sids = new Set(live.map((r) => r.j.sessionId))
+  let removed = 0
   for (const f of (await $.fs.list(dir!).catch(() => [])) as { name: string; mtimeMs?: number }[]) {
-    if (typeof f.mtimeMs !== 'number') continue
+    if (typeof f.mtimeMs !== 'number' || removed >= c.USAGE_SWEEP_MAX) continue
     const sid = f.name.endsWith('.json') ? f.name.slice(0, -5) : ''
     const dead = c.SID_RE.test(sid) && !sids.has(sid) && now - f.mtimeMs > c.USAGE_SWEEP_MS
-    if (dead || now - f.mtimeMs > c.USAGE_KEEP_MS) await run($, [RM, '-f', '--', `${dir}/${f.name}`])
+    if (!dead && now - f.mtimeMs <= c.USAGE_KEEP_MS) continue
+    removed++
+    await run($, [RM, '-f', '--', `${dir}/${f.name}`])
   }
 }
 
