@@ -124,8 +124,8 @@ export async function levelSave($: any, sid: string, d: LevelDesc, pin?: string)
   // A drop while the write was in flight (a new grant meanwhile too): the key it wrote goes again.
   if (epochOf(sid) !== epoch || !d.held(sid, pin)) {
     await Promise.resolve($.store.delete(key)).catch(logFail($, sid, d.hintDelete))
-    // A new grant's own key may have gone with it: its savedAt is cleared, so the next tick writes it again.
-    if (d.held(sid, pin)) d.savedAt.delete(sid)
+    // A new grant's own key may have gone with it: its savedAt goes back to 0 (set, and long due), so the next tick writes it again.
+    if (d.held(sid, pin)) d.savedAt.set(sid, 0)
   }
 }
 

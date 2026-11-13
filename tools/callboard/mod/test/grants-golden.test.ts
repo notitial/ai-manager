@@ -464,6 +464,28 @@ test('presence: a manager that appears while the manager file is being written m
   expect(JSON.stringify(await $.tool.call(listCall()))).toContain('lead tools are off')
 })
 
+// A refresh tick that lands while the manager grant is still being confirmed (its presence file is being written) saves nothing: when the grant then steps back
+// there is no saved manager grant, so a restart cannot restore it.
+test('presence: a tick while the manager grant is still being confirmed writes no saved grant, and none is left when the grant steps back (manager-exists)', async ($, on) => {
+  const stdins: string[] = []
+  await world($, on, stdins)
+  h.leadMvDelayMs = 300
+  const p = grant($, 'manager')
+  await waitFor(() => h.askCount === 1)
+  await sleepMs(60)
+  await ticks(1)
+  expect(h.store.has(LV.manager.key)).toBe(false)
+  mgrFile()
+  h.sessions = { ...condSelf(), ...mgrRow() }
+  const r = await p
+  h.leadMvDelayMs = 0
+  expect(logged(stdins)).toContain('refused:manager-exists')
+  expect(r.text).toContain('another live session is the manager')
+  expect(h.store.has(LV.manager.key)).toBe(false)
+  await ticks(3)
+  expect(h.store.has(LV.manager.key)).toBe(false)
+})
+
 // ---- 5. the briefing note, the off reply and the tools of each level ----
 for (const level of LEVELS) {
   const L = LV[level]

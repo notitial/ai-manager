@@ -1202,7 +1202,10 @@ async function managerRestoreAsk($: any, me: string, pend: MgrPending) {
 export async function managerTick($: any, sid: string) {
   if (grants.get(sid)?.level === 'manager') {
     managerRestorePending.delete(sid)
-    if (c.leadRefreshDue(managerSavedAt.get(sid), await $.clock.now(), MANAGER.refreshMs)) await levelSave($, sid, MANAGER)
+    // Only once the grant's own save has set the mark: a grant still being confirmed (the presence file, the second-manager check) is saved by nobody else, so a step
+    // back leaves no saved grant behind.
+    const at = managerSavedAt.get(sid)
+    if (at !== undefined && c.leadRefreshDue(at, await $.clock.now(), MANAGER.refreshMs)) await levelSave($, sid, MANAGER)
     return
   }
   const pend = managerRestorePending.get(sid)
