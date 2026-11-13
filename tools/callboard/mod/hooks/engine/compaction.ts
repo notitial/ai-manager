@@ -150,16 +150,6 @@ export async function pruneHints($: any, me: string) {
   // Lead grants (lead:<sid>), with their own caps. The starting session's own is left to the lead restore, which reads it and deletes it itself.
   const p = await where($)
   if (!p) return
-  // A saved on (on:<sid>) is never read now (/callboard on is retired): every other session's goes, unread, under the same cap; a delete that fails
-  // stops nothing. The starting session's own goes in onLeftovers.
-  let onDels = 0
-  for (const k of all.filter((x) => x.startsWith(c.ON_HINT_PREFIX) && x !== `${c.ON_HINT_PREFIX}${me}`).slice(0, c.HINT_SCAN_MAX)) {
-    if (onDels >= HINT_DELETE_MAX) break
-    onDels++
-    await Promise.resolve()
-      .then(() => $.store.delete(k))
-      .catch(() => undefined)
-  }
   // Cut-compaction marks (cmp:<sid>) of other sessions, under the same caps; the starting session's own is read at start.
   for (const [prefix, ok] of [[c.CMP_PREFIX, (v: unknown) => c.cmpMarkFresh(v, now)]] as const) {
     let n = 0

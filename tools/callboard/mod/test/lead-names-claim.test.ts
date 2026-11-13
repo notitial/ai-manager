@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { recordText, recordTextLegacy, CLAIM_OTHER_UNNAMED, CLAIM_HINT, CLAIM_NOT_PERSON, CLAIM_NOT_LEAD, CLAIM_UNNAMED, CLAIM_NONE, claimQuestion, claimedText, claimRefusedText, reserveShowText, reserveAddedText, reserveRemovedText, reserveNotListedText, reserveManagerText, RESERVE_NOT_PERSON, RESERVE_USAGE, refusalText, attachQuestion, ATTACH_YES, ATTACH_NO, LANE_NO_LEAD, REASON_TEXT, LEAD_MORE, LEAD_PICK_QUESTION } from '../hooks/core'
+import { CLAIM_OTHER_UNNAMED, CLAIM_HINT, CLAIM_NOT_PERSON, CLAIM_NOT_LEAD, CLAIM_UNNAMED, CLAIM_NONE, claimQuestion, claimedText, claimRefusedText, reserveShowText, reserveAddedText, reserveRemovedText, reserveNotListedText, reserveManagerText, RESERVE_NOT_PERSON, RESERVE_USAGE, refusalText, attachQuestion, ATTACH_YES, ATTACH_NO, LANE_NO_LEAD, REASON_TEXT, LEAD_MORE, LEAD_PICK_QUESTION } from '../hooks/core'
 import { h, NO, ROOT, SID, T0, YES, extraStat, fakeSha, laneSeed, leadFiles, lockLog, longTest, realMap, storeFiles, teeTexts } from './harness'
 import { ANY, ATTACHED, GONE_ATT, HOME, LEADPATH, LEADPS, LEADSID, MGR_NOAPI, OTHER, OTHERLEAD, OTHERPATH, PERSON, PIN, SELFPATH, STATUS_NONE, STOREFILE, SVC, USAGE, attRec, attacher, bareList, bornWithTwoLeads, callCreate, ckRow, created, cue, cueSession, dirStat, doLane, lane, leadAt, leadCall, leadFileText, leadReg, leadSelfReg, listCall, logged, madeLane, mdBox, mdTable, mgrAt, mgrFile, mgrRow, newTrace, noLaneWritten, ownReg, putStore, regAs, selfAs, started, storeJson, storeLaneNames, waitFor } from './fixtures'
 
@@ -537,26 +537,6 @@ test('stuck lanes: claim needs a named lead; a conductor and the manager have no
 test('stuck lanes: claim in a session that holds no lead grant, a conductor or the manager says so', async ($, on) => {
   await mgrAt($, on, [], { sess: MGR_NOAPI() })
   expect((await claim($)).text).toBe(CLAIM_NOT_LEAD)
-})
-
-test('stuck lanes: an attached lane bound under the legacy record hash (without the lead name) still takes resume and detaches whole', async ($, on) => {
-  const trace = newTrace()
-  const stdins: string[] = []
-  await attacher($, on, stdins, { clock: true, trace })
-  await doLane($, 'lane svc-api')
-  const rec = storeJson().lanes[0]
-  expect(rec.leadName).toBe('LEAD')
-  const b = trace.st!.get('lane')!
-  const old = fakeSha(recordTextLegacy({ name: rec.name, folder: rec.folder, brief: rec.brief, repo: PIN, adopted: true, lead: rec.lead, leadName: rec.leadName }))
-  expect(old).not.toBe((b.value as { rec: string }).rec)
-  trace.st!.set('lane', { value: { ...(b.value as object), rec: old }, version: b.version + 1 })
-  expect(await cue(91, 'resume\n')).toBe('resume ok - 91\n')
-  // The first read of the record upgraded the binding to the current hash, so a later change of the lead name (a rename carry, a claim) keeps it matching.
-  expect(logged(stdins)).toContain('hash-upgraded:')
-  expect((trace.st!.get('lane')!.value as { rec: string }).rec).toBe(fakeSha(recordText({ name: rec.name, folder: rec.folder, brief: rec.brief, repo: PIN, adopted: true, lead: rec.lead, leadName: rec.leadName })))
-  putStore([{ ...storeJson().lanes[0], leadName: 'LEAD2' }])
-  expect((await doLane($, 'lane off')).text).toBe('This session is no longer lane svc-api.')
-  expect(storeJson().lanes).toEqual([])
 })
 
 test('stuck lanes: a claim leaves out the lanes of a live lead (attached record whose lead session runs), and waits while another live lead of the repo has no usable name', async ($, on) => {

@@ -1929,7 +1929,7 @@ export function applyCheck(a: ApplyIn): ApplyOut {
 }
 
 // ---- the ledger: machine-wide, one JSON row per line, no input text ----
-export type RowKind = 'requested' | 'answered' | 'escalated' | 'dropped' | 'returned' | 'superseded' | 'expired-denied' | 'off' | 'abandoned' | 'floor' | 'not-judgeable' | 'no-tier' | 'floor-confirmed' | 'floor-off' | 'answering-on' | 'answering-off' | 'relayed' | 'relay-lost' | 'relay-left' | 'relay-late' | 'deny-unclear'
+export type RowKind = 'requested' | 'answered' | 'escalated' | 'dropped' | 'returned' | 'superseded' | 'expired-denied' | 'off' | 'abandoned' | 'floor' | 'not-judgeable' | 'no-tier' | 'answering-on' | 'answering-off' | 'relayed' | 'relay-lost' | 'relay-left' | 'relay-late' | 'deny-unclear'
 // cap and target: set on an `answered` and a `returned` row of a call that carries an `@claude` body (claudeCap), so the standing comment cap can be counted.
 // ctx: a short hash of what the floor read besides the input (folder, branch, push target, roots), on `floor` and `requested` rows, so the audit can tell a floor row
 // from a later request of the same input under another branch or config.

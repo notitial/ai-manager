@@ -594,7 +594,7 @@ test('every dialog is a verb plus Cancel; off has its own pair; restore follows 
   assert.ok(c.restoreQuestion('API').startsWith('Restore this session'))
 })
 
-import { recOk, reservedHit, parseStore, pinRefusal, createRefusal, recordText, recordTextLegacy, STORE_MAX_LANES, STORE_MAX_BYTES } from './core.ts'
+import { recOk, reservedHit, parseStore, pinRefusal, createRefusal, recordText, STORE_MAX_LANES, STORE_MAX_BYTES } from './core.ts'
 
 test('reserved names are matched by skeleton, not only by exact name', () => {
   for (const n of ['MANAGER', 'manager', 'Manager_', 'MANAGER-2', 'MANAGER2', 'MANAG3R', 'MANA6ER', 'rnANAGER', 'MANAGER1']) assert.equal(reservedHit(n), true, n)
@@ -1629,8 +1629,7 @@ test('the lead briefing has the park bullet right after the force stop bullet (t
   assert.equal(lines[i + 1], '- `lane_park` stops a lane but keeps its conversation. The lane must confirm, as for `lane_retire`: idle for 30 s, an empty prompt box, no background agents or shells. No signed report is needed. `lane_unpark` reopens the conversation with its history. The lane becomes itself again within a few seconds; then call `lane_resume`. A parked lane shows `parked` in the Session column of `lane_list`. Retire is final: a retired lane\'s conversation cannot be reopened with `lane_unpark`, only replaced by a new session (`lane_open`). Park a lane you may need again; retire it when its work is done.')
 })
 
-test('v13.5 /callboard on is retired: the saved on key prefix stays for the cleanup, and the fixed texts; v13.6: the retired text is gone too', () => {
-  assert.equal(c.ON_HINT_PREFIX, 'on:')
+test('v13.5 /callboard on is retired: the fixed texts; v13.6: the retired text is gone too', () => {
   assert.equal('ON_RETIRED' in c, false)
   assert.equal(c.OFF_NOTHING, 'Nothing to turn off: this session is not a lane or a lead.')
   assert.equal(c.rebindFailedToast('API'), 'Lane API did not rebind automatically. Run /callboard lane to restore it.')
@@ -2480,15 +2479,6 @@ test('stuck lanes: the claim question names the lanes, the old lead names and th
   assert.equal(c.parseCommandArgs('claim'), 'claim')
   assert.equal(c.parseCommandArgs(' claim  '), 'claim')
   assert.equal(c.parseCommandArgs('claim x'), undefined)
-})
-
-test('stuck lanes: recordTextLegacy is the hash an attached record had before: it differs from recordText only when the record has a lead name', () => {
-  const att = { name: 'A', folder: '/f', brief: '/f/b', repo: '/r', adopted: true as const, lead: LEAD }
-  assert.equal(recordTextLegacy(att), recordText(att))
-  assert.equal(recordTextLegacy({ ...att, leadName: 'LEADA' }), `A\n/f\n/f/b\n/r\nadopted\n${LEAD}\nleadName\nLEADA`)
-  assert.notEqual(recordTextLegacy({ ...att, leadName: 'LEADA' }), recordText({ ...att, leadName: 'LEADA' }))
-  const made = { name: 'A', folder: '/f', brief: '/f/b', repo: '/r', leadName: 'LEADA' }
-  assert.equal(recordTextLegacy(made), recordText(made))
 })
 
 test('stuck lanes: claimable, given the live names without the claimer\'s own, still offers a lane the lead made under its old letter case', () => {

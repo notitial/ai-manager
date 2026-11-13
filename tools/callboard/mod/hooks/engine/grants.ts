@@ -100,7 +100,6 @@ import type { Bound } from './lanes.ts'
 import { interactive, busyAgents, personRow, backgroundShells } from './compaction.ts'
 import { managerCommand } from './commands.ts'
 
-const enabledRef = { plugin: 'callboard', key: 'enabled' } as const
 // $.state keys declared again where they are used: `claude plugin validate` reads a key in the file that uses it.
 const lane = { plugin: 'callboard', key: 'lane' } as const
 const request = { plugin: 'callboard', key: 'request' } as const
@@ -382,33 +381,6 @@ export async function leadRestore($: any, me: string, hint: c.LeadHint, tries: n
     return
   }
   leadRestorePending.set(me, { hint, tries })
-}
-
-// What a retired /callboard on left (the enabled state, the saved on:<sid>) is cleared at session.start, with
-// no toast: it no longer means anything, and the session is eligible only as a bound lane.
-export async function onLeftovers($: any, sid: string) {
-  try {
-    if ((await $.state.get(enabledRef)).value != null) {
-      await $.state.set(enabledRef, null)
-      await log($, sid, 'on-cleared', 'state')
-    }
-  } catch {
-    await logq($, sid, 'error', 'on-clear')
-  }
-  if (!c.SID_RE.test(sid)) return
-  // Each store call has the engine-call limit and runs inside an async function, so one that throws at once is answered like one that rejects (as config).
-  try {
-    const key = `${c.ON_HINT_PREFIX}${sid}`
-    const raw = await withTimeout($, (async () => $.store.get(key))(), c.ENGINE_CALL_TIMEOUT_MS)
-    if (raw === 'timeout') throw new Error('timeout')
-    if (raw !== undefined) {
-      const d = await withTimeout($, (async () => $.store.delete(key))().then(() => 'ok' as const), c.ENGINE_CALL_TIMEOUT_MS)
-      if (d !== 'ok') throw new Error('timeout')
-      await log($, sid, 'on-cleared', 'saved')
-    }
-  } catch {
-    await logq($, sid, 'error', 'on-hint-delete')
-  }
 }
 
 // One briefing note, once per `key` in `marks`: the mark is set before the append, a refused or failed append unmarks it (if it is still this one) and logs errCode.

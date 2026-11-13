@@ -10,7 +10,6 @@ export const CUE_RE = /^(rename [A-Za-z0-9_-]{1,40}( [0-9a-f]{8}-[0-9a-f]{4}-[0-
 export const ORDER_PREFIX = 'ord:'
 export const HINT_PREFIX = 'sess:'
 export const LEAD_HINT_PREFIX = 'lead:'
-export const ON_HINT_PREFIX = 'on:'
 export const CMP_PREFIX = 'cmp:'
 export const MANAGER_HINT_PREFIX = 'manager:'
 export const CONDUCTOR_HINT_PREFIX = 'conductor:'
@@ -135,9 +134,6 @@ const isLaneModel = (m: unknown): m is LaneModel => typeof m === 'string' && (LA
 // A lane record is hashed to bind a session to the record it was renamed under; src is not part of it, nor are sid and parked: a session writes its own id into
 // its record while bound, and park and unpark change them, so neither may make a live binding refuse record-changed or orphan an attached record's removal.
 // A binding without a stored hash is an old one: no lane accepts it.
-// The hash an attached record had before the stuck-lanes change, which included its lead's name: a session bound before then holds it, and it still counts
-// (register.ts recMatch). The two differ only when the record has a lead name.
-export const recordTextLegacy = (l: Lane): string => `${recordText(l)}${l.adopted && l.leadName ? `\nleadName\n${l.leadName}` : ''}`
 export const recOk = (rec: string | undefined, current: string): boolean => rec !== undefined && rec === current
 // The attach fields, the model and the lead's name are appended only when present, so a record without them hashes as it always did. An attached record's identity
 // is its lead's session id (hashed above); its lead's name is a reach filter that follows the lead through a rename, so it is left out for adopted records.
@@ -690,7 +686,7 @@ export const reserveShowText = (names: readonly string[]): string =>
 // counts), when the list is full, or when a lane record, a lead stamp or a live lead or lane carries it, in any letter case (inUse names that one). The manager
 // may carry it: that is what the name is for.
 export function reserveAddRefusal(name: string, cur: readonly string[], inUse: string | undefined): string | undefined {
-  // Review c1: a short or letterless name folds to a skeleton that would reserve many names at once.
+  // A short or letterless name folds to a skeleton that would reserve many names at once.
   if (name.length < 3 || !/[A-Za-z]/.test(name)) return `${name} is too short to reserve: use at least 3 characters with a letter.`
   if (reservedHit(name, [])) return `${name} is reserved already (built in).`
   if (reservedHit(name, cur)) return `${name} is reserved already on this machine, or looks like a name that is.`
@@ -1217,8 +1213,6 @@ export const rebindFailedToast = (name: string): string => `Lane ${name} did not
 // The saved grant is rewritten once a day while lead is on (and at once when this process has no time for it), so it lapses only 30 days after the session closed.
 export const leadRefreshDue = (savedAt: number | undefined, now: number): boolean => savedAt === undefined || now - savedAt >= HINT_REFRESH_MS
 
-// /callboard on is retired; the on:<sid> key it once kept in $.store is deleted,
-// this session's at its start, any other's by the prune, and never read.
 // The /callboard off answer when there was nothing to turn off.
 export const OFF_NOTHING = 'Nothing to turn off: this session is not a lane or a lead.'
 
@@ -1730,7 +1724,7 @@ export const CHECKIN_WAKE_MS = 30 * 60_000
 export const CHECKIN_PROMPT_MS = 5 * 60_000
 export const CHECKIN_QUIET_MS = 30 * 60_000
 const CHECKIN_GONE_OBS = 3
-// Review c2 (N3): the lowest `ping after` setting: a status change after this much quiet may be the lane's own keepalive ping.
+// The lowest `ping after` setting: a status change after this much quiet may be the lane's own keepalive ping.
 export const CHECKIN_BLIP_AFTER_MS = CONFIG_RANGE.pingAfterMin[0] * 60_000
 const CHECKIN_PAUSE_MAX_MS = 24 * HOUR_MS
 const ATTENTION_MAX = 8
@@ -1753,7 +1747,7 @@ export function observeLane(prev: LaneObs | undefined, l: Lane, entries: RegEntr
     if (typeof at !== 'number' || at > now) return o
     o.at = at
     if (e.status === 'waiting' && (e.waitingFor ?? null) !== null) o.waitingSince = (prev?.at === at && prev?.waitingSince) || now
-    // Review c2 (N3): only a lane already quiet CHECKIN_BLIP_AFTER_MS when its status moved keeps its start (a keepalive ping comes no sooner); an earlier
+    // Only a lane already quiet CHECKIN_BLIP_AFTER_MS when its status moved keeps its start (a keepalive ping comes no sooner); an earlier
     // change starts the window again.
     const keeps = (from: number | undefined) => from !== undefined && at - from >= CHECKIN_BLIP_AFTER_MS
     if (e.status === 'idle' && (e.waitingFor ?? null) === null) {

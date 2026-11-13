@@ -251,12 +251,10 @@ export async function promptToolsRegister($: any) {
   })
 }
 
-// Whether a binding's stored record hash (rec) is this record's. The hash of an attached record leaves its lead's name out; a session bound before that holds the
-// older one, which includes it, and still counts, so a pull never makes a live attached lane refuse record-changed or fail to detach.
+// Whether a binding's stored record hash (rec) is this record's.
 async function recMatch($: any, rec: string | undefined, l: c.Lane): Promise<boolean> {
   if (rec === undefined) return false
-  if (c.recOk(rec, await sha($, c.recordText(l)))) return true
-  return l.adopted === true && l.leadName !== undefined && c.recOk(rec, await sha($, c.recordTextLegacy(l)))
+  return c.recOk(rec, await sha($, c.recordText(l)))
 }
 
 // lane_retire and lane_terminate delete the lane's record themselves. A lane is live when a registry row carries its
@@ -752,20 +750,6 @@ export async function sidSyncDue($: any, sid: string): Promise<Bound | undefined
   sidSynced.set(sid, key)
   return b
 }
-// A binding made before the lead name left an attached record's hash holds the older hash. It is rewritten to the current one the first time the record is read
-// (this sync runs once per binding, from the first tick after a reload), so a later carry or claim of the lead name never leaves that lane with no matching hash.
-async function hashUpgraded($: any, sid: string, b: Bound & { name: string }, l: c.Lane): Promise<Bound & { name: string }> {
-  if (l.adopted !== true || b.rec === undefined) return b
-  const cur = await sha($, c.recordText(l))
-  if (c.recOk(b.rec, cur)) return b
-  const now = (await $.state.get(lane)).value as Bound | null | undefined
-  if (!now || now.name !== b.name || now.at !== b.at || now.rec !== b.rec) return b
-  const up = { ...now, name: b.name, rec: cur }
-  await $.state.set(lane, up)
-  sidSynced.set(sid, `${up.name}\n${up.at}\n${up.rec}`)
-  await log($, sid, 'hash-upgraded')
-  return up
-}
 export async function sidSync($: any, sid: string, b: Bound & { name: string }) {
   const failed = (code: string) => log($, sid, 'sid-heal-failed', code)
   const lanes = await loadLanes($)
@@ -773,7 +757,6 @@ export async function sidSync($: any, sid: string, b: Bound & { name: string }) 
   const l = lanes.find((x) => x.name === b.name)
   if (!l || !l.src) return
   if (!(await recMatch($, b.rec, l))) return failed('record-changed')
-  b = await hashUpgraded($, sid, b, l)
   if ((await sessionRoot($)) !== l.folder) return failed('wrong-folder')
   if (l.sid === sid && l.parked === undefined) return
   const same = async () => {

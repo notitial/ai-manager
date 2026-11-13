@@ -241,7 +241,7 @@ async function laneCommand($: any, sid: string, code: c.OriginCode, arg: c.Comma
       if (asked === 'timed-out') return { text: `Nothing changed: ${c.TIMED_OUT}.` }
       const got = (await $.state.get(lane)).value as Bound | null | undefined
       if (got) {
-        // As /callboard on did after a restore: the hint takes the restored binding and the merged counters at once.
+        // The hint takes the restored binding and the merged counters at once.
         await saveHint($, sid)
         return { text: c.reboundToast(got.name) }
       }
@@ -1006,7 +1006,7 @@ export async function commandRun($: any, e: any) {
     return { text: 'Lead is on from your next prompt.\nOnly a force stop asks you.' }
   }
   const bound = (await $.state.get(lane)).value as Bound | null | undefined
-  // No ON or OFF part; /callboard on is retired and every session gets the keepalive and the nudges.
+  // Every session gets the keepalive and the nudges.
   // A lead's status adds its check-ins.
   const ckStatus = arg === 'status' && grants.has(sid) && grants.get(sid)?.level !== 'conductor' ? ` ${c.checkinStatus((await cfgGet($, sid)).checkin, (await $.state.get(checkinPauseRef)).value, await $.clock.now())}` : ''
   // The manager's status names its level in place of the lead's.
@@ -1055,6 +1055,4 @@ export async function commandRun($: any, e: any) {
     ].filter((x) => x !== '').join(' ')
     return { text: `${did || c.OFF_NOTHING}${d.whole ? '' : ` ${c.DETACH_INCOMPLETE}`}${bound && !bound.adopted ? c.STOPPABLE_BY_NAME(bound.name) : ''}${bound && d.sidKept ? c.SID_KEPT(bound.name) : ''}${loose && !loose.ok && loose.name ? c.SID_KEPT(loose.name) : ''}${leadKept ? (wasConductor || savedConductor ? c.CONDUCTOR_KEPT : wasManager || savedManager ? c.MANAGER_KEPT : c.LEAD_KEPT) : ''}` }
   }
-  // No verb is left here; /callboard on is an unknown word (the usage line above).
-  return { text: c.HELP_USAGE }
 }
