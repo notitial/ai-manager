@@ -1712,7 +1712,16 @@ export const USAGE_FOOTNOTE = "5h/7d are the account's limits: sessions on one a
 // A live lead in reach (its presence file passed every check; the registry gives its name), with the repo it leads. The manager's and a conductor's view draw
 // one for each lead that no lane group already names, so a lead with no lanes is seen. A lead's own view ignores them, and `self` (its own session) gives its group row its figures.
 export type ConductorView = { name?: string; repos: string[] }
-export type LiveLead = { name: string; repo: string; sid?: string }
+// state: the registry's word for the lead (display only; the registry is a filter, never proof). since: for waiting, when the registry last moved its status.
+export type LeadState = 'busy' | 'idle' | 'waiting' | 'unknown'
+export type LiveLead = { name: string; repo: string; sid?: string; state?: LeadState; since?: number }
+// A lead's state from its registry entry: waiting needs a status of waiting and a reason; idle needs no reason; anything else the registry says is unknown.
+export function leadStateOf(e: RegEntry): { state: LeadState; since?: number } {
+  const at = typeof e.statusUpdatedAt === 'number' ? e.statusUpdatedAt : undefined
+  if (e.status === 'waiting' && (e.waitingFor ?? null) !== null) return { state: 'waiting', ...(at !== undefined ? { since: at } : {}) }
+  if (e.status === 'idle' && (e.waitingFor ?? null) === null) return { state: 'idle' }
+  return { state: e.status === 'busy' ? 'busy' : 'unknown' }
+}
 export function laneListText(lanes: Lane[], entries: RegEntry[], now: number, view: { level?: 'lead' | 'manager' | 'conductor'; name?: string; self?: string; conductors?: ConductorView[] | 'error'; leads?: LiveLead[]; usage?: Map<string, UsageReading> } = {}): string {
   const liveLeads = view.level === 'manager' || view.level === 'conductor' ? (view.leads ?? []) : []
   if (lanes.length === 0 && liveLeads.length === 0) return mdTable(['Lanes'], [[view.level === 'conductor' ? 'no lanes in its repos' : 'no lanes in this repo']]).join('\n')
@@ -1756,12 +1765,19 @@ export function laneListText(lanes: Lane[], entries: RegEntry[], now: number, vi
     if (r && r.windows.length > 0) withWindows++
     return usageCells(r, now)
   }
+  // A live lead's state beside its name: idle shows no minutes (the keepalive ping moves its status time every 50 minutes); waiting shows how long.
+  const leadStateText = (g: Group): string => {
+    const x = liveLeads.find((y) => y.repo === g.repo && y.name === g.lead)
+    if (x?.state === undefined || x.state === 'unknown') return ''
+    if (x.state !== 'waiting') return ` (${x.state})`
+    return typeof x.since === 'number' && x.since <= now ? ` (waiting ${Math.floor((now - x.since) / 60_000)}m)` : ' (waiting)'
+  }
   // The rows of one group, with `also`: the other conductors that list its repo. The lead's own session is the one its live-lead entry names, or this one in a lead's own view.
   const groupRows = (g: Group, also: string): string[][] => {
     const lead = g.lead === '' ? 'Any lead' : `${g.lead}${g.lanes.length === 0 || names.includes(g.lead) ? '' : ' (not live)'}`
     const leadLive = g.lead !== '' && (g.lanes.length === 0 || names.includes(g.lead))
     const leadSid = g.sid ?? liveLeads.find((x) => x.repo === g.repo && x.name === g.lead)?.sid ?? (view.level === 'lead' && g.lead === view.name ? view.self : undefined)
-    const head = [`**${mdEscape(folderName(g.repo))}${also} · ${lead}**`, ...(withFolder ? [''] : []), leadLive ? 'lead' : '', ...(leadLive ? figures(leadSid) : NO_USAGE), '']
+    const head = [`**${mdEscape(folderName(g.repo))}${also} · ${lead}**${leadStateText(g)}`, ...(withFolder ? [''] : []), leadLive ? 'lead' : '', ...(leadLive ? figures(leadSid) : NO_USAGE), '']
     return [
       head,
       ...g.lanes.map((l) => [
