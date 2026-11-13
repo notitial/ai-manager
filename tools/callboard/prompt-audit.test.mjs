@@ -305,30 +305,30 @@ test('c: --since keeps old transcripts out', () => {
 test('d: a floor row for the same tool, hash and floor context makes a later request an anomaly', () => {
   const fx = fixture()
   const C1 = 'c'.repeat(16)
-  const rows = [ON(), R('floor', BASE - 1000, { ...T, ctx: C1, code: 'merge' }), ...clean(uid(1), BASE, uid(101), { ctx: C1 })]
+  const rows = [ON(), R('floor', BASE - 1000, { ...T, ctx: C1, code: 'settings' }), ...clean(uid(1), BASE, uid(101), { ctx: C1 })]
   ledger(fx, rows)
   assert.deepEqual(rules(run(fx)), ['floor-row-then-asked'])
-  const other = [ON(), R('floor', BASE - 1000, { ...T, hash: H('b'), ctx: C1, code: 'merge' }), ...clean(uid(1), BASE, uid(101), { ctx: C1 })]
+  const other = [ON(), R('floor', BASE - 1000, { ...T, hash: H('b'), ctx: C1, code: 'settings' }), ...clean(uid(1), BASE, uid(101), { ctx: C1 })]
   ledger(fx, other)
   assert.deepEqual(run(fx).anomalies, [])
 })
-test('review r2: the same input asked under another branch or config (another floor context) is not an anomaly; rows with no context are a note', () => {
+test('review r2: the same input asked under another floor context is not an anomaly; rows with no context are a note', () => {
   const fx = fixture()
-  // A push floored on main, the identical call asked after a checkout of a feature branch.
-  const changed = [ON(), R('floor', BASE - 1000, { ...T, ctx: 'a'.repeat(16), code: 'protected-push' }), ...clean(uid(1), BASE, uid(101), { ctx: 'b'.repeat(16) })]
+  // A call floored in one context, the identical call asked in another.
+  const changed = [ON(), R('floor', BASE - 1000, { ...T, ctx: 'a'.repeat(16), code: 'settings' }), ...clean(uid(1), BASE, uid(101), { ctx: 'b'.repeat(16) })]
   ledger(fx, changed)
   let rep = run(fx)
   assert.deepEqual(rep.anomalies, [])
   assert.deepEqual(rep.notes.filter((n) => /floor context/.test(n)), [])
   // Rows from before the context was recorded cannot be compared: a note, not an anomaly.
-  const old = [ON(), R('floor', BASE - 1000, { ...T, code: 'protected-push' }), ...clean()]
+  const old = [ON(), R('floor', BASE - 1000, { ...T, code: 'settings' }), ...clean()]
   ledger(fx, old)
   rep = run(fx)
   assert.deepEqual(rep.anomalies, [])
   assert.ok(rep.notes.some((n) => /1 request\(s\) share a tool and input hash with a floor row that recorded no floor context/.test(n)), rep.notes.join('|'))
 })
 
-test('d: a request that looks like a floor item by its tool or path is an anomaly', () => {
+test('d: a request that looks like a floor item by its path is an anomaly; a merge or a machine-ops call is not one', () => {
   const fx = fixture()
   const merge = clean(uid(1), BASE, uid(101), { tool: 'mcp__github__merge_pull_request', pattern: 'mcp__github__merge_pull_request x/y #3', hash: H('c') })
   const branch = clean(uid(2), BASE + 1000, uid(102), { tool: 'mcp__github__update_pull_request_branch', pattern: 'mcp__github__update_pull_request_branch x/y #3', hash: H('d') })
@@ -336,9 +336,10 @@ test('d: a request that looks like a floor item by its tool or path is an anomal
   const ok = clean(uid(4), BASE + 3000, uid(104), { tool: 'Edit', pattern: 'Edit src/app.ts', hash: H('f') })
   ledger(fx, [ON(), ...merge, ...branch, ...settings, ...ok])
   const rep = run(fx)
-  assert.deepEqual(rules(rep), ['floor-shape-asked', 'floor-shape-asked', 'floor-shape-asked'])
-  assert.deepEqual(rep.anomalies.map((a) => a.id).sort(), [uid(1), uid(2), uid(3)])
-  assert.equal(floorShape('mcp__machine-ops__reboot', 'x'), 'tool mcp__machine-ops__reboot')
+  assert.deepEqual(rules(rep), ['floor-shape-asked'])
+  assert.deepEqual(rep.anomalies.map((a) => a.id), [uid(3)])
+  assert.equal(floorShape('mcp__machine-ops__reboot', 'x'), undefined)
+  assert.equal(floorShape('mcp__github__merge_pull_request', 'x'), undefined)
   assert.equal(floorShape('Bash', 'git'), undefined)
 })
 
