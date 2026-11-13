@@ -107,7 +107,7 @@ export async function lockStore(key: string): Promise<() => void> {
 
 // One store write, from any of the four writers: the in-process queue, then the mkdir lock between processes, then read, compute and write only,
 // then a re-read: a writer whose change is not in the file after its own write says so (wrote: the file was replaced, so that writer may have to undo it). `pre` runs after the queue and before the lock (it may be slow).
-type Edit = { no: string; why?: string } | { skip: true } | { text: string; landed: (s: c.Store | undefined) => boolean }
+export type Edit = { no: string; why?: string } | { skip: true } | { text: string; landed: (s: c.Store | undefined) => boolean }
 export async function editStore($: any, key: string, fn: (cur: { state: 'absent' | 'bad' | 'ok'; text: string }, ctx: any) => Promise<Edit>, pre?: () => Promise<any>): Promise<{ no: string; why?: string; wrote?: true } | { text: string }> {
   const p = await where($)
   if (!p) return { no: 'no-paths' }
@@ -136,6 +136,16 @@ export async function editStore($: any, key: string, fn: (cur: { state: 'absent'
   } finally {
     release()
   }
+}
+
+// editStore for a writer that needs the store as it is: a file that is absent, untrusted or unparsable is refused (store-unreadable, or the parser's reason), and fn gets the parsed store.
+export function editLanes($: any, key: string, fn: (store: c.Store) => Promise<Edit>, pre?: () => Promise<any>) {
+  return editStore($, key, async (cur) => {
+    if (cur.state !== 'ok') return { no: 'store-unreadable' }
+    const parsed = c.parseStore(cur.text)
+    if (!parsed.ok) return { no: parsed.reason }
+    return fn(parsed.store)
+  }, pre)
 }
 
 // The lock is a folder made with mkdir (atomic) holding an owner file {pid, procStart, nonce} of the process that made it; the nonce tells one holding from
@@ -356,6 +366,14 @@ export async function idleCheck($: any, sid: string, reg: Reg = () => registryEn
   return undefined
 }
 
+// A new 0600 temp file, which must be a private file of ours (cueFileOk): its facts, or undefined when it is not (it is removed then).
+async function privateTmp($: any, tmp: string, uid: number) {
+  await run($, [INSTALL, '-m', '600', '/dev/null', tmp])
+  const f = await facts($, tmp)
+  if (f && !c.cueFileOk(f, uid)) return f
+  await run($, [RM, '-f', '--', tmp])
+}
+
 // A 0600 temp file in a 0700 folder under the callboard root, then one rename into place.
 // It returns the temp file's inode, which the rename keeps: the target can claim a cue within the same tick, so a stat after the write may find nothing.
 export async function writeIn($: any, folder: string, file: string, text: string): Promise<{ err: string } | { ino: number }> {
@@ -365,12 +383,8 @@ export async function writeIn($: any, folder: string, file: string, text: string
   await run($, [MKDIR, '-p', '-m', '700', p.root, dir])
   if (!(await dirOk($, p.root, p.uid)) || !(await dirOk($, dir, p.uid))) return { err: 'unsafe-dir' }
   const tmp = `${dir}/.${file}.${await $.clock.now()}.${++mem.seq}.tmp`
-  await run($, [INSTALL, '-m', '600', '/dev/null', tmp])
-  const f = await facts($, tmp)
-  if (!f || c.cueFileOk(f, p.uid)) {
-    await run($, [RM, '-f', '--', tmp])
-    return { err: 'tmp-unsafe' }
-  }
+  const f = await privateTmp($, tmp, p.uid)
+  if (!f) return { err: 'tmp-unsafe' }
   const w = await run($, [TEE, '--', tmp], text)
   const m = w.exitCode === 0 ? await run($, [MV, '-f', '--', tmp, `${dir}/${file}`]) : w
   if (m.exitCode !== 0) {
@@ -406,12 +420,7 @@ export async function writeBrief($: any, uid: number, brief: string, head: strin
   const after = await dirs()
   if (after !== 'ok') return after === 'bad' ? 'archive-unsafe' : 'brief-write'
   const tmp = `${dir}/.BRIEF.md.${await $.clock.now()}.${++mem.seq}.tmp`
-  await run($, [INSTALL, '-m', '600', '/dev/null', tmp])
-  const f = await facts($, tmp)
-  if (!f || c.cueFileOk(f, uid)) {
-    await run($, [RM, '-f', '--', tmp])
-    return 'brief-write'
-  }
+  if (!(await privateTmp($, tmp, uid))) return 'brief-write'
   const w = await run($, [TEE, '--', tmp], text)
   const old = w.exitCode === 0 ? await statR($, brief) : 'error'
   let keep = old === 'error' ? 'brief-write' : old !== 'absent' && (old.kind !== 'file' || old.uid !== uid || old.nlink !== 1) ? 'brief-exists' : undefined

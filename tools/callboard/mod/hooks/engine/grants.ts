@@ -68,7 +68,7 @@ import {
   toast,
   real,
   readSmallR,
-  PS,
+  psOne,
   statR,
   dirOk,
   facts,
@@ -90,7 +90,7 @@ import {
   storePath,
   idleCheck,
   loadLanes,
-  editStore,
+  editLanes,
   registryOf,
   regOnce,
   lockStore,
@@ -556,14 +556,6 @@ async function presenceRead($: any, p: { uid: number; root: string }, live: RegR
   if (args === 'error') return 'error'
   if (c.processRefusal(args === 'gone' ? undefined : args.out, lf.pid, undefined) !== undefined) return 'no'
   return lf
-}
-// psStart and psArgs with the failure told apart: exit 0 is the answer; exit 1 with no output is ps's "no such process" (gone); any other
-// result is a ps that failed. A ps that throws still throws, as before.
-export async function psOne($: any, pid: unknown, field: 'lstart=' | 'args='): Promise<{ out: string } | 'gone' | 'error'> {
-  if (!Number.isInteger(pid) || (pid as number) <= 1) return 'gone'
-  const r = await run($, [PS, '-o', field, '-p', String(pid)], undefined, field === 'lstart=' ? { TZ: 'UTC', LC_ALL: 'C' } : { LC_ALL: 'C' })
-  if (r.exitCode === 0) return { out: r.stdout }
-  return r.exitCode === 1 && `${r.stdout ?? ''}${r.stderr ?? ''}`.trim() === '' ? 'gone' : 'error'
 }
 // The fresh presence file names, cut to the fresh ones before the cap (as leadsFor). strict: a list that throws throws, not "none".
 async function freshPresence($: any, p: { root: string }, strict = false): Promise<string[]> {
@@ -1136,17 +1128,14 @@ export async function leadRenameTick($: any, sid: string) {
   if (typeof lanes === 'string') return
   const mine = lanes.filter((l) => l.src !== undefined && l.repo === g.pins[0] && c.leadOwns(l, sid) && l.leadName === old)
   if (mine.length > 0) {
-    const r = await ownWrite($, sid, () => editStore($, mine[0].src!, async (file) => {
-      const parsed = file.state === 'ok' ? c.parseStore(file.text) : undefined
-      if (!parsed) return { no: 'store-unreadable' }
-      if (!parsed.ok) return { no: parsed.reason }
+    const r = await ownWrite($, sid, () => editLanes($, mine[0].src!, async (store) => {
       const rows = await registryEntries($)
       if (!rows) return { no: 'registry-unreadable' }
       // The last checks before the write: the name is still the one seen, and this is still the same grant.
       if (c.leadNameOf(rows.map((x) => x.j), sid) !== cur || grantOf(sid)?.level !== 'lead' || epochOf(sid) !== epoch) return { no: 'changed' }
       const own = (l: c.Store['lanes'][number]) => c.leadOwns(l, sid) && l.leadName === old
-      if (!parsed.store.lanes.some(own)) return { skip: true }
-      const t = c.storeText({ ...parsed.store, lanes: parsed.store.lanes.map((l) => (own(l) ? { ...l, leadName: cur } : l)) })
+      if (!store.lanes.some(own)) return { skip: true }
+      const t = c.storeText({ ...store, lanes: store.lanes.map((l) => (own(l) ? { ...l, leadName: cur } : l)) })
       if ('no' in t) return t
       return { text: t.text, landed: (s) => !!s && !s.lanes.some(own) }
     })).catch(() => ({ no: 'store-busy' }))

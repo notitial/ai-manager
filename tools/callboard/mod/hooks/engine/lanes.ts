@@ -56,10 +56,12 @@ import {
   psArgs,
   ask,
   KILL,
+  psOne,
 } from './base.ts'
 import {
   registryEntries,
   editStore,
+  editLanes,
   loadLanes,
   registryOf,
   liveNames,
@@ -73,7 +75,7 @@ import {
   writeIn,
   readAnswer,
 } from './store.ts'
-import type { Reg, RegRow, Answer } from './store.ts'
+import type { Reg, RegRow, Answer, Edit } from './store.ts'
 import {
   leadsFor,
   presenceTouch,
@@ -94,7 +96,6 @@ import {
   leadsInReach,
   reservedGet,
   findLead,
-  psOne,
 } from './grants.ts'
 import { briefOnce, epochOf } from './levels.ts'
 import { dropRequest, doCompact, isEligible, leadNudge, busyAgents, backgroundShells, counts, bump, interactive, saveHint } from './compaction.ts'
@@ -280,14 +281,11 @@ export async function laneLive($: any, live: RegRow[], l: { name: string; sid?: 
 // No stored field is added. { ok } when the record is gone, otherwise the refusal code.
 type RemoveMode = { kind: 'idle'; sid: string | undefined; parked: boolean; seen: c.Lane; held: () => boolean } | { kind: 'stopped'; victim: string }
 async function removeRecord($: any, e: unknown, me: string, key: string, name: string, mode: RemoveMode): Promise<{ ok: true } | { no: string; why?: string }> {
-  const w = await ownWrite($, me, () => editStore(
+  const w = await ownWrite($, me, () => editLanes(
     $,
     key,
-    async (cur) => {
-      const parsed = cur.state === 'ok' ? c.parseStore(cur.text) : undefined
-      if (!parsed) return { no: 'store-unreadable' }
-      if (!parsed.ok) return { no: parsed.reason }
-      const rec = parsed.store.lanes.find((l) => l.name === name)
+    async (store) => {
+      const rec = store.lanes.find((l) => l.name === name)
       if (!rec) return { no: 'unknown-lane' }
       if (mode.kind === 'stopped') {
         if (rec.sid !== undefined && rec.sid !== mode.victim) return { no: 'changed' }
@@ -302,8 +300,8 @@ async function removeRecord($: any, e: unknown, me: string, key: string, name: s
         // The last check before the write.
         if (!mode.held()) return { no: 'grant-changed', why: c.reasonWhy('grant-changed') }
       }
-      const left = parsed.store.lanes.filter((l) => l.name !== name).map(c.storeLaneJson)
-      return { text: JSON.stringify({ repo: parsed.store.repo, lanes: left, creates: parsed.store.creates.slice(-12) }), landed: (st) => !!st && !st.lanes.some((l) => l.name === name) }
+      const left = store.lanes.filter((l) => l.name !== name).map(c.storeLaneJson)
+      return { text: JSON.stringify({ repo: store.repo, lanes: left, creates: store.creates.slice(-12) }), landed: (st) => !!st && !st.lanes.some((l) => l.name === name) }
     },
     async () => {
       if (mode.kind === 'stopped') return undefined
@@ -349,15 +347,12 @@ async function stopNoSession($: any, e: unknown, sid: string, verb: 'retire' | '
 // The pre re-runs leadPrep and checks only that the lane still comes from this store, as the removal of a record does; never its name-in-use check, since the stopped
 // session may still carry the name for a moment after the signal. undefined: written (or already so); otherwise the refusal code.
 async function parkWrite($: any, e: unknown, me: string, key: string, name: string, change: (l: c.Store['lanes'][number]) => c.Store['lanes'][number], ok: (l: c.Store['lanes'][number]) => boolean): Promise<string | undefined> {
-  const r = await ownWrite($, me, () => editStore($, key, async (cur) => {
-    if (cur.state !== 'ok') return { no: 'store-unreadable' }
-    const parsed = c.parseStore(cur.text)
-    if (!parsed.ok) return { no: parsed.reason }
-    const rec = parsed.store.lanes.find((l) => l.name === name)
+  const r = await ownWrite($, me, () => editLanes($, key, async (store) => {
+    const rec = store.lanes.find((l) => l.name === name)
     if (!rec) return { no: 'unknown-lane' }
     if (!ok(rec)) return { no: 'changed' }
     const next = change(rec)
-    const t = c.storeText({ ...parsed.store, lanes: parsed.store.lanes.map((l) => (l === rec ? next : l)) })
+    const t = c.storeText({ ...store, lanes: store.lanes.map((l) => (l === rec ? next : l)) })
     if ('no' in t) return t
     return { text: t.text, landed: (s) => !!s?.lanes.some((l) => l.name === name && l.sid === next.sid && l.parked === next.parked) }
   }, async () => {
@@ -368,17 +363,26 @@ async function parkWrite($: any, e: unknown, me: string, key: string, name: stri
   return 'no' in r ? r.no : undefined
 }
 
+// The edit that clears the sid (and the parked mark) of every record `hit` holds; nothing to write when none does. `gone` is what the store must show afterwards: no record that `hit` named (default: `hit` itself).
+function clearSid(hit: (l: c.Lane) => boolean | Promise<boolean>, gone: (l: c.Lane) => boolean = hit as (l: c.Lane) => boolean) {
+  return async (store: c.Store): Promise<Edit> => {
+    let any = false
+    const lanes: c.Store['lanes'] = []
+    for (const l of store.lanes) {
+      if (await hit(l)) {
+        any = true
+        lanes.push({ ...l, sid: undefined, parked: undefined })
+      } else lanes.push(l)
+    }
+    if (!any) return { skip: true }
+    const t = c.storeText({ ...store, lanes })
+    if ('no' in t) return t
+    return { text: t.text, landed: (s) => !!s && !s.lanes.some(gone) }
+  }
+}
 // After a retire or a force stop whose signal went out: the record of that name stops naming the stopped session (and is no longer parked). A failure is logged only.
 async function sidClearAfterStop($: any, me: string, key: string, name: string, victim: string) {
-  const r = await ownWrite($, me, () => editStore($, key, async (cur) => {
-    if (cur.state !== 'ok') return { no: 'store-unreadable' }
-    const parsed = c.parseStore(cur.text)
-    if (!parsed.ok) return { no: parsed.reason }
-    if (!parsed.store.lanes.some((l) => l.name === name && l.sid === victim)) return { skip: true }
-    const t = c.storeText({ ...parsed.store, lanes: parsed.store.lanes.map((l) => (l.name === name && l.sid === victim ? { ...l, sid: undefined, parked: undefined } : l)) })
-    if ('no' in t) return t
-    return { text: t.text, landed: (s) => !!s && !s.lanes.some((l) => l.name === name && l.sid === victim) }
-  })).catch(() => ({ no: 'throw' }))
+  const r = await ownWrite($, me, () => editLanes($, key, clearSid((l) => l.name === name && l.sid === victim))).catch(() => ({ no: 'throw' }))
   if ('no' in r) await log($, me, 'sid-uncleared', r.no)
   else if (r.text !== '') await log($, me, 'sid-cleared', name)
 }
@@ -771,14 +775,11 @@ export async function sidSync($: any, sid: string, b: Bound & { name: string }) 
     const now = (await getLane($)).value as Bound | null | undefined
     return !!now && now.name === b.name && now.at === b.at && now.rec === b.rec ? undefined : { no: 'changed' }
   }
-  const r = await editStore($, l.src, async (cur) => {
-    if (cur.state !== 'ok') return { no: 'store-unreadable' }
-    const parsed = c.parseStore(cur.text)
-    if (!parsed.ok) return { no: parsed.reason }
+  const r = await editLanes($, l.src, async (store) => {
     let hit = false
     let done = false
     const lanes2: c.Store['lanes'] = []
-    for (const x of parsed.store.lanes) {
+    for (const x of store.lanes) {
       if (x.name === b.name && (await recMatch($, b.rec, x))) {
         hit = true
         done = x.sid === sid && x.parked === undefined
@@ -787,7 +788,7 @@ export async function sidSync($: any, sid: string, b: Bound & { name: string }) 
     }
     if (!hit) return { no: 'record-changed' }
     if (done) return { skip: true }
-    const t = c.storeText({ ...parsed.store, lanes: lanes2 })
+    const t = c.storeText({ ...store, lanes: lanes2 })
     if ('no' in t) return t
     return { text: t.text, landed: (s) => !!s?.lanes.some((x) => x.name === b.name && x.sid === sid && x.parked === undefined) }
   }, same)
@@ -1042,23 +1043,8 @@ async function sidClear($: any, sid: string, b: Bound): Promise<boolean> {
   // No record of that name and hash: the lane was removed or changed. Only a record that still names this session could bring it back.
   if (!rec) return !lanes.some((l) => l.sid === sid)
   const key = rec.src!
-  const r = await editStore($, key, async (cur) => {
-    if (cur.state !== 'ok') return { no: 'store-unreadable' }
-    const parsed = c.parseStore(cur.text)
-    if (!parsed.ok) return { no: parsed.reason }
-    let hit = false
-    const lanes2: c.Store['lanes'] = []
-    for (const l of parsed.store.lanes) {
-      if (l.name === b.name && l.sid === sid && (await recMatch($, b.rec, l))) {
-        hit = true
-        lanes2.push({ ...l, sid: undefined, parked: undefined })
-      } else lanes2.push(l)
-    }
-    if (!hit) return { skip: true }
-    const t = c.storeText({ ...parsed.store, lanes: lanes2 })
-    if ('no' in t) return t
-    return { text: t.text, landed: (s) => !!s && !s.lanes.some((l) => l.name === b.name && l.sid === sid) }
-  })
+  const named = (l: c.Lane) => l.name === b.name && l.sid === sid
+  const r = await editLanes($, key, clearSid(async (l) => named(l) && (await recMatch($, b.rec, l)), named))
   if ('no' in r) return false
   if (r.text !== '') await log($, sid, 'sid-cleared')
   return true
@@ -1074,15 +1060,7 @@ export async function sidClearAll($: any, sid: string): Promise<{ ok: boolean; n
   if (mine.length === 0) return { ok: true }
   let ok = true
   for (const key of new Set(mine.map((l) => l.src!))) {
-    const r = await editStore($, key, async (cur) => {
-      if (cur.state !== 'ok') return { no: 'store-unreadable' }
-      const parsed = c.parseStore(cur.text)
-      if (!parsed.ok) return { no: parsed.reason }
-      if (!parsed.store.lanes.some((l) => l.sid === sid)) return { skip: true }
-      const t = c.storeText({ ...parsed.store, lanes: parsed.store.lanes.map((l) => (l.sid === sid ? { ...l, sid: undefined, parked: undefined } : l)) })
-      if ('no' in t) return t
-      return { text: t.text, landed: (st) => !!st && !st.lanes.some((l) => l.sid === sid) }
-    })
+    const r = await editLanes($, key, clearSid((l) => l.sid === sid))
     if ('no' in r) ok = false
     else if (r.text !== '') await log($, sid, 'sid-cleared')
   }
@@ -1225,6 +1203,35 @@ export async function laneCreateCall($: any, e: any, next: any) {
   })
 }
 
+// The exchange with the panels extension through <root>/open (lane_open, lane_unpark): the folder must be private, an answer left over goes first, the request is
+// written, then OPEN_POLL_MAX polls of OPEN_POLL_MS each read the answer. kind names the request file (<name>.open or <name>.reopen), its log line and its refusal codes.
+// { sid }: the window answered ok; otherwise the deny to return. A request no window answered is taken back.
+async function openExchange($: any, sid: string, name: string, kind: 'open' | 'reopen', text: string, timeoutWhy: string, no: (reason: string, why: string) => Promise<{ deny: string }>): Promise<{ deny: string } | { sid: string }> {
+  const table = kind === 'open' ? c.OPEN_TEXT_BY_CODE : c.REOPEN_TEXT_BY_CODE
+  const p = await where($)
+  if (!p) return no('no-paths', 'no-paths')
+  const result = `${p.root}/open/${name}.result`
+  const request = `${p.root}/open/${name}.${kind}`
+  if (!(await resultDirOk($, p, 'open'))) return no('unsafe-open-dir', 'unsafe-open-dir: ~/.claude/callboard/open is not a private folder of yours. Ask the person to check it.')
+  const openDeadline = (await $.clock.now()) + c.OPEN_POLL_MS * c.OPEN_POLL_MAX
+  await run($, [RM, '-f', '--', result])
+  const w = await writeIn($, 'open', `${name}.${kind}`, text)
+  if ('err' in w) return no(w.err, w.err)
+  await log($, sid, `${kind}-requested`, name)
+  for (let i = 0; i < c.OPEN_POLL_MAX && (await $.clock.now()) < openDeadline; i++) {
+    if (!(await pause($, c.OPEN_POLL_MS))) break
+    const a = await readAnswer($, result, p.uid, Math.max(c.OPEN_POLL_MS, Math.min(5000, openDeadline - (await $.clock.now()))))
+    if (a.state === 'absent') continue
+    if (a.state === 'bad') return no('result-file', 'result-file')
+    await run($, [RM, '-f', '--', result])
+    const r = c.parseOpenResult(a.text, table)
+    if (!r.ok) return no(`${kind}-${r.reason}`, r.reason === 'bad-result' ? 'bad-result: the window answer was not valid.' : `${r.reason}: ${table[r.reason]}`)
+    return { sid: r.sid }
+  }
+  await run($, [RM, '-f', '--', request])
+  return no(`${kind}-timeout`, timeoutWhy)
+}
+
 export async function laneOpenCall($: any, e: any, next: any) {
   return leadTool($, e, 'open', async (sid, no) => {
     const prep = await leadPrep($, e, sid)
@@ -1232,32 +1239,10 @@ export async function laneOpenCall($: any, e: any, next: any) {
     if (prep.lane.adopted) return no('adopted-record', c.reasonWhy('adopted-record'))
     if (prep.lane.parked !== undefined) return no('parked', c.reasonWhy('parked'))
     if (prep.entries.some((x) => x.name === prep.lane.name)) return no('name-in-use', 'a live session already carries that lane name.')
-    const p = await where($)
-    if (!p) return no('no-paths', 'no-paths')
-    const result = `${p.root}/open/${prep.lane.name}.result`
-    const request = `${p.root}/open/${prep.lane.name}.open`
-    if (!(await resultDirOk($, p, 'open'))) return no('unsafe-open-dir', 'unsafe-open-dir: ~/.claude/callboard/open is not a private folder of yours. Ask the person to check it.')
-    const openDeadline = (await $.clock.now()) + c.OPEN_POLL_MS * c.OPEN_POLL_MAX
-    await run($, [RM, '-f', '--', result])
-    const w = await writeIn($, 'open', `${prep.lane.name}.open`, c.OPEN_TEXT)
-    if ('err' in w) return no(w.err, w.err)
-    await log($, sid, 'open-requested', prep.lane.name)
-    for (let i = 0; i < c.OPEN_POLL_MAX && (await $.clock.now()) < openDeadline; i++) {
-      if (!(await pause($, c.OPEN_POLL_MS))) break
-      const a = await readAnswer($, result, p.uid, Math.max(c.OPEN_POLL_MS, Math.min(5000, openDeadline - (await $.clock.now()))))
-      if (a.state === 'absent') continue
-      if (a.state === 'bad') return no('result-file', 'result-file')
-      await run($, [RM, '-f', '--', result])
-      const r = c.parseOpenResult(a.text)
-      if (!r.ok) {
-        const why = r.reason === 'bad-result' ? 'bad-result: the window answer was not valid.' : `${r.reason}: ${c.OPEN_TEXT_BY_CODE[r.reason]}`
-        return no(`open-${r.reason}`, why)
-      }
-      await log($, sid, 'opened', prep.lane.name)
-      return { result: `lane ${prep.lane.name}: panel opened as session ${r.sid}. Next: lane_rename with sid ${r.sid}, then lane_start.` }
-    }
-    await run($, [RM, '-f', '--', request])
-    return no('open-timeout', 'no window answered in time. A VS Code window with the lane folder as its first workspace folder must run the callboard panels extension. A panel may still appear: check for an unnamed session in that folder first.')
+    const r = await openExchange($, sid, prep.lane.name, 'open', c.OPEN_TEXT, 'no window answered in time. A VS Code window with the lane folder as its first workspace folder must run the callboard panels extension. A panel may still appear: check for an unnamed session in that folder first.', no)
+    if ('deny' in r) return r
+    await log($, sid, 'opened', prep.lane.name)
+    return { result: `lane ${prep.lane.name}: panel opened as session ${r.sid}. Next: lane_rename with sid ${r.sid}, then lane_start.` }
   })
 }
 
@@ -1302,32 +1287,13 @@ export async function laneUnparkCall($: any, e: any, next: any) {
     }
     if (live.length > 0) return no('session-live', c.reasonWhy('session-live'))
     if (prep.entries.some((x) => x.name === name && x.sessionId !== want)) return no('name-in-use', c.reasonWhy('name-in-use'))
-    const p = await where($)
-    if (!p) return no('no-paths', 'no-paths')
-    if (!(await resultDirOk($, p, 'open'))) return no('unsafe-open-dir', 'unsafe-open-dir: ~/.claude/callboard/open is not a private folder of yours. Ask the person to check it.')
-    const result = `${p.root}/open/${name}.result`
-    const request = `${p.root}/open/${name}.reopen`
-    const openDeadline = (await $.clock.now()) + c.OPEN_POLL_MS * c.OPEN_POLL_MAX
-    await run($, [RM, '-f', '--', result])
-    const w = await writeIn($, 'open', `${name}.reopen`, `${want}\n`)
-    if ('err' in w) return no(w.err, w.err)
-    await log($, sid, 'reopen-requested', name)
-    for (let i = 0; i < c.OPEN_POLL_MAX && (await $.clock.now()) < openDeadline; i++) {
-      if (!(await pause($, c.OPEN_POLL_MS))) break
-      const a = await readAnswer($, result, p.uid, Math.max(c.OPEN_POLL_MS, Math.min(5000, openDeadline - (await $.clock.now()))))
-      if (a.state === 'absent') continue
-      if (a.state === 'bad') return no('result-file', 'result-file')
-      await run($, [RM, '-f', '--', result])
-      const r = c.parseOpenResult(a.text, c.REOPEN_TEXT_BY_CODE)
-      if (!r.ok) return no(`reopen-${r.reason}`, r.reason === 'bad-result' ? 'bad-result: the window answer was not valid.' : `${r.reason}: ${c.REOPEN_TEXT_BY_CODE[r.reason]}`)
-      if (r.sid !== want) return no('reopen-bad-result', c.reasonWhy('reopen-bad-result'))
-      await unmark()
-      await log($, sid, 'reopened', name)
-      toast($, `Lane ${name} reopened`)
-      return { result: c.reopenedText(name, want) }
-    }
-    await run($, [RM, '-f', '--', request])
-    return no('reopen-timeout', c.reasonWhy('reopen-timeout'))
+    const r = await openExchange($, sid, name, 'reopen', `${want}\n`, c.reasonWhy('reopen-timeout'), no)
+    if ('deny' in r) return r
+    if (r.sid !== want) return no('reopen-bad-result', c.reasonWhy('reopen-bad-result'))
+    await unmark()
+    await log($, sid, 'reopened', name)
+    toast($, `Lane ${name} reopened`)
+    return { result: c.reopenedText(name, want) }
   })
 }
 
