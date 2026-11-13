@@ -6,12 +6,9 @@ import * as pr from './prompts.ts'
 export const mem = {
   isTicking: false,
   timerOn: false,
-  // own: the registry folder that holds this session's own row, `sessions` unless CLAUDE_CONFIG_DIR names another, undefined when it names a bad one.
-  paths: undefined as { uid: number; root: string; sessions: string; own: string | undefined } | undefined,
+  paths: undefined as { uid: number; root: string; sessions: string } | undefined,
   seq: 0,
   submits: 0,
-  // The rejection is logged by the first own-row lookup that has a session id, once per load of the mod (the flag is set in the same step as the check).
-  configDirLogged: false,
   presenceQ: Promise.resolve() as Promise<unknown>,
   // Presence checks that could not be made, counted: an apply that spans one reads the count before and after its lookups (promptApply).
   presenceErrors: 0,

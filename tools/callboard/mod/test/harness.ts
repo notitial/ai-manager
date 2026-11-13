@@ -80,12 +80,9 @@ export const condStat = new Map<string, string>()
 export const realMap = new Map<string, string>()
 export const headArgs: string[] = []
 export const SESSIONS = '/Users/x/.claude/sessions'
-// The registry of a session that runs under CLAUDE_CONFIG_DIR (its own row lives there), the environment the mod reads, and the stat the folder answers.
-export const CONFIG_ROOT = '/Users/x/.claude-conductor/config'
-export const OWNDIR = `${CONFIG_ROOT}/sessions`
-// The registry folder a path sits in, with the file name: the default registry or the config-root one.
+// The registry folder a path sits in, with the file name.
 const regDirOf = (path: string): { name: string; files: Record<string, string> } | undefined =>
-  path.startsWith(`${SESSIONS}/`) ? { name: path.slice(SESSIONS.length + 1), files: regFiles() } : path.startsWith(`${OWNDIR}/`) ? { name: path.slice(OWNDIR.length + 1), files: h.ownSessions } : undefined
+  path.startsWith(`${SESSIONS}/`) ? { name: path.slice(SESSIONS.length + 1), files: regFiles() } : undefined
 export const T0 = 1_700_000_000_000
 // ADR 0004 (prompt answering): a fake of ~/.claude/callboard/prompts, files by path, answering the argv shapes the hook and the ledger use.
 export const PROMPTS_DIR = '/Users/x/.claude/callboard/prompts'
@@ -266,11 +263,6 @@ export const h = {
   briefTmpStat: undefined,
   condWriteHook: undefined,
   storeStatOverride: undefined,
-  envVars: {} as Record<string, string>,
-  ownSessions: {} as Record<string, string>,
-  ownDirStat: undefined,
-  // What $.env.get answers instead of envVars (a throw, null, a number), for the cases the real engine should never produce.
-  envHook: undefined,
   uuidN: 0,
   // The entries of ~/.claude/hooks (links into the toolkit's checkout, by realMap).
   hooksList: [] as string[],
@@ -421,8 +413,6 @@ function resetClock() {
 function resetSession() {
   seen.compacted = false
   h.turnsNow = 0
-  h.envVars = {}
-  h.envHook = undefined
   h.composeStale = false
   h.appendRows = []
   h.appendDeny = false
@@ -457,8 +447,6 @@ function resetSession() {
 // The session registry, the process table and its calls.
 function resetRegistry() {
   h.sessionsUnsafe = false
-  h.ownSessions = {}
-  h.ownDirStat = undefined
   h.psOut = 'Tue Oct 27 20:37:50 2026\n'
   h.psTable = PS_TABLE
   h.psTableFails = false
@@ -797,7 +785,6 @@ export function engine(on0: any, argvSeen: string[][], stdins: string[] = [], cl
       return { value: h.callerRoot ?? h.callerCwd }
     })
   on('session.model', () => ({ value: h.modelNow }))
-  on('env.get', (_: any, e: any) => ({ value: h.envHook ? h.envHook(e.name) : h.envVars[e.name] }))
   on('fs.read', (_: any, e: any) => {
     if (e.path === h.reportAt && h.reportFile) return { value: h.reportFile.text }
     if (e.path === OPEN_RESULT && h.openResult !== undefined) return { value: h.openResult }
@@ -810,7 +797,7 @@ export function engine(on0: any, argvSeen: string[][], stdins: string[] = [], cl
     if (e.path === LANESDIR && h.lanesListHook) await h.lanesListHook()
     return listed_(e)
   })
-  const listed_ = (e: any) => ({ value: e.path === '/Users/x/.claude/hooks' ? h.hooksList.map((name) => ({ name, kind: 'file', size: 1, mtimeMs: 0, isLink: true })) : isPromptPath(e.path) ? promptList(e.path) : e.path === `${ROOT}/leads` ? [...leadFiles.entries()].map(([k, f]) => ({ name: k.slice(ROOT.length + 7), kind: 'file', size: 1, mtimeMs: (f.mtimeSec ?? Math.floor(h.nowMs / 1000)) * 1000, isLink: false })) : e.path === `${ROOT}/result` ? h.resultList : e.path === `${ROOT}/cue` ? h.cueList : e.path === `${ROOT}/log` ? h.logList : e.path === LANESDIR ? [...storeFiles.keys()].map((k) => ({ name: k.slice(LANESDIR.length + 1), kind: 'file', size: 1, mtimeMs: 0, isLink: false })) : e.path === SESSIONS ? Object.keys(regFiles()).map((name) => ({ name, kind: 'file', size: 1, mtimeMs: 0, isLink: false })) : e.path === OWNDIR ? Object.keys(h.ownSessions).map((name) => ({ name, kind: 'file', size: 1, mtimeMs: 0, isLink: false })) : [] })
+  const listed_ = (e: any) => ({ value: e.path === '/Users/x/.claude/hooks' ? h.hooksList.map((name) => ({ name, kind: 'file', size: 1, mtimeMs: 0, isLink: true })) : isPromptPath(e.path) ? promptList(e.path) : e.path === `${ROOT}/leads` ? [...leadFiles.entries()].map(([k, f]) => ({ name: k.slice(ROOT.length + 7), kind: 'file', size: 1, mtimeMs: (f.mtimeSec ?? Math.floor(h.nowMs / 1000)) * 1000, isLink: false })) : e.path === `${ROOT}/result` ? h.resultList : e.path === `${ROOT}/cue` ? h.cueList : e.path === `${ROOT}/log` ? h.logList : e.path === LANESDIR ? [...storeFiles.keys()].map((k) => ({ name: k.slice(LANESDIR.length + 1), kind: 'file', size: 1, mtimeMs: 0, isLink: false })) : e.path === SESSIONS ? Object.keys(regFiles()).map((name) => ({ name, kind: 'file', size: 1, mtimeMs: 0, isLink: false })) : [] })
   on('process.run', function procRun(_: any, e: any): any {
     if (over()) return { value: { exitCode: 1, stdout: '', stderr: 'test over', isStdoutTruncated: false, isStderrTruncated: false } }
     argvSeen.push([...e.argv])
@@ -1115,7 +1102,7 @@ export function engine(on0: any, argvSeen: string[][], stdins: string[] = [], cl
       if (h.psStartsFails === 'exit') return ok('', 1)
       if (h.psStartsOut !== undefined) return ok(h.psStartsOut)
       const rows = ['    1 Thu Jan  1 00:00:00 1970']
-      for (const [n, t] of Object.entries({ ...regFiles(), ...h.ownSessions })) {
+      for (const [n, t] of Object.entries(regFiles())) {
         const pid = n.slice(0, -5)
         if (!/^\d+$/.test(pid) || psStartsGone.has(pid)) continue
         let at: unknown
@@ -1183,7 +1170,6 @@ export function engine(on0: any, argvSeen: string[][], stdins: string[] = [], cl
     if (a[0] === '/usr/bin/stat') {
       const path = a[a.length - 1]
       if (path === SESSIONS && !h.sessionsUnsafe) return ok('501 700 2 Directory 13 64 1700000000\n')
-      if (path === OWNDIR) return h.ownDirStat !== undefined ? ok(h.ownDirStat) : ok('501 700 2 Directory 14 64 1700000000\n')
       if (path.endsWith('/callboard') || path.endsWith('/lanes') || path.endsWith('/log') || path.endsWith('/cue') || path.endsWith('/open') || path.endsWith('/result') || path.endsWith('/leads')) return ok('501 700 2 Directory 11 64 1700000000\n')
       if (installed.has(path)) return ok('501 600 1 Regular File 12 0 1700000000\n')
       return ok('', 1)

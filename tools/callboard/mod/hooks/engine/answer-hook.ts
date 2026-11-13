@@ -4,7 +4,7 @@ import * as c from '../core.ts'
 import * as pr from '../prompts.ts'
 import { grants, checks, openReqs, doneIds, unclosed, askingSids, relayAskedTurn, mem } from '../mem.ts'
 import { run, MKDIR, dirOk, INSTALL, TEE, MV, rmF, where, facts, sha, statR, realR, REALPATH, readSmallR, pause, RMDIR } from './base.ts'
-import { loadLanes, registryEntries, registryOf, ownReg } from './store.ts'
+import { loadLanes, registryEntries, registryOf } from './store.ts'
 import { leadsFor, homeOf, presenceCheck } from './grants.ts'
 import { reportLaneOf, sessionRoot } from './lanes.ts'
 import type { Bound } from './lanes.ts'
@@ -305,8 +305,8 @@ async function promptLeadOf($: any, level: 'lane' | 'lead', sid: string, cwd: st
 // This session's own registry row, by one file read (not the whole table): the row of the pid the request was made under, kept only if it names this session and
 // the same process start. undefined: unknown (a changing, missing or odd file).
 async function promptOwnRow($: any, w: WaitCtx): Promise<any | undefined> {
-  if (w.p.own === undefined || !(await dirOk($, w.p.own, w.p.uid))) return undefined
-  const r = await readSmallR($, `${w.p.own}/${w.req.pid}.json`, w.p.uid, c.REGISTRY_FILE_MAX, true)
+  if (!(await dirOk($, w.p.sessions, w.p.uid))) return undefined
+  const r = await readSmallR($, `${w.p.sessions}/${w.req.pid}.json`, w.p.uid, c.REGISTRY_FILE_MAX, true)
   if (r.state !== 'ok') return undefined
   try {
     const j = JSON.parse(r.text)
@@ -561,7 +561,7 @@ async function promptHook($: any, e: any, nextOnce: (x: any) => Promise<any>, si
     // session list does not show (a session under another config folder): no row for a judge, the dialog stays the person's.
     if (!leadRead) lead = await promptLeadOf($, cov.level, sid, cwd, cov.lead)
     const leadName = lead?.name
-    const own = await registryOf($, sid, ownReg($))
+    const own = await registryOf($, sid)
     const liveNow = await registryEntries($)
     const reach = own && typeof own.pid === 'number' && typeof own.procStart === 'string' && liveNow ? await promptReachTiers($, liveNow, cov.a, { sid, pid: own.pid, procStart: own.procStart, level: cov.level, lane: cov.lane ?? cov.self, ...(leadName ? { leadName } : {}), repo: cwd, tool }, cov.level === 'lane' && lead === undefined).catch(() => [] as pr.Tier[]) : ([] as pr.Tier[])
     if (reach.length === 0 && own && typeof own.pid === 'number' && typeof own.procStart === 'string') {

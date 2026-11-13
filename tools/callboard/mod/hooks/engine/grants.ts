@@ -87,11 +87,10 @@ import {
   readStoreFile,
   storePath,
   idleCheck,
-  ownRegOnce,
-  ownReg,
   loadLanes,
   editStore,
   registryOf,
+  regOnce,
   lockStore,
 } from './store.ts'
 import type { RegRow, Reg } from './store.ts'
@@ -978,7 +977,7 @@ async function attentionNotice($: any, sid: string, items: c.AttentionItem[], su
   }
   if (await capped()) return
   if (await busyAgents($)) return
-  const reg = ownRegOnce($)
+  const reg = regOnce($)
   if ((await idleCheck($, sid, reg)) !== undefined) return
   if (!(await personRow($, sid, reg))) return
   if ((await backgroundShells($, sid, reg)) !== undefined) return
@@ -988,7 +987,7 @@ async function attentionNotice($: any, sid: string, items: c.AttentionItem[], su
   if (await capped()) return
   const now = await $.clock.now()
   if (dialogOpen.has(sid) || (await $.state.get(request)).value != null || (await $.state.get(nudgeDueRef)).value != null) return
-  if ((await idleCheck($, sid, ownReg($))) !== undefined) return
+  if ((await idleCheck($, sid)) !== undefined) return
   const draft = (await $.prompt.read()).text
   if (draft !== '' || dialogOpen.has(sid) || mem.submits !== submitsAtStart || lastSubmitAt.get(sid) !== sentAt || !grants.has(sid) || epochOf(sid) !== ep) return
   const fresh = untold(kept)
@@ -1135,7 +1134,7 @@ export async function managerTick($: any, sid: string) {
   }
   const pend = managerRestorePending.get(sid)
   if (!pend || pend.asking) return
-  const row = await registryOf($, sid, ownReg($))
+  const row = await registryOf($, sid)
   if (managerRestorePending.get(sid) !== pend) return
   if (row === undefined && pend.tries++ < MANAGER_RESTORE_TRIES) return
   if (row?.kind !== 'interactive') {
@@ -1502,7 +1501,7 @@ async function conductorRestoreTry($: any, me: string, box: { hint: c.ConductorH
   const dropped = () => epochOf(me) !== epoch
   // A person's own row: kind interactive. No row yet: tried again (a reopened panel's row may come a moment after session.start). Another kind (a
   // --bg worker resumed under this id) or none: the try ends and the key is kept.
-  const row = await registryOf($, me, ownReg($))
+  const row = await registryOf($, me)
   if (dropped()) return
   if (row === undefined) return 'not-person'
   if (row.kind !== 'interactive') return void (await reject('not-person'))

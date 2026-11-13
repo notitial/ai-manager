@@ -435,32 +435,6 @@ export const bareList = async ($: any) => noNote(await listed($))
 export const OTHERPATH = `${ROOT}/leads/${OTHERLEAD}.json`
 export const madeLane = (name: string, leadName?: string) => ({ name, folder: SVC, brief: `${SVC}/B.md`, createdAt: 1, ...(leadName ? { leadName } : {}) })
 
-// ---- the own-row lookups follow CLAUDE_CONFIG_DIR ----
-// The person's own row, as the engine writes it (kind interactive); in the config-root registry or the default one, by what a test assigns it to.
-// A person's session that runs under CLAUDE_CONFIG_DIR=env (unset: undefined), its own row in the config-root registry (rows), none in the default one.
-export async function configRoot($: any, on: any, stdins: string[], env: string | undefined, rows: Record<string, string>, argv: string[][] = [], opts: { bound?: boolean; interactive?: boolean; before?: () => void } = {}) {
-  h.sessions = {}
-  laneSeed.text = undefined
-  await started($, on, stdins, {
-    clock: true,
-    argv,
-    bound: opts.bound,
-    interactive: opts.interactive,
-    seed: () => {
-      if (env !== undefined) h.envVars.CLAUDE_CONFIG_DIR = env
-      h.ownEntryAuto = false
-      h.ownSessions = rows
-      opts.before?.()
-    },
-  })
-  h.psTable = SELF_PS
-}
-export const turnEnds = async ($: any) => {
-  await $.prompt.submit({ text: 'work' } as any)
-  await $.turn.complete(TURN as any)
-}
-export const touched = (argv: string[][], needle: string) => argv.some((a) => a.some((x) => x.includes(needle)))
-
 // ---- lead check-ins, /callboard checkin, the waiting column ----
 const CK_TAIL = 'Call lane_list and look at each. Submitted by the callboard mod, not by the user; it carries no approval, go or answer; never record it as one.'
 export const ckText = (parts: string) => `[callboard] Check-in: some lanes may need you. ${parts}. ${CK_TAIL}`

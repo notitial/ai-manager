@@ -1717,23 +1717,6 @@ test('inReach and leadLane: a lead reaches a lane naming it or none; other-lead 
   assert.ok(c.hasText('lead-unnamed'))
 })
 
-test('v13.3 ownRegistryDir: unset or empty gives the default registry; a clean folder under the home gives its sessions folder; anything else gives none', () => {
-  const sessions = '/Users/x/.claude/sessions'
-  assert.equal(c.ownRegistryDir(undefined, 'x', sessions), sessions)
-  assert.equal(c.ownRegistryDir('', 'x', sessions), sessions)
-  assert.equal(c.ownRegistryDir('/Users/x/.claude', 'x', sessions), '/Users/x/.claude/sessions')
-  assert.equal(c.ownRegistryDir('/Users/x/.claude-conductor/config', 'x', sessions), '/Users/x/.claude-conductor/config/sessions')
-  assert.equal(c.ownRegistryDir('/Users/x/.claude-conductor/My Config/é', 'x', sessions), '/Users/x/.claude-conductor/My Config/é/sessions')
-  for (const bad of [
-    'relative', '.', '..', ' ', '/', '/Users/x', '/Users/x/', '/Users/x/x/', '/Users/x//x', '/Users/x/x//y', '/Users/x/./x', '/Users/x/x/.',
-    '/Users/x/../x', '/Users/x/x/..', '/Users/x/x/../y', '/Users/y/x', '/Users/xy/y', '/tmp/x', '/Users/x/config', '/Users/x/.claudex', '/Users/x/.claude-', '/Users/x/.claude-x/config', '/Users/x/.claude/projects/x', '/Users/x/.claude/config', '/Users/x/.claude-conductorx/config', '/Users/x/.Claude/config', '/Users/x/Documents/x', '/Users/x/.config/claude', '/Users/x/claude', '/Users/x/x\ny', '/Users/x/x\u0000y', '/Users/x/x\u007fy',
-    `/Users/x/.claude-conductor/${'a'.repeat(c.CONFIG_DIR_MAX)}`,
-  ]) assert.equal(c.ownRegistryDir(bad, 'x', sessions), undefined, JSON.stringify(bad))
-  assert.equal(c.ownRegistryDir('/Users/x/.claude-conductor/' + 'a'.repeat(c.CONFIG_DIR_MAX - 40), 'x', sessions)?.endsWith('/sessions'), true)
-  assert.equal(c.ownRegistryDir(5 as unknown as string, 'x', sessions), undefined)
-})
-
-// ---- levels S2b: a second lead in a repo, and the Join dialog's lead picker ----
 test('secondLeadRefusal: none with no other lead; with one, this session and every other lead need a usable name (levels S2b)', () => {
   const S = '0a1b2c3d-0000-4000-8000-123456789abc'
   const A = '5a1b2c3d-0000-4000-8000-123456789abc'

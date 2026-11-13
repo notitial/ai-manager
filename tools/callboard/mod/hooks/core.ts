@@ -1595,24 +1595,6 @@ export const LOCK_BREAKER_MS = 30_000
 export const LEAD_PRUNE_MS = 10 * 60_000
 export const REGISTRY_FILE_MAX = 16_384
 export const REGISTRY_FILES_MAX = 512
-// Where a session's OWN registry row is looked for. CLAUDE_CONFIG_DIR unset or empty: the default registry, unchanged. Set: only a clean absolute path
-// in one of the user's two config folders counts (a first folder named `.claude` or `.claude-conductor`, the only two config folders this mod accepts;
-// widening them needs a new review first; no `.` or `..` segment, no `//`, no trailing slash, no control character, under 512 characters), and the registry is its `sessions` folder; anything else
-// gives undefined, so no own row is ever found (fails closed). The caller also resolves the config folder with realpath and refuses a link anywhere in it, and every
-// registry read holds the folder to the owner, mode and no-link check.
-export const CONFIG_DIR_MAX = 512
-export function ownRegistryDir(configDir: string | undefined, name: string, sessions: string): string | undefined {
-  if (configDir === undefined || configDir === '') return sessions
-  if (typeof configDir !== 'string' || configDir.length >= CONFIG_DIR_MAX) return undefined
-  if (CTRL.test(configDir)) return undefined
-  const home = `/Users/${name}/`
-  if (!configDir.startsWith(home) || configDir.endsWith('/')) return undefined
-  const rest = configDir.slice(home.length).split('/')
-  if (rest.some((s) => s === '' || s === '.' || s === '..')) return undefined
-  // `~/.claude` itself (equal to the default) or a folder under `~/.claude-conductor`; a folder inside `~/.claude` (projects, plugins, ...) is not a config root.
-  if (!(rest.length === 1 && rest[0] === '.claude') && rest[0] !== '.claude-conductor') return undefined
-  return `${configDir}/sessions`
-}
 export const parseOwner = (text: string): { pid: number; procStart: string; nonce: string } | undefined => {
   try {
     const j = JSON.parse(text)
