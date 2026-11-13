@@ -1,5 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import * as prm from '../hooks/prompts'
+import { FLOOR_LINE } from '../hooks/core'
 import { h, NO, PROMPTS_DIR, SID, T0, YES, extraStat, leadFiles, longTest, pdirs, pfs, psFail, realMap } from './harness'
 import { HOOK_BUDGET_MS, LEADPATH, LEADPS, LEADSID, OTHER, PIN, SVC, attRec, lane, leadReg, ownReg, putStore, sleeps, started } from './fixtures'
 import { GONE, LDIR, LEAD2, LEDGER_FILE, OFF_FILE, PCOMMENT, PDIR, PRQ, TID, answerCall, answered, answerer, askCheck, at, callOf, decFile, driveClock, handDecision, hookKinds, hookRows, ledgerRows, noFiles, putLedger, putQ, putRelay, readReq, refusal, reqFiles, retRow, rowKinds, runRequest, said, startReq, stop, tier, waitingRow } from './answer-fixtures'
@@ -561,14 +562,16 @@ test('prompts: sweep: with no prompts folder the tick makes no process call for 
   expect(argv.slice(before).filter((a) => a.some((x) => typeof x === 'string' && x.includes('/prompts'))).length).toBe(0)
 })
 
-// ---- /callboard escalation and /callboard prompts ----
+// ---- /callboard escalation ----
 const EXPECT_Q = prm.ESCALATION_QUESTION
 const ESC_VALUE = { scope: 'all', asks: false, asksScope: 'all', savedAt: T0 }
-test('prompts: /callboard prompts shows escalation off by default, with the floor', async ($, on) => {
+test('prompts: /callboard config shows escalation OFF by default, help carries the floor, and the prompts word is the usage line', async ($, on) => {
   await started($, on, [])
-  expect((await $.command.run(lane('prompts'))).text).toContain('| Escalation | off |')
-  expect((await $.command.run(lane('prompts'))).text).toContain('| Open requests | 0 |')
-  expect((await $.command.run(lane('prompts'))).text).toContain('Floor (never answered by an agent)')
+  expect((await $.command.run(lane('config'))).text).toContain('| Escalation | OFF |')
+  expect((await $.command.run(lane('help'))).text.endsWith(`\n\n${FLOOR_LINE}`)).toBe(true)
+  const usage = (await $.command.run(lane('prompts'))).text
+  expect(usage).toContain('Run /callboard help for the full list.')
+  expect(usage).not.toContain('Escalation')
 })
 test('prompts: /callboard escalation: the person\'s own command, one dialog naming exactly what turns on, stored on Allow with the two ledger rows the audit reads', async ($, on) => {
   await started($, on, [])
@@ -585,7 +588,7 @@ test('prompts: /callboard escalation: the person\'s own command, one dialog nami
   expect(rowKinds()).toEqual(['answering-on', 'answering-on asks'])
   for (const row of ledgerRows()) expect(row.hash).toMatch(/^[0-9a-f]{64}$/)
   expect(ledgerRows()[0].hash).toBe(ledgerRows()[1].hash)
-  expect((await $.command.run(lane('prompts'))).text).toContain('| Escalation | on for all lanes and leads |\n| Questions | answered for all lanes |')
+  expect((await $.command.run(lane('config'))).text).toContain('| Escalation | ON | OFF |')
 })
 test('prompts: the old /callboard answering command is gone: every form is the main usage line, nothing asked or stored', async ($, on) => {
   await started($, on, [])
@@ -689,20 +692,14 @@ test('prompts: /callboard escalation: the plain row lands and the asks row fails
     h.pfsFails = undefined
   }
 })
-test('prompts: the state line reads a value an earlier version stored (a narrowed scope, the old asks flag) and names the OFF file', async ($, on) => {
+test('prompts: the config row reads a value an earlier version stored (a narrowed scope, the old asks flag) as ON, and the OFF file as OFF', async ($, on) => {
   await started($, on, [])
   h.store.set('answering', { scope: 'svc-api', asks: false, asksScope: 'svc-api', savedAt: T0 })
-  expect((await $.command.run(lane('prompts'))).text).toContain('| Escalation | on for svc-api |\n| Questions | answered for svc-api |')
+  expect((await $.command.run(lane('config'))).text).toContain('| Escalation | ON | OFF |')
   h.store.set('answering', { scope: 'LEAD', asks: true, savedAt: T0 })
-  expect((await $.command.run(lane('prompts'))).text).toContain('| Escalation | on for LEAD |\n| Questions | yours |')
+  expect((await $.command.run(lane('config'))).text).toContain('| Escalation | ON | OFF |')
   pfs.set(OFF_FILE, { text: '', mtimeSec: T0 / 1000 })
-  expect((await $.command.run(lane('prompts'))).text).toContain('The OFF file exists')
-})
-test('prompts: /callboard prompts counts open requests', async ($, on) => {
-  await started($, on, [])
-  pdirs.add(`${PROMPTS_DIR}/${LEADSID}`)
-  pfs.set(`${PROMPTS_DIR}/${LEADSID}/${RID(3)}.request.json`, { text: '{}', mtimeSec: T0 / 1000 })
-  expect((await $.command.run(lane('prompts'))).text).toContain('| Open requests | 1 |')
+  expect((await $.command.run(lane('config'))).text).toContain('| Escalation | OFF |')
 })
 
 // ---- review fixes ----

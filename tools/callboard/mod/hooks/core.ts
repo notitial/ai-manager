@@ -486,19 +486,30 @@ function parseConfigArgs(rest: string | undefined): ConfigOp {
 }
 
 type ConfigField = (typeof CONFIG_FIELDS)[number]
-const CONFIG_NAME: Record<ConfigField, string> = { keepalive: 'keepalive', pingAfterMin: 'ping after', stopAfterH: 'stop after', idleK: 'idle level', workingK: 'working level', checkin: 'check-ins' }
+const CONFIG_NAME: Record<ConfigField, string> = { keepalive: 'Keepalive', pingAfterMin: 'Ping after', stopAfterH: 'Stop after', idleK: 'Idle level', workingK: 'Working level', checkin: 'Check-ins' }
+const onOff = (b: boolean): string => (b ? 'ON' : 'OFF')
 const CONFIG_VALUE: Record<ConfigField, (c: Config) => string> = {
-  keepalive: (c) => (c.keepalive ? 'on' : 'off'),
+  keepalive: (c) => onOff(c.keepalive),
   pingAfterMin: (c) => `${c.pingAfterMin} min`,
   stopAfterH: (c) => `${c.stopAfterH} h`,
   idleK: (c) => `${c.idleK}k`,
   workingK: (c) => `${c.workingK}k`,
-  checkin: (c) => (c.checkin ? 'on' : 'off'),
+  checkin: (c) => onOff(c.checkin),
 }
-const CONFIG_LABEL = (f: ConfigField, c: Config): string => `${CONFIG_NAME[f]} ${CONFIG_VALUE[f](c)}`
-// /callboard config: one row per setting, with whether it still has its default.
-export const configText = (cfg: Config): string =>
-  mdPage('**Callboard settings**', ['Setting', 'Value', 'Default'], CONFIG_FIELDS.map((f) => [CONFIG_NAME[f], CONFIG_VALUE[f](cfg), cfg[f] === CONFIG_DEFAULTS[f] ? 'yes' : 'no']))
+// The sentence that confirms a change keeps the lower-case words.
+const CONFIG_LABEL = (f: ConfigField, c: Config): string => `${CONFIG_NAME[f]} ${CONFIG_VALUE[f](c)}`.toLowerCase()
+// Escalation is not in the stored settings: the person's own command switches it on, and with nothing stored it is off.
+export const ESCALATION_DEFAULT = false
+// /callboard config: one row per setting. The Default column appears only while some setting differs from its default: it holds a check mark on a row at its default and
+// the default value on a changed row.
+export function configText(cfg: Config, escalation: boolean = ESCALATION_DEFAULT): string {
+  const rows = [
+    ...CONFIG_FIELDS.map((f) => ({ name: CONFIG_NAME[f], value: CONFIG_VALUE[f](cfg), dflt: CONFIG_VALUE[f](CONFIG_DEFAULTS), same: cfg[f] === CONFIG_DEFAULTS[f] })),
+    { name: 'Escalation', value: onOff(escalation), dflt: onOff(ESCALATION_DEFAULT), same: escalation === ESCALATION_DEFAULT },
+  ]
+  const withDefault = rows.some((r) => !r.same)
+  return mdPage('**Callboard settings**', ['Setting', 'Value', ...(withDefault ? ['Default'] : [])], rows.map((r) => [r.name, r.value, ...(withDefault ? [r.same ? '✓' : r.dflt] : [])]))
+}
 const CONFIG_APPLIES = ' It applies to every session on this Mac within a minute.'
 export const configSetText = (field: ConfigField, cfg: Config): string => `Callboard setting changed: ${CONFIG_LABEL(field, cfg)}.${CONFIG_APPLIES}`
 export const CONFIG_RESET_TEXT = `Callboard settings are back to the defaults.${CONFIG_APPLIES}`
@@ -618,27 +629,27 @@ const mdEscape = (s: string): string => s.replace(/[\\|*_`><[\]]/g, '\\$&')
 const mdTable = (head: string[], rows: string[][]): string[] => [`| ${head.join(' | ')} |`, `|${head.map(() => '---').join('|')}|`, ...rows.map((r) => `| ${r.join(' | ')} |`)]
 export const mdPage = (header: string, head: string[], rows: string[][], notes: string[] = []): string => [header, '', ...mdTable(head, rows), ...notes.flatMap((n) => ['', n])].join('\n')
 
-// /callboard with no argument and /callboard help: one row per subcommand the handler accepts, in the shared table style (mdPage). Who: who may run it ("You" is the
-// person, typing it or answering its dialog).
-const HELP_ROWS: [string, string, string][] = [
-  ['lanes', 'List the lanes in reach and their sessions.', 'Lead, conductor, manager'],
-  ['status', 'Show what callboard does in this session.', 'Anyone'],
-  ['lead', 'Make this session a lead, after you confirm.', 'Anyone'],
-  ['lane [NAME]', 'Make this session a lane, named NAME if given; lane off takes it out of its lane.', 'You'],
-  ['escalation [off]', 'Let the lead tier answer the prompts its lanes raise, or stop that.', 'You to turn on, anyone to turn off'],
-  ['prompts', 'Show whether escalation is on and how many requests are open.', 'Anyone'],
-  ['conductor [add|remove NAME]', 'Make this session a conductor, or change the repos it reaches.', 'Anyone to grant, you to change the list'],
-  ['manager [NAME]', 'Make this session the manager, after you confirm.', 'Anyone'],
-  ['config [SETTING VALUE]', 'Show the settings, or change one (reset restores the defaults).', 'Anyone to show, you to change'],
-  ['reserve [remove] [NAME]', 'Show the names reserved on this Mac, or add or remove one.', 'Anyone to show, you to change'],
-  ['checkin pause Nm|h', 'Pause check-ins for N minutes or hours; checkin on resumes them.', 'You, in a lead or manager'],
-  ['rest', 'Stop keepalive pings in this idle gap.', 'Anyone'],
-  ['off', 'Turn lead, conductor, manager and lane off for this session.', 'Anyone, after you confirm'],
-  ['help', 'Show this table.', 'Anyone'],
+// /callboard with no argument and /callboard help: one row per subcommand the handler accepts, in the shared table style (mdPage), then the floor line.
+const HELP_ROWS: [string, string][] = [
+  ['lanes', 'List the lanes in reach and their sessions.'],
+  ['status', 'Show what callboard does in this session.'],
+  ['lead', 'Make this session a lead, after you confirm.'],
+  ['lane [NAME]', 'Make this session a lane, named NAME if given; lane off takes it out of its lane.'],
+  ['escalation [off]', 'Let the lead tier answer the prompts its lanes raise, or stop that.'],
+  ['conductor [add|remove NAME]', 'Make this session a conductor, or change the repos it reaches.'],
+  ['manager [NAME]', 'Make this session the manager, after you confirm.'],
+  ['config [SETTING VALUE]', 'Show the settings, or change one (reset restores the defaults).'],
+  ['reserve [remove] [NAME]', 'Show the names reserved on this Mac, or add or remove one.'],
+  ['checkin pause Nm|h', 'Pause check-ins for N minutes or hours; checkin on resumes them.'],
+  ['rest', 'Stop keepalive pings in this idle gap.'],
+  ['off', 'Turn lead, conductor, manager and lane off for this session.'],
+  ['help', 'Show this table.'],
 ]
-export const helpText = (): string => mdPage('**Callboard commands**', ['Command', 'What it does', 'Who'], HELP_ROWS.map((r) => r.map(mdEscape)))
+// What escalation never hands to an agent: the one wording of it, under the help table and after /callboard escalation.
+export const FLOOR_LINE = 'Floor (never answered by an agent): merges, force pushes, pushes to main, master or production, destructive deletes, edits to settings, hooks and callboard state.'
+export const helpText = (): string => mdPage('**Callboard commands**', ['Command', 'What it does'], HELP_ROWS.map((r) => r.map(mdEscape)), [FLOOR_LINE])
 // A word the handler does not know: the short list, then the way to the full one.
-export const HELP_USAGE = 'Use /callboard help, lanes, status, lead, lane [NAME], escalation [off], prompts, manager or off. Run /callboard help for the full list.'
+export const HELP_USAGE = 'Use /callboard help, lanes, status, lead, lane [NAME], escalation [off], manager or off. Run /callboard help for the full list.'
 // /callboard lanes where there is no list to show: a lane is told who lists, any other session what it lacks.
 export const LANES_IS_LANE = 'This session is a lane: its lead lists the lanes.'
 export const LANES_NO_LEVEL = 'Lanes need a lead, conductor or manager here: run /callboard lead to make this session a lead.'
@@ -1669,33 +1680,39 @@ export function parseUsage(text: string, sid: string, row: { pid?: number; procS
   }
   return { at: j.at, ...(j.tokens !== null ? { tokens: j.tokens } : {}), ...(j.cost !== null ? { cost: j.cost } : {}), windows }
 }
-// The Usage cell of a live row, e.g. `ctx 142k · 5h 34% · 7d 61% · $3.10 · 2m ago`. A window whose reset time has passed shows `?`; a figure the file lacks is left out.
-export function usageCell(r: UsageReading | undefined, now: number): string {
-  if (!r) return 'no reading'
+// The figure cells of one session in the lane list: Context, 5h, 7d, Cost, Read (the age of the reading). No reading is `?` in each figure column and `–` for the age; a
+// figure the file lacks is `–`; a window whose reset time has passed is `?`.
+export const USAGE_HEAD = ['Context', '5h', '7d', 'Cost', 'Read'] as const
+export const NO_USAGE: readonly string[] = ['', '', '', '', '']
+export function usageCells(r: UsageReading | undefined, now: number): string[] {
+  if (!r) return ['?', '?', '?', '?', '–']
   const ago = now - r.at
-  const tokens = r.tokens === undefined ? [] : [`ctx ${r.tokens < 1000 ? r.tokens : r.tokens < 999_500 ? `${Math.round(r.tokens / 1000)}k` : `${(r.tokens / 1e6).toFixed(1)}M`}`]
-  const windows = r.windows.map((w) => `${USAGE_KINDS[w.kind]} ${w.resetsAt !== undefined && w.resetsAt <= now ? '?' : `${Math.round(w.pct)}%`}`)
-  const cost = r.cost === undefined ? [] : [`$${r.cost.toFixed(2)}`]
-  return [...tokens, ...windows, ...cost, `${ago < 60_000 ? '<1m' : ago < HOUR_MS ? `${Math.floor(ago / 60_000)}m` : `${Math.floor(ago / HOUR_MS)}h`} ago`].join(' · ')
+  const win = (kind: UsageKind): string => {
+    const w = r.windows.find((x) => x.kind === kind)
+    return w === undefined ? '–' : w.resetsAt !== undefined && w.resetsAt <= now ? '?' : `${Math.round(w.pct)}%`
+  }
+  const tokens = r.tokens === undefined ? '–' : r.tokens < 1000 ? String(r.tokens) : r.tokens < 999_500 ? `${Math.round(r.tokens / 1000)}k` : `${(r.tokens / 1e6).toFixed(1)}M`
+  return [tokens, win('five_hour'), win('seven_day'), r.cost === undefined ? '–' : `$${r.cost.toFixed(2)}`, ago < 60_000 ? '<1m' : ago < HOUR_MS ? `${Math.floor(ago / 60_000)}m` : `${Math.floor(ago / HOUR_MS)}h`]
 }
 export const USAGE_FOOTNOTE = "5h/7d are the account's limits: sessions on one account show the same figures."
 
-// One table, not blockquote boxes, which rendered as stray bars and differed between the CLI and
-// VS Code. The text is a plain header line (`**Manager NAME** · live`, `**Conductor NAME** · live` or `**Lead NAME** · live`), a blank line, then ONE table with
-// the columns Lead, Repo, Lane, Session, Usage, Waiting (the Usage cell: usageCell, `–` for a row with no live session). The lead and the repo are written on the first row of their group only (the cells after are blank); a lane that
-// names no lead goes under `Any lead`, a lead no live session carries is `NAME (not live)`, and a live lead with no lanes is one row with `–` in the lane cells and its own Usage cell.
+// One table, not blockquote boxes, which rendered as stray bars and differed between the CLI and VS Code. The text is a plain header line (`**Manager NAME** · live`,
+// `**Conductor NAME** · live` or `**Lead NAME** · live`), a blank line, then ONE table with the columns Lane, Session, Context, 5h, 7d, Cost, Read, Waiting (the figures:
+// usageCells). Each repo and lead the lanes name is a group row, bold, `**repo · LEAD**`, with session `lead` and the lead's own figures; its lanes follow, indented with
+// `↳`. A lane that names no lead goes under `Any lead` (no session, no figures), a lead no live session carries is `NAME (not live)` (no figures), and a live lead with no
+// lanes is a group row alone. A row that is parked or not live leaves its figure cells empty; a live one with no reading shows `?` in each.
 // A Folder column (after Lane, relative to the repo, `.` for the root) appears only when a lane is outside its repo root. waiting: minutes since the lane's own
 // live row went waiting on a prompt (its statusUpdatedAt; `?` when that is missing or ahead), `–` when it waits on nothing. One text for lane_list and /callboard lanes.
 // With no lanes and no live lead the text is a one-column table (`Lanes`) with one row saying there are none (`no lanes in this repo`, `no lanes in its repos` for a conductor).
-// The Repo cell names the repo by its folder name only (folderName), as a path made the row long; a lane's own Folder column is relative.
+// The repo is named by its folder name only (folderName), as a path made the row long; a lane's own Folder column is relative.
 // A conductor's view has its own header. The manager's view, when a live conductor lists repos, gains a leading Conductor column (conductors
-// sorted by name, then the repos no conductor lists, with `–`); a repo two conductors list goes under the first, its Repo cell saying `(also NAME2)`. conductors
+// sorted by name, then the repos no conductor lists, with `–`; the name is on the first row of its block); a repo two conductors list goes under the first, its group row saying `(also NAME2)`. conductors
 // 'error': the conductors could not be read, so the table is drawn without that column and a note follows it.
 // A live lead in reach (its presence file passed every check; the registry gives its name), with the repo it leads. The manager's and a conductor's view draw
-// one for each lead that no lane group already names, so a lead with no lanes is seen. A lead's own view ignores them.
+// one for each lead that no lane group already names, so a lead with no lanes is seen. A lead's own view ignores them, and `self` (its own session) gives its group row its figures.
 export type ConductorView = { name?: string; repos: string[] }
 export type LiveLead = { name: string; repo: string; sid?: string }
-export function laneListText(lanes: Lane[], entries: RegEntry[], now: number, view: { level?: 'lead' | 'manager' | 'conductor'; name?: string; conductors?: ConductorView[] | 'error'; leads?: LiveLead[]; usage?: Map<string, UsageReading> } = {}): string {
+export function laneListText(lanes: Lane[], entries: RegEntry[], now: number, view: { level?: 'lead' | 'manager' | 'conductor'; name?: string; self?: string; conductors?: ConductorView[] | 'error'; leads?: LiveLead[]; usage?: Map<string, UsageReading> } = {}): string {
   const liveLeads = view.level === 'manager' || view.level === 'conductor' ? (view.leads ?? []) : []
   if (lanes.length === 0 && liveLeads.length === 0) return mdTable(['Lanes'], [[view.level === 'conductor' ? 'no lanes in its repos' : 'no lanes in this repo']]).join('\n')
   const names = entries.flatMap((e) => (typeof e.name === 'string' ? [e.name] : []))
@@ -1731,42 +1748,43 @@ export function laneListText(lanes: Lane[], entries: RegEntry[], now: number, vi
   const owner = new Map<string, number>()
   conds.forEach((cd, i) => cd.repos.forEach((r) => (owner.has(r) ? undefined : owner.set(r, i))))
   const label = (cd: ConductorView) => (cd.name ? mdEscape(cd.name) : 'a conductor')
-  const dash = (n: number): string[] => Array.from({ length: n }, () => '–')
-  // The Usage cell of a live session's row; the footnote needs two of them with windows.
+  // The figure cells of a live session; the footnote needs two readings with windows.
   let withWindows = 0
-  const usageOf = (sid: string | undefined): string => {
+  const figures = (sid: string | undefined): string[] => {
     const r = sid === undefined ? undefined : view.usage?.get(sid)
     if (r && r.windows.length > 0) withWindows++
-    return usageCell(r, now)
+    return usageCells(r, now)
   }
-  // The rows of one group. also: the other conductors that list its repo.
+  // The rows of one group, with `also`: the other conductors that list its repo. The lead's own session is the one its live-lead entry names, or this one in a lead's own view.
   const groupRows = (g: Group, also: string): string[][] => {
-    const repo = `${mdEscape(folderName(g.repo))}${also}`
     const lead = g.lead === '' ? 'Any lead' : `${g.lead}${g.lanes.length === 0 || names.includes(g.lead) ? '' : ' (not live)'}`
-    if (g.lanes.length === 0) return [[lead, repo, ...dash(withFolder ? 3 : 2), usageOf(g.sid), '–']]
-    return g.lanes.map((l, i) => [
-      i === 0 ? lead : '',
-      i === 0 ? repo : '',
-      l.name,
-      ...(withFolder ? [folderOf(l)] : []),
-      names.includes(l.name) ? 'live' : l.parked !== undefined ? 'parked' : 'none',
-      names.includes(l.name) ? usageOf(sidOf(l)) : '–',
-      waiting(l),
-    ])
+    const leadLive = g.lead !== '' && (g.lanes.length === 0 || names.includes(g.lead))
+    const leadSid = g.sid ?? liveLeads.find((x) => x.repo === g.repo && x.name === g.lead)?.sid ?? (view.level === 'lead' && g.lead === view.name ? view.self : undefined)
+    const head = [`**${mdEscape(folderName(g.repo))}${also} · ${lead}**`, ...(withFolder ? [''] : []), leadLive ? 'lead' : '', ...(leadLive ? figures(leadSid) : NO_USAGE), '']
+    return [
+      head,
+      ...g.lanes.map((l) => [
+        `↳ ${l.name}`,
+        ...(withFolder ? [folderOf(l)] : []),
+        names.includes(l.name) ? 'live' : l.parked !== undefined ? 'parked' : 'none',
+        ...(names.includes(l.name) ? figures(sidOf(l)) : NO_USAGE),
+        waiting(l),
+      ]),
+    ]
   }
   const rows: string[][] = []
   const withCond = (rs: string[][], cond: string): string[][] => rs.map((r, i) => [i === 0 ? cond : '', ...r])
   if (conds.length > 0) {
     conds.forEach((cd, i) => {
       const mine = groups.filter((g) => owner.get(g.repo) === i).flatMap((g) => groupRows(g, conds.some((o, j) => j !== i && o.repos.includes(g.repo)) ? ` (also ${conds.filter((o, j) => j !== i && o.repos.includes(g.repo)).map(label).join(', ')})` : ''))
-      rows.push(...withCond(mine.length === 0 ? [['–', '–', ...dash(withFolder ? 5 : 4)]] : mine, label(cd)))
+      rows.push(...withCond(mine.length === 0 ? [Array.from({ length: withFolder ? 9 : 8 }, () => '–')] : mine, label(cd)))
     })
     const rest = groups.filter((g) => !owner.has(g.repo)).flatMap((g) => groupRows(g, ''))
     if (rest.length > 0) rows.push(...withCond(rest, '–'))
   } else {
     rows.push(...groups.flatMap((g) => groupRows(g, '')))
   }
-  const head = [...(conds.length > 0 ? ['Conductor'] : []), 'Lead', 'Repo', 'Lane', ...(withFolder ? ['Folder'] : []), 'Session', 'Usage', 'Waiting']
+  const head = [...(conds.length > 0 ? ['Conductor'] : []), 'Lane', ...(withFolder ? ['Folder'] : []), 'Session', ...USAGE_HEAD, 'Waiting']
   const level = view.level === 'manager' ? 'Manager' : view.level === 'conductor' ? 'Conductor' : 'Lead'
   return mdPage(`**${level}${view.name ? ` ${mdEscape(view.name)}` : ''}** · live`, head, rows, [...(view.level === 'manager' && view.conductors === 'error' ? ['(conductors could not be read)'] : []), ...(withWindows >= 2 ? [USAGE_FOOTNOTE] : [])])
 }

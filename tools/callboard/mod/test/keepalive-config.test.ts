@@ -525,7 +525,7 @@ test('config: /callboard config prints the settings from any origin and logs not
   const stdins: string[] = []
   await person($, on, stdins)
   for (const origin of [PERSON, { kind: 'bridge' }, { kind: 'plugin' }, { kind: 'peer' }, { kind: 'script' }])
-    expect((await $.command.run(lane('config', origin))).text).toBe(['**Callboard settings**', '', '| Setting | Value | Default |', '|---|---|---|', '| keepalive | on | yes |', '| ping after | 50 min | yes |', '| stop after | 3 h | yes |', '| idle level | 300k | yes |', '| working level | 400k | yes |', '| check-ins | on | yes |'].join('\n'))
+    expect((await $.command.run(lane('config', origin))).text).toBe(['**Callboard settings**', '', '| Setting | Value |', '|---|---|', '| Keepalive | ON |', '| Ping after | 50 min |', '| Stop after | 3 h |', '| Idle level | 300k |', '| Working level | 400k |', '| Check-ins | ON |', '| Escalation | OFF |'].join('\n'))
   expect(logged(stdins)).toEqual([])
   expect(h.store.has('config')).toBe(false)
   expect((await $.command.run(lane('bogus'))).text).toBe(USAGE)
@@ -536,7 +536,7 @@ test('/callboard help and a bare /callboard print the same command table; a word
   await started($, on, stdins)
   const help = (await $.command.run(lane('help'))).text
   expect(help).toBe(helpText())
-  expect(help.startsWith('**Callboard commands**\n\n| Command | What it does | Who |\n|---|---|---|\n| lanes |')).toBe(true)
+  expect(help.startsWith('**Callboard commands**\n\n| Command | What it does |\n|---|---|\n| lanes |')).toBe(true)
   expect((await $.command.run(lane(''))).text).toBe(help)
   expect((await $.command.run(lane('  help '))).text).toBe(help)
   for (const origin of [{ kind: 'plugin' }, { kind: 'peer' }, { kind: 'script' }, null]) expect((await $.command.run(lane('help', origin))).text).toBe(help)
@@ -602,7 +602,7 @@ test('config: invalid stored fields fall back to their defaults, logged once per
   await person($, on, stdins)
   h.store.set('config', { keepalive: 'no', pingAfterMin: 99, stopAfterH: 2, idleK: 350, workingK: 450, path: '/etc/x', savedAt: 1 })
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
-  expect((await $.command.run(lane('config'))).text).toBe(['**Callboard settings**', '', '| Setting | Value | Default |', '|---|---|---|', '| keepalive | on | yes |', '| ping after | 50 min | yes |', '| stop after | 2 h | no |', '| idle level | 350k | no |', '| working level | 450k | no |', '| check-ins | on | yes |'].join('\n'))
+  expect((await $.command.run(lane('config'))).text).toBe(['**Callboard settings**', '', '| Setting | Value | Default |', '|---|---|---|', '| Keepalive | ON | ✓ |', '| Ping after | 50 min | ✓ |', '| Stop after | 2 h | 3 h |', '| Idle level | 350k | 300k |', '| Working level | 450k | 400k |', '| Check-ins | ON | ✓ |', '| Escalation | OFF | ✓ |'].join('\n'))
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   expect(logged(stdins).filter((x) => x.startsWith('config-invalid'))).toEqual(['config-invalid:keepalive', 'config-invalid:pingAfterMin'])
 })
