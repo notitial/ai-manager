@@ -39,7 +39,6 @@ import {
   checkinTick,
   orderDue,
   orderTick,
-  onLeftovers,
   cfgGet,
   presenceDrop,
   homeOf,
@@ -289,8 +288,6 @@ export async function sessionStart($: any, e: any, next: any) {
   } catch {
     await log($, me, 'error', 'command-register')
   }
-  // What a retired /callboard on left, after /callboard is registered, so a slow store cannot hold the command up.
-  await onLeftovers($, me)
   try {
     await pruneHints($, me)
     if (c.parseHint(await $.store.get(`${c.HINT_PREFIX}${me}`), now)) await log($, me, 'hint-found')

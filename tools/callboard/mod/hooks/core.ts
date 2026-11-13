@@ -10,7 +10,6 @@ export const CUE_RE = /^(rename [A-Za-z0-9_-]{1,40}( [0-9a-f]{8}-[0-9a-f]{4}-[0-
 export const ORDER_PREFIX = 'ord:'
 export const HINT_PREFIX = 'sess:'
 export const LEAD_HINT_PREFIX = 'lead:'
-export const ON_HINT_PREFIX = 'on:'
 export const CMP_PREFIX = 'cmp:'
 export const MANAGER_HINT_PREFIX = 'manager:'
 export const CONDUCTOR_HINT_PREFIX = 'conductor:'
@@ -126,7 +125,8 @@ export function parseStat(out: string): (FileFacts & { ino: number }) | undefine
 // sid: the session bound to a store lane (the lane rebinds itself when that session starts again); parked: when lane_park stopped it (ms).
 // leadName: the registry name of the lead the lane belongs to; only that lead reaches it. A store lane without it is legacy:
 // any lead of its repo reaches it.
-export type Lane = { name: string; folder: string; brief: string; repo?: string; src?: string; adopted?: true; lead?: string; model?: LaneModel; sid?: string; parked?: number; leadName?: string }
+// leadSid: the session id of the lead that made the lane (lane_create); a joined lane carries it as `lead`. A record made before the field has none.
+export type Lane = { name: string; folder: string; brief: string; repo?: string; src?: string; adopted?: true; lead?: string; model?: LaneModel; sid?: string; parked?: number; leadName?: string; leadSid?: string }
 export const LANE_MODELS = ['opus', 'sonnet', 'haiku', 'fable'] as const
 export type LaneModel = (typeof LANE_MODELS)[number]
 const DEFAULT_LANE_MODEL: LaneModel = 'sonnet'
@@ -135,13 +135,13 @@ const isLaneModel = (m: unknown): m is LaneModel => typeof m === 'string' && (LA
 // A lane record is hashed to bind a session to the record it was renamed under; src is not part of it, nor are sid and parked: a session writes its own id into
 // its record while bound, and park and unpark change them, so neither may make a live binding refuse record-changed or orphan an attached record's removal.
 // A binding without a stored hash is an old one: no lane accepts it.
-// The hash an attached record had before the stuck-lanes change, which included its lead's name: a session bound before then holds it, and it still counts
-// (register.ts recMatch). The two differ only when the record has a lead name.
-export const recordTextLegacy = (l: Lane): string => `${recordText(l)}${l.adopted && l.leadName ? `\nleadName\n${l.leadName}` : ''}`
 export const recOk = (rec: string | undefined, current: string): boolean => rec !== undefined && rec === current
-// The attach fields, the model and the lead's name are appended only when present, so a record without them hashes as it always did. An attached record's identity
-// is its lead's session id (hashed above); its lead's name is a reach filter that follows the lead through a rename, so it is left out for adopted records.
-export const recordText = (l: Lane) => `${l.name}\n${l.folder}\n${l.brief}\n${l.repo ?? ''}${l.adopted ? `\nadopted\n${l.lead}` : ''}${l.model ? `\nmodel\n${l.model}` : ''}${l.leadName && !l.adopted ? `\nleadName\n${l.leadName}` : ''}`
+// The attach fields, the model, the lead's session id and the lead's name are appended only when present, so a record without them hashes as it always did. An
+// attached record's identity is its lead's session id (hashed above), and so is a made record's when it carries one (`leadSid`): the lead's name is a reach filter
+// that follows the lead through a rename, so it is left out of both. A made record with no lead session id keeps the name in its hash.
+export const recordText = (l: Lane) => `${l.name}\n${l.folder}\n${l.brief}\n${l.repo ?? ''}${l.adopted ? `\nadopted\n${l.lead}` : ''}${l.model ? `\nmodel\n${l.model}` : ''}${l.leadSid && !l.adopted ? `\nleadSid\n${l.leadSid}` : l.leadName && !l.adopted ? `\nleadName\n${l.leadName}` : ''}`
+// Whether the lead session `sid` is the one that made or joined this lane: an attached record names it as `lead`, a made record as `leadSid`.
+export const leadOwns = (l: Lane, sid: string): boolean => (l.adopted === true ? l.lead === sid : l.leadSid === sid)
 
 // The per-repo store of lanes a lead made, in the user's own callboard folder (not in the repo, and found by name, never by walking up).
 export type Store = { repo: string; lanes: (Lane & { createdAt: number })[]; creates: number[] }
@@ -159,7 +159,7 @@ export function parseStore(text: string): { ok: true; store: Store } | { ok: fal
   if (!Array.isArray(creates) || creates.length > 64 || creates.some((t) => !Number.isFinite(t))) return { ok: false, reason: 'store-shape' }
   const out: Store['lanes'] = []
   for (const l of lanes) {
-    const { name, folder, brief, createdAt, adopted, lead, model, sid, parked, leadName } = (l ?? {}) as Record<string, unknown>
+    const { name, folder, brief, createdAt, adopted, lead, model, sid, parked, leadName, leadSid } = (l ?? {}) as Record<string, unknown>
     if (typeof name !== 'string' || !NAME_RE.test(name) || reservedHit(name, [])) return { ok: false, reason: 'store-name' }
     if (typeof folder !== 'string' || !isCleanAbs(folder) || !(folder === repo || within(repo, folder)) || dotBelow(repo, folder)) return { ok: false, reason: 'store-folder' }
     if (typeof brief !== 'string' || !isSafeBrief(brief) || !within(folder, brief)) return { ok: false, reason: 'store-brief' }
@@ -168,8 +168,9 @@ export function parseStore(text: string): { ok: true; store: Store } | { ok: fal
     if (model !== undefined && !isLaneModel(model)) return { ok: false, reason: 'store-shape' }
     if (!sidFieldsOk(sid, parked)) return { ok: false, reason: 'store-shape' }
     if (leadName !== undefined && (typeof leadName !== 'string' || !NAME_RE.test(leadName) || reservedHit(leadName, []))) return { ok: false, reason: 'store-shape' }
+    if (leadSid !== undefined && (adopted === true || typeof leadSid !== 'string' || !SID_RE.test(leadSid))) return { ok: false, reason: 'store-shape' }
     if (out.some((x) => x.name === name)) return { ok: false, reason: 'store-dup' }
-    out.push({ name, folder, brief, repo, createdAt: createdAt as number, ...(adopted === true ? { adopted: true as const, lead: lead as string } : {}), ...(model !== undefined ? { model } : {}), ...(sid !== undefined ? { sid: sid as string } : {}), ...(parked !== undefined ? { parked: parked as number } : {}), ...(leadName !== undefined ? { leadName: leadName as string } : {}) })
+    out.push({ name, folder, brief, repo, createdAt: createdAt as number, ...(adopted === true ? { adopted: true as const, lead: lead as string } : {}), ...(model !== undefined ? { model } : {}), ...(sid !== undefined ? { sid: sid as string } : {}), ...(parked !== undefined ? { parked: parked as number } : {}), ...(leadName !== undefined ? { leadName: leadName as string } : {}), ...(leadSid !== undefined ? { leadSid: leadSid as string } : {}) })
   }
   return { ok: true, store: { repo, lanes: out, creates: creates as number[] } }
 }
@@ -181,8 +182,8 @@ const attachFieldsOk = (adopted: unknown, lead: unknown): boolean => (adopted ==
 export const sidFieldsOk = (sid: unknown, parked: unknown): boolean =>
   (sid === undefined || (typeof sid === 'string' && SID_RE.test(sid))) && (parked === undefined || (Number.isFinite(parked) && sid !== undefined))
 
-// The JSON a store keeps for a lane; every writer uses it, so no writer drops adopted, lead, model, sid, parked or leadName from a record it keeps.
-export const storeLaneJson = (l: Lane & { createdAt: number }) => ({ name: l.name, folder: l.folder, brief: l.brief, createdAt: l.createdAt, ...(l.adopted ? { adopted: true, lead: l.lead } : {}), ...(l.model ? { model: l.model } : {}), ...(l.sid !== undefined ? { sid: l.sid } : {}), ...(l.parked !== undefined ? { parked: l.parked } : {}), ...(l.leadName ? { leadName: l.leadName } : {}) })
+// The JSON a store keeps for a lane; every writer uses it, so no writer drops adopted, lead, model, sid, parked, leadName or leadSid from a record it keeps.
+export const storeLaneJson = (l: Lane & { createdAt: number }) => ({ name: l.name, folder: l.folder, brief: l.brief, createdAt: l.createdAt, ...(l.adopted ? { adopted: true, lead: l.lead } : {}), ...(l.model ? { model: l.model } : {}), ...(l.sid !== undefined ? { sid: l.sid } : {}), ...(l.parked !== undefined ? { parked: l.parked } : {}), ...(l.leadName ? { leadName: l.leadName } : {}), ...(l.leadSid && !l.adopted ? { leadSid: l.leadSid } : {}) })
 
 // A whole store as one writer writes it, through storeLaneJson, or store-size when every reader would refuse it (parseStore's limit).
 export function storeText(s: Store): { text: string } | { no: 'store-size' } {
@@ -605,7 +606,7 @@ export const HINT_REFRESH_MS = 24 * HOUR_MS
 // `manager` with an optional NAME, one word; managerNameRefusal judges the name, so a bad one gets its own fixed refusal, not the usage line.
 // `conductor` and anything after it is the conductor command (parseConductorArgs); a form it does not know is its own usage text.
 // `reserve` and anything after it is this machine's reserved-names command (parseReserveArgs); a form it does not know is its own usage text.
-export type CommandArg = 'off' | 'status' | 'lead' | 'lanes' | 'claim' | 'lane-off' | { lane: string | undefined } | { config: ConfigOp } | { checkin: CheckinOp } | { manager: string | undefined } | { conductor: ConductorOp } | { reserve: ReserveOp }
+export type CommandArg = 'off' | 'status' | 'lead' | 'lanes' | 'lane-off' | { lane: string | undefined } | { config: ConfigOp } | { checkin: CheckinOp } | { manager: string | undefined } | { conductor: ConductorOp } | { reserve: ReserveOp }
 
 // /callboard with no argument and /callboard help: one row per subcommand the handler accepts, in laneListText's table style. Who: who may run it ("You" is the
 // person, typing it or answering its dialog).
@@ -620,7 +621,6 @@ const HELP_ROWS: [string, string, string][] = [
   ['manager [NAME]', 'Make this session the manager, after you confirm.', 'Anyone'],
   ['config [SETTING VALUE]', 'Show the settings, or change one (reset restores the defaults).', 'Anyone to show, you to change'],
   ['reserve [remove] [NAME]', 'Show the names reserved on this Mac, or add or remove one.', 'Anyone to show, you to change'],
-  ['claim', 'Take over the lanes of a lead that is gone.', 'You'],
   ['checkin pause Nm|h', 'Pause check-ins for N minutes or hours; checkin on resumes them.', 'You, in a lead or manager'],
   ['rest', 'Stop keepalive pings in this idle gap.', 'Anyone'],
   ['off', 'Turn lead, conductor, manager and lane off for this session.', 'Anyone, after you confirm'],
@@ -638,7 +638,7 @@ export function parseCommandArgs(args: unknown): CommandArg | undefined {
   if (typeof args !== 'string') return undefined
   // Runs of spaces or tabs count as one space (a doubled space is a typo); a newline still makes the line unknown.
   const a = args.trim().replace(/[ \t]+/g, ' ')
-  if (a === 'off' || a === 'status' || a === 'lead' || a === 'lanes' || a === 'claim') return a
+  if (a === 'off' || a === 'status' || a === 'lead' || a === 'lanes') return a
   if (a === 'manager') return { manager: undefined }
   const mg = /^manager ([^ \n]{1,80})$/.exec(a)
   if (mg) return { manager: mg[1] }
@@ -690,7 +690,7 @@ export const reserveShowText = (names: readonly string[]): string =>
 // counts), when the list is full, or when a lane record, a lead stamp or a live lead or lane carries it, in any letter case (inUse names that one). The manager
 // may carry it: that is what the name is for.
 export function reserveAddRefusal(name: string, cur: readonly string[], inUse: string | undefined): string | undefined {
-  // Review c1: a short or letterless name folds to a skeleton that would reserve many names at once.
+  // A short or letterless name folds to a skeleton that would reserve many names at once.
   if (name.length < 3 || !/[A-Za-z]/.test(name)) return `${name} is too short to reserve: use at least 3 characters with a letter.`
   if (reservedHit(name, [])) return `${name} is reserved already (built in).`
   if (reservedHit(name, cur)) return `${name} is reserved already on this machine, or looks like a name that is.`
@@ -796,7 +796,7 @@ export const OFF_YES = 'Turn off'
 export const OFF_NO = 'Cancel'
 
 // The chip above each dialog (the engine allows 12 characters), so the person sees which feature is asking.
-export const HEADER = { enable: 'Callboard', lead: 'Enable Lead', restore: 'Restore Lane', stop: 'Stop Lane', attach: 'Join Lane', manager: 'Manager', conductor: 'Conductor', claim: 'Claim Lanes' } as const
+export const HEADER = { enable: 'Callboard', lead: 'Enable Lead', restore: 'Restore Lane', stop: 'Stop Lane', attach: 'Join Lane', manager: 'Manager', conductor: 'Conductor' } as const
 
 // Where a /callboard command came from, as fixed codes and words; never a plugin's own name or text.
 export type OriginCode = 'prompt' | 'phone' | 'plugin' | 'session' | 'other'
@@ -894,8 +894,7 @@ export function laneSession(entries: RegEntry[], lane: Lane, selfSid: string): {
   return { ok: true, entry: named[0] }
 }
 
-// The exact text of a cue file, in the grammar the target checks. A lead's rename adds its own session id; callboard-send.mjs writes the plain
-// rename NAME, which the target still takes.
+// The exact text of a cue file, in the grammar the target checks. A lead's rename adds its own session id.
 export function cueLine(verb: LeadVerb | 'retire' | 'park', laneName: string, leadSid?: string): string | undefined {
   const text = verb === 'rename' ? `rename ${laneName}${leadSid === undefined ? '' : ` ${leadSid}`}\n` : `${verb}\n`
   return parseCue(text).ok ? text : undefined
@@ -979,31 +978,6 @@ export const afterSignalFailedText = (verb: 'retire' | 'park' | 'terminate', nam
   (verb === 'park'
     ? 'Call lane_list: a parked lane shows as parked; if it does not, lane_unpark can still reopen it by its saved session.'
     : `Call lane_list, then lane_${verb} again if the lane is still listed.`)
-// ---- A lead's lanes after its name changed or its session ended: the rename carry and /callboard claim ----
-// Reach is by name: a lead reaches a lane that names it. A lead that is renamed keeps the lanes that session itself joined (the attached records naming its
-// session id): its tick moves their lead name along. Records it cannot prove are its own (a lane it made carries no lead session id), and any record whose lead
-// name no live session carries any more, wait for the person: /callboard claim names them in a dialog and re-points them at the claiming lead's name.
-export const CLAIM_YES = 'Claim'
-export const CLAIM_NO = 'Cancel'
-export const CLAIM_NOT_PERSON = 'Only you can claim lanes: type /callboard claim yourself.'
-export const CLAIM_NOT_LEAD = 'Claim needs the lead grant: run /callboard lead in this session first.'
-export const CLAIM_UNNAMED = 'This lead has no usable name, so no lane could name it. Give the session a name with /rename first.'
-export const CLAIM_NONE = 'No lane in this repo names a lead that is not running. Nothing to claim.'
-export const CLAIM_OTHER_UNNAMED = 'Another live lead in this repo has no usable name, so it cannot be told from a lead that is gone. Give it a name with /rename first. Nothing changed.'
-export const CLAIM_UNREADABLE = 'The lane list or the session list could not be read. Nothing changed.'
-export const claimQuestion = (lanes: string[], repo: string, olds: string[], lead: string, home?: string): string =>
-  `Claim lane${lanes.length === 1 ? '' : 's'} ${lanes.join(', ')} in ${homePath(repo, home)} for lead ${lead}? ${lanes.length === 1 ? 'It names' : 'They name'} ${olds.length === 1 ? 'a lead' : 'leads'} that ${olds.length === 1 ? 'is' : 'are'} not running (${olds.join(', ')}). ${lanes.length === 1 ? 'It answers' : 'They answer'} ${lead} afterwards.`
-export const claimedText = (lanes: string[], lead: string): string => `Claimed ${lanes.length} lane${lanes.length === 1 ? '' : 's'} for ${lead}: ${lanes.join(', ')}. Run lane_list to see ${lanes.length === 1 ? 'it' : 'them'}.`
-export const claimRefusedText = (code: string): string => `Nothing claimed: ${code}.`
-export const CLAIM_HINT = (names: string[]): string => `Not in your list: ${names.join(', ')} ${names.length === 1 ? 'names' : 'name'} a lead that is not running. The person can type /callboard claim to make ${names.length === 1 ? 'it' : 'them'} yours.`
-// The records a lead may claim: the lanes a lead made or joined in its own repo (a store lane, repo equal to its pin) whose lead name is neither its own nor
-// carried by any live session in any letter case. The caller passes the live session names and checks each record again inside the store lock.
-export function claimable(lanes: Lane[], g: Grant, liveNames: string[]): Lane[] {
-  if (g.level !== 'lead' || g.name === '' || g.pins.length !== 1) return []
-  const live = new Set(liveNames.filter((n) => typeof n === 'string').map((n) => n.toLowerCase()))
-  return lanes.filter((l) => l.src !== undefined && l.repo === g.pins[0] && l.leadName !== undefined && l.leadName !== g.name && !live.has(l.leadName.toLowerCase()))
-}
-
 export const removedNoSessionText = (verb: 'retire' | 'terminate', name: string): string => `lane ${name} ${verb === 'retire' ? 'retired' : 'terminated'} and removed: it had no live session. Its .archive/${name}/ folder and report stay.`
 
 // The report's last line is the signature: `status: done <session id of the writer>`. Older reports of earlier sessions
@@ -1218,8 +1192,6 @@ export const rebindFailedToast = (name: string): string => `Lane ${name} did not
 // The saved grant is rewritten once a day while lead is on (and at once when this process has no time for it), so it lapses only 30 days after the session closed.
 export const leadRefreshDue = (savedAt: number | undefined, now: number): boolean => savedAt === undefined || now - savedAt >= HINT_REFRESH_MS
 
-// /callboard on is retired; the on:<sid> key it once kept in $.store is deleted,
-// this session's at its start, any other's by the prune, and never read.
 // The /callboard off answer when there was nothing to turn off.
 export const OFF_NOTHING = 'Nothing to turn off: this session is not a lane or a lead.'
 
@@ -1602,24 +1574,6 @@ export const LOCK_BREAKER_MS = 30_000
 export const LEAD_PRUNE_MS = 10 * 60_000
 export const REGISTRY_FILE_MAX = 16_384
 export const REGISTRY_FILES_MAX = 512
-// Where a session's OWN registry row is looked for. CLAUDE_CONFIG_DIR unset or empty: the default registry, unchanged. Set: only a clean absolute path
-// in one of the user's two config folders counts (a first folder named `.claude` or `.claude-conductor`, the only two config folders this mod accepts;
-// widening them needs a new review first; no `.` or `..` segment, no `//`, no trailing slash, no control character, under 512 characters), and the registry is its `sessions` folder; anything else
-// gives undefined, so no own row is ever found (fails closed). The caller also resolves the config folder with realpath and refuses a link anywhere in it, and every
-// registry read holds the folder to the owner, mode and no-link check.
-export const CONFIG_DIR_MAX = 512
-export function ownRegistryDir(configDir: string | undefined, name: string, sessions: string): string | undefined {
-  if (configDir === undefined || configDir === '') return sessions
-  if (typeof configDir !== 'string' || configDir.length >= CONFIG_DIR_MAX) return undefined
-  if (CTRL.test(configDir)) return undefined
-  const home = `/Users/${name}/`
-  if (!configDir.startsWith(home) || configDir.endsWith('/')) return undefined
-  const rest = configDir.slice(home.length).split('/')
-  if (rest.some((s) => s === '' || s === '.' || s === '..')) return undefined
-  // `~/.claude` itself (equal to the default) or a folder under `~/.claude-conductor`; a folder inside `~/.claude` (projects, plugins, ...) is not a config root.
-  if (!(rest.length === 1 && rest[0] === '.claude') && rest[0] !== '.claude-conductor') return undefined
-  return `${configDir}/sessions`
-}
 export const parseOwner = (text: string): { pid: number; procStart: string; nonce: string } | undefined => {
   try {
     const j = JSON.parse(text)
@@ -1731,7 +1685,7 @@ export const CHECKIN_WAKE_MS = 30 * 60_000
 export const CHECKIN_PROMPT_MS = 5 * 60_000
 export const CHECKIN_QUIET_MS = 30 * 60_000
 const CHECKIN_GONE_OBS = 3
-// Review c2 (N3): the lowest `ping after` setting: a status change after this much quiet may be the lane's own keepalive ping.
+// The lowest `ping after` setting: a status change after this much quiet may be the lane's own keepalive ping.
 export const CHECKIN_BLIP_AFTER_MS = CONFIG_RANGE.pingAfterMin[0] * 60_000
 const CHECKIN_PAUSE_MAX_MS = 24 * HOUR_MS
 const ATTENTION_MAX = 8
@@ -1754,7 +1708,7 @@ export function observeLane(prev: LaneObs | undefined, l: Lane, entries: RegEntr
     if (typeof at !== 'number' || at > now) return o
     o.at = at
     if (e.status === 'waiting' && (e.waitingFor ?? null) !== null) o.waitingSince = (prev?.at === at && prev?.waitingSince) || now
-    // Review c2 (N3): only a lane already quiet CHECKIN_BLIP_AFTER_MS when its status moved keeps its start (a keepalive ping comes no sooner); an earlier
+    // Only a lane already quiet CHECKIN_BLIP_AFTER_MS when its status moved keeps its start (a keepalive ping comes no sooner); an earlier
     // change starts the window again.
     const keeps = (from: number | undefined) => from !== undefined && at - from >= CHECKIN_BLIP_AFTER_MS
     if (e.status === 'idle' && (e.waitingFor ?? null) === null) {

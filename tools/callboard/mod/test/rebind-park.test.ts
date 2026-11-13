@@ -1,8 +1,8 @@
 import { expect, test } from 'claude-code/testing'
-import { refusalText, STOPPABLE_BY_NAME, RESTORE_YES, RESTORE_NO, ATTACH_YES, ATTACH_NO, SID_KEPT, reboundToast, restoreChangedToast, KEEPALIVE_TEXT, OFF_NOTHING } from '../hooks/core'
+import { refusalText, STOPPABLE_BY_NAME, RESTORE_YES, RESTORE_NO, ATTACH_YES, ATTACH_NO, SID_KEPT, reboundToast, restoreChangedToast, OFF_NOTHING } from '../hooks/core'
 import { h, GOOD, LANESDIR, NO, OPEN_RESULT, PS_TABLE, ROOT, SESSIONS, SID, T0, YES, extraStat, laneSeed, longTest, psStartsGone, renames, resultFiles, storeFiles, teeTexts, toasts, toolDefs } from './harness'
 import type { Trace } from './harness'
-import { ATTACHED, ATTSESS, ATT_REC, KEY, LANES, LANE_COMPOSE, LANE_HINT, LEADSID, LEAD_LANES, MFOLDER, MIN, NEWSID, OTHER, OTHERLEAD, OWN_ROW, PARK_API, PIN, REG, REGFILE, RESULT, SELFREG, STATUS_NONE, STOREFILE, STORE_LANE, SVC, TWIN, allEvents, attRec, attacher, bornStore, callCreate, closeWrites, configRoot, cue, cueSession, doLane, drive, events, fileStat, grantAt, killed, lane, laneSections, lateLane, lead, leadAt, leadCall, leadReg, leadSelfReg, logged, newTrace, notices, ownReg, park, parkSess, parker, pause, pings, putStore, rebindAsks, rebinder, rebinds, recOf, renameThroughTick, sleepMs, started, statusText, storeJson, tickTwice, ticks, touched, turnEnds, unanswered, waitFor } from './fixtures'
+import { ATTACHED, ATTSESS, ATT_REC, KEY, LANES, LANE_COMPOSE, LANE_HINT, LEADSID, LEAD_LANES, MFOLDER, NEWSID, OTHER, OTHERLEAD, PARK_API, PIN, REG, REGFILE, RESULT, SELFREG, STATUS_NONE, STOREFILE, STORE_LANE, SVC, TWIN, allEvents, attRec, attacher, bornStore, callCreate, closeWrites, cue, cueSession, doLane, drive, events, fileStat, grantAt, killed, lane, laneSections, lateLane, lead, leadAt, leadCall, leadReg, leadSelfReg, logged, newTrace, notices, ownReg, park, parkSess, parker, pause, putStore, rebindAsks, rebinder, rebinds, recOf, renameThroughTick, sleepMs, started, statusText, storeJson, tickTwice, ticks, unanswered, waitFor } from './fixtures'
 
 test('a session that is not a lane writes no hint and no saved on; a lane writes a hint for its own session id only', async ($, on) => {
   await started($, on, [])
@@ -1182,18 +1182,3 @@ test('/callboard lane with a hint whose Restore is declined goes on to the Join 
     laneSeed.text = undefined
   }
 })
-
-for (const env of [undefined, ''] as const) {
-  longTest(`CLAUDE_CONFIG_DIR ${env === undefined ? 'unset' : 'empty'}: the own row is read from the default registry, as before, and the config folder is never touched`, async ($, on) => {
-    const stdins: string[] = []
-    const argv: string[][] = []
-    await configRoot($, on, stdins, env, OWN_ROW(), argv)
-    h.sessions = OWN_ROW()
-    h.ownSessions = {}
-    await turnEnds($)
-    await h.clock!.advance(50 * MIN)
-    expect(pings()).toEqual([KEEPALIVE_TEXT])
-    expect(logged(stdins).some((x) => x.startsWith('error:config-dir-rejected'))).toBe(false)
-    expect(touched(argv, '.claude-conductor')).toBe(false)
-  })
-}

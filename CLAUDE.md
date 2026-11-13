@@ -5,7 +5,7 @@
 ai-manager holds the manager role and its mechanism. The manager is one Claude Code session per machine that
 coordinates the other sessions on it, the leads and their lanes: it decides across them, reviews and reports, and
 does no work itself. Every go stays with the person. The repo also carries the tools the role leans on: the callboard
-mod, a usage watcher, a session lister and the manager's project skills. ai-toolkit
+mod, a usage watcher and the manager's project skills. ai-toolkit
 (https://github.com/notitial/ai-toolkit) is the base install; this repo builds on it.
 
 - **If you hold the callboard manager grant** (`/callboard manager`), read `docs/manager/README.md` and follow it.
@@ -15,7 +15,7 @@ mod, a usage watcher, a session lister and the manager's project skills. ai-tool
 
 No repo-wide build or lint. `bash tools/test-all.sh` is the entry point: it runs every suite below and prints a
 pass/fail table (`--quick` skips the slow `callboard` suite, `NAME…` runs only those). Its suites: `callboard`,
-`usage-watcher`, `usage-watcher-install`, `session-peers`, `rule-text`; keep its list in step with this one.
+`usage-watcher`, `usage-watcher-install`, `rule-text`; keep its list in step with this one.
 
 - `tools/callboard/` — `bash tools/callboard/test.sh` after changing anything under it. Needs node 22.18 or later
   and the `claude` CLI (`claude plugin validate`, `claude plugin test`). CI (`.github/workflows/ci.yml`) runs
@@ -30,7 +30,6 @@ pass/fail table (`--quick` skips the slow `callboard` suite, `NAME…` runs only
   not reset gets its setup in its own body.
 - `tools/usage-watcher/` — `/usr/bin/python3 -I tools/usage-watcher/test_watch.py` after changing `watch.py`;
   `bash tools/usage-watcher/test-install.sh` after changing `install.sh`.
-- `tools/session-peers/` — `bash tools/session-peers/test-peers.sh` after changing `peers.sh` (needs jq and python3).
 - `docs/`, `rules/` and `.claude/skills/` have no suite: check them by reading against the ADRs.
 
 Outside those directories, do not search for `package.json`, `Makefile`, or similar.
@@ -44,7 +43,7 @@ Outside those directories, do not search for `package.json`, `Makefile`, or simi
 - `.claude/skills/` — the manager's project skills; `.claude/skills/setup-manager/` walks a person through
   `docs/setup.md`.
 - `rules/callboard.md` — an always-on global rule for callboard's turns, linked into `~/.claude/rules/` by hand.
-- `tools/` — the callboard mod, the usage watcher and the session lister, each with its own tests;
+- `tools/` — the callboard mod and the usage watcher, each with its own tests;
   `tools/test-all.sh` runs them all.
 - `assets/icon/` — the project icon (SVG, mono variant, colour PNGs from 16 to 1024 px).
 - `.archive/` — gitignored local working area: the manager's state, tracker and audit records, lane reports.
@@ -58,8 +57,6 @@ Copy these when adding something like them, each with the test beside it:
   ADR 0005). Engine-level cases go in the matching topic file under `mod/test/`.
 - `tools/callboard/prompt-audit.mjs` + `prompt-audit.test.mjs` — a read-only node script: header comment with usage and
   exit codes, fixtures built in a temp dir, `node --test`.
-- `tools/session-peers/peers.sh` + `test-peers.sh` — a small bash tool: usage in the header, strict argument parsing,
-  tested against fake config dirs in a temp dir.
 
 Comments and docs state what the code does now, with no version, review or plan tags (`v13.2`, `review c1`, `PR 2`)
 and no "before X" history. History belongs in the ADRs and in git.

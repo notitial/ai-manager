@@ -28,7 +28,6 @@ import {
   readSmallR,
   psStarts,
   psConfirm,
-  configDirRejected,
   statR,
   toast,
   countDown,
@@ -79,7 +78,7 @@ export async function loadLanes($: any): Promise<c.Lane[] | string> {
   const count = new Map<string, number>()
   for (const s of stores) for (const l of s.store.lanes) count.set(l.name, (count.get(l.name) ?? 0) + 1)
   const out: c.Lane[] = []
-  for (const s of stores) for (const l of s.store.lanes) if (count.get(l.name) === 1) out.push({ name: l.name, folder: l.folder, brief: l.brief, repo: l.repo, src: s.key, ...(l.adopted ? { adopted: true as const, lead: l.lead } : {}), ...(l.model ? { model: l.model } : {}), ...(l.sid !== undefined ? { sid: l.sid } : {}), ...(l.parked !== undefined ? { parked: l.parked } : {}), ...(l.leadName ? { leadName: l.leadName } : {}) })
+  for (const s of stores) for (const l of s.store.lanes) if (count.get(l.name) === 1) out.push({ name: l.name, folder: l.folder, brief: l.brief, repo: l.repo, src: s.key, ...(l.adopted ? { adopted: true as const, lead: l.lead } : {}), ...(l.model ? { model: l.model } : {}), ...(l.sid !== undefined ? { sid: l.sid } : {}), ...(l.parked !== undefined ? { parked: l.parked } : {}), ...(l.leadName ? { leadName: l.leadName } : {}), ...(l.leadSid ? { leadSid: l.leadSid } : {}) })
   return out
 }
 
@@ -277,12 +276,10 @@ export async function registryEntries($: any): Promise<RegRow[] | undefined> {
 
 // The same read, with the reason the dead-row filter was off for it (the rebind): undefined only when this session's own row is live and every row the
 // table lacks was confirmed gone or absent; 'ps-confirm' when that confirmation failed or was cut (every row kept).
-// dir: the folder to read, `sessions` unless the caller asks for the own registry (ownRegistryEntries). One call reads one folder; rows of two registries
-// are never put in one list.
-export async function registryEntriesWhy($: any, dirArg?: string): Promise<{ rows: RegRow[] | undefined; why?: string }> {
+export async function registryEntriesWhy($: any): Promise<{ rows: RegRow[] | undefined; why?: string }> {
   const p = await where($)
   if (!p) return { rows: undefined }
-  const dir = dirArg ?? p.sessions
+  const dir = p.sessions
   if (!(await dirOk($, dir, p.uid))) return { rows: undefined }
   const out: RegRow[] = []
   const names = ((await $.fs.list(dir).catch(() => [])) as { name: string }[]).map((f) => f.name).filter((n) => /^[A-Za-z0-9-]{1,64}\.json$/.test(n))
@@ -335,25 +332,9 @@ export async function registryEntriesWhy($: any, dirArg?: string): Promise<{ row
 
 // One cue or one tool call reads the registry once: a memo that its steps share.
 export type Reg = () => Promise<RegRow[] | undefined>
-// own: the registry that holds the session's own row (ownRegistryEntries below).
-export function regOnce($: any, own = false): Reg {
+export function regOnce($: any): Reg {
   let p: ReturnType<Reg> | undefined
-  return () => (p ??= own ? ownRegistryEntries($) : registryEntries($))
-}
-
-// The registry that holds this session's OWN row: `sessions` unless CLAUDE_CONFIG_DIR names a good folder, none (no row, fails closed) when it names a bad
-// one. Used only where the session looks at itself (a person's row, idle, its shells, the nudge and the ping); everything that looks at other sessions or at
-// a cue (names, lanes, leads, the lock owner, a cue's idle check) reads `sessions` alone through registryEntries.
-async function ownRegistryEntries($: any): Promise<RegRow[] | undefined> {
-  const p = await where($)
-  if (p && p.own === undefined) await configDirRejected($)
-  return p?.own === undefined ? undefined : (await registryEntriesWhy($, p.own)).rows
-}
-export function ownRegOnce($: any): Reg {
-  return regOnce($, true)
-}
-export function ownReg($: any): Reg {
-  return () => ownRegistryEntries($)
+  return () => (p ??= registryEntries($))
 }
 
 export async function liveNames($: any, reg: Reg = () => registryEntries($)): Promise<string[]> {
@@ -375,7 +356,7 @@ export async function idleCheck($: any, sid: string, reg: Reg = () => registryEn
   return undefined
 }
 
-// Same steps as callboard-send.mjs: a 0600 temp file in a 0700 folder under the callboard root, then one rename into place.
+// A 0600 temp file in a 0700 folder under the callboard root, then one rename into place.
 // It returns the temp file's inode, which the rename keeps: the target can claim a cue within the same tick, so a stat after the write may find nothing.
 export async function writeIn($: any, folder: string, file: string, text: string): Promise<{ err: string } | { ino: number }> {
   const p = await where($)

@@ -50,34 +50,8 @@ export async function where($: any) {
   const name = n.stdout.trim()
   if (u.exitCode !== 0 || n.exitCode !== 0 || !Number.isInteger(uid) || !/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/.test(name)) return undefined
   const sessions = `/Users/${name}/.claude/sessions`
-  // Only the own-row lookups follow CLAUDE_CONFIG_DIR (ownRegistryEntries); the cues, lanes, leads and logs stay under ~/.claude. A throw while reading the
-  // variable is a bad value too; null reads as unset. The name is a string literal, as `claude plugin validate` reads it.
-  let configDir: unknown
-  let envFailed = false
-  try {
-    configDir = await $.env.get('CLAUDE_CONFIG_DIR')
-  } catch {
-    envFailed = true
-  }
-  if (configDir === null) configDir = undefined
-  let ownDir = envFailed ? undefined : c.ownRegistryDir(configDir as string | undefined, name, sessions)
-  // A set folder is resolved once, the config folder itself (it exists: the engine runs from it, where `sessions` may not yet): a link anywhere in it
-  // (a parent component the lexical check cannot see) refuses it, so it cannot lead out of the config folders by a link. `sessions` is still held to dirOk
-  // at every read (a missing folder or a link there gives no row).
-  if (ownDir !== undefined && ownDir !== sessions) {
-    const cfg = ownDir.slice(0, -'/sessions'.length)
-    const r = await run($, [REALPATH, '--', cfg]).catch(() => undefined)
-    if (!r || r.exitCode !== 0 || r.stdout.trim() !== cfg) ownDir = undefined
-  }
-  mem.paths = { uid, root: `/Users/${name}/.claude/callboard`, sessions, own: ownDir }
+  mem.paths = { uid, root: `/Users/${name}/.claude/callboard`, sessions }
   return mem.paths
-}
-
-export async function configDirRejected($: any) {
-  const sid = await $.session.id().catch(() => '')
-  if (mem.configDirLogged || !c.SID_RE.test(sid)) return
-  mem.configDirLogged = true
-  await logq($, sid, 'error', 'config-dir-rejected')
 }
 
 export async function facts($: any, path: string) {

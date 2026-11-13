@@ -25,10 +25,6 @@ function activate(context) {
   const lanes = createLanes({ vscode, registry, sleep: (ms) => new Promise((r) => setTimeout(r, ms)), now: Date.now,
     workspaceFolders: primaryFolder,
   })
-  const reg = (id, fn) => context.subscriptions.push(vscode.commands.registerCommand(id, fn))
-  reg('callboard.open', (folder) => lanes.open(folder))
-  reg('callboard.reopen', (sid) => lanes.reopen(sid))
-  reg('callboard.close', (sid) => lanes.close(sid))
   const spool = createSpool({
     dir: path.join(CLAUDE, 'callboard', 'open'),
     loadLanes: () => allLanes({ storeDir: path.join(CLAUDE, 'callboard', 'lanes') }),

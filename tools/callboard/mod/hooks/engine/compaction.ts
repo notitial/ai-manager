@@ -43,7 +43,7 @@ import {
   ownTextOf,
   countDown,
 } from './base.ts'
-import { registryOf, ownReg, ownRegOnce, idleCheck, regOnce, loadLanes, registryEntries, noAnswer } from './store.ts'
+import { registryOf, idleCheck, regOnce, loadLanes, registryEntries, noAnswer } from './store.ts'
 import type { Reg, Answer } from './store.ts'
 import { homeOf, LEAD_RESTORE_TRIES, regEntry, cfgGet, leadBusy } from './grants.ts'
 import { reportLaneOf, reportStat, retireReportCheck, sessionRoot, undoLate, detach, keepLaneFacts, briefLane } from './lanes.ts'
@@ -150,16 +150,6 @@ export async function pruneHints($: any, me: string) {
   // Lead grants (lead:<sid>), with their own caps. The starting session's own is left to the lead restore, which reads it and deletes it itself.
   const p = await where($)
   if (!p) return
-  // A saved on (on:<sid>) is never read now (/callboard on is retired): every other session's goes, unread, under the same cap; a delete that fails
-  // stops nothing. The starting session's own goes in onLeftovers.
-  let onDels = 0
-  for (const k of all.filter((x) => x.startsWith(c.ON_HINT_PREFIX) && x !== `${c.ON_HINT_PREFIX}${me}`).slice(0, c.HINT_SCAN_MAX)) {
-    if (onDels >= HINT_DELETE_MAX) break
-    onDels++
-    await Promise.resolve()
-      .then(() => $.store.delete(k))
-      .catch(() => undefined)
-  }
   // Cut-compaction marks (cmp:<sid>) of other sessions, under the same caps; the starting session's own is read at start.
   for (const [prefix, ok] of [[c.CMP_PREFIX, (v: unknown) => c.cmpMarkFresh(v, now)]] as const) {
     let n = 0
@@ -274,18 +264,12 @@ export async function backgroundShells($: any, sid: string, reg: Reg): Promise<'
 // isInteractive false (the engine sets it only under the REPL); a -p run or the SDK writes no row, so it stays out. Both are live checks.
 export async function interactive($: any, sid: string): Promise<boolean> {
   if ((await $.state.get(interactiveRef)).value === true) return true
-  const row = await registryOf($, sid, ownReg($))
-  if (row === undefined) return false
-  // In a config folder other than ~/.claude the row must be a person's (kind interactive): a bg or kind-less row there is not a person's
-  // session for the restores, the rebind or the self request. Under ~/.claude any row still counts, as before.
-  const p = await where($)
-  return p?.own === p?.sessions || row.kind === 'interactive'
+  return (await registryOf($, sid)) !== undefined
 }
 
 // A person's own registry row, as the engine writes it for a VS Code panel or a terminal (kind interactive). A `claude --bg` background
 // worker has a row too (kind background), so interactive() passes it; this does not. A row with no kind, two rows, or no row fail.
-// The default registry is the own one (CLAUDE_CONFIG_DIR); a caller that works from a cue passes the plain one.
-export async function personRow($: any, sid: string, reg: Reg = ownReg($)): Promise<boolean> {
+export async function personRow($: any, sid: string, reg: Reg = () => registryEntries($)): Promise<boolean> {
   return (await registryOf($, sid, reg))?.kind === 'interactive'
 }
 
@@ -320,7 +304,7 @@ async function laneSignedDone($: any, sid: string): Promise<boolean> {
 async function thresholdState($: any, sid: string): Promise<'done' | 'working' | 'idle'> {
   if ((await $.state.get(lane)).value != null) return (await laneSignedDone($, sid)) ? 'done' : 'working'
   if (await busyAgents($)) return 'working'
-  if ((await backgroundShells($, sid, ownRegOnce($))) !== undefined) return 'working'
+  if ((await backgroundShells($, sid, regOnce($))) !== undefined) return 'working'
   return 'idle'
 }
 
@@ -365,7 +349,7 @@ export async function nudgeTick($: any, sid: string) {
   // A lead's nudge is an order: no context floor, and the 30-minute gap does not apply (the hourly cap does).
   const no = c.compactAllowed(await counts($), tokens, now, due.kind === 'lead')
   if (no) return drop(no)
-  if ((await idleCheck($, sid, ownReg($))) !== undefined) return
+  if ((await idleCheck($, sid)) !== undefined) return
   let kind: c.NudgeKind | undefined = due.kind === 'threshold' ? undefined : due.kind
   if (due.kind === 'threshold') {
     if (await laneSignedDone($, sid)) return drop('lane-done')
@@ -502,7 +486,7 @@ export async function keepaliveTick($: any, sid: string, submitsAtStart: number)
   if ((await $.state.get(request)).value != null) return
   const due = await $.state.get(nudgeDueRef)
   if (due.value != null) return
-  const reg = ownRegOnce($)
+  const reg = regOnce($)
   if ((await idleCheck($, sid, reg)) !== undefined) return
   if (!(await personRow($, sid, reg))) return
   if (mem.submits !== submitsAtStart) return
@@ -534,7 +518,7 @@ export async function keepaliveTick($: any, sid: string, submitsAtStart: number)
 // the nudge throttle; then one nudge is recorded. A fresh nudge already pending is answered nudged as it stands (its time is kept, so the lead cannot
 // stretch its 10 minutes); a pending one of another kind (size, idle, cache) becomes a lead nudge (the order text, not its own).
 export async function leadNudge($: any, sid: string, now: number, answer: Answer, refuse: (reason: string) => Promise<void>) {
-  // A cue's path: the plain registry, as every cue check (a lead's cue never reaches a session whose row is only in another config folder).
+  // A cue's path: the session registry, as every cue check.
   if (!(await personRow($, sid, regOnce($)))) return refuse('not-interactive')
   const read = await $.state.get(nudgeDueRef)
   const pending = read.value as c.NudgeDue | null | undefined

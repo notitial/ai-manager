@@ -87,20 +87,18 @@ import {
   readStoreFile,
   storePath,
   idleCheck,
-  ownRegOnce,
-  ownReg,
   loadLanes,
   editStore,
   registryOf,
+  regOnce,
   lockStore,
 } from './store.ts'
 import type { RegRow, Reg } from './store.ts'
-import { sessionRoot, leadToolsOnce, promptToolsRegister, leadCore, readReport, laneLive } from './lanes.ts'
+import { sessionRoot, leadToolsOnce, promptToolsRegister, leadCore, readReport } from './lanes.ts'
 import type { Bound } from './lanes.ts'
 import { interactive, busyAgents, personRow, backgroundShells } from './compaction.ts'
 import { managerCommand } from './commands.ts'
 
-const enabledRef = { plugin: 'callboard', key: 'enabled' } as const
 // $.state keys declared again where they are used: `claude plugin validate` reads a key in the file that uses it.
 const lane = { plugin: 'callboard', key: 'lane' } as const
 const request = { plugin: 'callboard', key: 'request' } as const
@@ -382,33 +380,6 @@ export async function leadRestore($: any, me: string, hint: c.LeadHint, tries: n
     return
   }
   leadRestorePending.set(me, { hint, tries })
-}
-
-// What a retired /callboard on left (the enabled state, the saved on:<sid>) is cleared at session.start, with
-// no toast: it no longer means anything, and the session is eligible only as a bound lane.
-export async function onLeftovers($: any, sid: string) {
-  try {
-    if ((await $.state.get(enabledRef)).value != null) {
-      await $.state.set(enabledRef, null)
-      await log($, sid, 'on-cleared', 'state')
-    }
-  } catch {
-    await logq($, sid, 'error', 'on-clear')
-  }
-  if (!c.SID_RE.test(sid)) return
-  // Each store call has the engine-call limit and runs inside an async function, so one that throws at once is answered like one that rejects (as config).
-  try {
-    const key = `${c.ON_HINT_PREFIX}${sid}`
-    const raw = await withTimeout($, (async () => $.store.get(key))(), c.ENGINE_CALL_TIMEOUT_MS)
-    if (raw === 'timeout') throw new Error('timeout')
-    if (raw !== undefined) {
-      const d = await withTimeout($, (async () => $.store.delete(key))().then(() => 'ok' as const), c.ENGINE_CALL_TIMEOUT_MS)
-      if (d !== 'ok') throw new Error('timeout')
-      await log($, sid, 'on-cleared', 'saved')
-    }
-  } catch {
-    await logq($, sid, 'error', 'on-hint-delete')
-  }
 }
 
 // One briefing note, once per `key` in `marks`: the mark is set before the append, a refused or failed append unmarks it (if it is still this one) and logs errCode.
@@ -1006,7 +977,7 @@ async function attentionNotice($: any, sid: string, items: c.AttentionItem[], su
   }
   if (await capped()) return
   if (await busyAgents($)) return
-  const reg = ownRegOnce($)
+  const reg = regOnce($)
   if ((await idleCheck($, sid, reg)) !== undefined) return
   if (!(await personRow($, sid, reg))) return
   if ((await backgroundShells($, sid, reg)) !== undefined) return
@@ -1016,7 +987,7 @@ async function attentionNotice($: any, sid: string, items: c.AttentionItem[], su
   if (await capped()) return
   const now = await $.clock.now()
   if (dialogOpen.has(sid) || (await $.state.get(request)).value != null || (await $.state.get(nudgeDueRef)).value != null) return
-  if ((await idleCheck($, sid, ownReg($))) !== undefined) return
+  if ((await idleCheck($, sid)) !== undefined) return
   const draft = (await $.prompt.read()).text
   if (draft !== '' || dialogOpen.has(sid) || mem.submits !== submitsAtStart || lastSubmitAt.get(sid) !== sentAt || !grants.has(sid) || epochOf(sid) !== ep) return
   const fresh = untold(kept)
@@ -1038,10 +1009,11 @@ async function attentionNotice($: any, sid: string, items: c.AttentionItem[], su
   await log($, sid, sent === 'ok' ? label : sent === 'timeout' ? `${label}-unconfirmed` : `${label}-failed`, `${codes}:${fresh.length}`)
 }
 
-// ---- the rename carry and /callboard claim (see c.claimable) ----
-// A lead that is renamed keeps the lanes its own session joined: once a lead's registry name (c.leadNameOf) differs from the one cached at its grant, the attached
-// records of its repo that name its session id (adopted, lead == this session) and its old name take the new name, in one store write under the lock. A record it
-// cannot prove is its own (a lane it made carries no lead session id; a lead that restarted has another session id) is left to /callboard claim. A rename that
+// ---- the rename carry ----
+// A lead that is renamed keeps the lanes its own session made or joined: once a lead's registry name (c.leadNameOf) differs from the one cached at its grant, the
+// records of its repo that name its session id (c.leadOwns: `lead` of an attached record, `leadSid` of a made one) and its old name take the new name, in one store
+// write under the lock. A record it cannot prove is its own (a lane made before records carried `leadSid`; a lead that restarted has another session id) is left
+// as it is. A rename that
 // leaves no usable name carries nothing and keeps the old name cached, so the next valid name still finds the records. Checked at most every RENAME_CHECK_MS.
 const RENAME_CHECK_MS = 10_000
 
@@ -1060,7 +1032,7 @@ export async function leadRenameTick($: any, sid: string) {
   const old = g.name
   const lanes = await loadLanes($)
   if (typeof lanes === 'string') return
-  const mine = lanes.filter((l) => l.src !== undefined && l.repo === g.pins[0] && l.adopted === true && l.lead === sid && l.leadName === old)
+  const mine = lanes.filter((l) => l.src !== undefined && l.repo === g.pins[0] && c.leadOwns(l, sid) && l.leadName === old)
   if (mine.length > 0) {
     const r = await ownWrite($, sid, () => editStore($, mine[0].src!, async (file) => {
       const parsed = file.state === 'ok' ? c.parseStore(file.text) : undefined
@@ -1070,7 +1042,7 @@ export async function leadRenameTick($: any, sid: string) {
       if (!rows) return { no: 'registry-unreadable' }
       // The last checks before the write: the name is still the one seen, and this is still the same grant.
       if (c.leadNameOf(rows.map((x) => x.j), sid) !== cur || grantOf(sid)?.level !== 'lead' || epochOf(sid) !== epoch) return { no: 'changed' }
-      const own = (l: c.Store['lanes'][number]) => l.adopted === true && l.lead === sid && l.leadName === old
+      const own = (l: c.Store['lanes'][number]) => c.leadOwns(l, sid) && l.leadName === old
       if (!parsed.store.lanes.some(own)) return { skip: true }
       const t = c.storeText({ ...parsed.store, lanes: parsed.store.lanes.map((l) => (own(l) ? { ...l, leadName: cur } : l)) })
       if ('no' in t) return t
@@ -1083,28 +1055,6 @@ export async function leadRenameTick($: any, sid: string) {
     if (r.text !== '') await log($, sid, 'lead-rename-carried', String(mine.length))
   }
   if (grants.get(sid) === g) grants.set(sid, { ...g, name: cur })
-}
-
-// The names of every live session but this one: a lead renamed only in letter case (Twin to TWIN) still has its made lanes to claim, and the registry already
-// guarantees no other row carries its name in any case (c.leadNameOf).
-export const otherNames = (live: RegRow[], sid: string): string[] => live.flatMap((r) => (typeof r.j.name === 'string' && r.j.sessionId !== sid ? [r.j.name] : []))
-
-// A claim is held back while another live lead of the repo has no usable name (its lanes would look like a gone lead's), or while the registry or the presence
-// files cannot be read; undefined when it may go on. Run for the plan and again inside the store lock.
-export async function claimBlocked($: any, live: RegRow[], sid: string, pin: string): Promise<string | undefined> {
-  const errs = { error: false }
-  const leads = (await leadsFor($, live, pin, pin, errs)).filter((x) => x.sid !== sid)
-  if (errs.error) return 'unreadable'
-  const rows = live.map((r) => r.j)
-  return leads.some((x) => c.leadNameOf(rows, x.sid) === undefined) ? 'other-unnamed' : undefined
-}
-// An attached record whose lead session is live is that lead's, whatever name it carries now.
-export const leadLiveFor = (live: RegRow[], l: { adopted?: true | boolean; lead?: string }, own: string): boolean => l.adopted === true && l.lead !== undefined && l.lead !== own && live.some((r) => r.j.sessionId === l.lead)
-// The records /callboard claim would take now: claimable, minus an attached record whose lead is another live session and a lane the lead made that a live session carries.
-export async function claimLanes($: any, live: RegRow[], lanes: c.Lane[], g: c.Grant, sid: string): Promise<c.Lane[]> {
-  const out: c.Lane[] = []
-  for (const l of c.claimable(lanes, g, otherNames(live, sid))) if (!leadLiveFor(live, l, sid) && (l.adopted || (await laneLive($, live, l)) === undefined)) out.push(l)
-  return out
 }
 
 // /callboard off: the pending restore and the saved grant go. Resolves false when the delete failed (the reply then says the manager may come back).
@@ -1163,7 +1113,7 @@ export async function managerTick($: any, sid: string) {
   }
   const pend = managerRestorePending.get(sid)
   if (!pend || pend.asking) return
-  const row = await registryOf($, sid, ownReg($))
+  const row = await registryOf($, sid)
   if (managerRestorePending.get(sid) !== pend) return
   if (row === undefined && pend.tries++ < MANAGER_RESTORE_TRIES) return
   if (row?.kind !== 'interactive') {
@@ -1530,7 +1480,7 @@ async function conductorRestoreTry($: any, me: string, box: { hint: c.ConductorH
   const dropped = () => epochOf(me) !== epoch
   // A person's own row: kind interactive. No row yet: tried again (a reopened panel's row may come a moment after session.start). Another kind (a
   // --bg worker resumed under this id) or none: the try ends and the key is kept.
-  const row = await registryOf($, me, ownReg($))
+  const row = await registryOf($, me)
   if (dropped()) return
   if (row === undefined) return 'not-person'
   if (row.kind !== 'interactive') return void (await reject('not-person'))

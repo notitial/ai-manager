@@ -21,7 +21,7 @@
 //   answered / returned rows of a question's answer carry code: "answer", opt (the chosen option's index, as a string) and lh (the first 16 hex of SHA-256(id + "\n" + label), the label redacted
 //              and trimmed); the labels themselves are in prompts/questions-YYYY-MM.jsonl, { t, id, lane, repo, tier, by, header, question, options, label, via? }
 //   answered / returned rows of the person's own answer carry via: "person", short and by = the relaying tier's session id (no prompt_answer call exists for them)
-//   floor <category>, not-judgeable, no-tier, escalated, floor-confirmed, floor-off, answering-on, answering-off   no request of their own
+//   floor <category>, not-judgeable, no-tier, escalated, answering-on, answering-off   no request of their own
 //
 // Rule c (a hook-sourced decision in a transcript that the ledger never saw), and its blind spot. A result line's
 // `permissionDecision.source: "hook"` does not say which hook event decided: PreToolUse guards allow and deny with the same source. Real
@@ -62,7 +62,7 @@ const QUESTION_DAYS = 90
 const LABEL_MAX = 256
 
 const ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
-const KINDS = new Set(['requested', 'answered', 'escalated', 'dropped', 'returned', 'superseded', 'expired-denied', 'off', 'abandoned', 'floor', 'not-judgeable', 'no-tier', 'floor-confirmed', 'floor-off', 'answering-on', 'answering-off', 'relayed', 'relay-lost', 'relay-left', 'relay-late', 'deny-unclear'])
+const KINDS = new Set(['requested', 'answered', 'escalated', 'dropped', 'returned', 'superseded', 'expired-denied', 'off', 'abandoned', 'floor', 'not-judgeable', 'no-tier', 'answering-on', 'answering-off', 'relayed', 'relay-lost', 'relay-left', 'relay-late', 'deny-unclear'])
 const FIELDS = ['code', 'id', 'lane', 'repo', 'tool', 'pattern', 'hash', 'ctx', 'tier', 'why', 'nonce', 'tuid', 'by', 'via', 'short', 'opt', 'lh']
 const ENDS = new Set(['returned', 'superseded', 'expired-denied', 'off', 'abandoned'])
 // A `dropped` row with one of these codes is a decision the hook refused as forged or wrong: an anomaly. The others are ordinary.

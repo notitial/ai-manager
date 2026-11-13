@@ -23,7 +23,6 @@ It doesn't touch the terminal, any setting or the network. It reads and writes r
 - **One repo per window.** Claude Code opens a new panel in the window's *first* folder, so a window answers only for lanes in that folder. In a multi-root workspace, lanes of the other folders need their own window.
 - **Limits.** At most 6 panels a minute. A lane made by a lead is refused when its repo already has 8 live sessions. A lane that already has a live session is refused.
 - **Focus stays put.** A panel it opens doesn't keep focus: the tab you were on comes back.
-- **Commands.** `Callboard: Open lane panel`, `Reopen lane panel by session id` and `Close lane panel by session id` are for the mod. They're hidden from the Command Palette.
 
 ## Updating
 

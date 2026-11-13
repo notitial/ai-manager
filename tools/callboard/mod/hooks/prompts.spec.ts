@@ -13,15 +13,11 @@ const floor = (tool: string, input: unknown, o: p.FloorOpts = {}) =>
 const HOME = { home: '/Users/x' }
 
 // ---- the floor: each row, allow and refuse, with the bypass spellings ----
-test('floor: merges on any server, branch updates, and the optional merge item by its own tool name only', () => {
+test('floor: merges on any server, branch updates, and machine-ops pr_merge', () => {
   assert.equal(floor('mcp__github__merge_pull_request', {}), 'merge')
   assert.equal(floor('mcp__other__merge_pull_request', {}), 'merge')
   assert.equal(floor('mcp__github__update_pull_request_branch', {}), 'merge')
   assert.equal(floor('mcp__machine-ops__pr_merge', {}), 'merge')
-  assert.equal(floor('mcp__machine-ops__pr_merge', {}, { optional: { merges: true } }), undefined)
-  // The optional merge item lifts nothing else: every other merge shape stays floor.
-  assert.equal(floor('mcp__github__merge_pull_request', {}, { optional: { merges: true } }), 'merge')
-  assert.equal(floor('Bash', { command: 'gh pr merge 5 --squash' }, { optional: { merges: true } }), 'merge')
   assert.equal(floor('mcp__github__get_file_contents', {}), undefined)
 })
 test('floor: git_merge only on main, master or production (unresolved is floor); every Bash merge is floor', () => {
@@ -63,7 +59,7 @@ test('floor: git_push shapes that read as the current branch, a delete, an optio
   for (const branch of ['--force', '--mirror', '--all', '-d']) assert.equal(floor(`${GIT}git_push`, { path: '/r', branch }), 'protected-push', branch)
   for (const branch of [7, ['main'], { a: 1 }, true]) assert.equal(floor(`${GIT}git_push`, { path: '/r', branch }), 'protected-push', JSON.stringify(branch))
 })
-test('floor: force pushes by flag, by + refspec, and the optional force item by its own tool name only', () => {
+test('floor: force pushes by flag, by + refspec, and machine-ops force_push', () => {
   assert.equal(floor(`${GIT}git_push`, { branch: 'feat/x', force: true }), 'force-push')
   assert.equal(floor(`${GIT}git_push`, { branch: 'feat/x', forceWithLease: true }), 'force-push')
   assert.equal(floor(`${GIT}git_push`, { branch: '+feat/x' }), 'force-push')
@@ -72,8 +68,6 @@ test('floor: force pushes by flag, by + refspec, and the optional force item by 
   assert.equal(floor('Bash', { command: 'git push -f origin feat/x' }), 'force-push')
   assert.equal(floor('Bash', { command: 'git push origin +feat/x' }), 'force-push')
   assert.equal(floor('mcp__machine-ops__force_push', {}), 'force-push')
-  assert.equal(floor('mcp__machine-ops__force_push', {}, { optional: { forcePushes: true } }), undefined)
-  assert.equal(floor(`${GIT}git_push`, { branch: 'feat/x', force: true }, { optional: { forcePushes: true } }), 'force-push')
 })
 test('floor: a push to a protected branch, in every spelling, and any Bash git push', () => {
   for (const b of ['main', 'master', 'production', 'refs/heads/main', 'origin/main', 'MAIN', 'upstream/master', 'refs/remotes/origin/production']) {

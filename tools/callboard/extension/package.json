@@ -2,7 +2,7 @@
   "name": "callboard-panels",
   "displayName": "Callboard Panels",
   "description": "Opens, reopens and closes Claude Code lane panels for the callboard mod, so a lead session can run its lanes in this window.",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "publisher": "notitial",
   "icon": "icon.png",
   "galleryBanner": { "color": "#101d22", "theme": "dark" },
@@ -15,19 +15,5 @@
   "main": "./extension.js",
   "activationEvents": ["onStartupFinished"],
   "extensionDependencies": ["anthropic.claude-code"],
-  "contributes": {
-    "commands": [
-      { "command": "callboard.open", "category": "Callboard", "title": "Open lane panel" },
-      { "command": "callboard.reopen", "category": "Callboard", "title": "Reopen lane panel by session id" },
-      { "command": "callboard.close", "category": "Callboard", "title": "Close lane panel by session id" }
-    ],
-    "menus": {
-      "commandPalette": [
-        { "command": "callboard.open", "when": "false" },
-        { "command": "callboard.reopen", "when": "false" },
-        { "command": "callboard.close", "when": "false" }
-      ]
-    }
-  },
   "type": "commonjs"
 }

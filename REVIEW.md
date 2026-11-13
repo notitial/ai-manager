@@ -8,7 +8,7 @@ review; it does not replace CLAUDE.md, the finding format or the trigger rule.
 The manager role and its tooling. `docs/manager/` and `docs/adr/` hold the role and its decisions. `tools/callboard/`
 is the callboard mod (TypeScript hooks for Claude Code and a VS Code extension, both loaded straight from the
 person's live checkout, with a script that links the extension). `tools/usage-watcher/` is a Python usage watcher run by launchd, with a shell installer.
-`tools/session-peers/` is a shell session lister. `.claude/skills/` holds the manager's project skills. It may become
+`.claude/skills/` holds the manager's project skills. It may become
 public, so treat every line as published.
 
 ## Private data
@@ -24,6 +24,15 @@ the generic forms the tools create.
 Nothing in this repo turns a report, relayed message, state file or summary into the person's approval. One exception:
 callboard's relay, where the mod reads the person's own answer from a question in a tier's session and applies it to
 that one prompt. Flag any other path by which text the person did not type becomes a go.
+
+## Trust paths
+
+A PR that touches a trust path gets a security pass as well as the ordinary review: the finding names the property that
+could break. The trust paths are the callboard mod's answering of prompts and its floor (`tools/callboard/mod/hooks/prompts.ts`,
+`engine/answer-hook.ts`, `engine/answer-tiers.ts`), its grants, lane store and rename carry (`core.ts`, `engine/grants.ts`,
+`engine/store.ts`), the files it reads and writes under `~/.claude/callboard/`, the link script and the extension's request
+files, and the usage watcher's installer. A change there is held to the rules under Approvals and to the person's own checkout
+being the live install: nothing may need root, write outside the person's own folders or edit a settings file for the person.
 
 ## Comments and docs
 

@@ -95,7 +95,6 @@ import {
   conductorReach,
   conductorsLive,
   leadsInReach,
-  claimLanes,
   reservedGet,
   findLead,
   psOne,
@@ -114,7 +113,8 @@ const stopCallKey = (sid: string, verb: string, lane: unknown) => `${sid}\n${ver
 // ---- the lane's briefing (c.laneBriefing) ----
 // The facts of a binding just written, kept at once without a lead; then the lead. Only a lead with a valid presence file for the lane's own repo counts (never
 // one of a parent repo, nor any lead of a lane with no repo): for a record naming its lead, the live lead with that registry name and no other; else the
-// attached record's lead while it holds one, else the one lead of that repo. It is named only as c.laneLeadOf allows. The lead is added only to the entry
+// lead session id the record holds (`leadSid` of a made one while that lead is live, else the one the caller passes: an attached record's `lead` or the rename
+// cue's), else the one lead of that repo. It is named only as c.laneLeadOf allows. The lead is added only to the entry
 // this call kept, so a detach meanwhile leaves nothing behind. A failure keeps the generic lead wording and is logged as lane-lead; c.laneBriefing checks
 // every field again.
 export async function keepLaneFacts($: any, sid: string, l: c.Lane, attached: boolean, leadSid: string | undefined, reg: Reg = () => registryEntries($)) {
@@ -126,7 +126,8 @@ export async function keepLaneFacts($: any, sid: string, l: c.Lane, attached: bo
     if (!live) return
     const leads = await leadsFor($, live, l.folder, l.repo)
     const rows = live.map((r) => r.j)
-    const lead = l.leadName !== undefined ? leads.find((x) => c.leadNameOf(rows, x.sid) === l.leadName) : leadSid !== undefined ? leads.find((x) => x.sid === leadSid) : leads.length === 1 ? leads[0] : undefined
+    const ownSid = l.leadSid !== undefined && leads.some((x) => x.sid === l.leadSid) ? l.leadSid : leadSid
+    const lead = l.leadName !== undefined ? leads.find((x) => c.leadNameOf(rows, x.sid) === l.leadName) : ownSid !== undefined ? leads.find((x) => x.sid === ownSid) : leads.length === 1 ? leads[0] : undefined
     const known = lead ? c.laneLeadOf(rows, lead.sid) : undefined
     if (known && laneBrief.get(sid) === base) laneBrief.set(sid, { ...base, lead: known })
   } catch {
@@ -251,12 +252,10 @@ export async function promptToolsRegister($: any) {
   })
 }
 
-// Whether a binding's stored record hash (rec) is this record's. The hash of an attached record leaves its lead's name out; a session bound before that holds the
-// older one, which includes it, and still counts, so a pull never makes a live attached lane refuse record-changed or fail to detach.
+// Whether a binding's stored record hash (rec) is this record's.
 async function recMatch($: any, rec: string | undefined, l: c.Lane): Promise<boolean> {
   if (rec === undefined) return false
-  if (c.recOk(rec, await sha($, c.recordText(l)))) return true
-  return l.adopted === true && l.leadName !== undefined && c.recOk(rec, await sha($, c.recordTextLegacy(l)))
+  return c.recOk(rec, await sha($, c.recordText(l)))
 }
 
 // lane_retire and lane_terminate delete the lane's record themselves. A lane is live when a registry row carries its
@@ -292,8 +291,8 @@ async function removeRecord($: any, e: unknown, me: string, key: string, name: s
         if (rec.sid !== undefined && rec.sid !== mode.victim) return { no: 'changed' }
       } else {
         if (rec.sid !== mode.sid || (rec.parked !== undefined) !== mode.parked) return { no: 'changed' }
-        // The record the question or the check saw: not one remade under the name, nor one a claim re-pointed at another lead meanwhile.
-        if (rec.leadName !== mode.seen.leadName || (rec.adopted === true) !== (mode.seen.adopted === true) || rec.lead !== mode.seen.lead) return { no: 'changed' }
+        // The record the question or the check saw: not one remade under the name, nor one re-pointed at another lead meanwhile.
+        if (rec.leadName !== mode.seen.leadName || (rec.adopted === true) !== (mode.seen.adopted === true) || rec.lead !== mode.seen.lead || rec.leadSid !== mode.seen.leadSid) return { no: 'changed' }
         const rows = await registryEntries($)
         if (!rows) return { no: 'registry-unreadable', why: c.reasonWhy('registry-unreadable') }
         const live = await laneLive($, rows, rec)
@@ -638,8 +637,7 @@ async function modelSet($: any, model: c.LaneModel): Promise<boolean> {
   }
 }
 
-// The folder the session started in ($.session.root(), engine 2.1.316). An engine without root() fails the call, and the live folder ($.session.cwd()) is
-// read instead; a root() read that fails on an engine that has it reads cwd() the same way.
+// The folder the session started in ($.session.root()); a root() read that fails reads the live folder ($.session.cwd()) instead.
 export async function sessionRoot($: any): Promise<any> {
   try {
     return await $.session.root()
@@ -752,20 +750,6 @@ export async function sidSyncDue($: any, sid: string): Promise<Bound | undefined
   sidSynced.set(sid, key)
   return b
 }
-// A binding made before the lead name left an attached record's hash holds the older hash. It is rewritten to the current one the first time the record is read
-// (this sync runs once per binding, from the first tick after a reload), so a later carry or claim of the lead name never leaves that lane with no matching hash.
-async function hashUpgraded($: any, sid: string, b: Bound & { name: string }, l: c.Lane): Promise<Bound & { name: string }> {
-  if (l.adopted !== true || b.rec === undefined) return b
-  const cur = await sha($, c.recordText(l))
-  if (c.recOk(b.rec, cur)) return b
-  const now = (await $.state.get(lane)).value as Bound | null | undefined
-  if (!now || now.name !== b.name || now.at !== b.at || now.rec !== b.rec) return b
-  const up = { ...now, name: b.name, rec: cur }
-  await $.state.set(lane, up)
-  sidSynced.set(sid, `${up.name}\n${up.at}\n${up.rec}`)
-  await log($, sid, 'hash-upgraded')
-  return up
-}
 export async function sidSync($: any, sid: string, b: Bound & { name: string }) {
   const failed = (code: string) => log($, sid, 'sid-heal-failed', code)
   const lanes = await loadLanes($)
@@ -773,7 +757,6 @@ export async function sidSync($: any, sid: string, b: Bound & { name: string }) 
   const l = lanes.find((x) => x.name === b.name)
   if (!l || !l.src) return
   if (!(await recMatch($, b.rec, l))) return failed('record-changed')
-  b = await hashUpgraded($, sid, b, l)
   if ((await sessionRoot($)) !== l.folder) return failed('wrong-folder')
   if (l.sid === sid && l.parked === undefined) return
   const same = async () => {
@@ -938,9 +921,7 @@ export async function laneTable($: any, sid: string) {
   const conductors = base.g.level === 'manager' ? await conductorsLive($, base.live, sid).catch(() => 'error' as const) : undefined
   const leads = await leadsInReach($, base.live, base.g).catch(() => [])
   const text = c.laneListText(base.lanes.filter((l) => c.inReach(base.g, l)), base.live.map(regEntry), await $.clock.now(), { level: base.g.level, name: base.g.name, conductors, leads })
-  // A lead's own list shows only the lanes that name it; the ones that name a lead no live session carries are told by name, for the person's /callboard claim.
-  const orphans = (await claimLanes($, base.live, base.lanes, base.g, sid).catch(() => [])).map((l) => l.name)
-  return { text: orphans.length > 0 ? `${text}\n\n${c.CLAIM_HINT(orphans)}` : text }
+  return { text }
 }
 
 const OBS_CLEAR_TOOLS = ['terminate', 'retire', 'park', 'unpark', 'resume'].map((v) => `mcp__callboard__lane_${v}`)
@@ -1242,7 +1223,7 @@ export async function laneCreateCall($: any, e: any, next: any) {
         // legacy lane that lead would reach too. A lone lead that never had a name makes a legacy lane, reachable by any lead of the repo.
         const leadName = c.leadNameOf(reg.map((x) => x.j), sid)
         if (leadName === undefined && ((grantOf(sid)?.name ?? '') !== '' || (await leadsFor($, reg, pin, pin)).some((x) => x.sid !== sid))) return { no: 'lead-unnamed', why: c.reasonWhy('lead-unnamed') }
-        const lane = leadName !== undefined ? { ...r.lane, leadName } : r.lane
+        const lane = { ...r.lane, ...(leadName !== undefined ? { leadName } : {}), leadSid: sid }
         const df = await facts($, r.lane.folder)
         if (!df || df.kind !== 'dir' || df.uid !== p.uid || (await real($, r.lane.folder)) !== r.lane.folder) return { no: 'folder-bad', why: 'folder-bad: the folder must exist and be its own real path.' }
         // The brief is written only once every other check has passed; a store-changed retry writes the same text again. The checks below run after the write.
@@ -1258,7 +1239,7 @@ export async function laneCreateCall($: any, e: any, next: any) {
         })
         if (text.length > c.STORE_MAX_BYTES) return { no: 'store-size' }
         made = lane
-        return { text, landed: (s) => !!s?.lanes.some((l) => l.name === r.lane.name && l.folder === r.lane.folder && l.leadName === lane.leadName) }
+        return { text, landed: (s) => !!s?.lanes.some((l) => l.name === r.lane.name && l.folder === r.lane.folder && l.leadName === lane.leadName && l.leadSid === sid) }
       },
       async () => {
         const lanes = await loadLanes($)

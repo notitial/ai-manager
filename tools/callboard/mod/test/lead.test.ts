@@ -1,8 +1,8 @@
 import { expect, test } from 'claude-code/testing'
 import { refusalText, LANES_CHANGED_NOTE, OFF_QUESTION, offLeavesLane, LEAD_YES, LEAD_NO, RESTORE_YES, RESTORE_NO, REASON_TEXT, OFF_NOTHING } from '../hooks/core'
-import { h, GOOD, NO, ROOT, SID, T0, YES, extraStat, gitFiles, gitNoHead, laneSeed, leadFiles, longTest, realFails, realMap, resultFiles, statErr, storeFiles, toasts, toolDefs } from './harness'
+import { h, NO, ROOT, SID, T0, YES, extraStat, gitFiles, gitNoHead, laneSeed, leadFiles, longTest, realFails, realMap, resultFiles, statErr, storeFiles, toasts, toolDefs } from './harness'
 import type { Trace } from './harness'
-import { ATTACHED, LANES, LEADKEY, LEADPATH, LEADPS, LEADSID, LEAD_LANES, MFOLDER, NOT_ENABLED, OTHER, OTHERLEAD, PIN, REG, REGFILE, RESULT, SELFPATH, SELF_PS, STATUS_NONE, STORE_LANE, USAGE, allEvents, attRec, attacher, callCreate, created, creator, cue, cueSession, dirStat, doLane, drive, dropRec, grantAt, lane, laneTarget, lead, leadAt, leadCall, leadFileText, leadReg, leadSelfReg, listCall, logged, newTrace, notices, ownReg, pause, putStore, rebinder, rebinds, recOf, renameThroughTick, started, statusText, storeLaneNames, tickTwice, ticks } from './fixtures'
+import { ATTACHED, LANES, LEADKEY, LEADPATH, LEADPS, LEADSID, LEAD_LANES, MFOLDER, OTHER, OTHERLEAD, PIN, REG, REGFILE, RESULT, SELFPATH, STATUS_NONE, STORE_LANE, USAGE, allEvents, attRec, attacher, callCreate, created, creator, cue, cueSession, dirStat, doLane, drive, dropRec, grantAt, lane, laneTarget, lead, leadAt, leadCall, leadFileText, leadReg, leadSelfReg, listCall, logged, newTrace, notices, ownReg, pause, putStore, rebinder, rebinds, recOf, renameThroughTick, started, statusText, storeLaneNames, tickTwice, ticks } from './fixtures'
 
 test('the lead scope is the cwd at the grant, not the live cwd', async ($, on) => {
   await lead($, on, [])
@@ -1018,73 +1018,13 @@ test('an engine without session.root() reads the live folder instead: the lane r
   expect(rebinds(stdins)[0]).toStartWith('rebound:')
 })
 
-// ---- /callboard on does not exist; what an earlier one left is cleared at start ----
-const ONKEY = `on:${SID}`
-
-test('an enabled state and a saved on left from before are cleared at start with no toast; the session is not eligible, so a compact cue refuses', async ($, on) => {
-  const stdins: string[] = []
-  const trace = newTrace()
-  h.sessions = {}
-  laneSeed.text = undefined
-  await started($, on, stdins, {
-    clock: true,
-    trace,
-    seed: () => {
-      trace.st!.set('enabled', { value: { at: T0 - 1000 }, version: 1 })
-      h.store.set(ONKEY, { pin: '/data/x/work/lab', savedAt: T0 - 60_000 })
-    },
-  })
-  h.psTable = SELF_PS
-  expect(trace.st!.get('enabled')?.value).toBe(null)
-  expect(h.store.has(ONKEY)).toBe(false)
-  expect(toasts).toEqual([])
-  expect(logged(stdins)).toContain('on-cleared:state')
-  expect(logged(stdins)).toContain('on-cleared:saved')
-  expect((await $.command.run(lane('status'))).text).toBe(STATUS_NONE)
-  expect(JSON.stringify(await $.tool.call(GOOD as any))).toContain(NOT_ENABLED)
-  expect(await cue(150, 'compact\n')).toBe('compact refused not-eligible 150\n')
-  // The cue's handling saves a hint only for a lane: none for this session.
-  expect(h.store.has(`sess:${SID}`)).toBe(false)
-  // A reload keeps the state: a start clears it again.
-  trace.st!.set('enabled', { value: { at: h.nowMs }, version: 9 })
-  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
-  expect(trace.st!.get('enabled')?.value).toBe(null)
-  expect(toasts).toEqual([])
-})
-
-test('a start with nothing left writes nothing and logs no clear; a saved on whose delete fails is logged, with no toast', async ($, on) => {
-  const stdins: string[] = []
-  const trace = newTrace()
-  await started($, on, stdins, { trace })
-  expect(trace.log.filter((k) => k.startsWith('enabled'))).toEqual([])
-  expect(logged(stdins).some((x) => x.startsWith('on-cleared'))).toBe(false)
-  h.store.set(ONKEY, { pin: '/data/x/work/lab', savedAt: T0 })
-  h.storeDeleteFails = true
-  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
-  h.storeDeleteFails = false
-  expect(logged(stdins)).toContain('error:on-hint-delete')
-  expect(toasts).toEqual([])
-})
-
-test('the prune at start deletes every other session\'s saved on, good or bad and unread, and keeps a fresh cut mark', async ($, on) => {
-  const reads: string[] = []
+test('the prune at start deletes a stale cut mark of another session and keeps a fresh one', async ($, on) => {
   await started($, on, [], {
     seed: () => {
-      h.store = new (class extends Map<string, unknown> {
-        get(k: string) {
-          reads.push(k)
-          return super.get(k)
-        }
-      })()
-      h.store.set(`on:${OTHER}`, { pin: '/x', savedAt: T0 - 1000 })
-      h.store.set(`on:${LEADSID}`, { pin: 'x', savedAt: T0 })
-      h.store.set('on:not-a-sid', { pin: '/x', savedAt: T0 })
       h.store.set(`cmp:${OTHER}`, { at: T0 - 60_000 })
       h.store.set(`cmp:${LEADSID}`, { at: T0 - 16 * 60_000 })
     },
   })
-  expect([...h.store.keys()].filter((k) => k.startsWith('on:'))).toEqual([])
-  expect(reads.filter((k) => k.startsWith('on:') && k !== ONKEY)).toEqual([])
   expect(h.store.has(`cmp:${OTHER}`)).toBe(true)
   expect(h.store.has(`cmp:${LEADSID}`)).toBe(false)
 })

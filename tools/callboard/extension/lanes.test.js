@@ -214,7 +214,6 @@ test('bad arguments are refused before any command runs', async () => {
   const w = world()
   await assert.rejects(w.lanes.open('relative'), /absolute/)
   await assert.rejects(w.lanes.reopen('nope'), /bad session id/)
-  await assert.rejects(w.lanes.close('../x'), /bad session id/)
 })
 
 test('reopen is a no-op for a live panel and opens a closed one by sid', async () => {
@@ -287,28 +286,6 @@ test('reopen: a live row of that sid that is not a panel throws live-elsewhere a
   d.entries.push({ sessionId: s, cwd: A, entrypoint: 'cli', name: 'LAB', nameSource: 'user', pid: 4300 })
   assert.equal(await d.lanes.reopen(s), s)
   assert.equal(world.opens(), 1)
-})
-
-test('close needs exactly one tab named for the panel', async () => {
-  const w = world({ pids: true, alive: () => true })
-  const s = await w.lanes.open(A)
-  const closedTabs = []
-  const tab = { label: w.entries[0].name, input: { viewType: 'mainThreadWebview-claudeVSCodePanel' } }
-  w.vscode.window.tabGroups.all.push({ tabs: [tab] })
-  w.vscode.window.tabGroups.close = async (t) => closedTabs.push(t)
-  assert.equal(await w.lanes.close(s), s)
-  assert.deepEqual(closedTabs, [tab])
-  w.vscode.window.tabGroups.all[0].tabs.push({ label: tab.label, input: tab.input })
-  await assert.rejects(w.lanes.close(s), /found 2/)
-})
-
-test('close ignores an editor tab that is not a Claude panel, and reserved names', async () => {
-  const w = world({ pids: true, alive: () => true })
-  const s = await w.lanes.open(A)
-  w.vscode.window.tabGroups.all.push({ tabs: [{ label: w.entries[0].name, input: { viewType: 'default' } }] })
-  await assert.rejects(w.lanes.close(s), /found 0/)
-  w.entries[0].name = 'manager'
-  await assert.rejects(w.lanes.close(s), /reserved/)
 })
 
 test('open refuses a folder that is not the first workspace folder of the window', async () => {
@@ -762,19 +739,6 @@ test('sweep: a live row still keeps the tab open, and a live row with the lane\'
   v.lanes.adopt(VALID_SID, { name: 'ATT', pid: 4242 })
   await v.lanes.sweep()
   assert.deepEqual(vclosed, [], 'a live session carries the name')
-})
-
-test('close uses only a live row: a stale row whose old name is now another live session\'s tab closes nothing, nor does a row whose check fails', async () => {
-  const s = 'abcdef01-0000-4000-8000-0000000000c1'
-  for (const [alive, startOf] of [[(pid) => pid !== 4242, undefined], [() => true, async (pid) => (pid === 4242 ? undefined : `start-${pid}`)]]) {
-    const w = world({ alive, startOf })
-    const closed = trackTabs(w)
-    w.entries.push({ sessionId: s, cwd: A, entrypoint: 'claude-vscode', name: 'LABO', nameSource: 'user', pid: 4242 })
-    w.entries.push({ sessionId: 'abcdef01-0000-4000-8000-0000000000c2', cwd: A, entrypoint: 'claude-vscode', name: 'LABO', nameSource: 'user', pid: 4300 })
-    w.vscode.window.tabGroups.all.push({ tabs: [claudeTab('LABO')] })
-    await assert.rejects(w.lanes.close(s), /no such open panel/)
-    assert.deepEqual(closed, [])
-  }
 })
 
 test('sweep: a panel only ever seen as maybe-live (ps failing) is noted, and its tab closes once its pid is dead', async () => {

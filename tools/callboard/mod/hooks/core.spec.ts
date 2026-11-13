@@ -3,7 +3,6 @@ import assert from 'node:assert/strict'
 import { readFileSync, readdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import * as c from './core.ts'
-import { cueText } from '../../send/callboard-send.mjs'
 
 const reserved = createRequire(import.meta.url)('../../extension/reserved.js') as { reservedHit: (name: string) => boolean; pinRefusal: (pin: string, home: string) => string | undefined }
 
@@ -595,7 +594,7 @@ test('every dialog is a verb plus Cancel; off has its own pair; restore follows 
   assert.ok(c.restoreQuestion('API').startsWith('Restore this session'))
 })
 
-import { recOk, reservedHit, parseStore, pinRefusal, createRefusal, recordText, recordTextLegacy, STORE_MAX_LANES, STORE_MAX_BYTES } from './core.ts'
+import { recOk, reservedHit, parseStore, pinRefusal, createRefusal, recordText, STORE_MAX_LANES, STORE_MAX_BYTES } from './core.ts'
 
 test('reserved names are matched by skeleton, not only by exact name', () => {
   for (const n of ['MANAGER', 'manager', 'Manager_', 'MANAGER-2', 'MANAGER2', 'MANAG3R', 'MANA6ER', 'rnANAGER', 'MANAGER1']) assert.equal(reservedHit(n), true, n)
@@ -899,6 +898,34 @@ test('recordText of a record without the attach fields is the text it always was
   assert.equal(recordText(att), `A\n/f\n/f/b\n/r\nadopted\n${LEAD}`)
 })
 
+test('leadSid: parseStore takes it on a made record only and keeps it; the hash takes the lead session id in place of the lead name; a record without it hashes as it always did', () => {
+  const store = (l: any) => JSON.stringify({ repo: '/Users/x/code/app', lanes: [l], creates: [] })
+  const made = { name: 'API', folder: '/Users/x/code/app/api', brief: '/Users/x/code/app/api/B.md', createdAt: 1, leadName: 'LEADA' }
+  const ok = parseStore(store({ ...made, leadSid: LEAD }))
+  assert.equal(ok.ok && ok.store.lanes[0].leadSid, LEAD)
+  assert.equal((c.storeLaneJson((ok as any).store.lanes[0]) as any).leadSid, LEAD)
+  const old = parseStore(store(made))
+  assert.equal(old.ok && 'leadSid' in old.store.lanes[0], false)
+  assert.equal('leadSid' in c.storeLaneJson((old as any).store.lanes[0]), false)
+  for (const leadSid of ['x', 5, null, LEAD.toUpperCase()]) assert.equal((parseStore(store({ ...made, leadSid })) as any).reason, 'store-shape', `leadSid ${leadSid}`)
+  assert.equal((parseStore(store({ ...adoptedLane, leadSid: LEAD })) as any).reason, 'store-shape', 'an attached record names its lead as lead')
+  const rec = { name: 'A', folder: '/f', brief: '/f/b', repo: '/r', leadName: 'LEADA' }
+  assert.equal(recordText(rec), 'A\n/f\n/f/b\n/r\nleadName\nLEADA')
+  const withSid = { ...rec, leadSid: LEAD }
+  assert.equal(recordText(withSid), `A\n/f\n/f/b\n/r\nleadSid\n${LEAD}`)
+  assert.equal(recordText(withSid), recordText({ ...withSid, leadName: 'LEADB' }), 'a carry that moves the lead name leaves the hash alone')
+  assert.notEqual(recordText(withSid), recordText({ ...withSid, leadSid: OTHER }))
+})
+
+test('leadOwns: the lead session id of an attached record is `lead`, of a made record `leadSid`; a record with neither is nobody\'s', () => {
+  const made = { name: 'A', folder: '/f', brief: '/f/b' }
+  assert.equal(c.leadOwns({ ...made, leadSid: LEAD }, LEAD), true)
+  assert.equal(c.leadOwns({ ...made, leadSid: LEAD }, OTHER), false)
+  assert.equal(c.leadOwns({ ...made, adopted: true, lead: LEAD }, LEAD), true)
+  assert.equal(c.leadOwns({ ...made, adopted: true, lead: LEAD }, OTHER), false)
+  assert.equal(c.leadOwns(made, LEAD), false)
+})
+
 test('birthRenameOk refuses a record that was attached', () => {
   const l = { name: 'ATT', folder: '/w/x', brief: '/w/x/.callboard-attached', adopted: true as const, lead: LEAD }
   const s = { cwd: '/w/x', turns: 0, nameSource: 'auto', firstSeenMs: 1000, liveNames: [] as string[] }
@@ -1110,7 +1137,7 @@ test('helpText is a header and a three-column table with one row per subcommand,
   const lines = c.helpText().split('\n')
   assert.deepEqual(lines.slice(0, 4), ['**Callboard commands**', '', '| Command | What it does | Who |', '|---|---|---|'])
   const words = lines.slice(4).map((l) => /^\| ([^ \\|]+)/.exec(l)![1])
-  assert.deepEqual(words, ['lanes', 'status', 'lead', 'lane', 'escalation', 'prompts', 'conductor', 'manager', 'config', 'reserve', 'claim', 'checkin', 'rest', 'off', 'help'])
+  assert.deepEqual(words, ['lanes', 'status', 'lead', 'lane', 'escalation', 'prompts', 'conductor', 'manager', 'config', 'reserve', 'checkin', 'rest', 'off', 'help'])
   assert.ok(lines.includes('| lane \\[NAME\\] | Make this session a lane, named NAME if given; lane off takes it out of its lane. | You |'))
   for (const l of lines.slice(4)) assert.equal(l.replace(/\\\|/g, '').split('|').length, 5, l)
   assert.match(c.HELP_USAGE, /manager/)
@@ -1630,8 +1657,7 @@ test('the lead briefing has the park bullet right after the force stop bullet (t
   assert.equal(lines[i + 1], '- `lane_park` stops a lane but keeps its conversation. The lane must confirm, as for `lane_retire`: idle for 30 s, an empty prompt box, no background agents or shells. No signed report is needed. `lane_unpark` reopens the conversation with its history. The lane becomes itself again within a few seconds; then call `lane_resume`. A parked lane shows `parked` in the Session column of `lane_list`. Retire is final: a retired lane\'s conversation cannot be reopened with `lane_unpark`, only replaced by a new session (`lane_open`). Park a lane you may need again; retire it when its work is done.')
 })
 
-test('v13.5 /callboard on is retired: the saved on key prefix stays for the cleanup, and the fixed texts; v13.6: the retired text is gone too', () => {
-  assert.equal(c.ON_HINT_PREFIX, 'on:')
+test('v13.5 /callboard on is retired: the fixed texts; v13.6: the retired text is gone too', () => {
   assert.equal('ON_RETIRED' in c, false)
   assert.equal(c.OFF_NOTHING, 'Nothing to turn off: this session is not a lane or a lead.')
   assert.equal(c.rebindFailedToast('API'), 'Lane API did not rebind automatically. Run /callboard lane to restore it.')
@@ -1719,23 +1745,6 @@ test('inReach and leadLane: a lead reaches a lane naming it or none; other-lead 
   assert.ok(c.hasText('lead-unnamed'))
 })
 
-test('v13.3 ownRegistryDir: unset or empty gives the default registry; a clean folder under the home gives its sessions folder; anything else gives none', () => {
-  const sessions = '/Users/x/.claude/sessions'
-  assert.equal(c.ownRegistryDir(undefined, 'x', sessions), sessions)
-  assert.equal(c.ownRegistryDir('', 'x', sessions), sessions)
-  assert.equal(c.ownRegistryDir('/Users/x/.claude', 'x', sessions), '/Users/x/.claude/sessions')
-  assert.equal(c.ownRegistryDir('/Users/x/.claude-conductor/config', 'x', sessions), '/Users/x/.claude-conductor/config/sessions')
-  assert.equal(c.ownRegistryDir('/Users/x/.claude-conductor/My Config/é', 'x', sessions), '/Users/x/.claude-conductor/My Config/é/sessions')
-  for (const bad of [
-    'relative', '.', '..', ' ', '/', '/Users/x', '/Users/x/', '/Users/x/x/', '/Users/x//x', '/Users/x/x//y', '/Users/x/./x', '/Users/x/x/.',
-    '/Users/x/../x', '/Users/x/x/..', '/Users/x/x/../y', '/Users/y/x', '/Users/xy/y', '/tmp/x', '/Users/x/config', '/Users/x/.claudex', '/Users/x/.claude-', '/Users/x/.claude-x/config', '/Users/x/.claude/projects/x', '/Users/x/.claude/config', '/Users/x/.claude-conductorx/config', '/Users/x/.Claude/config', '/Users/x/Documents/x', '/Users/x/.config/claude', '/Users/x/claude', '/Users/x/x\ny', '/Users/x/x\u0000y', '/Users/x/x\u007fy',
-    `/Users/x/.claude-conductor/${'a'.repeat(c.CONFIG_DIR_MAX)}`,
-  ]) assert.equal(c.ownRegistryDir(bad, 'x', sessions), undefined, JSON.stringify(bad))
-  assert.equal(c.ownRegistryDir('/Users/x/.claude-conductor/' + 'a'.repeat(c.CONFIG_DIR_MAX - 40), 'x', sessions)?.endsWith('/sessions'), true)
-  assert.equal(c.ownRegistryDir(5 as unknown as string, 'x', sessions), undefined)
-})
-
-// ---- levels S2b: a second lead in a repo, and the Join dialog's lead picker ----
 test('secondLeadRefusal: none with no other lead; with one, this session and every other lead need a usable name (levels S2b)', () => {
   const S = '0a1b2c3d-0000-4000-8000-123456789abc'
   const A = '5a1b2c3d-0000-4000-8000-123456789abc'
@@ -2456,45 +2465,16 @@ test('v15.4 the mod waits only through pause(): the only $.clock.sleep left are 
   assert.ok(hits.every((l) => l.includes('Promise.race(')), hits.join('\n'))
 })
 
-// ---- stuck lanes: refusal text, claimable ----
+// ---- stuck lanes: refusal text ----
 test('stuck lanes: the adopted-record refusal names no route that needs the gone session', () => {
   const t = c.reasonWhy('adopted-record')
   assert.equal(t, 'adopted-record: an attached lane keeps its own session: no rename, start or open. Use lane_resume to prompt it. lane_retire or lane_terminate ends it.')
   assert.ok(!t.includes('/callboard lane off'))
 })
 
-test('stuck lanes: claimable takes the store lanes of the lead\'s own repo that name a lead no live session carries, in any letter case', () => {
-  const lane = (name: string, leadName?: string, extra: Record<string, unknown> = {}) => ({ name, folder: '/w/repo', brief: '/w/repo/B.md', repo: '/w/repo', src: 'k', ...(leadName ? { leadName } : {}), ...extra })
-  const lanes = [lane('legacy'), lane('mine', 'NEW'), lane('dead', 'old-aa'), lane('alive', 'ALIVE'), lane('other-case', 'Twin'), lane('far', 'old-bb', { repo: '/w/repo/sub' }), lane('nosrc', 'old-cc', { src: undefined })]
-  const names = (g: c.Grant, live: string[]) => c.claimable(lanes, g, live).map((l) => l.name)
-  assert.deepEqual(names(c.leadGrant('/w/repo', 'NEW'), ['NEW', 'ALIVE', 'twin']), ['dead'])
-  assert.deepEqual(names(c.leadGrant('/w/repo', 'NEW'), ['NEW', 'ALIVE', 'TWIN', 'OLD-AA']), [])
-  // A lead with no usable name, a conductor and the manager claim nothing.
-  assert.deepEqual(names(c.leadGrant('/w/repo', ''), []), [])
-  assert.deepEqual(names({ level: 'conductor', pins: ['/w/repo'], name: 'C' }, []), [])
-  assert.deepEqual(names({ level: 'manager', pins: [], name: 'MANAGER' }, []), [])
-})
-
-test('stuck lanes: the claim question names the lanes, the old lead names and the claiming lead', () => {
-  assert.equal(c.claimQuestion(['A', 'B'], '/Users/x/code/app', ['old-aa'], 'NEW', '/Users/x'), 'Claim lanes A, B in ~/code/app for lead NEW? They name a lead that is not running (old-aa). They answer NEW afterwards.')
-  assert.equal(c.claimQuestion(['A'], '/Users/x/code/app', ['p', 'q'], 'NEW', '/Users/x'), 'Claim lane A in ~/code/app for lead NEW? It names leads that are not running (p, q). It answers NEW afterwards.')
-  assert.equal(c.parseCommandArgs('claim'), 'claim')
-  assert.equal(c.parseCommandArgs(' claim  '), 'claim')
-  assert.equal(c.parseCommandArgs('claim x'), undefined)
-})
-
-test('stuck lanes: recordTextLegacy is the hash an attached record had before: it differs from recordText only when the record has a lead name', () => {
-  const att = { name: 'A', folder: '/f', brief: '/f/b', repo: '/r', adopted: true as const, lead: LEAD }
-  assert.equal(recordTextLegacy(att), recordText(att))
-  assert.equal(recordTextLegacy({ ...att, leadName: 'LEADA' }), `A\n/f\n/f/b\n/r\nadopted\n${LEAD}\nleadName\nLEADA`)
-  assert.notEqual(recordTextLegacy({ ...att, leadName: 'LEADA' }), recordText({ ...att, leadName: 'LEADA' }))
-  const made = { name: 'A', folder: '/f', brief: '/f/b', repo: '/r', leadName: 'LEADA' }
-  assert.equal(recordTextLegacy(made), recordText(made))
-})
-
-test('stuck lanes: claimable, given the live names without the claimer\'s own, still offers a lane the lead made under its old letter case', () => {
-  const lane = { name: 'M', folder: '/w/repo', brief: '/w/repo/B.md', repo: '/w/repo', src: 'k', leadName: 'Twin' }
-  assert.deepEqual(c.claimable([lane], c.leadGrant('/w/repo', 'TWIN'), []).map((l) => l.name), ['M'])
+test('parseCommandArgs: claim is not a command any more', () => {
+  assert.equal(c.parseCommandArgs('claim'), undefined)
+  assert.equal(c.parseCommandArgs(' claim  '), undefined)
 })
 
 // Byte pins for the texts that carry a number typed into them (15 minutes, 30 minutes, 12 resumes per hour, 100k, 8000, 16, 1 MB), and for the four fixed
@@ -2526,7 +2506,7 @@ test('startText, resumeText, COMPACT_CUT_NOTE and LANES_CHANGED_TEXT are fixed w
 })
 
 
-// The extension and the sender keep copies of rules that live in core.ts (each is a stand-alone script with no access to the mod). These tests run the same inputs through both. They are here because only this spec can read core.ts.
+// The extension keeps copies of rules that live in core.ts (it is a stand-alone script with no access to the mod). These tests run the same inputs through both. They are here because only this spec can read core.ts.
 test('the extension\'s reserved-name check agrees with the mod\'s built-in one', () => {
   const names = ['MANAGER', 'manager', 'Manager', 'MANAGER_', 'MANAGER-2', 'manager7', 'MANAG3R', 'MANAGEr1', 'M-A-N-A-G-E-R', 'rnanager', 'LABLANE', 'API', 'manage', 'managers', 'a', 'x'.repeat(40), 'svc-api', 'MANAGER_x']
   for (const n of names) assert.equal(reserved.reservedHit(n), c.reservedHit(n, []), n)
@@ -2569,16 +2549,11 @@ test('the extension\'s pinRefusal agrees with the mod\'s and gives the codes the
   assert.equal(reserved.pinRefusal(long, home), undefined)
 })
 
-test('the sender writes only cues the mod reads: four verbs, and a narrower grammar than the mod\'s', () => {
-  for (const args of [['start'], ['resume'], ['compact'], ['rename', 'api'], ['rename', 'a-b_C1'], ['rename', 'x'.repeat(40)]]) {
-    const text = cueText(args)
-    const parsed = c.parseCue(text)
-    assert.equal(parsed.ok, true, JSON.stringify(args))
-    assert.equal((parsed as { ok: true; cue: { verb: string } }).cue.verb, args[0])
+test('cueLine writes only cues the mod reads: every verb, and the longest and the odd-character lane names', () => {
+  for (const [verb, name] of [['start', 'api'], ['resume', 'api'], ['compact', 'api'], ['retire', 'api'], ['park', 'api'], ['rename', 'api'], ['rename', 'a-b_C1'], ['rename', 'x'.repeat(40)]] as const) {
+    const parsed = c.parseCue(c.cueLine(verb, name)!)
+    assert.equal(parsed.ok, true, `${verb} ${name}`)
+    assert.equal((parsed as { ok: true; cue: { verb: string } }).cue.verb, verb)
   }
-  // The mod also takes retire, park and a rename that names its lead; the sender does not write them.
-  for (const args of [['retire'], ['park'], ['rename', 'blue', '5a1b2c3d-0000-4000-8000-123456789abc']]) {
-    assert.equal(c.parseCue(`${args.join(' ')}\n`).ok, true, `the mod reads ${JSON.stringify(args)}`)
-    assert.throws(() => cueText(args), /grammar/, JSON.stringify(args))
-  }
+  for (const name of ['a b', 'x'.repeat(41), '', 'a\nstart']) assert.equal(c.cueLine('rename', name), undefined, JSON.stringify(name))
 })
