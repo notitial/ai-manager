@@ -25,6 +25,15 @@ Nothing in this repo turns a report, relayed message, state file or summary into
 callboard's relay, where the mod reads the person's own answer from a question in a tier's session and applies it to
 that one prompt. Flag any other path by which text the person did not type becomes a go.
 
+## Trust paths
+
+A PR that touches a trust path gets a security pass as well as the ordinary review: the finding names the property that
+could break. The trust paths are the callboard mod's answering of prompts and its floor (`tools/callboard/mod/hooks/prompts.ts`,
+`engine/answer-hook.ts`, `engine/answer-tiers.ts`), its grants, lane store and rename carry (`core.ts`, `engine/grants.ts`,
+`engine/store.ts`), the files it reads and writes under `~/.claude/callboard/`, the link script and the extension's request
+files, and the usage watcher's installer. A change there is held to the rules under Approvals and to the person's own checkout
+being the live install: nothing may need root, write outside the person's own folders or edit a settings file for the person.
+
 ## Comments and docs
 
 A comment or doc states what the code does now. A version, date, review or plan tag in a new or changed comment or doc

@@ -76,7 +76,7 @@ The mod tests (`mod/test/*.test.ts`) drive a fake clock, and each simulated 2 s 
 
 ## Not yet verified against a live engine
 
-Cue-to-action paths (tick, claim, rename/start/resume/compact, PostCompact resume, the deferred `now` compaction) run only against mocks. Before a change is pulled into the live checkout, in a lab VS Code (own `--user-data-dir`, launched with `env -i`): the process calls (`stat`, `mv`, `rm`, `realpath`) from a mod, rename/start/resume/compact end to end, a real MANAGER sender, several lanes at once, Remote Control with a cue-driven panel, and the ADR probes P1-P8, L1-L9, C1-C13 listed in ADR 0002. Any source change needs a new security-auditor review before it is loaded.
+Cue-to-action paths (tick, claim, rename/start/resume/compact, PostCompact resume, the deferred `now` compaction) run only against mocks. Before a change is pulled into the live checkout, in a lab VS Code (own `--user-data-dir`, launched with `env -i`): the process calls (`stat`, `mv`, `rm`, `realpath`) from a mod, rename/start/resume/compact end to end, a real MANAGER sender, several lanes at once, Remote Control with a cue-driven panel, and the ADR probes P1-P8, L1-L9, C1-C13 listed in ADR 0002.
 
 ## Lanes a lead makes
 
