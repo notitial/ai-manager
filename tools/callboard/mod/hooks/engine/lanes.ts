@@ -637,8 +637,7 @@ async function modelSet($: any, model: c.LaneModel): Promise<boolean> {
   }
 }
 
-// The folder the session started in ($.session.root(), engine 2.1.316). An engine without root() fails the call, and the live folder ($.session.cwd()) is
-// read instead; a root() read that fails on an engine that has it reads cwd() the same way.
+// The folder the session started in ($.session.root()); a root() read that fails reads the live folder ($.session.cwd()) instead.
 export async function sessionRoot($: any): Promise<any> {
   try {
     return await $.session.root()
