@@ -860,9 +860,10 @@ function judgeGit(args: Word[], cur: B[], j: J): Res {
   // The shapes whose flags decide it cannot be judged when a flag is spelled by a variable.
   if (GIT_COND.test(verb) && rest.some(opaque)) return SETT
   // An output file: --output, or any abbreviation of it, with the file glued on or as the next word (none readable is the floor).
-  const oi = fl.findIndex((w) => w.t.startsWith('--') && ((n) => n.length >= 2 && 'output'.startsWith(n))(w.t.slice(2).split('=')[0]))
-  if (oi >= 0) {
+  // git takes the last one, so every one is judged.
+  for (let oi = 0; oi < fl.length; oi++) {
     const ow = fl[oi]
+    if (!(ow.t.startsWith('--') && ((n) => n.length >= 2 && 'output'.startsWith(n))(ow.t.slice(2).split('=')[0]))) continue
     const ov = ow.t.includes('=') ? { ...ow, t: ow.t.slice(ow.t.indexOf('=') + 1) } : fl[oi + 1]
     if (!ov) return SETT
     const c = wpath(ov, eff, j)
@@ -1002,8 +1003,9 @@ const GRAPHQL_OK = /^(mergePullRequest|createRef|updateRef|deleteRef|createIssue
 // Whether a GraphQL text holds a mutation outside the allow list: the field names that take an `input:` argument (every mutation does), and any mutation whose names cannot be read that way.
 function graphqlMutates(x0: string): boolean {
   if (!/mutation/i.test(x0)) return false
-  // Commas and # comments are ignored tokens in GraphQL: they may sit between a field name and its arguments.
-  const x = x0.replace(/#[^\n]*/g, ' ').replace(/,/g, ' ')
+  // A # starts a comment, or sits in a string: which one cannot be told without parsing, so it is the floor. Commas are ignored tokens in GraphQL and may sit between a field name and its arguments.
+  if (x0.includes('#')) return true
+  const x = x0.replace(/,/g, ' ')
   const names = [...x.matchAll(/([A-Za-z_]\w*)\s*\(\s*input\s*:/g)].map((m) => m[1])
   return names.length === 0 || names.some((n) => !GRAPHQL_OK.test(n))
 }
