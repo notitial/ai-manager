@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { folderName, briefingFolder, leadBriefing, LANES_CHANGED_TEXT, LANES_CHANGED_NOTE } from '../hooks/core'
+import { folderName, briefingFolder, leadBriefing, STOPPABLE_BY_NAME, LANES_CHANGED_TEXT, LANES_CHANGED_NOTE } from '../hooks/core'
 import { h, LANESDIR, NO, REPORT, ROOT, SID, T0, TOOL, YES, engine, extraStat, laneSeed, leadFiles, longTest, resultFiles, storeFiles, submitted } from './harness'
 import type { Trace } from './harness'
 import { ANY, ATTACHED, ATTLEAD, ATTSESS, ATT_REC, COMPOSE, LANES, LANE_COMPOSE, LEADPATH, LEADPS, LEADSID, LEAD_LANES, OTHER, OTHERLEAD, PIN, REG, REGFILE, RESULT, STOREFILE, SVC, attRec, attacher, bornWithTwoLeads, briefings, callCreate, cue, cueSession, dirStat, doLane, fileStat, grantAt, lane, laneSections, leadAt, leadCall, leadFileText, leadReg, leadSelfReg, listCall, listed, logged, mdBox, newTrace, noNote, noteRows, notices, ownReg, putStore, renameThroughTick, sleepMs, started, storeText, tickTwice, ticks, waitFor } from './fixtures'
@@ -552,9 +552,10 @@ test('an attached lane gets one note and the same text as its section, naming it
   const s = laneSections(await $.prompt.compose(LANE_COMPOSE))
   expect(s.length).toBe(1)
   expect(`${NOTE_OPENER}\n\n${s[0].text}`).toBe(note)
-  expect((await doLane($, 'lane off')).text).toBe('This session is no longer lane svc-api.')
+  expect((await doLane($, 'lane off')).text).toBe(`This session is no longer lane svc-api.${STOPPABLE_BY_NAME('svc-api')}`)
   expect(laneSections(await $.prompt.compose(LANE_COMPOSE)).length).toBe(0)
   expect(h.appendRows.length).toBe(1)
+  storeFiles.clear()
   expect((await doLane($, 'lane svc-api')).text).toBe(ATTACHED())
   expect(h.appendRows.length).toBe(2)
 })
@@ -707,7 +708,7 @@ test('a detach during the lead lookup leaves no facts and no note behind', async
   h.askAnswer = NO
   const p = $.command.run(lane('lane'))
   await waitFor(() => entered)
-  expect((await doLane($, 'lane off')).text).toBe('This session is no longer lane svc-api.')
+  expect((await doLane($, 'lane off')).text).toBe(`This session is no longer lane svc-api.${STOPPABLE_BY_NAME('svc-api')}`)
   release()
   await p
   expect(h.appendRows.length).toBe(0)

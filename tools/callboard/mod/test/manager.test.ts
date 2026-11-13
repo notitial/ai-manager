@@ -472,6 +472,7 @@ test('an attached lane whose lead is gone takes the manager\'s resume while a tr
   await attacher($, on, [], { clock: true })
   await doLane($, 'lane svc-api')
   leadFiles.clear()
+  h.cueLead = false
   expect(await cue(71, 'resume\n')).toBe('resume refused no-lead 71\n')
   mgrFile()
   h.sessions = { ...ownReg(), ...mgrRow() }

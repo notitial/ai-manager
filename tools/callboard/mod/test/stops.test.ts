@@ -811,6 +811,7 @@ test('a retire cue to an attached lane with no lead running is refused no-lead',
   await attacher($, on, [], { clock: true })
   await doLane($, 'lane svc-api')
   leadFiles.clear()
+  h.cueLead = false
   expect(await retireCue(108)).toBe('retire refused no-lead 108\n')
 })
 
@@ -841,7 +842,7 @@ test('the stop tools give the full text of a process refusal, still starting wit
   expect(killed(argv).length).toBe(0)
 })
 
-test('retire and terminate of a joined lane keep its record and clear the stopped session id from it after a kill that exited 0, and not after one that failed', async ($, on) => {
+test('retire and terminate of a joined lane remove its record once the process has ended, after a kill that exited 0 and not after one that failed', async ($, on) => {
   const stdins: string[] = []
   await leadAt($, on, stdins, { sess: { ...leadSelfReg(), ...ATTSESS() } })
   const rec = attRec(SID, 'ATT')
@@ -852,18 +853,17 @@ test('retire and terminate of a joined lane keep its record and clear the stoppe
   expect(recOf('ATT').sid).toBe(OTHER)
   h.killFails = false
   const out = (await $.tool.call(leadCall('terminate', { lane: 'ATT' }))).result as string
-  expect(out).toBe('lane ATT terminated: SIGTERM sent to process 4500. The record stays because a session joined it. With that session gone, call lane_terminate again to remove it.')
-  expect(h.lastQuestion).toBe(terminateQuestion('ATT', OTHER, 4500, undefined, false))
-  expect(h.lastQuestion).not.toContain('record is then removed')
-  expect(recOf('ATT')).toEqual(rec)
-  expect(logged(stdins)).toContain('sid-cleared:ATT')
-  expect(logged(stdins)).not.toContain('lane-removed:ATT')
+  expect(out).toBe('lane ATT terminated and removed: SIGTERM sent to process 4500. Its .archive/ATT/ folder and report stay.')
+  expect(h.lastQuestion).toBe(terminateQuestion('ATT', OTHER, 4500, undefined, true))
+  expect(h.lastQuestion).toContain("The lane's record is then removed.")
+  expect(storeJson().lanes).toEqual([])
+  expect(logged(stdins)).toContain('lane-removed:ATT')
   putStore([{ ...rec, sid: OTHER }])
   killedPids.clear()
   h.reportAt = `${PIN}/.archive/ATT/REPORT.md`
   h.reportFile = REPORT_OK()
-  expect((await $.tool.call(leadCall('retire', { lane: 'ATT' }))).result).toBe('lane ATT retired: SIGTERM sent to process 4500. The record stays because a session joined it. With that session gone, call lane_retire again to remove it.')
-  expect(recOf('ATT')).toEqual(rec)
+  expect(stopText(await $.tool.call(leadCall('retire', { lane: 'ATT' })))).toBe('lane ATT retired and removed: SIGTERM sent to process 4500. Its .archive/ATT/ folder and report stay.')
+  expect(storeJson().lanes).toEqual([])
 })
 
 // ---- lane_retire and lane_terminate end the lane for good: its record goes with its session ----
@@ -900,6 +900,18 @@ test('lane_terminate of a live lane removes its record too; its dialog says so',
   expect(storeJson().lanes).toEqual([OLD_REC])
   expect(logged(stdins)).toContain('lane-removed:API')
   expect(noArchiveRm(argv)).toBe(true)
+})
+
+test('a stop of a joined lane whose process is still running 10 seconds after the signal keeps the record and clears its session id', async ($, on) => {
+  const stdins: string[] = []
+  await leadAt($, on, stdins, { sess: { ...leadSelfReg(), ...ATTSESS() } })
+  putStore([attRec(SID, 'ATT', { sid: OTHER })])
+  h.askAnswer = 'Force stop'
+  h.survivesKill = true
+  h.fastSleep = () => undefined
+  expect(stopText(await $.tool.call(leadCall('terminate', { lane: 'ATT' })))).toBe('lane ATT terminated: SIGTERM sent to process 4500, but the session was still running 10 seconds later, so its record stays. Call lane_terminate again if it does not end.')
+  expect(recOf('ATT').sid).toBeUndefined()
+  expect(logged(stdins)).not.toContain('lane-removed:ATT')
 })
 
 test('a stop whose record cannot be removed after the signal says so with the code; the record stays', async ($, on) => {
@@ -1197,16 +1209,12 @@ test('stuck lanes: the refusal of an attached lane for open names no route that 
   expect(t).not.toContain('/callboard lane off')
 })
 
-test('stuck lanes: a stop of a live attached lane keeps the record and says how to remove it; the second stop, with the session gone, removes it', async ($, on) => {
+test('stuck lanes: a stop of a live attached lane removes the record once the process has ended, as for a made lane', async ($, on) => {
   const argv: string[][] = []
   await leadAt($, on, [], { argv, sess: { ...leadSelfReg(), ...ATTSESS() } })
   putStore([attRec(SID, 'ATT', { sid: OTHER, leadName: 'LEAD' })])
   h.askAnswer = 'Force stop'
-  expect(stopText(await $.tool.call(leadCall('terminate', { lane: 'ATT' })))).toBe('lane ATT terminated: SIGTERM sent to process 4500. The record stays because a session joined it. With that session gone, call lane_terminate again to remove it.')
-  expect(storeJson().lanes.map((l: any) => [l.name, l.sid])).toEqual([['ATT', undefined]])
-  h.sessions = leadSelfReg()
-  h.askAnswer = YES
-  expect(stopText(await $.tool.call(leadCall('terminate', { lane: 'ATT' })))).toBe(REMOVED_NO_SESSION('terminate'))
+  expect(stopText(await $.tool.call(leadCall('terminate', { lane: 'ATT' })))).toBe('lane ATT terminated and removed: SIGTERM sent to process 4500. Its .archive/ATT/ folder and report stay.')
   expect(storeJson().lanes).toEqual([])
 })
 

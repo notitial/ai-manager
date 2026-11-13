@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { CLAIM_OTHER_UNNAMED, CLAIM_HINT, CLAIM_NOT_PERSON, CLAIM_NOT_LEAD, CLAIM_UNNAMED, CLAIM_NONE, claimQuestion, claimedText, claimRefusedText, reserveShowText, reserveAddedText, reserveRemovedText, reserveNotListedText, reserveManagerText, RESERVE_NOT_PERSON, RESERVE_USAGE, refusalText, attachQuestion, ATTACH_YES, ATTACH_NO, LANE_NO_LEAD, REASON_TEXT, LEAD_MORE, LEAD_PICK_QUESTION } from '../hooks/core'
+import { STOPPABLE_BY_NAME, CLAIM_OTHER_UNNAMED, CLAIM_HINT, CLAIM_NOT_PERSON, CLAIM_NOT_LEAD, CLAIM_UNNAMED, CLAIM_NONE, claimQuestion, claimedText, claimRefusedText, reserveShowText, reserveAddedText, reserveRemovedText, reserveNotListedText, reserveManagerText, RESERVE_NOT_PERSON, RESERVE_USAGE, refusalText, attachQuestion, ATTACH_YES, ATTACH_NO, LANE_NO_LEAD, REASON_TEXT, LEAD_MORE, LEAD_PICK_QUESTION } from '../hooks/core'
 import { h, NO, ROOT, SID, T0, YES, extraStat, laneSeed, leadFiles, lockLog, longTest, realMap, storeFiles, teeTexts } from './harness'
 import { ANY, ATTACHED, GONE_ATT, HOME, LEADPATH, LEADPS, LEADSID, MGR_NOAPI, OTHER, OTHERLEAD, OTHERPATH, PERSON, PIN, SELFPATH, STATUS_NONE, STOREFILE, SVC, USAGE, attRec, attacher, bareList, bornWithTwoLeads, callCreate, ckRow, created, cue, cueSession, dirStat, doLane, lane, leadAt, leadCall, leadFileText, leadReg, leadSelfReg, listCall, logged, madeLane, mdBox, mdTable, mgrAt, mgrFile, mgrRow, noLaneWritten, ownReg, putStore, regAs, selfAs, started, storeJson, storeLaneNames, waitFor } from './fixtures'
 
@@ -49,7 +49,7 @@ test('an attached record carries the lead name and its briefing names that lead;
   h.sessions = { ...h.sessions, ...regAs(LEADSID, 4242, 'LEADC') }
   expect(await cue(94, 'resume\n')).toBe('resume refused no-lead 94\n')
   await doLane($, 'lane off')
-  expect(storeJson().lanes).toEqual([])
+  expect(storeJson().lanes.map((l: any) => l.sid)).toEqual([undefined])
 })
 
 test('a legacy attached record (lead session id only) answers any lead of its repo and still detaches', async ($, on) => {
@@ -62,7 +62,7 @@ test('a legacy attached record (lead session id only) answers any lead of its re
   h.sessions = { ...regAs(OTHERLEAD, 4243, 'LEADB'), ...ownReg() }
   expect(await cue(95, 'resume\n')).toBe('resume ok - 95\n')
   await doLane($, 'lane off')
-  expect(storeJson().lanes).toEqual([])
+  expect(storeJson().lanes.map((l: any) => l.sid)).toEqual([undefined])
 })
 
 test('with two leads in the repo, a born store lane naming its lead gets that lead in its briefing, whatever lead the rename cue names', async ($, on) => {
@@ -410,7 +410,7 @@ test('/callboard status in a lane names the lane and its lead; /callboard on the
   expect((await $.command.run(lane('on'))).text).toBe(USAGE)
   expect(h.askCount).toBe(asks)
   expect((await $.command.run(lane('status'))).text).toBe("Lane: svc-api. Lead: OFF. This lane's lead: LEAD.")
-  expect((await doLane($, 'lane off')).text).toBe('This session is no longer lane svc-api.')
+  expect((await doLane($, 'lane off')).text).toBe(`This session is no longer lane svc-api.${STOPPABLE_BY_NAME('svc-api')}`)
   expect((await $.command.run(lane('status'))).text).toBe(STATUS_NONE)
 })
 

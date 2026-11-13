@@ -70,7 +70,6 @@ import type { CondOut } from './grants.ts'
 import {
   leadCore,
   laneLive,
-  strayRecord,
   detach,
   attachPlan,
   dropRecord,
@@ -208,12 +207,9 @@ async function laneCommand($: any, sid: string, code: c.OriginCode, arg: c.Comma
   }
   const bound = (await $.state.get(lane)).value as Bound | null | undefined
   if (arg === 'lane-off') {
-    if (!bound) {
-      const stray = await strayRecord($, sid)
-      return { text: stray === 'removed' ? 'Removed its leftover lane record.' : stray === 'stuck' ? c.DETACH_INCOMPLETE : stray === 'unknown' ? c.LANE_RECORD_UNKNOWN : `This session is not a lane. ${c.NO_LANE_RECORD}` }
-    }
+    if (!bound) return { text: `This session is not a lane. ${c.NO_LANE_RECORD}` }
     const d = await detach($, sid, bound)
-    return { text: d.whole ? `This session is no longer lane ${bound.name}.${bound.adopted ? '' : c.STOPPABLE_BY_NAME(bound.name)}${d.sidKept ? c.SID_KEPT(bound.name) : ''}` : `${c.DETACH_INCOMPLETE}${d.sidKept ? c.SID_KEPT(bound.name) : ''}` }
+    return { text: `This session is no longer lane ${bound.name}.${c.STOPPABLE_BY_NAME(bound.name)}${d.sidKept ? c.SID_KEPT(bound.name) : ''}` }
   }
   const seq = offSeq.get(sid) ?? 0
   const want = (arg as { lane: string | undefined }).lane
@@ -312,7 +308,8 @@ async function laneCommand($: any, sid: string, code: c.OriginCode, arg: c.Comma
       if (text.length > c.STORE_MAX_BYTES) return { no: 'store-size' }
       return { text, landed: (s) => !!s?.lanes.some((l) => l.name === plan.name && l.adopted && l.lead === plan.lead && l.leadName === plan.leadName && l.folder === plan.cwd) }
     })
-    const undo = () => dropRecord($, plan.name, plan.key, recHash, undefined).catch(() => false)
+    // The undo of this Join's own write: the record it wrote goes again, with nothing bound to it.
+    const undo = () => dropRecord($, plan.name, plan.key, recHash).catch(() => false)
     if ('no' in w) {
       // The write went through but the file does not show it: the record may be there, and nothing is bound to it.
       if (!w.wrote) return refuse(w.no)
@@ -349,15 +346,16 @@ async function laneCommand($: any, sid: string, code: c.OriginCode, arg: c.Comma
       // An off that landed while the binding was being set could not unbind it: it ran before there was one.
       if ((offSeq.get(sid) ?? 0) !== seq) {
         await withTimeout($, detach($, sid, binding), c.ENGINE_CALL_TIMEOUT_MS)
+        await undo()
         await log($, sid, 'refused', 'off-meanwhile')
         return { text: 'Nothing changed: callboard was turned off meanwhile.' }
       }
       await limited(saveHint($, sid), 'hint')
     } catch {
       await logq($, sid, 'error', 'attach-bind')
-      // From the binding write on, it may be there: detach clears it, its hint and the briefing facts, and takes the record back; undo is the fallback for the record.
-      // The detach has the same time limit: a timeout counts as not done, and undo takes the record back.
-      if (!written || (await withTimeout($, detach($, sid, binding).then((d) => d.whole, () => false), c.ENGINE_CALL_TIMEOUT_MS)) !== true) await undo()
+      // From the binding write on, it may be there: detach clears it, its hint and the briefing facts. The detach has the same time limit; undo takes the record back.
+      if (written) await withTimeout($, detach($, sid, binding).catch(() => undefined), c.ENGINE_CALL_TIMEOUT_MS)
+      await undo()
       return { text: 'Lane not changed: the session could not be bound.' }
     }
     await withTimeout($, briefLane($, sid), c.ENGINE_CALL_TIMEOUT_MS)
@@ -1053,6 +1051,6 @@ export async function commandRun($: any, e: any) {
       loose?.ok && loose.name !== undefined ? `Lane ${loose.name} no longer names this session.` : '',
       reqDone === 'dropped' ? 'Its compaction request was dropped.' : reqDone === 'no-resume' ? 'The compaction under way will not resume the work.' : '',
     ].filter((x) => x !== '').join(' ')
-    return { text: `${did || c.OFF_NOTHING}${d.whole ? '' : ` ${c.DETACH_INCOMPLETE}`}${bound && !bound.adopted ? c.STOPPABLE_BY_NAME(bound.name) : ''}${bound && d.sidKept ? c.SID_KEPT(bound.name) : ''}${loose && !loose.ok && loose.name ? c.SID_KEPT(loose.name) : ''}${leadKept ? (wasConductor || savedConductor ? c.CONDUCTOR_KEPT : wasManager || savedManager ? c.MANAGER_KEPT : c.LEAD_KEPT) : ''}` }
+    return { text: `${did || c.OFF_NOTHING}${bound ? c.STOPPABLE_BY_NAME(bound.name) : ''}${bound && d.sidKept ? c.SID_KEPT(bound.name) : ''}${loose && !loose.ok && loose.name ? c.SID_KEPT(loose.name) : ''}${leadKept ? (wasConductor || savedConductor ? c.CONDUCTOR_KEPT : wasManager || savedManager ? c.MANAGER_KEPT : c.LEAD_KEPT) : ''}` }
   }
 }

@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 import { HINT_PREFIX, conductorFileText, conductorAddQuestion, conductorRefusalText, conductorAddedText, CONDUCTOR_NOT_PERSON, CONDUCTOR_USAGE, conductorQuestion, conductorRestoreQuestion, conductorBriefing, conductorBriefingNote, conductorRestoredToast, conductorUnansweredToast, conductorFileBadToast, conductorNoReposToast, CONDUCTOR_ON_TEXT, CONDUCTOR_OFF_QUESTION, conductorStatus, leadBriefing, LANES_CHANGED_TEXT, reboundToast, REASON_TEXT, managerRefusalText, terminateQuestion, leadConductorText } from '../hooks/core'
 import { h, GOOD, LANESDIR, NO, PS_TABLE, ROOT, SID, T0, YES, condFiles, condStat, extraStat, laneSeed, leadFiles, longTest, realFails, realMap, seen, storeFiles, submitted, toasts, toolDefs } from './harness'
 import type { Trace } from './harness'
-import { APISID, APP2, COMPOSE, COND, CONDFILE, CSESS, FAR, LANE_HINT, LEADKEY, LEADPATH, LEADPS, LEADSID, MGR_SESS, MIN, OTHER, OTHERLEAD, OTHERPATH, PIN, SELFPATH, STATUS_NONE, TURN, allEvents, attacher, briefings, ckLane, condAt, condOn, condPresenceOf, condRun, condSelf, cue, dirStat, doLane, grantAt, idleFor, killed, lane, leadAt, leadFileText, leadReg, leadSelfReg, listCall, listed, logged, madeLane, mgrAt, mgrCall, mgrFile, mgrRow, newTrace, noteRows, nudges, ownReg, putCond, putStore, regAs, selfAs, started, statusText, ticks, unanswered, waitFor } from './fixtures'
+import { APISID, APP2, COMPOSE, COND, CONDFILE, CSESS, FAR, LANE_HINT, LEADKEY, LEADPATH, LEADPS, LEADSID, MGR_SESS, MIN, OTHER, OTHERLEAD, OTHERPATH, PIN, SELFPATH, STATUS_NONE, TURN, allEvents, attacher, briefings, ckLane, condAt, condOn, condPresenceOf, condRun, condSelf, cue, dirStat, doLane, grantAt, idleFor, killed, lane, leadAt, leadFileText, leadReg, leadSelfReg, listCall, listed, logged, madeLane, mgrAt, mgrCall, mgrFile, mgrRow, newTrace, noteRows, nudges, ownReg, putCond, putStore, regAs, renameThroughTick, selfAs, started, statusText, ticks, unanswered, waitFor } from './fixtures'
 
 const CONDSTORE = `${LANESDIR}/${'c'.repeat(64)}.json`
 const condEntries = () => JSON.parse(condFiles.get(CONDFILE) ?? '{"repos":[]}').repos as string[]
@@ -973,17 +973,80 @@ test('refused when the presence file\'s home is not a git root', async ($, on) =
   await refusedWith([], $, on, () => extraStat.delete(`${COND}/.git`))
 })
 
-test('an adopted lane with no live lead refuses a conductor\'s cue (no-lead) and still takes the manager\'s', async ($, on) => {
+test('an adopted lane with no live lead refuses a conductor\'s resume (no-lead), takes its compact, and still takes the manager\'s', async ($, on) => {
   await attacher($, on, [], { clock: true })
   await doLane($, 'lane svc-api')
   leadFiles.clear()
+  h.cueLead = false
   trustSeed()()
   h.sessions = { ...ownReg(), ...regAs(OTHERLEAD, 4243, 'CONDX') }
   expect(await cue(81, 'resume\n')).toBe('resume refused no-lead 81\n')
-  expect(await cue(82, 'compact\n')).toBe('compact refused no-lead 82\n')
+  expect(await cue(82, 'compact\n')).toBe('compact held nudged 82\n')
   mgrFile()
   h.sessions = { ...ownReg(), ...mgrRow() }
   expect(await cue(83, 'resume\n')).toBe('resume ok - 83\n')
+})
+
+// ---- a lane made by a lead takes a cue by the same rule as a joined one ----
+// A session bound to LABLANE by a birth rename (store of /data/x/work), with no live lead unless the test makes one (cue adds one while h.cueLead holds).
+const bornLane = async ($: any, on: any, setup?: () => void) => {
+  await renameThroughTick($, on, [], 1, undefined, async () => {
+    h.cueLead = false
+    setup?.()
+  })
+  expect((await $.command.run(lane('status'))).text).toContain('Lane: LABLANE')
+}
+// The cue each verb sends, one inode each; the answers are 'VERB refused CODE INO\n' or 'VERB ok - INO\n'.
+const bornCues = async (verbs: string[]) => {
+  const out: Record<string, string> = {}
+  let ino = 100
+  for (const v of verbs) out[v] = (await cue(ino++, `${v}\n`))!
+  return out
+}
+const REFUSED = (v: string, ino: number) => `${v} refused no-lead ${ino}\n`
+// A conductor (OTHERLEAD, CONDX) over /data/x/work: its presence file, saved grant, list file and registry row, as a lead sees them.
+const bornConductor = () => {
+  extraStat.set(`${COND}/.git`, dirStat)
+  putCond(['/data/x/work'])
+  h.store.set(`conductor:${OTHERLEAD}`, { home: COND, repos: ['/data/x/work'], savedAt: T0 - 60_000 })
+  condPresenceOf(OTHERLEAD, 4243, 'CONDX', ['/data/x/work'])
+  h.sessions = { ...h.sessions, ...regAs(OTHERLEAD, 4243, 'CONDX') }
+}
+
+test('a made lane with no live lead, no manager and no conductor takes no resume, compact, retire, park or start cue (no-lead)', async ($, on) => {
+  await bornLane($, on)
+  const r = await bornCues(['resume', 'compact', 'retire', 'park', 'start'])
+  expect(r).toEqual({ resume: REFUSED('resume', 100), compact: REFUSED('compact', 101), retire: REFUSED('retire', 102), park: REFUSED('park', 103), start: REFUSED('start', 104) })
+})
+
+test('a made lane takes its cues while a live lead of its repo is there', async ($, on) => {
+  await bornLane($, on)
+  h.cueLead = true
+  expect(await cue(110, 'resume\n')).toBe('resume ok - 110\n')
+  for (const v of ['compact', 'retire', 'park']) expect(await cue(111, `${v}\n`)).not.toContain('no-lead')
+})
+
+test('a made lane with no live lead takes resume, compact and retire from a trusted manager, and no other cue', async ($, on) => {
+  await bornLane($, on, () => {
+    mgrFile()
+    h.sessions = { ...h.sessions, ...mgrRow() }
+  })
+  expect(await cue(120, 'resume\n')).toBe('resume ok - 120\n')
+  for (const v of ['compact', 'retire']) expect(await cue(121, `${v}\n`)).not.toContain('no-lead')
+  expect(await cue(122, 'park\n')).toBe(REFUSED('park', 122))
+  expect(await cue(123, 'start\n')).toBe(REFUSED('start', 123))
+})
+
+test('a made lane with no live lead takes compact from a trusted conductor of its repo, and no other cue', async ($, on) => {
+  await bornLane($, on, bornConductor)
+  expect(await cue(130, 'compact\n')).not.toContain('no-lead')
+  for (const v of ['resume', 'retire', 'park', 'start']) expect(await cue(131, `${v}\n`)).toBe(REFUSED(v, 131))
+})
+
+test('a conductor\'s compact reaches a made lane whose lead is gone, and an untrusted conductor\'s does not', async ($, on) => {
+  await bornLane($, on, bornConductor)
+  leadFiles.delete(`${ROOT}/leads/${OTHERLEAD}.json`)
+  expect(await cue(140, 'compact\n')).toBe(REFUSED('compact', 140))
 })
 
 // ---- a lead's briefing names its conductor ----

@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { folderName, refusalText, attachQuestion, NO_LANE_RECORD, LANE_RECORD_UNKNOWN, STOPPABLE_BY_NAME, DETACH_INCOMPLETE, ATTACH_YES, ATTACH_NO, SID_KEPT, OFF_NOTHING } from '../hooks/core'
+import { folderName, refusalText, attachQuestion, NO_LANE_RECORD, STOPPABLE_BY_NAME, DETACH_INCOMPLETE, ATTACH_YES, ATTACH_NO, SID_KEPT, OFF_NOTHING } from '../hooks/core'
 import { h, GOOD, LANESDIR, NO, ROOT, SID, T0, YES, extraStat, hangForever, laneSeed, leadFiles, lockLog, longTest, psDead, psStartsGone, realMap, renames, seen, storeFiles, submitted, toasts } from './harness'
 import type { Trace } from './harness'
 import { ATTACHED, ATTLANE, ATTLEAD, ATTSESS, ATT_REC, LANE_COMPOSE, LEADPATH, LEADPS, LEADSID, LEAD_LANES, LOCK_CYCLE, OTHER, OTHERLEAD, OWNER_LIVE, PIN, STATUS_NONE, STOREFILE, SVC, TURN, attRec, attacher, callCreate, cue, cueSession, dirStat, doLane, lane, laneSections, lateLane, leadAt, leadCall, leadFileText, leadReg, leadSelfReg, logged, newTrace, noLaneWritten, ownReg, pause, putStore, renameThroughTick, sleepMs, storeJson, ticks, unanswered, waitFor } from './fixtures'
@@ -412,6 +412,7 @@ test('an attached lane is a lane: resume and compact work with no re-arm, start 
 
 test('an attached lane follows the lead: it answers whichever lead holds a valid presence file for its repo, and refuses no-lead while none does', async ($, on) => {
   await attacher($, on, [], { clock: true })
+  h.cueLead = false
   await doLane($, 'lane svc-api')
   const OTHERLEAD = '6a1b2c3d-0000-4000-8000-123456789abc'
   const swap = (path: string, file: Record<string, unknown>, reg: Record<string, string> = leadReg()) => {
@@ -451,14 +452,15 @@ test('an attached lane whose record is changed after the join refuses record-cha
   expect(await cue(72, 'resume\n')).toBe('resume refused record-changed 72\n')
 })
 
-test('lane off detaches: the record is removed under the lock, the binding and the hint go, and no lead tool or cue reaches the session by name', async ($, on) => {
+test('lane off detaches: the binding and the hint go, the record stays and loses its session id, and no cue reaches the session', async ($, on) => {
   const stdins: string[] = []
   await attacher($, on, stdins, { clock: true })
   await doLane($, 'lane svc-api')
   expect(h.store.has(`sess:${SID}`)).toBe(true)
+  expect(storeJson().lanes[0].sid).toBe(SID)
   const r = await doLane($, 'lane off')
-  expect(r.text).toBe('This session is no longer lane svc-api.')
-  expect(storeJson().lanes).toEqual([])
+  expect(r.text).toBe(`This session is no longer lane svc-api.${STOPPABLE_BY_NAME('svc-api')}`)
+  expect(storeJson().lanes.map((l: any) => [l.name, l.sid])).toEqual([['svc-api', undefined]])
   expect((await $.command.run(lane('status'))).text).toContain('Lane: NONE')
   expect(h.store.has(`sess:${SID}`)).toBe(false)
   expect(h.lockState.held).toBe(false)
@@ -483,21 +485,21 @@ test('lane off needs the person; off from anything else asks first and then deta
   expect(storeJson().lanes.length).toBe(1)
   h.askAnswer = YES
   const r = await $.command.run(lane('off', { kind: 'peer' }))
-  expect(r.text).toBe('This session is no longer lane svc-api.')
-  expect(storeJson().lanes).toEqual([])
+  expect(r.text).toBe(`This session is no longer lane svc-api.${STOPPABLE_BY_NAME('svc-api')}`)
+  expect(storeJson().lanes.map((l: any) => [l.name, l.sid])).toEqual([['svc-api', undefined]])
 })
 
-test('off from the prompt on an attached lane removes the record, drops the binding and the hint', async ($, on) => {
+test('off from the prompt on an attached lane keeps the record, drops the binding and the hint', async ($, on) => {
   await attacher($, on)
   await doLane($, 'lane svc-api')
   const r = await $.command.run(lane('off'))
-  expect(r.text).toBe('This session is no longer lane svc-api.')
-  expect(storeJson().lanes).toEqual([])
+  expect(r.text).toBe(`This session is no longer lane svc-api.${STOPPABLE_BY_NAME('svc-api')}`)
+  expect(storeJson().lanes.map((l: any) => [l.name, l.sid])).toEqual([['svc-api', undefined]])
   expect(h.store.has(`sess:${SID}`)).toBe(false)
   expect((await $.command.run(lane('status'))).text).toBe(STATUS_NONE)
 })
 
-test('detach only removes the record that is attached and carries the binding name; a lead-made record stays', async ($, on) => {
+test('detach clears the session id of the record the binding names and leaves a lead-made record as it was', async ($, on) => {
   await attacher($, on)
   await doLane($, 'lane svc-api')
   const rec = storeJson()
@@ -505,7 +507,7 @@ test('detach only removes the record that is attached and carries the binding na
   extraStat.set(`${PIN}/api`, dirStat)
   storeFiles.set(STOREFILE, JSON.stringify({ ...rec, lanes: [made, ...rec.lanes] }))
   await doLane($, 'lane off')
-  expect(storeJson().lanes).toEqual([made])
+  expect(storeJson().lanes).toEqual([made, { ...rec.lanes[0], sid: undefined }])
 })
 
 test('a session bound by a birth rename is unbound by off too, and its record stays', async ($, on) => {
@@ -519,7 +521,7 @@ test('a session bound by a birth rename is unbound by off too, and its record st
   expect(await cue(43, 'resume\n')).toBe('resume refused not-eligible 43\n')
 })
 
-test('detach that cannot remove the record says so, logs detach-incomplete, and still clears the binding', async ($, on) => {
+test('detach whose session id clear fails still clears the binding, and tells the restart sentence', async ($, on) => {
   const stdins: string[] = []
   await attacher($, on, stdins, { clock: true })
   const incomplete = async (why: string) => {
@@ -527,11 +529,12 @@ test('detach that cannot remove the record says so, logs detach-incomplete, and 
     expect((await doLane($, 'lane svc-api')).text).toBe(ATTACHED())
     return why
   }
-  const INCOMPLETE = `${DETACH_INCOMPLETE}${SID_KEPT('svc-api')}`
+  const BASE = `This session is no longer lane svc-api.${STOPPABLE_BY_NAME('svc-api')}`
+  const INCOMPLETE = `${BASE}${SID_KEPT('svc-api')}`
   // An unreadable store is not loaded, so no record there names the session (nothing to clear, nothing a restart could rebind); in the other cases the
-  // write that would clear its session id fails as well.
+  // write that would clear its session id fails.
   const cases: [string, () => void | Promise<void>, () => void, string][] = [
-    ['store unreadable', () => (h.storeStatOverride = '501 644 1 Regular File 77 50 1700000000\n'), () => (h.storeStatOverride = undefined), DETACH_INCOMPLETE],
+    ['store unreadable', () => (h.storeStatOverride = '501 644 1 Regular File 77 50 1700000000\n'), () => (h.storeStatOverride = undefined), BASE],
     ['write fails', () => (h.storeWrites = 'fail'), () => (h.storeWrites = 'ok'), INCOMPLETE],
     ['re-read shows it still there', () => (h.storeWrites = 'ignore'), () => (h.storeWrites = 'ok'), INCOMPLETE],
     ['lock busy', () => (h.lockState = { held: true, owner: OWNER_LIVE, mtimeSec: T0 / 1000 }), () => (h.lockState = { held: false }), INCOMPLETE],
@@ -547,7 +550,7 @@ test('detach that cannot remove the record says so, logs detach-incomplete, and 
     expect((await $.command.run(lane('status'))).text, why).toContain('Lane: NONE')
     expect(h.store.has(`sess:${SID}`), why).toBe(false)
   }
-  expect(logged(stdins).filter((e) => e === 'detach-incomplete:').length).toBe(cases.length)
+  expect(logged(stdins)).not.toContain('detach-incomplete:')
   const w = await $.command.run(lane('status'))
   expect(w.text).toContain('Lane: NONE')
 })
@@ -557,7 +560,7 @@ test('a hint that cannot be deleted at detach is logged, not swallowed', async (
   await attacher($, on, stdins)
   await doLane($, 'lane svc-api')
   h.storeDeleteFails = true
-  expect((await doLane($, 'lane off')).text).toBe('This session is no longer lane svc-api.')
+  expect((await doLane($, 'lane off')).text).toBe(`This session is no longer lane svc-api.${STOPPABLE_BY_NAME('svc-api')}`)
   expect(logged(stdins)).toContain('error:hint-delete')
 })
 
@@ -575,7 +578,7 @@ test('a restored attached lane works like any lane: the store record is the auth
   expect((h.store.get(`sess:${SID}`) as any).lane).toMatchObject({ name: 'svc-api', turns: -1, adopted: true, lead: LEADSID })
   expect(await cue(55, 'resume\n')).toBe('resume ok - 55\n')
   await $.command.run(lane('off'))
-  expect(storeJson().lanes).toEqual([])
+  expect(storeJson().lanes.map((l: any) => [l.name, l.sid])).toEqual([['svc-api', undefined]])
 })
 
 const restoreRefused = (rec: Record<string, unknown>) => async ($: any, on: any) => {
@@ -598,13 +601,9 @@ test('a lead tool serves an attached lane whichever lead it joined: the lead fie
   putStore([attRec(OTHERLEAD)])
   h.askAnswer = 'Force stop'
   for (const verb of ['start', 'resume', 'compact']) expect(JSON.stringify(await $.tool.call(leadCall(verb, { lane: 'ATT' }))), verb).toContain(`cue ${verb} acted for lane ATT`)
-  expect(JSON.stringify(await $.tool.call(leadCall('terminate', { lane: 'ATT' })))).toContain('SIGTERM sent')
   expect(JSON.stringify(await $.tool.call(leadCall('open', { lane: 'ATT' })))).toContain('adopted-record')
-  // A stop of a live attached lane keeps its record (the session is the only other way to detach it); with no session carrying it, a second stop removes it.
-  expect(JSON.parse(storeFiles.get(STOREFILE)!).lanes.map((l: any) => l.name)).toEqual(['ATT'])
-  h.sessions = leadSelfReg()
-  h.askAnswer = YES
-  expect(JSON.stringify(await $.tool.call(leadCall('terminate', { lane: 'ATT' })))).toContain('terminated and removed: it had no live session')
+  // A stop of a live attached lane removes its record once the process has ended, as for any lane.
+  expect(JSON.stringify(await $.tool.call(leadCall('terminate', { lane: 'ATT' })))).toContain('terminated and removed: SIGTERM sent')
   expect(JSON.parse(storeFiles.get(STOREFILE)!).lanes).toEqual([])
   expect(JSON.stringify(argv)).not.toContain('lead-gone')
 })
@@ -706,16 +705,16 @@ longTest('a pending rename that did not get a tick within 60 seconds expires wit
   expect(logged(stdins)).toContain('rename-failed:expired')
 })
 
-test('off with a record that cannot be removed still unbinds, and says so', async ($, on) => {
+test('off with a session id that cannot be cleared still unbinds, and says so', async ($, on) => {
   const stdins: string[] = []
   await attacher($, on, stdins)
   await doLane($, 'lane svc-api')
   h.storeWrites = 'fail'
   const r = await $.command.run(lane('off'))
-  // The record stays and the write that would clear its session id fails as well: the restart sentence follows.
-  expect(r.text).toBe(`This session is no longer lane svc-api. ${DETACH_INCOMPLETE}${SID_KEPT('svc-api')}`)
+  // The write that clears the record's session id fails: the restart sentence follows.
+  expect(r.text).toBe(`This session is no longer lane svc-api.${STOPPABLE_BY_NAME('svc-api')}${SID_KEPT('svc-api')}`)
   expect((await $.command.run(lane('status'))).text).toBe(STATUS_NONE)
-  expect(logged(stdins)).toContain('detach-incomplete:')
+  expect(logged(stdins)).toContain('sid-uncleared:')
 })
 
 test('detach keeps every other record as it was, attached or not', async ($, on) => {
@@ -726,10 +725,10 @@ test('detach keeps every other record as it was, attached or not', async ($, on)
   extraStat.set(`${PIN}/old`, dirStat)
   storeFiles.set(STOREFILE, JSON.stringify({ ...rec, lanes: [other, ...rec.lanes] }))
   await doLane($, 'lane off')
-  expect(storeJson().lanes).toEqual([other])
+  expect(storeJson().lanes).toEqual([other, { ...rec.lanes[0], sid: undefined }])
 })
 
-test('off and lane off clear the binding and the hint first, then remove the record', async ($, on) => {
+test('off and lane off clear the binding and the hint first, then the record\'s session id', async ($, on) => {
   const trace = newTrace()
   await attacher($, on, [], { trace })
   await doLane($, 'lane svc-api')
@@ -738,7 +737,8 @@ test('off and lane off clear the binding and the hint first, then remove the rec
   h.storeWriteHook = () => (atWrite = { unbound: trace.log.includes('lane:null'), hint: h.store.has(`sess:${SID}`) })
   await doLane($, 'lane off')
   expect(atWrite).toEqual({ unbound: true, hint: false })
-  expect(storeJson().lanes).toEqual([])
+  expect(storeJson().lanes.map((l: any) => [l.name, l.sid])).toEqual([['svc-api', undefined]])
+  storeFiles.clear()
   await doLane($, 'lane svc-api')
   atWrite = undefined
   trace.log.length = 0
@@ -746,69 +746,45 @@ test('off and lane off clear the binding and the hint first, then remove the rec
   expect(atWrite).toEqual({ unbound: true, hint: false })
 })
 
-test('a stale binding never removes a record somebody else made: another lead, another folder, or a plain record of the same name; an attached one is reported, not called done', async ($, on) => {
+test('a stale binding changes no record somebody else made: another lead, another folder, or a plain record of the same name', async ($, on) => {
   const stdins: string[] = []
   await attacher($, on, stdins)
   await doLane($, 'lane svc-api')
-  const cases: [string, unknown, string][] = [
-    ['another lead', ATTLANE({ lead: OTHERLEAD }), DETACH_INCOMPLETE],
-    ['another folder', ATTLANE({ folder: `${PIN}/other`, brief: `${PIN}/other/.callboard-attached` }), DETACH_INCOMPLETE],
-    ['a plain record', { name: 'svc-api', folder: SVC, brief: `${SVC}/BRIEF.md`, createdAt: 3 }, 'This session is no longer lane svc-api.'],
+  const cases: [string, unknown][] = [
+    ['another lead', ATTLANE({ lead: OTHERLEAD })],
+    ['another folder', ATTLANE({ folder: `${PIN}/other`, brief: `${PIN}/other/.callboard-attached` })],
+    ['a plain record', { name: 'svc-api', folder: SVC, brief: `${SVC}/BRIEF.md`, createdAt: 3 }],
   ]
-  for (const [why, other, text] of cases) {
+  for (const [why, other] of cases) {
     putStore([other])
     const before = storeFiles.get(STOREFILE)
-    expect((await doLane($, 'lane off')).text, why).toBe(text)
+    expect((await doLane($, 'lane off')).text, why).toBe(`This session is no longer lane svc-api.${STOPPABLE_BY_NAME('svc-api')}`)
     expect(storeFiles.get(STOREFILE), why).toBe(before)
     storeFiles.clear()
     expect((await doLane($, 'lane svc-api')).text).toBe(ATTACHED())
   }
-  expect(logged(stdins).filter((e) => e === 'detach-incomplete:').length).toBe(2)
+  expect(logged(stdins)).not.toContain('detach-incomplete:')
 })
 
-test('a session that changed folder after the attach still removes its own record: the record is found by its text, not by the folder', async ($, on) => {
+test('a session that changed folder after the attach still clears its own record: the record is found by its text, not by the folder', async ($, on) => {
   await attacher($, on)
   await doLane($, 'lane svc-api')
   h.callerCwd = `${SVC}/sub`
-  expect((await doLane($, 'lane off')).text).toBe('This session is no longer lane svc-api.')
-  expect(storeJson().lanes).toEqual([])
+  expect((await doLane($, 'lane off')).text).toBe(`This session is no longer lane svc-api.${STOPPABLE_BY_NAME('svc-api')}`)
+  expect(storeJson().lanes.map((l: any) => [l.name, l.sid])).toEqual([['svc-api', undefined]])
+  storeFiles.clear()
   h.callerCwd = SVC
   expect((await doLane($, 'lane svc-api')).text).toBe(ATTACHED())
   h.callerCwd = `${SVC}/sub`
-  expect((await $.command.run(lane('off'))).text).toBe('This session is no longer lane svc-api.')
-  expect(storeJson().lanes).toEqual([])
+  expect((await $.command.run(lane('off'))).text).toBe(`This session is no longer lane svc-api.${STOPPABLE_BY_NAME('svc-api')}`)
+  expect(storeJson().lanes.map((l: any) => [l.name, l.sid])).toEqual([['svc-api', undefined]])
 })
 
-test('a stray record is not taken when another live session carries the name', async ($, on) => {
+test('lane off on a session with no binding says it is not a lane and leaves every record', async ($, on) => {
   await attacher($, on)
-  putStore([ATTLANE()])
-  h.sessions = { ...leadReg(), ...ownReg(), ...cueSession(OTHER, 'svc-api', '/elsewhere', { pid: 4500 }) }
+  putStore([ATTLANE(), ATTLANE({ name: 'other-name' })])
   expect((await doLane($, 'lane off')).text).toBe(`This session is not a lane. ${NO_LANE_RECORD}`)
-  expect(storeJson().lanes.length).toBe(1)
-})
-
-test('lane off on a session with no binding finds its own record by name and folder, and says so when there is none', async ($, on) => {
-  await attacher($, on)
-  putStore([ATTLANE(), ATTLANE({ name: 'other-name' }), ATTLANE({ name: 'svc-api2', folder: `${PIN}/other`, brief: `${PIN}/other/.callboard-attached` })])
-  expect((await doLane($, 'lane off')).text).toBe('Removed its leftover lane record.')
-  expect(storeJson().lanes.map((l: any) => l.name)).toEqual(['other-name', 'svc-api2'])
-  expect((await doLane($, 'lane off')).text).toBe(`This session is not a lane. ${NO_LANE_RECORD}`)
-  for (const other of [ATTLANE({ folder: `${PIN}/other`, brief: `${PIN}/other/.callboard-attached` }), { name: 'svc-api', folder: SVC, brief: `${SVC}/BRIEF.md`, createdAt: 3 }]) {
-    putStore([other])
-    expect((await doLane($, 'lane off')).text).toBe(`This session is not a lane. ${NO_LANE_RECORD}`)
-    expect(storeJson().lanes.length).toBe(1)
-  }
-  h.sessions = { ...leadReg(), ...ownReg({ name: undefined }) }
-  expect((await doLane($, 'lane off')).text).toBe(`This session is not a lane. ${NO_LANE_RECORD}`)
-})
-
-test('a lane off while the stray record cannot be removed says so', async ($, on) => {
-  await attacher($, on, [], { clock: true })
-  putStore([ATTLANE()])
-  h.lockMkdirErr = 'mkdir: Permission denied'
-  expect((await doLane($, 'lane off')).text).toBe(DETACH_INCOMPLETE)
-  h.lockMkdirErr = undefined
-  expect(storeJson().lanes.length).toBe(1)
+  expect(storeJson().lanes.map((l: any) => l.name)).toEqual(['svc-api', 'other-name'])
 })
 
 test('an off that lands between the store write of a Join and the binding wins: the record goes again and nothing is bound', async ($, on) => {
@@ -878,16 +854,6 @@ test('an attached lane answers when two leads hold the repo: any valid presence 
   leadFiles.set(`${ROOT}/leads/${OTHERLEAD}.json`, { text: leadFileText({ sid: OTHERLEAD, pid: 4243 }) })
   h.sessions = { ...leadReg(), '4243.json': leadReg({ sessionId: OTHERLEAD, pid: 4243 })['4242.json'], ...ownReg() }
   expect(await cue(83, 'resume\n')).toBe('resume ok - 83\n')
-})
-
-test('lane off with no binding says so when the registry cannot be read, and does not claim there is no record', async ($, on) => {
-  await attacher($, on)
-  putStore([ATTLANE()])
-  h.sessionsUnsafe = true
-  expect((await doLane($, 'lane off')).text).toBe(LANE_RECORD_UNKNOWN)
-  h.sessionsUnsafe = false
-  expect(storeJson().lanes.length).toBe(1)
-  expect((await doLane($, 'lane off')).text).toBe('Removed its leftover lane record.')
 })
 
 test('a pending rename whose registry cannot be read is not run: it fails with a toast', async ($, on) => {
@@ -967,16 +933,6 @@ test('a late binding write the engine refused is left alone: nothing to undo', a
   await pause()
   await pause()
   expect(logged(stdins)).not.toContain('error:late-bind-undone')
-})
-
-test('a failed removal of an attached record gives DETACH_INCOMPLETE; its session id is then cleared instead, and the restart sentence comes only when that fails too', async ($, on) => {
-  const stdins: string[] = []
-  await attacher($, on, stdins)
-  await doLane($, 'lane svc-api')
-  h.storeWrites = 'fail'
-  const r = await doLane($, 'lane off')
-  expect(r.text).toBe(`${DETACH_INCOMPLETE}${SID_KEPT('svc-api')}`)
-  expect(logged(stdins)).toContain('sid-uncleared:')
 })
 
 test('attach records the start folder, and the attached lane still answers a cue after its shell moved', async ($, on) => {

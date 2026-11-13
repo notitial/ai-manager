@@ -724,7 +724,7 @@ longTest('lane_unpark writes <LANE>.reopen with the record\'s sid, waits for ok,
   await unparker($, on, stdins, argv)
   expect(toolDefs.filter((d) => d.includes('"lane_unpark"')).at(-1)).toContain("Reopen a lane's saved conversation in its VS Code window, with its full history. Use it for a parked lane, or one whose session was closed. Not for a retired lane: retire is final, so lane_open starts a new conversation for it. The session becomes the lane again by itself within a few seconds; then call lane_resume. lane: the lane name.")
   expect(toolDefs.filter((d) => d.includes('"lane_retire"')).at(-1)).toContain('Retire is final: the conversation cannot be reopened with lane_unpark. Use lane_park for a lane you may need again, the only stop that keeps the lane.')
-  expect(toolDefs.filter((d) => d.includes('"lane_retire"')).at(-1)).toContain("Once the session has stopped, the lane's record is deleted too (the .archive/<LANE> folder and signed report stay; a lane a session joined keeps its record while a session carries it; a second stop removes it once the session is gone). A lane with no live session is removed directly, with no signed report.")
+  expect(toolDefs.filter((d) => d.includes('"lane_retire"')).at(-1)).toContain("Once the session has stopped, the lane's record is deleted too (the .archive/<LANE> folder and signed report stay). A lane with no live session is removed directly, with no signed report.")
   expect(toolDefs.filter((d) => d.includes('"lane_retire"')).at(-1)).toContain("The call itself waits up to 40 seconds for the idle time, so call it right after the lane's last turn; if it still refuses not-idle, wait the seconds it names and try once, never in a loop.")
   windowAnswers(`ok ${OTHER}\n`)
   const r = await unparkCall($)
@@ -830,14 +830,14 @@ test('a park whose mark failed after the signal still leaves the session id, and
   expect((await unparkCall($)).result).toContain(`lane LABLANE reopened as session ${OTHER}.`)
 })
 
-test('after a park mark and an unpark clear, /callboard lane off in the attached lane still removes its record (found by its hash)', async ($, on) => {
+test('after a park mark and an unpark clear, /callboard lane off in the attached lane still clears its record\'s session id (found by its hash)', async ($, on) => {
   await attacher($, on, [], { clock: true })
   await doLane($, 'lane svc-api')
   const rec = storeJson().lanes[0]
   putStore([{ ...rec, parked: T0 }])
   putStore([{ ...rec }])
-  expect((await doLane($, 'lane off')).text).toBe('This session is no longer lane svc-api.')
-  expect(storeJson().lanes).toEqual([])
+  expect((await doLane($, 'lane off')).text).toBe(`This session is no longer lane svc-api.${STOPPABLE_BY_NAME('svc-api')}`)
+  expect(storeJson().lanes.map((l: any) => l.sid)).toEqual([undefined])
 })
 
 test('a session whose store record names its id rebinds from the tick as a restore binds: one note, a toast, and no Restore question later', async ($, on) => {
@@ -910,7 +910,7 @@ test('a parked record still rebinds, and the sync then drops the mark', async ($
   expect(logged(stdins)).toContain('sid-healed:')
 })
 
-test('an attached record rebinds with the attached facts in the binding, and its record still goes at lane off', async ($, on) => {
+test('an attached record rebinds with the attached facts in the binding, and its record loses its session id at lane off', async ($, on) => {
   const stdins: string[] = []
   const trace = newTrace()
   await rebinder($, on, stdins, { trace, rec: { adopted: true, lead: LEADSID } })
@@ -918,7 +918,7 @@ test('an attached record rebinds with the attached facts in the binding, and its
   expect(trace.st!.get('lane')!.value).toMatchObject({ name: 'LABLANE', turns: -1, restored: true, adopted: true, lead: LEADSID, key: KEY })
   expect(rebinds(stdins)).toEqual(['rebound:LABLANE'])
   await $.command.run(lane('lane off'))
-  expect(storeJson().lanes).toEqual([])
+  expect(storeJson().lanes.map((l: any) => l.sid)).toEqual([undefined])
 })
 
 test('a live row of this same session id carrying the lane name (the old process) does not block the rebind', async ($, on) => {

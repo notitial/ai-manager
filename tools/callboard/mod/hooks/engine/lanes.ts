@@ -66,7 +66,6 @@ import {
   idleCheck,
   regOnce,
   registryEntriesWhy,
-  loadStores,
   cueExchange,
   keptLanes,
   writeBrief,
@@ -197,10 +196,10 @@ async function leadTools($: any, sid: string) {
       name: `lane_${verb}`,
       description:
         verb === 'terminate'
-          ? "Stop the lane's session with SIGTERM, whatever it is doing. The person is asked to confirm every time. Once the session has stopped, the lane's record is deleted too (the .archive/<LANE> folder and report stay; a lane a session joined keeps its record while a session carries it; a second stop removes it once the session is gone). A lane with no live session is removed directly. lane: the lane name."
+          ? "Stop the lane's session with SIGTERM, whatever it is doing. The person is asked to confirm every time. Once the session has stopped, the lane's record is deleted too (the .archive/<LANE> folder and report stay). A lane with no live session is removed directly. lane: the lane name."
           : verb === 'park'
             ? "Park the lane's session: stop it and close its tab, but keep the conversation. lane_unpark reopens it later. The session must confirm first: idle for 30 seconds, an empty prompt box, no background agents or shells. No report is needed; the lane's record stays, the only stop that keeps it. The call itself waits up to 40 seconds for the idle time, so call it right after the lane's last turn; if it still refuses not-idle, wait the seconds it names and try once, never in a loop. Works for lanes you made and lanes a session joined. lane: the lane name."
-            : "Stop the lane's session once it confirms it can end: idle, empty prompt box, no background agents or shells, and the last line of <repo>/.archive/<LANE>/REPORT.md reads `status: done <its session id>` in a file newer than its last prompt. Does nothing otherwise. The call itself waits up to 40 seconds for the idle time, so call it right after the lane's last turn; if it still refuses not-idle, wait the seconds it names and try once, never in a loop. Once the session has stopped, the lane's record is deleted too (the .archive/<LANE> folder and signed report stay; a lane a session joined keeps its record while a session carries it; a second stop removes it once the session is gone). A lane with no live session is removed directly, with no signed report. Retire is final: the conversation cannot be reopened with lane_unpark. Use lane_park for a lane you may need again, the only stop that keeps the lane. lane: the lane name.",
+            : "Stop the lane's session once it confirms it can end: idle, empty prompt box, no background agents or shells, and the last line of <repo>/.archive/<LANE>/REPORT.md reads `status: done <its session id>` in a file newer than its last prompt. Does nothing otherwise. The call itself waits up to 40 seconds for the idle time, so call it right after the lane's last turn; if it still refuses not-idle, wait the seconds it names and try once, never in a loop. Once the session has stopped, the lane's record is deleted too (the .archive/<LANE> folder and signed report stay). A lane with no live session is removed directly, with no signed report. Retire is final: the conversation cannot be reopened with lane_unpark. Use lane_park for a lane you may need again, the only stop that keeps the lane. lane: the lane name.",
       inputSchema: { type: 'object', properties: { lane: text }, required: ['lane'] },
     })
   }
@@ -270,8 +269,7 @@ export async function laneLive($: any, live: RegRow[], l: { name: string; sid?: 
   return undefined
 }
 
-// One lane's record out of its store, in one editStore write wrapped in ownWrite (so the repo's lead still gets its lanes-changed notice). A lane a session
-// joined (adopted) is removed only with no live session carrying it (mode idle), never right after a stop signalled one. mode idle: the lane has no live session; the record must still be the one the question or the report check saw (same
+// One lane's record out of its store, in one editStore write wrapped in ownWrite (so the repo's lead still gets its lanes-changed notice). mode idle: the lane has no live session; the record must still be the one the question or the report check saw (same
 // session id, same parked state), no live session may carry it now (checked again on the records as they are, inside the lock), and the grant must still hold.
 // mode stopped: the session got its signal; the record must name that session or none (the dying session may still carry the lane name for a moment).
 // No stored field is added. { ok } when the record is gone, otherwise the refusal code.
@@ -286,8 +284,6 @@ async function removeRecord($: any, e: unknown, me: string, key: string, name: s
       if (!parsed.ok) return { no: parsed.reason }
       const rec = parsed.store.lanes.find((l) => l.name === name)
       if (!rec) return { no: 'unknown-lane' }
-      // A stop that just signalled a session keeps a joined record (the caller never asks for it); with no session carrying it, laneLive below is the guard.
-      if (rec.adopted && mode.kind === 'stopped') return { no: 'adopted-record' }
       if (mode.kind === 'stopped') {
         if (rec.sid !== undefined && rec.sid !== mode.victim) return { no: 'changed' }
       } else {
@@ -532,7 +528,9 @@ export async function handle($: any, sid: string, cue: c.Cue, answer: Answer) {
     return doCompact($, sid, req, true, answer)
   }
   if (cue.verb === 'rename') return birthRename($, sid, cue, { bound, now, first, reg, lanesOnce, refuse, hold, answer })
-  if (bound?.adopted) {
+  // One rule for every lane, made or joined: its session takes a cue only while a live lead of its repo passes leadHere, or, for the verbs they can cause, a
+  // trusted live manager or conductor does.
+  if (bound) {
     const all = await lanesOnce()
     if (typeof all === 'string') return refuse(all)
     const rec = all.find((x) => x.name === bound.name)
@@ -540,9 +538,13 @@ export async function handle($: any, sid: string, cue: c.Cue, answer: Answer) {
     if (!rec.repo) return refuse('no-lead')
     if (!(await leadHere($, await sessionRoot($), rec.repo, rec.leadName, reg))) {
       // With no live lead, the verbs a manager may send (resume, compact, retire) are taken while a live manager passes every
-      // presence check and has a reserved registry name (managerTrusted). A filter, not proof: any writer of the cue folder can send the cue then.
-      const live = c.MANAGER_CUE_VERBS.includes(cue.verb) ? await reg() : undefined
-      if (!live || !(await managerTrusted($, live, sid))) return refuse('no-lead')
+      // presence check and has a reserved registry name (managerTrusted), and the verbs a conductor may send (compact) while a live conductor that lists the
+      // lane's repo passes conductorsTrusted. A filter, not proof: any writer of the cue folder can send the cue then.
+      const byManager = c.MANAGER_CUE_VERBS.includes(cue.verb)
+      const byConductor = c.CONDUCTOR_CUE_VERBS.includes(cue.verb)
+      const live = byManager || byConductor ? await reg() : undefined
+      if (!live) return refuse('no-lead')
+      if (!(byManager && (await managerTrusted($, live, sid))) && !(byConductor && (await conductorsTrusted($, live, sid, rec.repo)).length > 0)) return refuse('no-lead')
     }
   }
   // A session holding a lead grant takes one verb, compact, and only while a live manager file of another session passes every presence
@@ -1003,12 +1005,11 @@ export async function attachPlan($: any, sid: string, want: string | undefined, 
 
 export type Bound = { name: string; at?: number; turns?: number; restored?: boolean; adopted?: boolean; lead?: string; key?: string; rec?: string }
 
-// The session's own record, removed under the store lock. With the binding's `rec` the record must be the very one the binding was made from (name, attached,
-// and the hash of its text, which covers the folder, so a session that has since changed folder still finds it); without one (a session with no binding) the
-// folder must be the session's own. true: it is gone, or was never there (an absent store is done). false: an attached record of that name is still there
-// and is not ours, or the store could not be edited: never reported as done.
-export async function dropRecord($: any, name: string, key: string | undefined, rec: string | undefined, folder: string | undefined): Promise<boolean> {
-  if (!key || !/^[0-9a-f]{64}$/.test(key) || (rec === undefined && folder === undefined)) return false
+// The record a Join just wrote, removed under the store lock when the Join fails: the undo of the act of making. The record must be the very one the Join wrote
+// (name, attached, and the hash of its text, which covers the folder). true: it is gone, or was never there (an absent store is done). false: an attached
+// record of that name is still there and is not ours, or the store could not be edited: never reported as done.
+export async function dropRecord($: any, name: string, key: string, rec: string): Promise<boolean> {
+  if (!/^[0-9a-f]{64}$/.test(key)) return false
   const r = await editStore($, key, async (cur) => {
     if (cur.state === 'absent') return { skip: true }
     if (cur.state !== 'ok') return { no: 'store-unreadable' }
@@ -1017,7 +1018,7 @@ export async function dropRecord($: any, name: string, key: string | undefined, 
     const left: c.Store['lanes'] = []
     let hit = false
     for (const l of parsed.store.lanes) {
-      const ours = l.name === name && l.adopted && (rec !== undefined ? await recMatch($, rec, l) : l.folder === folder)
+      const ours = l.name === name && l.adopted && (await recMatch($, rec, l))
       if (ours) hit = true
       else left.push(l)
     }
@@ -1028,8 +1029,8 @@ export async function dropRecord($: any, name: string, key: string | undefined, 
   return 'text' in r
 }
 
-// A born store lane's record stops naming this session, so a lane the person turned off does not come back by itself after a restart. The record is
-// found by name and by the binding's hash (a born binding has no store key); it is changed only while it still names this session. true: nothing names this
+// A store lane's record stops naming this session, so a lane the person turned off does not come back by itself after a restart. The record is
+// found by name and by the binding's hash; it is changed only while it still names this session. true: nothing names this
 // session any more, or nothing needed clearing; false: a record may still name it (the lanes or the store could not be read or written).
 async function sidClear($: any, sid: string, b: Bound): Promise<boolean> {
   const lanes = await loadLanes($)
@@ -1061,9 +1062,8 @@ async function sidClear($: any, sid: string, b: Bound): Promise<boolean> {
   return true
 }
 
-// Clears the binding and its hint first, then removes an attached session's record (or clears a born store lane's sid): whatever the removal does, the session
-// is unbound. whole false: the record could not be removed (the person is told to rename the session). sidKept: a born lane's record may still name this
-// session, so it could become the lane again after a restart (the person is told).
+// Clears the binding and its hint first, then the record's sid (the record stays): whatever the clear does, the session is unbound. sidKept: the record may still
+// name this session, so it could become the lane again after a restart (the person is told).
 // /callboard off in a session that is not bound: no store record may keep naming it, or a restart would rebind it into that lane.
 export async function sidClearAll($: any, sid: string): Promise<{ ok: boolean; name?: string }> {
   const lanes = await loadLanes($)
@@ -1087,12 +1087,11 @@ export async function sidClearAll($: any, sid: string): Promise<{ ok: boolean; n
   if (!ok) await log($, sid, 'sid-uncleared')
   return { ok, name: mine[0].name }
 }
-export async function detach($: any, sid: string, b: Bound): Promise<{ whole: boolean; sidKept: boolean }> {
+export async function detach($: any, sid: string, b: Bound): Promise<{ sidKept: boolean }> {
   pendingRename.delete(sid)
   sidSynced.delete(sid)
   laneBrief.delete(sid)
   laneBriefed.delete(sid)
-  const folder = b.adopted && b.rec === undefined ? ((await sessionRoot($).catch(() => undefined)) as string | undefined) : undefined
   await $.state.set(lane, null)
   // Again after the write: facts kept while it was in flight go too.
   laneBrief.delete(sid)
@@ -1103,31 +1102,10 @@ export async function detach($: any, sid: string, b: Bound): Promise<{ whole: bo
     await logq($, sid, 'error', 'hint-delete')
   }
   lastSaved.delete(sid)
-  const whole = !b.adopted || (await dropRecord($, b.name, b.key, b.rec, folder).catch(() => false))
-  if (!whole) await log($, sid, 'detach-incomplete')
-  // A born lane's record stays and loses its sid. An attached record is removed whole; when that failed, its sid is cleared instead, so a restart cannot
-  // rebind the session into it.
-  const sidKept = (!b.adopted || !whole) && !(await sidClear($, sid, b).catch(() => false))
+  // The record stays and loses its sid, so a restart cannot rebind the session into it.
+  const sidKept = !(await sidClear($, sid, b).catch(() => false))
   if (sidKept) await log($, sid, 'sid-uncleared')
-  return { whole, sidKept }
-}
-
-// An unbound session (its binding is gone, its record is not): the record is found by the session's own name and folder, never by a name alone, and never
-// when another live session carries that name (it is that session's lane).
-export async function strayRecord($: any, sid: string): Promise<'none' | 'removed' | 'stuck' | 'unknown'> {
-  const rows = await registryEntries($)
-  if (!rows) return 'unknown'
-  // Exactly one entry of this session: with two, the name could be a twin's, and a record would be removed on it.
-  const mine = rows.filter((e) => e.j.sessionId === sid)
-  if (mine.length > 1) return 'unknown'
-  const name = mine[0]?.j.name
-  const cwd = await sessionRoot($)
-  if (typeof name !== 'string' || rows.some((e) => e.j.name === name && e.j.sessionId !== sid)) return 'none'
-  for (const s of await loadStores($)) {
-    if (!s.store.lanes.some((l) => l.name === name && l.adopted && l.folder === cwd)) continue
-    return (await dropRecord($, name, s.key, undefined, cwd).catch(() => false)) ? 'removed' : 'stuck'
-  }
-  return 'none'
+  return { sidKept }
 }
 
 export async function leadVerbCall($: any, e: any, next: any, verb: (typeof c.LEAD_VERBS)[number]) {
@@ -1497,8 +1475,8 @@ export async function stopVerbCall($: any, e: any, next: any, verb: (typeof c.ST
         if (early) return early
         // At manager reach the question names the repo and is the one dialog of the session (askOnce): a second stop while it is open is refused busy.
         const r = level !== 'lead'
-          ? await askOnce($, sid, c.terminateQuestion(prep.lane.name, target.sessionId, target.pid as number, prep.lane.repo, !prep.lane.adopted), c.TERMINATE_YES, c.TERMINATE_NO, c.HEADER.stop)
-          : await ask($, c.terminateQuestion(prep.lane.name, target.sessionId, target.pid as number, undefined, !prep.lane.adopted), c.TERMINATE_YES, c.TERMINATE_NO, c.HEADER.stop)
+          ? await askOnce($, sid, c.terminateQuestion(prep.lane.name, target.sessionId, target.pid as number, prep.lane.repo, true), c.TERMINATE_YES, c.TERMINATE_NO, c.HEADER.stop)
+          : await ask($, c.terminateQuestion(prep.lane.name, target.sessionId, target.pid as number, undefined, true), c.TERMINATE_YES, c.TERMINATE_NO, c.HEADER.stop)
         if (r === 'busy') return no('busy', c.reasonWhy('busy'))
         if (r === 'timed-out') return { deny: leadReason(verb, `${await timedOut($, sid)}.`) }
         if (r !== 'yes') return no('not-confirmed', 'the person did not confirm.')
@@ -1522,7 +1500,7 @@ export async function stopVerbCall($: any, e: any, next: any, verb: (typeof c.ST
         if (early) return early
         // A retire at manager reach asks the person once before the cue; anything but Retire sends nothing.
         if (verb === 'retire' && level === 'manager') {
-          const r = await askOnce($, sid, c.retireQuestion(prep.lane.name, prep.lane.repo!, !prep.lane.adopted), c.RETIRE_YES, c.RETIRE_NO, c.HEADER.stop)
+          const r = await askOnce($, sid, c.retireQuestion(prep.lane.name, prep.lane.repo!, true), c.RETIRE_YES, c.RETIRE_NO, c.HEADER.stop)
           if (r === 'busy') return no('busy', c.reasonWhy('busy'))
           if (r === 'timed-out') return { deny: leadReason(verb, `${await timedOut($, sid)}.`) }
           if (r !== 'yes') return no('not-confirmed', 'the person did not confirm.')
@@ -1581,7 +1559,7 @@ export async function stopVerbCall($: any, e: any, next: any, verb: (typeof c.ST
           return { result: c.parkedText(prep.lane.name, victim.pid as number) } as never
         }
         // Retire and force stop end the lane for good: once the session got its signal, its store record goes too (the .archive folder and the
-        // report stay). A lane a session joined keeps its record, which stops naming the stopped session, as before. A failed removal is told, with its code; the call
+        // report stay), a joined lane's as well as a made one's. A failed removal is told, with its code; the call
         // can be made again: the record stops naming the stopped session, so a retry goes by name and a by-hand reopen of that conversation asks Restore.
         // The record goes only once the process (that pid and start time) has ended, polled up to c.STOP_POLLS times.
         const ended = async (): Promise<boolean> => {
@@ -1594,26 +1572,23 @@ export async function stopVerbCall($: any, e: any, next: any, verb: (typeof c.ST
             if (!(await pause($, c.STOP_POLL_MS))) throw new Error('pause-failed')
           }
         }
-        let outcome: 'removed' | 'kept' | 'alive' | { unremoved: string } = 'kept'
-        if (prep.lane.src) {
-          if (prep.lane.adopted) await sidClearAfterStop($, sid, prep.lane.src, prep.lane.name, victim.sessionId)
-          else if (!(await ended())) {
-            // A session that survives its SIGTERM keeps its record, so the lead can still stop it by name; the record stops naming the session at once, so reopening
-            // that conversation by hand asks Restore again instead of making it the lane silently.
-            outcome = 'alive'
-            await logq($, sid, 'error', 'lane-still-running')
-            await sidClearAfterStop($, sid, prep.lane.src, prep.lane.name, victim.sessionId)
+        const key = prep.lane.src!
+        let outcome: 'removed' | 'alive' | { unremoved: string } = 'removed'
+        if (!(await ended())) {
+          // A session that survives its SIGTERM keeps its record, so the lead can still stop it by name; the record stops naming the session at once, so reopening
+          // that conversation by hand asks Restore again instead of making it the lane silently.
+          outcome = 'alive'
+          await logq($, sid, 'error', 'lane-still-running')
+          await sidClearAfterStop($, sid, key, prep.lane.name, victim.sessionId)
+        } else {
+          const gone = await removeRecord($, e, sid, key, prep.lane.name, { kind: 'stopped', victim: victim.sessionId })
+          // A record that is gone already (another writer took it out meanwhile) is the outcome wanted.
+          if ('no' in gone && gone.no !== 'unknown-lane') {
+            outcome = { unremoved: gone.no }
+            await logq($, sid, 'error', `lane-unremoved ${gone.no}`)
+            await sidClearAfterStop($, sid, key, prep.lane.name, victim.sessionId)
           } else {
-            const gone = await removeRecord($, e, sid, prep.lane.src, prep.lane.name, { kind: 'stopped', victim: victim.sessionId })
-            // A record that is gone already (another writer took it out meanwhile) is the outcome wanted.
-            if ('no' in gone && gone.no !== 'unknown-lane') {
-              outcome = { unremoved: gone.no }
-              await logq($, sid, 'error', `lane-unremoved ${gone.no}`)
-              await sidClearAfterStop($, sid, prep.lane.src, prep.lane.name, victim.sessionId)
-            } else {
-              outcome = 'removed'
-              await log($, sid, 'lane-removed', prep.lane.name)
-            }
+            await log($, sid, 'lane-removed', prep.lane.name)
           }
         }
         return { result: c.stoppedText(verb as 'retire' | 'terminate', prep.lane.name, victim.pid as number, outcome) } as never
