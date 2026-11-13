@@ -312,7 +312,7 @@ test('d: a floor row for the same tool, hash and floor context makes a later req
   ledger(fx, other)
   assert.deepEqual(run(fx).anomalies, [])
 })
-test('review r2: the same input asked under another floor context is not an anomaly; rows with no context are a note', () => {
+test('the same input asked under another floor context is not an anomaly; rows with no context are a note', () => {
   const fx = fixture()
   // A call floored in one context, the identical call asked in another.
   const changed = [ON(), R('floor', BASE - 1000, { ...T, ctx: 'a'.repeat(16), code: 'settings' }), ...clean(uid(1), BASE, uid(101), { ctx: 'b'.repeat(16) })]

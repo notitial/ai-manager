@@ -290,7 +290,7 @@ async function promptAnswerTool($: any, e: any, answer: boolean): Promise<{ resu
   if (answer) {
     if (q.truncated && decision === 'allow') return refuse('truncated')
     if (!q.truncated) {
-      const fo = await promptFloorOpts($, q.tool, q.input, q.cwd ?? q.repo, homeOf(t.p), q.cwd !== undefined)
+      const fo = await promptFloorOpts($, q.tool, q.input, q.cwd ?? q.repo, homeOf(t.p), q.cwd !== undefined, q.level === 'lane' && q.lane !== undefined && q.ownReport !== undefined ? { lane: q.lane, path: q.ownReport } : undefined)
       if (pr.floorCheck(q.tool, q.input, fo) !== undefined) return refuse('floor')
     }
     if (promptWindowShut(q, stand, sid, now)) return refuse('window')

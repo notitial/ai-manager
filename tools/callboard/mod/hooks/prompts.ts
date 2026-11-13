@@ -151,6 +151,9 @@ export type FloorOpts = {
   home?: string
   // The protected folders: the mod's own code in the live checkout (tools/callboard) and the folders that the hooks and rules under ~/.claude link into. An edit under one is the floor.
   roots?: string[]
+  // A lane's own report, which the hook sets only after checking it: `path` is `<repo>/.archive/<lane>/REPORT.md` of the session's own lane, `real` is the same
+  // path under the repo's real path. A Write, Edit or MultiEdit of exactly this file is not held by `roots` (every other floor rule still is). See ownReportWrite.
+  ownReport?: { path: string; real: string }
   // The folder the session runs in: a git call with no path acts there.
   cwd?: string
   // The event carried no folder: the base for relative paths is unknown, as after a cd to a variable (the hook sets this instead of guessing a cwd).
@@ -178,6 +181,30 @@ function lexical(p: string, home: string | undefined): string {
     else out.push(s)
   }
   return (abs ? '/' : '') + out.join('/')
+}
+// A lane signs by writing its own report: `<repo>/.archive/<lane>/REPORT.md`, which lies under a live checkout when the repo is one. The path of that report for a repo and a
+// lane name; undefined for anything but an absolute repo path with no dot segment or control character and a plain lane name.
+export function ownReportPath(repo: unknown, lane: unknown): string | undefined {
+  if (typeof repo !== 'string' || typeof lane !== 'string' || !repo.startsWith('/') || repo.length < 2 || /[\u0000-\u001f\u007f]/.test(repo) || repo.split('/').some((x) => x === '.' || x === '..')) return undefined
+  if (!/^[A-Za-z0-9_-]{1,40}$/.test(lane)) return undefined
+  return `${repo.replace(/\/+$/, '')}/.archive/${lane}/REPORT.md`
+}
+// Whether a file tool's file_path names the path, lexically and spelled exactly (a relative one reads against cwd): the cheap test before the file system is asked anything.
+export function namesOwnReport(filePath: unknown, cwd: string | undefined, path: string): boolean {
+  if (typeof filePath !== 'string') return false
+  const full = filePath.startsWith('/') ? filePath : cwd === undefined ? undefined : `${cwd}/${filePath}`
+  return full !== undefined && lexical(full, undefined) === path
+}
+// Whether a call is a write of exactly the lane's own report: a Write, Edit or MultiEdit (no notebook, no second path argument) whose file_path is that path, spelled
+// exactly (the case too: the volume ignores it, so another spelling is not shown to be the same file), and whose one real path is the expected real path.
+function ownReportWrite(tool: string, input: Record<string, unknown>, o: FloorOpts): boolean {
+  const own = o.ownReport
+  if (own === undefined || !/^(Write|Edit|MultiEdit)$/.test(tool)) return false
+  const fp = input.file_path
+  if (typeof fp !== 'string' || input.notebook_path !== undefined || input.path !== undefined) return false
+  const full = fp.startsWith('/') ? fp : o.cwd === undefined || o.cwdUnknown === true ? undefined : `${o.cwd}/${fp}`
+  if (full === undefined || lexical(full, undefined) !== own.path) return false
+  return o.real !== undefined && o.real.length === 1 && o.real[0] === own.real
 }
 // Whether a path is a protected folder or inside one (lexical, case-insensitive).
 function underRoot(p0: string, o: FloorOpts): boolean {
@@ -734,15 +761,15 @@ const coversRoot = (p: string, o: FloorOpts): boolean => {
   })
 }
 // The same for a path with a glob in it: whether the pattern can match a protected folder or one above it, component by component (a name with a leading dot is not matched by a
-// glob that does not start with one).
-const coversRootGlob = (p: string, o: FloorOpts): boolean => {
+// glob that does not start with one). deep: a pattern that goes on below the protected folder counts as reaching it.
+const coversRootGlob = (p: string, o: FloorOpts, deep = false): boolean => {
   const pc = lexical(p, o.home).split('/').filter(Boolean)
   const home = o.home?.replace(/\/+$/, '')
   return [...(o.roots ?? []), ...(home ? [`${home}/.claude`] : [])].some((r) => {
     const bc = r.split('/').filter(Boolean)
     return (
-      pc.length <= bc.length &&
-      pc.every((c, i) => {
+      (deep || pc.length <= bc.length) &&
+      pc.slice(0, bc.length).every((c, i) => {
         if (!/[*?[]/.test(c)) return c.toLowerCase() === bc[i].toLowerCase()
         if (!c.startsWith('.') && !c.startsWith('[') && bc[i].startsWith('.')) return false
         try {
@@ -967,6 +994,13 @@ function wrapScan(args: Word[], it: Item, cur: B[], j: J, reparse: boolean): Flo
 
 // The options of gh that take a value as the next word (a flag that takes none is not listed).
 const GH_VAL = /^(-R|--repo|--hostname|-b|--body|-t|--title|-B|--base|-H|--head|-l|--label|-a|--assignee|-m|--milestone|-F|--body-file|-q|--jq|-r|--reviewer|--json|-L|--limit|-s|--state|--author|-A|--search|-S|--branch)$/
+const GRAPHQL_OK = /^(mergePullRequest|createRef|updateRef|deleteRef|createIssue|updateIssue|closeIssue|reopenIssue|addComment|updateIssueComment|deleteIssueComment)$/
+// Whether a GraphQL text holds a mutation outside the allow list: the field names that take an `input:` argument (every mutation does), and any mutation whose names cannot be read that way.
+function graphqlMutates(x: string): boolean {
+  if (!/mutation/i.test(x)) return false
+  const names = [...x.matchAll(/([A-Za-z_]\w*)\s*\(\s*input\s*:/g)].map((m) => m[1])
+  return names.length === 0 || names.some((n) => !GRAPHQL_OK.test(n))
+}
 // gh: what changes gh's own settings or runs code (config, extensions, aliases), changes GitHub-side settings, secrets, access or keys, or starts a paid run through a comment.
 // A merge, a delete or any other write reaches the tiers.
 function judgeGh(args: Word[], cur: B[], o: FloorOpts): FloorCategory | undefined {
@@ -992,7 +1026,7 @@ function judgeGh(args: Word[], cur: B[], o: FloorOpts): FloorCategory | undefine
     // A comment, review, edit or new PR or issue that mentions @claude starts a paid run: the mod caps that only through the GitHub server's tools.
     if ((g === 'pr' || g === 'issue') && rest.some((x) => /^(comment|review|edit|create)$/.test(x)) && t.some((x) => /@claude/i.test(x))) return 'settings'
     // A checkout, a sync, a clone or a download rewrites the folder it runs in: the floor in, under or above a protected one, or where the folder is not known.
-    if (((g === 'pr' && rest[0] === 'checkout') || (g === 'repo' && /^(sync|clone)$/.test(rest[0] ?? '')) || (g === 'gist' && rest[0] === 'clone') || (g === 'run' && rest[0] === 'download')) && gitReach(cur, o)) return 'settings'
+    if (((g === 'pr' && rest[0] === 'checkout') || (g === 'repo' && /^(sync|clone)$/.test(rest[0] ?? '')) || (g === 'gist' && rest[0] === 'clone') || (g === 'run' && rest[0] === 'download') || (g === 'release' && rest[0] === 'download')) && gitReach(cur, o)) return 'settings'
     if (g === 'repo' && rest.some((x) => /^(edit|archive|unarchive|rename|transfer|create|deploy-key)$/.test(x))) return 'settings'
     if ((g === 'secret' || g === 'variable') && rest.some((x) => /^(set|delete|remove)$/.test(x))) return 'settings'
     if (g === 'ruleset' && rest.length > 0 && !/^(list|view|check)$/.test(rest[0])) return 'settings'
@@ -1029,8 +1063,8 @@ function judgeGh(args: Word[], cur: B[], o: FloorOpts): FloorCategory | undefine
   const write = m !== undefined ? m !== 'GET' && m !== 'HEAD' : fields.length > 0 || input
   if (!write) return undefined
   const ep = (endpoint ?? '').replace(/^https?:\/\/[^/]+\//i, '').replace(/^\/+/, '').replace(/[?#].*$/, '')
-  // A GraphQL call can change settings, rulesets, access or visibility: a mutation of those, or a query read from a file or a variable, is the floor (a merge or a branch write reaches the tiers).
-  if (ep === 'graphql' && (input || args.some((w) => w.dyn) || fields.some((f) => /(^|=)@/.test(f)) || t.some((x) => /mutation[\s\S]*(BranchProtection|Ruleset|Visibility|Collaborator|Repository|Secret|Webhook|DeployKey|Environment|Team|Member|Invitation|Pages|Token|Permission)/i.test(x)))) return 'settings'
+  // A GraphQL call can change anything: every mutation is the floor except the few that are not settings (a merge, a branch or tag write, an issue or a comment), and so is a query read from a file or a variable.
+  if (ep === 'graphql' && (input || args.some((w) => w.dyn) || fields.some((f) => /(^|=)@/.test(f)) || t.some(graphqlMutates))) return 'settings'
   // A write to an endpoint that changes settings, secrets, access or keys.
   if (/(^|\/)(hooks|secrets|variables|rulesets|rules|protection|environments|keys|deploy_keys|collaborators|invitations|autolinks|actions\/(permissions|runners|secrets|variables|oidc)|dependabot\/secrets|codespaces\/secrets|webhooks|pages|teams|members|memberships|installations|transfer|settings|vulnerability-alerts|automated-security-fixes|private-vulnerability-reporting|topics|visibility)(\/|$)/.test(ep) || /^repos\/[^/]+\/[^/]+$/.test(ep) || /^(orgs|user)(\/|$)/.test(ep)) return 'settings'
   return undefined
@@ -1134,6 +1168,7 @@ function dispatch(v: string, verb: Word, args: Word[], it: Item, cur: B[], j: J,
     const a = args.find((w) => !w.t.startsWith('-') || w.t === '-')
     // pushd with no folder swaps the top two of the stack, +N and -N rotate it, and -n moves nothing: none of those is a known folder. (cd alone is home.)
     const stackMove = v === 'pushd' && (!a || /^[+-]\d+$/.test(a.t) || args.some((w) => w.t.startsWith('-') && w.t !== '-' && w.t !== a?.t))
+    if (a?.glob && !stackMove && cur.some((b) => b !== null && b !== '' && coversRootGlob(/^[/~]/.test(a.t) ? a.t : `${b}/${a.t}`, o, true))) return SETT
     const to: B[] = stackMove ? [null] : !a ? (o.home ? [lexical(o.home, undefined)] : [null]) : a.t === '-' || a.dyn || a.glob ? [null] : capB(cur.map((b) => cdTo(b, a.t)))
     return { cd: to }
   }
@@ -1417,7 +1452,9 @@ function floorCore(tool: string, input0: unknown, o: FloorOpts = {}): FloorCateg
   // File tools: settings, hooks, callboard state.
   if (WRITE_TOOLS.has(tool)) {
     if (o.unresolved) return 'settings'
-    if (pathArgs(input).concat(o.real ?? []).some((p) => settingsPath(p, o))) return 'settings'
+    // The lane's own report is the one file under a live checkout that stays answerable: the rest of the settings rules still apply to it.
+    const po = ownReportWrite(tool, input, o) ? { ...o, roots: [] } : o
+    if (pathArgs(input).concat(o.real ?? []).some((p) => settingsPath(p, po))) return 'settings'
   }
   if (tool === 'Bash') {
     const cmd0 = str(input.command)
@@ -1528,6 +1565,8 @@ export type Request = {
   agentType?: string
   // The folder the call ran in (the event's own cwd), for the tier's floor check; absent when the event gave none.
   cwd?: string
+  // The lane's own report, when this call is a write of it that the floor let through (see FloorOpts.ownReport); the tier's floor check reads it from here.
+  ownReport?: string
   inputHash: string
   raisedBy: Raised
   at: number
@@ -2108,8 +2147,8 @@ export function parseRequest(text: string): Request | undefined {
   if (typeof o.repo !== 'string' || typeof o.tool !== 'string' || typeof o.inputHash !== 'string' || !HASH_RE.test(o.inputHash) || typeof o.nonce !== 'string' || o.nonce === '') return undefined
   if (o.raisedBy !== 'mode' && o.raisedBy !== 'rule' && o.raisedBy !== 'guard') return undefined
   if (!finite(o.at) || !finite(o.expiresAt) || typeof o.truncated !== 'boolean') return undefined
-  if ((o.lane !== undefined && typeof o.lane !== 'string') || (o.leadName !== undefined && typeof o.leadName !== 'string') || (o.agentType !== undefined && typeof o.agentType !== 'string') || (o.cwd !== undefined && typeof o.cwd !== 'string') || (o.noLead !== undefined && typeof o.noLead !== 'boolean')) return undefined
-  return { id: o.id, sid: o.sid, pid: o.pid as number, procStart: o.procStart, level: o.level, lane: o.lane as string | undefined, leadName: o.leadName as string | undefined, ...(o.noLead === true ? { noLead: true } : {}), repo: o.repo, tool: o.tool, agentType: o.agentType as string | undefined, cwd: o.cwd as string | undefined, inputHash: o.inputHash, raisedBy: o.raisedBy, at: o.at, expiresAt: o.expiresAt, nonce: o.nonce, input: o.input, truncated: o.truncated }
+  if ((o.lane !== undefined && typeof o.lane !== 'string') || (o.leadName !== undefined && typeof o.leadName !== 'string') || (o.agentType !== undefined && typeof o.agentType !== 'string') || (o.cwd !== undefined && typeof o.cwd !== 'string') || (o.noLead !== undefined && typeof o.noLead !== 'boolean') || (o.ownReport !== undefined && typeof o.ownReport !== 'string')) return undefined
+  return { id: o.id, sid: o.sid, pid: o.pid as number, procStart: o.procStart, level: o.level, lane: o.lane as string | undefined, leadName: o.leadName as string | undefined, ...(o.noLead === true ? { noLead: true } : {}), repo: o.repo, tool: o.tool, agentType: o.agentType as string | undefined, cwd: o.cwd as string | undefined, ...(typeof o.ownReport === 'string' ? { ownReport: o.ownReport } : {}), inputHash: o.inputHash, raisedBy: o.raisedBy, at: o.at, expiresAt: o.expiresAt, nonce: o.nonce, input: o.input, truncated: o.truncated }
 }
 // prompt_escalate by position: a tier that is not the top passes the request up, and its right to answer ends. The file is `<id>.escalate-<level>.json`
 // (level: the tier that passed it; sid: that tier's session).

@@ -7,14 +7,14 @@ const SID_A = '0a1b2c3d-0000-4000-8000-123456789abc'
 const SID_B = '1a1b2c3d-0000-4000-8000-123456789abc'
 const ID = '2a1b2c3d-0000-4000-8000-123456789abc'
 const GIT = 'mcp__git-mcp__'
-// A git server call names its folder (one with no absolute path acts in the server's own, and is the floor: see 'cycle 2 H1'); the helper names one.
+// A git server call names its folder (one with no absolute path acts in the server's own, and is the floor); the helper names one.
 const floor = (tool: string, input: unknown, o: p.FloorOpts = {}) =>
   p.floorCheck(tool, tool.startsWith('mcp__git-mcp__') && input !== null && typeof input === 'object' && !('path' in input) ? { ...input, path: '/w/repo' } : input, o)
 const HOME = { home: '/Users/x' }
 
 // ---- the floor: self-protection only. What it holds is the person's; everything else reaches the tiers ----
-// The protected folders: callboard's own code in the live checkout, and the folders ~/.claude/hooks and ~/.claude/rules link into.
-const PROT = ['/live/ai-manager/tools/callboard', '/live/ai-manager/CLAUDE.md', '/live/ai-manager/docs/manager', '/live/ai-manager/rules', '/live/toolkit/hooks', '/live/toolkit/tools']
+// The protected folders: the whole live checkout (the mod's own code, steering files, docs, rules) and the toolkit checkout that ~/.claude/hooks and ~/.claude/rules link into.
+const PROT = ['/live/ai-manager', '/live/toolkit']
 const IN = { ...HOME, roots: PROT }
 test('reaches the tiers: merges, branch updates and machine-ops calls', () => {
   for (const tool of ['mcp__github__merge_pull_request', 'mcp__other__merge_pull_request', 'mcp__github__update_pull_request_branch', 'mcp__machine-ops__pr_merge', 'mcp__machine-ops__force_push', 'mcp__github__get_file_contents'])
@@ -67,19 +67,22 @@ test('floor: settings, hooks and callboard state, by path (written and real) and
   for (const file_path of ['/Users/x/.claude/settings.json', '~/.claude/callboard/prompts/ledger-2026-11.jsonl', '/Users/x/.claude/hooks/a.sh', '/r/.claude/settings.local.json', '/r/.mcp.json', '/r/.git/hooks/pre-commit', '/r/install.conf', '/r/a/../.mcp.json', '/Users/x/.claude',
     '/r/.MCP.json', '/r/.claude/Settings.local.json', '/R/.GIT/hooks/x', '/r/.git/config', '/Users/x/.gitconfig', '/r/.claude/hooks/a.sh', '/r/.husky/pre-commit', '/r/.githooks/x', '/r/.git/modules/s/hooks/post-checkout', '/r/.git/config.worktree', '/r/.git/worktrees/w/config.worktree', '/USERS/X/.CLAUDE/rules/a.md'])
     assert.equal(floor('Write', { file_path }, HOME), 'settings', file_path)
-  // The mod's own code and the guard folders: held by path, in any case, and by shell text.
-  for (const file_path of ['/live/ai-manager/tools/callboard/mod/hooks/prompts.ts', '/LIVE/AI-Manager/tools/Callboard/x', '/live/toolkit/hooks/x.sh', '/live/ai-manager/rules/callboard.md', '/live/ai-manager/tools/callboard'])
+  // The live checkout and the toolkit checkout, whole: held by path, in any case, and by shell text.
+  for (const file_path of ['/live/ai-manager/tools/callboard/mod/hooks/prompts.ts', '/LIVE/AI-Manager/tools/Callboard/x', '/live/toolkit/hooks/x.sh', '/live/ai-manager/rules/callboard.md', '/live/ai-manager/tools/callboard', '/live/ai-manager',
+    '/live/ai-manager/docs/a.md', '/live/ai-manager/CLAUDE.local.md', '/live/ai-manager/tools/usage-watcher/watch.py', '/live/toolkit/skills/a.md', '/live/ai-manager/.archive/HARDEN/REPORT.md'])
     assert.equal(floor('Edit', { file_path }, IN), 'settings', file_path)
-  for (const file_path of ['/r/src/a.ts', '/live/ai-manager/docs/a.md', '/live/ai-manager/.archive/HARDEN/REPORT.md', '/live/ai-manager/tools/usage-watcher/watch.py', '/live/ai-manager/tools/callboard-other/x', '/live/toolkit/skills/a.md'])
+  for (const file_path of ['/r/src/a.ts', '/live/ai-manager-other/docs/a.md', '/live/toolkit2/x'])
     assert.equal(floor('Edit', { file_path }, IN), undefined, file_path)
   assert.equal(floor('Bash', { command: 'vi /live/toolkit/hooks/x.sh' }, IN), 'settings')
   assert.equal(floor('Bash', { command: 'echo x >> /live/ai-manager/tools/callboard/mod/hooks/register.ts' }, IN), 'settings')
-  assert.equal(floor('Bash', { command: 'echo x >> /live/ai-manager/docs/a.md' }, IN), undefined)
+  assert.equal(floor('Bash', { command: 'echo x >> /live/ai-manager/docs/a.md' }, IN), 'settings')
+  assert.equal(floor('Bash', { command: 'echo x >> /other/ai-manager/docs/a.md' }, IN), undefined)
   assert.equal(floor('Bash', { command: 'git config user.name' }, HOME), undefined)
   // A link: the written path is harmless, its real path is not.
   assert.equal(floor('Write', { file_path: '/r/link.json' }, { ...HOME, real: ['/Users/x/.claude/settings.json'] }), 'settings')
   assert.equal(floor('Write', { file_path: '/r/link.json' }, { ...IN, real: ['/live/ai-manager/tools/callboard/a.ts'] }), 'settings')
-  assert.equal(floor('Write', { file_path: '/r/link.json' }, { ...IN, real: ['/live/ai-manager/docs/a.md'] }), undefined)
+  assert.equal(floor('Write', { file_path: '/r/link.json' }, { ...IN, real: ['/live/ai-manager/docs/a.md'] }), 'settings')
+  assert.equal(floor('Write', { file_path: '/r/link.json' }, { ...IN, real: ['/live/ai-manager-other/a.md'] }), undefined)
   assert.equal(floor('Write', { file_path: '/r/link.json' }, { ...HOME, real: ['/r/link.json'] }), undefined)
   for (const command of ['cat ~/.claude/settings.json', 'echo x > $HOME/.claude/rules/a.md', 'ls /Users/x/.claude/callboard', 'cp a .claude/settings.local.json', 'cat .mcp.json', 'claude mcp add x', 'CLAUDE_CODE_PLUGIN_DIRS=/x claude', 'x/workspace-lock.sh --id a clear', 'cat install.conf', 'git config core.hooksPath /tmp/h', 'git -C /r config --local core.fsmonitor /x', 'git config alias.x !sh', 'echo a >> .git/config', 'cat ~/.gitconfig', 'cat /r/.husky/x'])
     assert.equal(floor('Bash', { command }, HOME), 'settings', command)
@@ -92,29 +95,46 @@ test('floor: a shell line that cannot be read stays the floor, as settings', () 
 test('floor: removing a folder above a protected folder, or above ~/.claude, stays the floor; a delete that cannot reach one does not', () => {
   const o = { ...IN, cwd: '/tmp/clone' }
   for (const command of ['rm -rf /live', 'rm -rf /live/ai-manager', 'rm -rf /live/ai-manager/tools', 'rm -rf /live/toolkit', 'rm -rf /', 'rm -rf /Users/x', 'rm -rf ~', 'rm -rf $HOME', 'rm -rf /Users/x/.claude', 'rm -rf /live/ai-manager/tools/callboard', 'rm -rf /live/toolkit/hooks/x.sh', 'rm -rf /LIVE/AI-MANAGER/TOOLS',
-    'find /live -delete', 'find /live/ai-manager -name x -delete', 'find ~ -delete', 'cd /live/ai-manager && rm -rf tools', 'cd /live && rm -rf ai-manager'])
+    'find /live -delete', 'find /live/ai-manager -name x -delete', 'find ~ -delete', 'cd /live/ai-manager && rm -rf tools', 'cd /live && rm -rf ai-manager',
+    'rm -rf /live/ai-manager/docs/adr', 'rm -rf /live/ai-manager/.archive/x', 'rm -rf /live/toolkit/skills', 'find /live/ai-manager/docs/adr -delete', 'rm /live/ai-manager/README.md'])
     assert.equal(floor('Bash', { command }, o), 'settings', command)
-  for (const command of ['rm -rf /live/ai-manager/docs/adr', 'rm -rf /live/ai-manager/.archive/x', 'rm -rf /live/toolkit/skills', 'rm -rf /tmp/clone/build', 'find /tmp -name x -delete', 'find /live/ai-manager/docs/adr -delete', 'rm -rf build', 'rm /live/ai-manager/README.md'])
+  for (const command of ['rm -rf /other/ai-manager/x', 'rm -rf /other/toolkit', 'rm -rf /tmp/clone/build', 'find /tmp -name x -delete', 'rm -rf build'])
     assert.equal(floor('Bash', { command }, o), undefined, command)
 })
-test('floor: the parts of a live checkout that steer sessions (CLAUDE.md, docs/manager, rules) and the toolkit tools folder, by file tool and by shell', () => {
+test('floor: anything in the live checkout or the toolkit checkout, by file tool and by shell: steering files, nested ones, docs', () => {
   const o = { ...IN, cwd: '/tmp/clone' }
-  for (const path of ['/live/ai-manager/CLAUDE.md', '/live/ai-manager/docs/manager/README.md', '/live/ai-manager/rules/callboard.md', '/live/toolkit/tools/statusline.sh', '/live/toolkit/tools/shell-init.zsh', '/live/ai-manager/tools/callboard/mod/x.ts']) {
+  for (const path of ['/live/ai-manager/CLAUDE.md', '/live/ai-manager/CLAUDE.local.md', '/live/ai-manager/.claude/rules/x.md', '/live/ai-manager/.claude/settings.local.json', '/live/ai-manager/docs/manager/README.md', '/live/ai-manager/rules/callboard.md', '/live/toolkit/tools/statusline.sh', '/live/toolkit/tools/shell-init.zsh', '/live/ai-manager/tools/callboard/mod/x.ts', '/live/ai-manager/docs/a.md', '/live/ai-manager/README.md', '/live/ai-manager/docs/adr/0001.md', '/live/toolkit/docs/a.md', '/live/ai-manager/sub/CLAUDE.md', '/live/ai-manager/.archive/L/REPORT.md']) {
     assert.equal(floor('Write', { file_path: path, content: 'x' }, o), 'settings', path)
     assert.equal(floor('Bash', { command: `echo x >> ${path}` }, o), 'settings', path)
     assert.equal(floor('Bash', { command: `sed -i s/a/b/ ${path}` }, o), 'settings', path)
   }
-  for (const path of ['/live/ai-manager/docs/a.md', '/live/ai-manager/README.md', '/live/ai-manager/docs/adr/0001.md', '/live/toolkit/docs/a.md', '/live/ai-manager/.archive/L/REPORT.md']) {
+  for (const path of ['/other/ai-manager/docs/a.md', '/tmp/clone/CLAUDE.local.md', '/other/toolkit/docs/a.md']) {
     assert.equal(floor('Write', { file_path: path, content: 'x' }, o), undefined, path)
     assert.equal(floor('Bash', { command: `echo x >> ${path}` }, o), undefined, path)
   }
 })
+test('floor: a cd to a glob that can land in, under or above a protected folder is the floor; one that cannot leaves the folder unknown', () => {
+  const o = { ...IN, cwd: '/live/ai-manager' }
+  for (const command of ['cd tools/callboard/mod/hook? && curl -O https://example.com/x', 'cd tool?/callboard/mod && make', 'cd /live/ai-manager/tools/call* && npm install', 'cd d* && ls', 'cd tools/c*/mod && touch x'])
+    assert.equal(floor('Bash', { command }, o), 'settings', command)
+  for (const command of ['cd /tmp/x* && ls', 'cd /tmp/x* && npm test'])
+    assert.equal(floor('Bash', { command }, o), undefined, command)
+})
+test('floor: a file-system tool that moves, deletes or writes a protected folder or one above it is the floor; a read, or other folders, are not', () => {
+  const o = { ...IN, cwd: '/tmp/clone' }
+  for (const [tool, input] of [['mcp__filesystem__move_file', { source: '/live/ai-manager', destination: '/live/ai-manager-old' }], ['mcp__filesystem__move_file', { source: '/tmp/x', destination: '/live/ai-manager' }],
+    ['mcp__fs__delete_directory', { path: '/live/ai-manager/tools' }], ['mcp__fs__delete_directory', { path: '/live/ai-manager/docs/adr' }], ['mcp__fs__remove', { path: '/Users/x/.claude' }], ['mcp__fs__write_file', { path: '/live/ai-manager/CLAUDE.local.md', content: 'x' }]] as [string, unknown][])
+    assert.equal(floor(tool, input, o), 'settings', `${tool} ${JSON.stringify(input)}`)
+  for (const [tool, input] of [['mcp__filesystem__move_file', { source: '/tmp/a', destination: '/tmp/b' }],
+    ['mcp__fs__delete_directory', { path: '/other/ai-manager/docs/adr' }], ['mcp__filesystem__list_directory', { path: '/tmp/clone' }]] as [string, unknown][])
+    assert.equal(floor(tool, input, o), undefined, `${tool} ${JSON.stringify(input)}`)
+})
 test('floor: a write, move or extract that replaces a folder above a protected one, by name or by glob, stays the floor', () => {
   const o = { ...IN, cwd: '/live/ai-manager' }
   for (const command of ['rm -rf t*', 'rm -rf tool?', 'rm -rf [t]ools', 'mv t* /tmp/x', 'find t* -delete', 'mv /live/ai-manager/tools /tmp/x', 'rsync -a --delete /tmp/x/ /live/ai-manager/tools/', 'tar -xf a.tar -C /live/ai-manager',
-    'cp -R /tmp/x /live/ai-manager/tools/', 'unzip a.zip -d /live/ai-manager', 'ditto /tmp/x /live/ai-manager/tools', 'mv /Users/x/.claude /tmp/x', 'rm -rf /Users/x/.cl*', 'rm -rf .claude', 'mv /live/.claude /tmp/x', 'cd t* && touch x', 'rm -rf d*', 'rm -rf /live/ai-manager/docs', 'cp a.txt /live/ai-manager/docs/'])
+    'cp -R /tmp/x /live/ai-manager/tools/', 'unzip a.zip -d /live/ai-manager', 'ditto /tmp/x /live/ai-manager/tools', 'mv /Users/x/.claude /tmp/x', 'rm -rf /Users/x/.cl*', 'rm -rf .claude', 'mv /live/.claude /tmp/x', 'cd t* && touch x', 'rm -rf d*', 'rm -rf /live/ai-manager/docs', 'cp a.txt /live/ai-manager/docs/', 'rm -rf docs/a*', 'mv README.md /tmp/x', 'rm -rf .a*', 'cp -R /tmp/x /live/ai-manager/docs/adr', 'cp a.txt /live/ai-manager/docs/adr/'])
     assert.equal(floor('Bash', { command }, o), 'settings', command)
-  for (const command of ['rm -rf docs/a*', 'mv README.md /tmp/x', 'rm -rf .a*', 'cp -R /tmp/x /live/ai-manager/docs/adr', 'cp a.txt /live/ai-manager/docs/adr/', 'cd /tmp/y && tar -xf a.tar'])
+  for (const command of ['cd /tmp/y && tar -xf a.tar', 'rm -rf /tmp/x/abc', 'cp -R /tmp/x /tmp/y'])
     assert.equal(floor('Bash', { command }, o), undefined, command)
   // A writer with no named target (a patch, an archive) acts in the folder it runs in: the floor from a folder in, under or above a protected one.
   const implicit = ['patch -p1 < a.diff', 'tar -xf a.tar', 'unzip a.zip', 'ditto a b', 'cpio -id < a']
@@ -122,7 +142,7 @@ test('floor: a write, move or extract that replaces a folder above a protected o
     assert.equal(floor('Bash', { command }, o), 'settings', command)
     assert.equal(floor('Bash', { command }, { ...IN, cwd: '/live/ai-manager/tools/callboard' }), 'settings', command)
     assert.equal(floor('Bash', { command }, { ...IN, cwd: '/tmp/clone' }), undefined, command)
-    assert.equal(floor('Bash', { command }, { ...IN, cwd: '/live/ai-manager/docs/adr' }), undefined, command)
+    assert.equal(floor('Bash', { command }, { ...IN, cwd: '/live/ai-manager/docs/adr' }), 'settings', command)
   }
 })
 test('floor: a git call that rewrites the work tree in, under or above a protected folder stays the floor', () => {
@@ -148,21 +168,81 @@ test('floor: a git call that rewrites the work tree in, under or above a protect
   assert.equal(floor('Bash', { command: 'git checkout x' }, { ...IN, cwdUnknown: true }), 'settings')
   assert.equal(floor('Bash', { command: 'git checkout x' }, { home: '/Users/x', cwd: '/tmp/clone' }), undefined)
 })
-test('reaches the tiers: writes with a known target outside the protected folders, from a live checkout too', () => {
+test('reaches the tiers: writes whose target lies outside the live checkout, from a session in it too; writes into it are the floor', () => {
   const o = { ...IN, cwd: '/live/ai-manager' }
-  for (const command of ['echo x > /tmp/a', 'cp a /tmp/b', 'echo x > docs/a.md', 'rm docs/a.md', 'touch x', 'mkdir -p out', 'sed -i s/a/b/ README.md', 'git commit -m x', 'git push origin feat/x', 'git branch -D x', 'rm -rf build', 'npm install', 'make']) assert.equal(floor('Bash', { command }, o), undefined, command)
-  for (const command of ['echo x > tools/callboard/a.ts', 'cp a tools/callboard/b', 'rm tools/callboard/a.ts', 'cd tools/callboard && echo x > a', 'mv a rules/x.md']) assert.equal(floor('Bash', { command }, o), 'settings', command)
+  for (const command of ['echo x > /tmp/a', 'cp /tmp/a /tmp/b', 'touch /tmp/x', 'mkdir -p /tmp/out', 'rm -rf /tmp/build', 'git commit -m x', 'git push origin feat/x', 'git branch -D x', 'cd /tmp/clone && npm test', 'cd /tmp/clone && make', 'cd /tmp/clone && touch x', 'cd /tmp/clone && echo x > a'])
+    assert.equal(floor('Bash', { command }, o), undefined, command)
+  for (const command of ['echo x > tools/callboard/a.ts', 'cp a tools/callboard/b', 'rm tools/callboard/a.ts', 'cd tools/callboard && echo x > a', 'mv a rules/x.md', 'echo x > docs/a.md', 'rm docs/a.md', 'touch x', 'mkdir -p out', 'sed -i s/a/b/ README.md', 'rm -rf build', 'npm install', 'make',
+    'cd ../ai-manager && touch x', 'cd /live/toolkit && touch x'])
+    assert.equal(floor('Bash', { command }, o), 'settings', command)
   // A file tool's relative path arrives with its real path, which the engine reads against the folder the session runs in.
-  assert.equal(floor('Write', { file_path: 'docs/a.md' }, { ...o, real: ['/live/ai-manager/docs/a.md'] }), undefined)
+  assert.equal(floor('Write', { file_path: 'docs/a.md' }, { ...o, real: ['/live/ai-manager/docs/a.md'] }), 'settings')
   assert.equal(floor('Write', { file_path: 'tools/callboard/a.ts' }, { ...o, real: ['/live/ai-manager/tools/callboard/a.ts'] }), 'settings')
+  assert.equal(floor('Write', { file_path: '/tmp/clone/a.md' }, { ...o, real: ['/tmp/clone/a.md'] }), undefined)
 })
-test('reaches the tiers: a lane\'s own report file, and any other file outside the protected folders', () => {
+test('floor: a file tool writing anything in the live checkout, a lane\'s report included (the report has its own exception)', () => {
   const o = { ...IN, cwd: '/live/ai-manager' }
-  for (const tool of ['Write', 'Edit', 'MultiEdit']) assert.equal(floor(tool, { file_path: '/live/ai-manager/.archive/HARDEN/REPORT.md' }, { ...o, real: ['/live/ai-manager/.archive/HARDEN/REPORT.md'] }), undefined, tool)
-  // A link whose real path is a guard stays the floor.
-  assert.equal(floor('Write', { file_path: '/live/ai-manager/.archive/HARDEN/REPORT.md' }, { ...o, real: ['/live/ai-manager/rules/callboard.md'] }), 'settings')
+  for (const tool of ['Write', 'Edit', 'MultiEdit']) assert.equal(floor(tool, { file_path: '/live/ai-manager/.archive/HARDEN/REPORT.md' }, { ...o, real: ['/live/ai-manager/.archive/HARDEN/REPORT.md'] }), 'settings', tool)
   assert.equal(floor('mcp__fs__write_file', { path: '/live/ai-manager/tools/callboard/a.ts', content: 'x' }, o), 'settings')
-  assert.equal(floor('mcp__fs__write_file', { path: '/live/ai-manager/docs/a.md', content: 'x' }, o), undefined)
+  assert.equal(floor('mcp__fs__write_file', { path: '/live/ai-manager/docs/a.md', content: 'x' }, o), 'settings')
+  assert.equal(floor('mcp__fs__write_file', { path: '/tmp/clone/a.md', content: 'x' }, o), undefined)
+})
+// ---- a lane's own report: the one file under a live checkout that a tier may answer ----
+const OWN = { path: '/live/ai-manager/.archive/HARDEN/REPORT.md', real: '/live/ai-manager/.archive/HARDEN/REPORT.md' }
+const ownOpts = (over: Partial<p.FloorOpts> = {}): p.FloorOpts => ({ ...HOME, roots: ['/live/ai-manager', '/live/toolkit'], cwd: '/live/ai-manager', ownReport: OWN, real: [OWN.real], ...over })
+test('ownReportPath: an absolute repo and a plain lane name, nothing else', () => {
+  assert.equal(p.ownReportPath('/live/ai-manager', 'HARDEN'), '/live/ai-manager/.archive/HARDEN/REPORT.md')
+  assert.equal(p.ownReportPath('/live/ai-manager/', 'HARDEN'), '/live/ai-manager/.archive/HARDEN/REPORT.md')
+  for (const repo of ['live/ai-manager', '/', '', '/live/../ai-manager', '/live/./x', '/live/a\nb', undefined, 5]) assert.equal(p.ownReportPath(repo, 'HARDEN'), undefined, String(repo))
+  for (const lane of ['', '.', '..', 'a/b', '../x', 'a b', '.git', 'x'.repeat(41), undefined, 5]) assert.equal(p.ownReportPath('/live/ai-manager', lane), undefined, String(lane))
+})
+test('floor: the lane\'s own report is answerable by Write, Edit and MultiEdit, and only that exact file', () => {
+  const o = ownOpts()
+  for (const tool of ['Write', 'Edit', 'MultiEdit']) assert.equal(floor(tool, { file_path: OWN.path }, o), undefined, tool)
+  // Without the verified opts (or on a root that is not the live one) the old rule holds.
+  assert.equal(floor('Write', { file_path: OWN.path }, ownOpts({ ownReport: undefined })), 'settings')
+  assert.equal(floor('Write', { file_path: OWN.path }, { ...HOME, roots: ['/live/ai-manager'], real: [OWN.real] }), 'settings')
+  // A relative spelling of the same file reads against the folder the call ran in.
+  assert.equal(floor('Edit', { file_path: '.archive/HARDEN/REPORT.md' }, o), undefined)
+  assert.equal(floor('Edit', { file_path: '.archive/HARDEN/REPORT.md' }, ownOpts({ cwd: '/live/ai-manager/docs' })), 'settings')
+  assert.equal(floor('Edit', { file_path: '.archive/HARDEN/REPORT.md' }, ownOpts({ cwdUnknown: true })), 'settings')
+})
+test('floor: nothing but the own report became answerable: another lane, another file, another repo, a case change, a path trick, a link', () => {
+  const o = ownOpts()
+  const held = (file_path: string, over: Partial<p.FloorOpts> = {}, extra: Record<string, unknown> = {}) => floor('Write', { file_path, ...extra }, ownOpts({ real: [file_path], ...over }))
+  for (const f of ['/live/ai-manager/.archive/OTHER/REPORT.md', '/live/ai-manager/.archive/HARDEN/BRIEF.md', '/live/ai-manager/.archive/HARDEN/sub/REPORT.md', '/live/ai-manager/.archive/REPORT.md', '/live/ai-manager/REPORT.md',
+    '/live/ai-manager/.archive/HARDEN/REPORT.md.bak', '/live/ai-manager/.archive/HARDEN/REPORT.md/x', '/live/toolkit/.archive/HARDEN/REPORT.md', '/live/ai-manager/tools/callboard/mod/hooks/register.ts', '/live/ai-manager/.archive/MANAGER/STATE.md',
+    '/live/ai-manager/.claude/settings.json', '/live/ai-manager/.git/hooks/pre-commit', '/Users/x/.claude/callboard/prompts/ledger-2026-11.jsonl', '/Users/x/.claude/settings.json'])
+    assert.equal(held(f), 'settings', f)
+  // The case: the volume ignores it, so another spelling is not shown to be the same file.
+  for (const f of ['/live/ai-manager/.archive/harden/REPORT.md', '/live/ai-manager/.archive/HARDEN/report.md', '/LIVE/AI-MANAGER/.archive/HARDEN/REPORT.md', '/live/ai-manager/.ARCHIVE/HARDEN/REPORT.md']) assert.equal(floor('Write', { file_path: f }, ownOpts({ real: [f] })), 'settings', f)
+  // `..` and `.` collapse lexically to the real path: another file by that road is judged as itself, and the same file by it is the same file.
+  assert.equal(floor('Write', { file_path: '/live/ai-manager/.archive/HARDEN/../OTHER/REPORT.md' }, ownOpts({ real: ['/live/ai-manager/.archive/OTHER/REPORT.md'] })), 'settings')
+  assert.equal(floor('Write', { file_path: '/live/ai-manager/.archive/HARDEN/../HARDEN/REPORT.md' }, o), undefined)
+  // A link: the written path is the report's, its real path is somewhere else (inside the checkout or out of it, or into settings).
+  for (const real of ['/live/ai-manager/tools/callboard/mod/hooks/register.ts', '/live/ai-manager/.archive/OTHER/REPORT.md', '/Users/x/.claude/settings.json', '/elsewhere/REPORT.md', '/live/ai-manager/.archive/harden/REPORT.md']) assert.equal(floor('Write', { file_path: OWN.path }, ownOpts({ real: [real] })), 'settings', real)
+  // No real path read, more than one, or one that could not be resolved: held.
+  for (const over of [{ real: undefined }, { real: [] }, { real: [OWN.real, OWN.real] }, { unresolved: true }]) assert.equal(floor('Write', { file_path: OWN.path }, ownOpts(over)), 'settings', JSON.stringify(over))
+  // A second path argument, a notebook, another tool: held.
+  assert.equal(floor('Write', { file_path: OWN.path, path: '/live/ai-manager/docs/a.md' }, o), 'settings')
+  assert.equal(floor('Write', { file_path: OWN.path, notebook_path: '/live/ai-manager/a.ipynb' }, o), 'settings')
+  assert.equal(floor('NotebookEdit', { notebook_path: OWN.path }, o), 'settings')
+  assert.equal(floor('NotebookEdit', { file_path: OWN.path }, o), 'settings')
+  assert.equal(floor('Bash', { command: `echo 'status: done x' >> ${OWN.path}` }, o), 'settings')
+  assert.equal(floor('Read', { file_path: OWN.path }, o), undefined)
+  assert.equal(floor('mcp__fs__write_file', { path: OWN.path, content: 'x' }, o), 'settings')
+  assert.equal(floor('Write', { file_path: 5 }, o), 'settings')
+  // The report's folder is not under a settings path by another rule: those still apply to it.
+  const inClaude = { path: '/Users/x/.claude/.archive/HARDEN/REPORT.md', real: '/Users/x/.claude/.archive/HARDEN/REPORT.md' }
+  assert.equal(floor('Write', { file_path: inClaude.path }, ownOpts({ ownReport: inClaude, real: [inClaude.real] })), 'settings')
+  const inGit = { path: '/live/ai-manager/.git/.archive/HARDEN/REPORT.md', real: '/live/ai-manager/.git/.archive/HARDEN/REPORT.md' }
+  assert.equal(floor('Write', { file_path: inGit.path }, ownOpts({ ownReport: inGit, real: [inGit.real] })), 'settings')
+})
+test('request: ownReport round-trips and must be text', () => {
+  const base: p.Request = { id: ID, sid: SID_A, pid: 1, procStart: 'x', level: 'lane', lane: 'HARDEN', repo: '/r', tool: 'Write', inputHash: H, raisedBy: 'mode', at: 1, expiresAt: 2, nonce: 'n', input: {}, truncated: false }
+  assert.equal(p.parseRequest(p.requestText({ ...base, ownReport: OWN.path }))?.ownReport, OWN.path)
+  assert.equal(p.parseRequest(p.requestText(base))?.ownReport, undefined)
+  assert.equal(p.parseRequest(JSON.stringify({ ...base, ownReport: 5 })), undefined)
 })
 test('floor: ExitPlanMode is a dialog', () => {
   assert.equal(floor('ExitPlanMode', {}), 'dialog')
@@ -245,7 +325,8 @@ test('shell judge 3: verbs that remove, overwrite or redirect, and the infrastru
     'echo a > "$HOME"/.claude/x', 'chmod 600 ~/.claude/x', 'chown x ~/.claude/y', 'touch .git/hooks/pre-commit', 'touch /tmp/../Users/x/.claude/x', 'git mv a ~/.claude/x',
     'rsync -a a ~/.claude/', 'curl -o ~/.claude/x https://example.com', 'wget -O ~/.claude/x https://example.com', 'tar xf a.tar -C ~/.claude', 'cp a ~/.cl""aude/settings.json',
     'cp a ~/.cl*/settings.json', 'cp a ~/.claude*', 'touch ~bob/.claude/x', 'touch $X/y', 'echo a > $X/y'])
-  reaches(['cp a /live/toolkit/x', 'echo a > ../../live/ai-manager/x', 'cd /live/ai-manager && touch x'])
+  floored(['cp a /live/toolkit/x', 'echo a > ../../live/ai-manager/x', 'cd /live/ai-manager && touch x', 'echo a > /live/ai-manager/CLAUDE.local.md'])
+  reaches(['cp a /other/toolkit/x', 'echo a > ../../other/ai-manager/x', 'cd /other/ai-manager && touch x'])
   // Deletes and disk writes with no settings target reach the tiers.
   reaches(['dd if=a of=b', 'truncate -s0 f', 'echo a > /dev/disk2', 'diskutil eraseDisk x', 'mkfs.ext4 x', 'shred -u x'])
   // The same writers on ordinary targets are not the floor.
@@ -268,13 +349,14 @@ test('shell judge 4: api and CLI writes', () => {
     'gh api -X PUT /repos/o/r/pulls/3/merge', 'gh api graphql -f query=\'mutation{mergePullRequest(input:{pullRequestId:"x"}){clientMutationId}}\''])
   floored(['gh api repos/o/r/hooks -f url=x', 'gh api -X PATCH repos/o/r -f private=true', 'gh api -X PUT repos/o/r/branches/main/protection --input p.json',
     'gh api -X PUT repos/o/r/actions/secrets/X -f v=1', 'gh api -X POST orgs/o/rulesets --input r.json', 'gh api -X PUT repos/o/r/actions/permissions -f enabled=true'])
-  reaches(["gh api graphql -f query='mutation{x}'", 'gh api graphql -X PUT -f query=x'])
-  // A GraphQL query read from a file, a variable or the input, and a mutation of settings, rulesets, access or visibility, are the floor.
-  floored(['gh api graphql -F query=@q.graphql', 'gh api graphql -f query="$Q"', 'gh api graphql --input q.json',
+  reaches(['gh api graphql -X PUT -f query=x'])
+  // A GraphQL query read from a file, a variable or the input, and every mutation but the allow list (a merge, a branch or tag write, an issue, a comment), are the floor.
+  floored(["gh api graphql -f query='mutation{x}'", "gh api graphql -f query='mutation{enableSomething(input:{}){x}}'", 'gh api graphql -F query=@q.graphql', 'gh api graphql -f query="$Q"', 'gh api graphql --input q.json',
     "gh api graphql -f query='mutation{createBranchProtectionRule(input:{repositoryId:\"x\"}){clientMutationId}}'", "gh api graphql -f query='mutation{updateRepository(input:{repositoryId:\"x\",visibility:PUBLIC}){clientMutationId}}'",
-    "gh api graphql -f query='mutation{a: addCollaborator(input:{}){x}}'"])
+    "gh api graphql -f query='mutation{a: addCollaborator(input:{}){x}}'", "gh api graphql -f query='mutation{updateIpAllowListEnabledSetting(input:{settingValue:DISABLED}){clientMutationId}}'",
+    "gh api graphql -f query='mutation{createIpAllowListEntry(input:{}){x}}'", "gh api graphql -f query='mutation{updateOrganizationWebCommitSignoffSetting(input:{}){x}}'"])
   // A checkout, a sync, a clone or a download rewrites the folder it runs in: the floor in, under or above a protected one, and where the folder is unknown.
-  floored(['gh pr checkout 3', 'gh repo sync', 'gh repo clone o/r', 'gh gist clone x', 'gh run download 1'], INROOT)
+  floored(['gh pr checkout 3', 'gh repo sync', 'gh repo clone o/r', 'gh gist clone x', 'gh run download 1', 'gh release download v1 --clobber', 'gh release download v1 -D out'], INROOT)
   floored(['cd "$X" && gh repo sync'])
   floored(['gh pr checkout 3'], { ...CLEAN, cwd: '/live/ai-manager' })
   reaches(['gh pr checkout 3', 'gh repo sync', 'gh repo clone o/r', 'gh run download 1'])
@@ -300,7 +382,8 @@ test('shell judge 5: home, relative and cd-moved paths', () => {
   // Relative and .. forms resolve against the cwd, and a literal cd moves the base for what follows.
   floored(['cp a .git/config', 'cp a ./.git/hooks/x', 'cp a sub/../.git/x', 'touch .husky/x', 'touch .githooks/x', 'touch .mcp.json', 'touch .claude/settings.json', 'touch .claude/hooks/x',
     'touch install.conf', 'cd .git && touch config', 'cd /tmp/clone/.git && touch x', 'cd .. && cp a .git/x', 'cd ~/.claude && touch x'], o)
-  reaches(['cd /live/toolkit && touch x', 'echo a > ../../live/toolkit/x'], o)
+  floored(['cd /live/toolkit && touch x', 'echo a > ../../live/toolkit/x'], o)
+  reaches(['cd /other/toolkit && touch x', 'echo a > ../../other/toolkit/x'], o)
   floored(['cd "$X" && touch y', 'cd $X; echo hi > out.txt', 'cd "$(pwd)/x" && cp a b', 'cd - && touch y', 'popd && touch y', 'pushd "$X" && echo a > f'], o)
   // A cd that is only literal keeps the base known; one that may not have run keeps the old base too.
   open(['cd /tmp/clone && touch out.txt', 'cd sub && echo a > out.txt', '(cd /tmp/x && touch out.txt)', 'cd /tmp/x && cd ../y && touch out.txt'], o)
@@ -326,14 +409,15 @@ test('shell judge 6: a session inside a protected folder: reads stay open, write
     'git status', 'git log --oneline -5', 'git diff', 'git show HEAD', 'git blame a', 'git branch', 'git branch -a', 'git branch --list', 'git rev-parse HEAD', 'git ls-files', 'git remote -v', 'git config --get user.name', 'git config --list', 'git config user.name', 'git tag', 'git stash list', 'git describe'], o)
   // A write that names a place in the folder, a pipe to a shell, or a rewrite of the work tree is the floor there.
   floored(['touch x', 'mkdir x', 'cp a b', 'mv a b', 'echo hi > f', 'echo hi >> f', 'echo hi | tee f', 'cat a | sh', 'cat a > b', 'sed -i s/a/b/ f', 'git checkout main', 'git pull',
-    'git stash', 'git config user.name x', 'git remote add x y', 'git diff --output=f', 'find . -exec ls {} \\;', 'echo $(touch x)', 'for f in a b; do touch $f; done'], o)
+    'git stash', 'git config user.name x', 'git remote add x y', 'git diff --output=f', 'find . -exec ls {} \\;', 'echo $(touch x)', 'for f in a b; do touch $f; done', 'cd ../ai-manager && touch x'], o)
   // Any other verb may write where it runs without naming the file (a build, a package manager, an unpacker, a script): from a folder inside a protected one it is the floor too.
   floored(['npm test', 'node --test x.ts', 'make', './build.sh', 'unknownverb', 'sort -o x a', 'uniq a b', 'env FOO=1 ls', 'ls | xargs wc -l', 'echo $(npm test)', 'cd /tmp/clone; npm test'], o)
   // A verb that names its targets is judged by them: a target outside the protected folders reaches the tiers from inside one too.
   reaches(['rm -rf /tmp/build', 'mkdir /tmp/x', 'cp /tmp/a /tmp/b', 'touch /tmp/x'], o)
-  reaches(['git commit -m x', 'git add .', 'git fetch', 'git branch x', 'git branch -m a b', 'git tag v1', 'git push', 'date -s x', 'cd ../ai-manager && touch x', 'cd "$X" && npm test',
+  reaches(['git commit -m x', 'git add .', 'git fetch', 'git branch x', 'git branch -m a b', 'git tag v1', 'git push', 'date -s x', 'cd "$X" && npm test',
     'git -C . commit -m x', 'git -C ../x commit -m x'], o)
-  reaches(['npm test', 'make', 'cd /tmp/clone && npm test'], { ...CLEAN, cwd: '/live/ai-manager/tools' })
+  reaches(['npm test', 'make', 'cd /tmp/clone && npm test'], { ...CLEAN, cwd: '/live' })
+  floored(['npm test', 'make'], { ...CLEAN, cwd: '/live/ai-manager/tools' })
   // Without a protected folder (or with the session elsewhere) none of that is the rule.
   open(['npm test', 'touch x', 'git commit -m x', 'gh pr view 3', 'make'], { ...CLEAN, cwd: '/tmp/clone' })
   open(['npm test', 'touch x'], { home: '/Users/x', cwd: '/live/ai-manager' })
@@ -343,7 +427,7 @@ test('shell judge 6: a session inside a protected folder: reads stay open, write
   assert.equal(floor(`${GIT}git_clone`, { url: 'https://example.com/r.git', localPath: '/live/toolkit/hooks/x', path: '/tmp/clone' }, CLEAN), 'settings')
   assert.equal(floor(`${GIT}git_clone`, { url: 'https://example.com/r.git', localPath: '../../live/ai-manager/tools/callboard/x', path: '/tmp/clone' }, CLEAN), 'settings')
   assert.equal(floor(`${GIT}git_worktree`, { path: '/tmp/clone', worktreePath: '~/../../live/toolkit/hooks/w' }, CLEAN), 'settings')
-  assert.equal(floor(`${GIT}git_worktree`, { path: '/tmp/clone', worktreePath: '~/../../live/toolkit/skills/w' }, CLEAN), undefined)
+  assert.equal(floor(`${GIT}git_worktree`, { path: '/tmp/clone', worktreePath: '~/../../live/toolkit/skills/w' }, CLEAN), 'settings')
   assert.equal(floor(`${GIT}git_stash`, { path: '/live/ai-manager/tools/callboard', mode: 'list' }, CLEAN), undefined)
   assert.equal(floor(`${GIT}git_add`, { path: '/tmp/clone', files: ['a.ts', '/tmp/clone/b.ts'] }, CLEAN), undefined)
   assert.equal(floor(`${GIT}git_clone`, { url: 'https://example.com/r.git', localPath: '/tmp/other', path: '/tmp/clone' }, CLEAN), undefined)
@@ -400,7 +484,7 @@ test('review F3: the CLI state file, XDG git, shell start files, ssh, and a proj
   open(['echo a > ~/notes.txt', 'cat ~/code/a.ts', 'ls ~/.config/other', 'cp a /tmp/x/.zshrc.bak'])
 })
 
-test('review F4: git settings that steer a fetch or a remote, and changing a remote', () => {
+test('git settings that steer a fetch or a remote, and changing a remote', () => {
   // Settings that run code or point the repository at another place are code-running keys; a key that only steers a push is not one.
   for (const k of ['remote.o.url', 'branch.x.merge', 'branch.x.remote', 'url.https://h/.insteadOf'])
     floored([`git config ${k} v`, `git config --global ${k} v`, `git -c ${k}=v status`, `git -c ${k.toUpperCase()}=v log`, `git --config-env=${k}=V log`])
@@ -439,7 +523,7 @@ test('review F6: gh sync, update-branch, @claude mentions, and hub', () => {
   open(['hub status', 'hub log --oneline', 'hub diff', 'hub commit -m x', 'hub checkout feat/x'])
 })
 
-test('review F7: git server worktree, remote and flag modes', () => {
+test('git server worktree, remote and flag modes', () => {
   // Outside a protected folder every mode reaches the tiers, whatever the flags (given as anything but false too).
   for (const mode of ['remove', 'prune', 'REMOVE', ' prune ', 7, 'add']) assert.equal(floor(`${GIT}git_worktree`, { path: '/tmp/clone', mode, force: 'true' }, { roots: PROT }), undefined, String(mode))
   for (const mode of ['remove', 'prune', 'add', 7]) assert.equal(floor(`${GIT}git_worktree`, { path: '/live/ai-manager/tools/callboard', mode }, { roots: PROT }), 'settings', String(mode))
@@ -458,7 +542,7 @@ test('review F7: git server worktree, remote and flag modes', () => {
   assert.equal(floor(`${GIT}git_checkout`, { path: '/tmp/clone', target: 'x', paths: 'a' }, { roots: PROT }), undefined)
 })
 
-test('review F8: merge-base and friends, network tools in a protected folder, script files, and a long raw line', () => {
+test('merge-base and friends, network tools in a protected folder, script files, and a long raw line', () => {
   // (a) Only the word merge: its neighbours are other verbs; none of them is the floor.
   open(['git merge-base main HEAD', 'git "merge-base" a b', 'git merge-tree a b c', 'git mergetool', 'git merge-file a b c', 'git log --merge-base x'])
   reaches(['git merge x', 'git merge-base x && git merge y', 'git -C /x merge --no-ff y', 'git "merge" x', 'git reset --merge'])
@@ -493,7 +577,7 @@ test('review F9: stdin to ssh with no remote command, and programs that run comm
   open(['tmux ls', 'tmux list-sessions', 'tmux capture-pane -p', 'tmux display-message -p x', 'screen -ls', 'screen -list', 'echo hi | cat', 'echo "at noon"', 'cat atfile'])
 })
 
-test('review F10: any other tool holding a path to settings, state, ssh or a protected folder in a string is the floor', () => {
+test('any other tool holding a path to settings, state, ssh or a protected folder in a string is the floor', () => {
   const o: p.FloorOpts = { home: '/Users/x', roots: ROOTS, cwd: '/tmp/clone' }
   const w = (input: unknown, opts: p.FloorOpts = o, tool = 'mcp__fs__write_file') => floor(tool, input, opts)
   for (const input of [{ path: '/Users/x/.claude/settings.json', content: 'x' }, { destination: '~/.claude/hooks/a.sh' }, { target: '/Users/x/.zshrc' }, { dest: '/Users/x/.ssh/config' }, { file: '/Users/x/.claude.json' }, { files: ['a.ts', '/r/.git/hooks/pre-commit'] }, { a: { b: [{ c: '/Users/x/.claude/settings.json' }] } }, { p: '.claude/settings.json' }, { p: '.claude/hooks/x' }, { p: './.mcp.json' }, { p: '../.git/config' }, { p: '/live/toolkit/hooks/x' }, { p: '/live/ai-manager/tools/callboard/mod/a.ts' }, { p: '~/.config/git/ignore' }, { p: '/r/.claude/skills/s' }, { p: '/Users/x/.CLAUDE/rules/a.md' }, { paths: ['/tmp/a', '/Users/x/.gitconfig'] }])
@@ -525,7 +609,7 @@ test('review F10: any other tool holding a path to settings, state, ssh or a pro
   }
   assert.equal(floor('Task', { prompt: 'edit /Users/x/.claude/settings.json please' }, o), undefined)
   assert.equal(floor('mcp__fs__read_file', { path: '/live/toolkit/hooks/a.md' }, o), 'settings')
-  assert.equal(floor('mcp__fs__read_file', { path: '/live/toolkit/docs/a.md' }, o), undefined)
+  assert.equal(floor('mcp__fs__read_file', { path: '/live/toolkit/docs/a.md' }, o), 'settings')
 })
 
 test('shell judge: bounded work, and a long pathological input finishes quickly', () => {
@@ -770,7 +854,7 @@ test('escalation args: none is on, off is off, anything else is bad', () => {
   for (const bad of ['on', 'on all', 'on svc-api', 'asks all', 'asks LANE-1', 'off asks', 'off all', 'enable', 'all', 'on a\nb']) assert.equal(p.parseEscalationArgs(bad), 'bad', bad)
 })
 
-test('cycle 2 H1: a git server call that rewrites a work tree, with no absolute path, is the floor; other calls and reads are not', () => {
+test('a git server call that rewrites a work tree, with no absolute path, is the floor; other calls and reads are not', () => {
   assert.equal(p.floorCheck(`${GIT}git_checkout`, { target: 'evil' }), 'settings')
   assert.equal(p.floorCheck(`${GIT}git_checkout`, { target: 'x', path: 'rel' }), 'settings')
   assert.equal(p.floorCheck(`${GIT}git_commit`, { message: 'x', path: 'rel' }), undefined)
@@ -805,7 +889,7 @@ test('capInput: a redaction that hides a line break marks the input truncated', 
 })
 
 // A session that starts OUTSIDE a protected folder and reaches into it by a relative path.
-test('review r1: a relative path into a protected folder is the floor behind a wrapper, git -C, env -C, cd, pushd and find -exec', () => {
+test('a relative path into a protected folder is the floor behind a wrapper, git -C, env -C, cd, pushd and find -exec', () => {
   const o = { home: '/Users/x', roots: ['/tmp/ai-manager'], cwd: '/tmp/clone' }
   const f = (c: string) => p.floorCheck('Bash', { command: c }, o)
   for (const c of [
