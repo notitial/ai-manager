@@ -894,8 +894,7 @@ export function laneSession(entries: RegEntry[], lane: Lane, selfSid: string): {
   return { ok: true, entry: named[0] }
 }
 
-// The exact text of a cue file, in the grammar the target checks. A lead's rename adds its own session id; callboard-send.mjs writes the plain
-// rename NAME, which the target still takes.
+// The exact text of a cue file, in the grammar the target checks. A lead's rename adds its own session id.
 export function cueLine(verb: LeadVerb | 'retire' | 'park', laneName: string, leadSid?: string): string | undefined {
   const text = verb === 'rename' ? `rename ${laneName}${leadSid === undefined ? '' : ` ${leadSid}`}\n` : `${verb}\n`
   return parseCue(text).ok ? text : undefined

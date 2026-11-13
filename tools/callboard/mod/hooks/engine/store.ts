@@ -375,7 +375,7 @@ export async function idleCheck($: any, sid: string, reg: Reg = () => registryEn
   return undefined
 }
 
-// Same steps as callboard-send.mjs: a 0600 temp file in a 0700 folder under the callboard root, then one rename into place.
+// A 0600 temp file in a 0700 folder under the callboard root, then one rename into place.
 // It returns the temp file's inode, which the rename keeps: the target can claim a cue within the same tick, so a stat after the write may find nothing.
 export async function writeIn($: any, folder: string, file: string, text: string): Promise<{ err: string } | { ino: number }> {
   const p = await where($)

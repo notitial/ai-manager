@@ -55,6 +55,7 @@ One mod, `callboard`, loaded into every session from a root-owned copy. A cue fi
   | `park` | Confirms or refuses a stop that keeps the conversation |
 
   Anything else is refused and logged. The sender script (`send/callboard-send.mjs`) writes only `rename`, `start`, `resume` and `compact`; `retire` and `park` come only from the lead's own stop tools.
+  *2026-11-13: the sender script is removed. Cues come only from the lane tools of a lead, a conductor and the manager; its parity test with `cueLine` stays in `core.spec.ts` as a test of `cueLine` alone.*
 - **Claim.** The mod renames the cue to a name only this tick uses, checks the moved file is the same inode, reads it through a byte-bounded process call (a FIFO cannot hang the tick), stats it again and deletes it. A cue written meanwhile is a new file. A held cue is consumed and answered `held`; the lead re-sends.
 - **Pre-action checks.** Right before acting: an empty prompt box and an idle registry row waiting on nothing. This narrows the race with the person; it does not close it.
 - **Result file.** Every cue is answered once in `~/.claude/callboard/result/<sid>.result` (0600): one line, `<verb> <ok|refused|held> <code> <inode of the claimed cue>`. The lead accepts only an answer that carries the inode of the cue it wrote, and maps each code through a fixed table (`REASON_TEXT`), so only table text reaches the lead model. A cue tool waits up to 6 s (retire and park: 10 s from the cue write) and otherwise returns `no-answer`.

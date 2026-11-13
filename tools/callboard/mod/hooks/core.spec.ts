@@ -3,7 +3,6 @@ import assert from 'node:assert/strict'
 import { readFileSync, readdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import * as c from './core.ts'
-import { cueText } from '../../send/callboard-send.mjs'
 
 const reserved = createRequire(import.meta.url)('../../extension/reserved.js') as { reservedHit: (name: string) => boolean; pinRefusal: (pin: string, home: string) => string | undefined }
 
@@ -2526,7 +2525,7 @@ test('startText, resumeText, COMPACT_CUT_NOTE and LANES_CHANGED_TEXT are fixed w
 })
 
 
-// The extension and the sender keep copies of rules that live in core.ts (each is a stand-alone script with no access to the mod). These tests run the same inputs through both. They are here because only this spec can read core.ts.
+// The extension keeps copies of rules that live in core.ts (it is a stand-alone script with no access to the mod). These tests run the same inputs through both. They are here because only this spec can read core.ts.
 test('the extension\'s reserved-name check agrees with the mod\'s built-in one', () => {
   const names = ['MANAGER', 'manager', 'Manager', 'MANAGER_', 'MANAGER-2', 'manager7', 'MANAG3R', 'MANAGEr1', 'M-A-N-A-G-E-R', 'rnanager', 'LABLANE', 'API', 'manage', 'managers', 'a', 'x'.repeat(40), 'svc-api', 'MANAGER_x']
   for (const n of names) assert.equal(reserved.reservedHit(n), c.reservedHit(n, []), n)
@@ -2569,16 +2568,11 @@ test('the extension\'s pinRefusal agrees with the mod\'s and gives the codes the
   assert.equal(reserved.pinRefusal(long, home), undefined)
 })
 
-test('the sender writes only cues the mod reads: four verbs, and a narrower grammar than the mod\'s', () => {
-  for (const args of [['start'], ['resume'], ['compact'], ['rename', 'api'], ['rename', 'a-b_C1'], ['rename', 'x'.repeat(40)]]) {
-    const text = cueText(args)
-    const parsed = c.parseCue(text)
-    assert.equal(parsed.ok, true, JSON.stringify(args))
-    assert.equal((parsed as { ok: true; cue: { verb: string } }).cue.verb, args[0])
+test('cueLine writes only cues the mod reads: every verb, and the longest and the odd-character lane names', () => {
+  for (const [verb, name] of [['start', 'api'], ['resume', 'api'], ['compact', 'api'], ['retire', 'api'], ['park', 'api'], ['rename', 'api'], ['rename', 'a-b_C1'], ['rename', 'x'.repeat(40)]] as const) {
+    const parsed = c.parseCue(c.cueLine(verb, name)!)
+    assert.equal(parsed.ok, true, `${verb} ${name}`)
+    assert.equal((parsed as { ok: true; cue: { verb: string } }).cue.verb, verb)
   }
-  // The mod also takes retire, park and a rename that names its lead; the sender does not write them.
-  for (const args of [['retire'], ['park'], ['rename', 'blue', '5a1b2c3d-0000-4000-8000-123456789abc']]) {
-    assert.equal(c.parseCue(`${args.join(' ')}\n`).ok, true, `the mod reads ${JSON.stringify(args)}`)
-    assert.throws(() => cueText(args), /grammar/, JSON.stringify(args))
-  }
+  for (const name of ['a b', 'x'.repeat(41), '', 'a\nstart']) assert.equal(c.cueLine('rename', name), undefined, JSON.stringify(name))
 })
