@@ -2808,8 +2808,14 @@ test('lead_open texts: the request line, the brief, the offer and the fixed reas
   assert.ok(c.offerText(o).length < c.OFFER_MAX)
   for (const code of ['not-conductor', 'conductor-leads-off', 'bad-repo', 'not-in-reach', 'conductor-nested', 'name-in-open', 'leads-unreadable', 'lead-exists', 'offer-open', 'open-in-flight', 'open-rate', 'ledger-unreadable', 'offer-write', 'ledger-write', 'unsafe-offers-dir', 'config-unreadable'])
     assert.ok(c.reasonWhy(code).startsWith(`${code}: `), code)
-  assert.match(c.leadOpenedText('LEAD-A', '12345678-aaaa-bbbb-cccc-dddddddddddd'), /^lead panel opened for LEAD-A as session 12345678;.*only they can make it a lead/)
-  assert.match(c.leadOpenedText('LEAD-A', '12345678-aaaa-bbbb-cccc-dddddddddddd', 'brief-chars'), /its brief could not be written \(brief-chars\), so the person must give it the task\./)
+  const S = '12345678-aaaa-bbbb-cccc-dddddddddddd'
+  assert.match(c.leadOpenedText('LEAD-A', S, false), /^lead LEAD-A is on as session 12345678: the person was not asked\./)
+  assert.ok(!c.leadOpenedText('LEAD-A', S, false).includes('model you asked for'))
+  assert.match(c.leadOpenedText('LEAD-A', S, true), /The model you asked for was not changed/)
+  assert.match(c.leadNotGrantedText('LEAD-A', S, 'brief-chars: x.'), /the panel now carries that name, but it did not become a lead: brief-chars: x\./)
+  assert.match(c.leadNoAnswerText('LEAD-A', S), /may still become the lead\. Do not open another/)
+  assert.equal(c.leadCueLine(nonce), `lead ${nonce}\n`)
+  assert.equal(c.leadCueLine('xyz'), undefined)
   assert.equal(c.LEAD_OPENS_PER_HOUR, 1)
   assert.equal(c.LEAD_OFFERS_PER_HOUR, 3)
 })
@@ -2966,4 +2972,16 @@ test('leadStartText, leadOnToast and leadNotStartedToast are fixed text', () => 
   assert.ok(t.endsWith(c.SUBMITTED_NOTE_NEVER_RECORD))
   assert.equal(c.leadOnToast('NEWLEAD', CSID, '/Users/x/repo'), 'Lead NEWLEAD is on in repo, opened by conductor 5a1b2c3d. Type /callboard off in that panel to end it.')
   assert.equal(c.leadNotStartedToast('NEWLEAD', '/Users/x/repo'), 'Lead NEWLEAD is on in repo but has not started: type anything in its panel to begin.')
+})
+
+// Only lead_open builds a lead cue, and the only code that acts on one is the dispatch in lanes.handle: a cue a lane tool or a file could make reach leadAccept would skip the offer.
+test('the lead cue is built in lead-open only and handled at one dispatch line', () => {
+  const dir = new URL('./engine/', import.meta.url)
+  const files = readdirSync(dir).filter((f) => /\.ts$/.test(f))
+  const text = (f: string) => readFileSync(new URL(f, dir), 'utf8')
+  assert.deepEqual(files.filter((f) => text(f).includes('leadCueLine(')), ['lead-open.ts'])
+  const handlers = files.flatMap((f) => text(f).split('\n').filter((l) => /verb === 'lead'/.test(l)).map((l) => `${f}: ${l.trim()}`))
+  assert.equal(handlers.length, 1)
+  assert.match(handlers[0], /^lanes\.ts: if \(cue\.verb === 'lead'\) return leadAccept\(/)
+  assert.deepEqual(files.filter((f) => /leadAccept\(/.test(text(f)) && f !== 'lead-accept.ts'), ['lanes.ts'])
 })

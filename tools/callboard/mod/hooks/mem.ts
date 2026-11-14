@@ -276,3 +276,6 @@ export const promptCapLogged = new Set<string>()
 // is told twice at most. A request that closed meanwhile is dropped by the tick's scan and its marks here with it.
 export const promptMidSent = new Map<string, Set<string>>()
 export const promptMidRetold = new Map<string, Set<string>>()
+
+// A conductor's own lead offers, by its session id: the nonce and the time of each, newest last (capped, one day). conductorGrantCheck reads it to tell a grant it made from one it did not.
+export const condOffers = new Map<string, { nonce: string; at: number }[]>()
