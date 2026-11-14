@@ -1,6 +1,6 @@
 import { expect } from 'claude-code/testing'
 import * as c from '../hooks/core'
-import { h, longTest, pfs, pdirs, OFFERS_DIR, PROMPTS_DIR, ROOT, SID, T0, extraStat, laneSeed, leadFiles, modelRuns, renames, resultFiles, submitted, toasts } from './harness'
+import { h, longTest, pfs, pdirs, OFFERS_DIR, PROMPTS_DIR, ROOT, SID, T0, extraStat, briefFiles, laneSeed, leadFiles, modelRuns, renames, resultFiles, submitted, toasts } from './harness'
 import { ledgerRows } from './answer-fixtures'
 import { COND, KEY, LEADPS, OTHERLEAD, PIN, RESULT, cue, condPresenceOf, dirStat, grantAt, lane, leadFileText, leadReg, LEADPATH, logged, putCond, regAs, started, tickTwice, ticks, waitFor } from './fixtures'
 
@@ -266,7 +266,10 @@ longTest('a claim that names this very session is taken again (the retry after a
 // ---- the held start turn ----
 const BRIEFP = `${PIN}/.archive/LEAD-N/BRIEF.md`
 const START = c.leadStartText('LEAD-N', PIN, BRIEFP)
-const withBrief = () => extraStat.set(BRIEFP, '501 600 1 Regular File 9 100 1700000000\n')
+const withBrief = () => {
+  extraStat.set(BRIEFP, '501 600 1 Regular File 9 100 1700000000\n')
+  briefFiles.set(BRIEFP, c.leadBriefText('LEAD-N', 'Do it.'))
+}
 // The person starts typing as the panel is renamed: the accept is done by then, and the start turn finds a draft.
 const typingAfterRename = () => {
   const prev = h.onRename
@@ -331,6 +334,13 @@ longTest('/callboard off before the start turn drops it', async ($, on) => {
   expect(await cue(145, CUE)).toBe('lead ok - 145\n')
   await $.command.run(lane('off'))
   h.draftNow = ''
+  await ticks(6)
+  expect(startTurns()).toBe(0)
+})
+
+longTest('a brief whose first line is not the conductor\'s header drops the start turn', async ($, on) => {
+  await accepting($, on, { seed: () => { withBrief(); briefFiles.set(BRIEFP, 'something else\n') } })
+  expect(await cue(146, CUE)).toBe('lead ok - 146\n')
   await ticks(6)
   expect(startTurns()).toBe(0)
 })

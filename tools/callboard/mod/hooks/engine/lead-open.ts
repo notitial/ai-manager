@@ -66,10 +66,12 @@ async function openLead($: any, e: any, sid: string, base: { live: RegRow[]; lan
   if (!(await resultDirOk($, p, 'offers'))) return no('unsafe-offers-dir', c.reasonWhy('unsafe-offers-dir'))
   const offer = `${p.root}/offers/${key}.json`
   const now = await $.clock.now()
-  // An offer left behind (a crash, a reload) is taken away once it is older than OFFER_STALE_MS; a claim is never ours to remove.
+  // An offer left behind (a crash, a reload) is taken away once it is older than OFFER_STALE_MS; a claim goes the same way, after the same age.
   const left = await statR($, offer)
   if (left !== 'absent' && !(left !== 'error' && left.kind === 'file' && now - left.mtimeMs > c.OFFER_STALE_MS && (await rmF($, offer))?.exitCode === 0)) return no('offer-open', c.reasonWhy('offer-open'))
-  if ((await statR($, `${p.root}/offers/${key}.claim`)) !== 'absent') return no('offer-open', c.reasonWhy('offer-open'))
+  // A claim left behind with no offer (its panel never answered) goes with a stale offer, after the same age; a younger one still holds the repo.
+  const cl = await statR($, `${p.root}/offers/${key}.claim`)
+  if (cl !== 'absent' && !(cl !== 'error' && cl.kind === 'file' && now - cl.mtimeMs > c.OFFER_STALE_MS && (await rmF($, `${p.root}/offers/${key}.claim`))?.exitCode === 0)) return no('offer-open', c.reasonWhy('offer-open'))
   const rows = await ledgerRowsFor($, p, `"hash":"${key}"`)
   if (rows === 'unreadable') return no('ledger-unreadable', c.reasonWhy('ledger-unreadable'))
   if (c.leadOpenRate(rows, key, now) !== 'ok') return no('open-rate', c.reasonWhy('open-rate'))
@@ -80,8 +82,9 @@ async function openLead($: any, e: any, sid: string, base: { live: RegRow[]; lan
   const nonce = (await promptNewId($)).replace(/-/g, '')
   const voided = (code: string) => ledgerAdd($, { kind: 'lead-offer-void', hash: key, nonce, code })
   if (!(await ledgerAdd($, { kind: 'lead-offer', hash: key, repo, lane: a.name, nonce, by: sid }))) return no('ledger-write', c.reasonWhy('ledger-write'))
+  const claim = `${p.root}/offers/${key}.claim`
   const fail = async (code: string, why: string) => {
-    await rmF($, offer)
+    await rmF($, [offer, claim])
     await voided(code)
     return no(code, why)
   }
@@ -139,6 +142,8 @@ async function openLead($: any, e: any, sid: string, base: { live: RegRow[]; lan
     await rmF($, [offer, `${p.root}/offers/${key}.claim`])
     return { result: c.leadOpenedText(a.name, r.sid, out.reason === c.LEAD_MODEL_UNSET) }
   }
+  // A refusal that names no reason (the panel's own tick failed) is as unclear as no answer: nothing is taken back.
+  if (out.outcome === 'refused' && out.reason === 'other') return { result: c.leadNoAnswerText(a.name, r.sid) }
   // Refused, or not ready twice: the offer and the claim go, the row is voided (the hour is not spent), and the panel stays an ordinary one.
   await rmF($, [offer, `${p.root}/offers/${key}.claim`])
   await voided(out.reason)

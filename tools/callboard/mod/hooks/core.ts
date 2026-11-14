@@ -1588,7 +1588,7 @@ export function leadOpenRate(rows: { kind: string; t: string; hash?: string; non
 }
 
 // ---- the new panel's side: it takes a conductor's offer only after every check here and in engine/lead-accept.ts (ADR 0006) ----
-// The panel must act within this long of the cue file's mtime; the conductor waits longer (a tick, then this), so a grant never lands after the conductor stopped waiting.
+// The panel must act within this long of the cue file's mtime; every check that can refuse is made inside it, and the conductor waits longer (a tick, then this).
 export const LEAD_ACCEPT_LATE_MS = 25_000
 export const LEAD_CUE_WAIT_MS = 35_000
 // A start turn that finds the box busy is dropped after this long, with a toast.

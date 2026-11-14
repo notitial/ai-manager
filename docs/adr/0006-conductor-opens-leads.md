@@ -90,8 +90,9 @@ For waking a lead:
      window's own model, shows a toast and makes the answer say `model-unset`), the turn count is taken, and
      the answer `ok` is written last, so the conductor's wait covers the whole grant.
 
-  The panel acts only within 25 s of the cue file's time; the conductor waits 35 s, so a grant never lands after
-  the conductor stopped waiting. A panel that is not ready (the registry row not written yet, a draft in the
+  Every check that can refuse is made within 25 s of the cue file's time and the conductor waits 35 s; the steps
+  after the grant is set (saved grant, presence, briefing, model) are not timed, so a slow one can outlast the
+  conductor's wait. It then says the panel may still become the lead. A panel that is not ready (the registry row not written yet, a draft in the
   box, not idle) answers `held`, and the conductor sends the cue once more. A failure before the grant leaves the
   session plain; a refusal after the rename leaves it named and plain, and a failure after the ledger row writes
   a `lead-offer-void` row of the nonce with its code, which gives the repo its hour back. A conductor that gets a

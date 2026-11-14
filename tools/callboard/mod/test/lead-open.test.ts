@@ -397,3 +397,13 @@ longTest('a grant row in the conductor\'s name for a nonce it never offered is t
   await ticks(64)
   expect(unasked().length).toBe(1)
 })
+
+longTest('a claim left with no offer goes once it is ten minutes old, not before', async ($, on) => {
+  const argv: string[][] = []
+  await conductor($, on, argv)
+  pfs.set(`${OFFERS_DIR}/${KEY}.claim`, { text: 'x', mtimeSec: T0 / 1000 - 9 * 60 })
+  expect(await open($)).toContain(REASON_TEXT['offer-open'])
+  pfs.set(`${OFFERS_DIR}/${KEY}.claim`, { text: 'x', mtimeSec: T0 / 1000 - 11 * 60 })
+  expect(await open($, `ok ${NEWSID}\n`)).toContain('is on as session')
+  expect(offers()).toEqual([])
+})

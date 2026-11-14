@@ -3,7 +3,7 @@
 import * as c from '../core.ts'
 import { leadStarts, grants, mem, offerSweptAt, condOffers, grantCheckedAt, grantTold } from '../mem.ts'
 import type { LeadStart } from '../mem.ts'
-import { where, statR, readSmallR, dirOk, run, REALPATH, facts, log, logq, sha, submitOwn, toast, rmF } from './base.ts'
+import { HEAD, where, statR, readSmallR, dirOk, run, REALPATH, facts, log, logq, sha, submitOwn, toast, rmF } from './base.ts'
 import { idleCheck } from './store.ts'
 import { ledgerAdd, ledgerRowsFor } from './answer-hook.ts'
 
@@ -27,7 +27,7 @@ export async function leadStartTick($: any, sid: string, submitsAtStart: number)
   const turns = await $.session.turns()
   if (turns !== l.turns) return give($, sid, l, 'turn-began')
   if ((await idleCheck($, sid)) !== undefined) return
-  // The brief: a plain file of the user's, one link, within the repo, read back as the same bytes the conductor wrote.
+  // The brief: a plain file of the user's, one link, within the repo, starting with the conductor's header line.
   const p = await where($)
   if (!p) return
   const bf = await facts($, l.brief)
@@ -35,6 +35,10 @@ export async function leadStartTick($: any, sid: string, submitsAtStart: number)
   const real = (await run($, [REALPATH, '--', l.brief])).stdout.trim()
   const realRepo = (await run($, [REALPATH, '--', l.repo])).stdout.trim()
   if (!real || !realRepo || !c.within(realRepo, real)) return give($, sid, l, 'brief-path')
+  // Its first line is still the conductor's header (the bytes after it are the task and are not read here).
+  const head = c.leadBriefHead(l.name)
+  const h = await run($, [HEAD, '-c', String(head.length), '--', l.brief])
+  if (h.exitCode !== 0 || h.stdout !== head) return give($, sid, l, 'brief-head')
   // Every read is behind: a draft, another turn or another submit meanwhile wins, and nothing is awaited between the last guard and the submit.
   const draft = (await $.prompt.read()).text
   if (draft !== '' || mem.submits !== submitsAtStart || leadStarts.get(sid) !== l || grants.get(sid)?.level !== 'lead' || (await $.session.turns()) !== l.turns) return
@@ -101,7 +105,7 @@ export async function conductorGrantCheck($: any, sid: string) {
     if (!Number.isNaN(at) && (at > now || now - at > c.COND_OFFERS_KEEP_MS)) continue
     told.add(r.nonce)
     grantTold.set(sid, new Set([...told].slice(-c.COND_OFFERS_MAX)))
-    toast($, c.leadUnaskedToast(typeof r.lane === 'string' ? r.lane : '?', typeof r.repo === 'string' ? r.repo : '/', sid))
+    toast($, c.leadUnaskedToast(typeof r.lane === 'string' && c.NAME_RE.test(r.lane) ? r.lane : '?', typeof r.repo === 'string' ? r.repo : '/', sid))
     await logq($, sid, 'lead-grant-unasked', typeof r.lane === 'string' ? r.lane : '?')
   }
 }

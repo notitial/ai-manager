@@ -5,7 +5,7 @@
 // conductor is answered. A read that fails or times out is a refusal: nothing defaults to yes. The panel acts within LEAD_ACCEPT_LATE_MS of the cue file's time.
 import * as c from '../core.ts'
 import { grants, leadStarts, laneBinding, offSeq } from '../mem.ts'
-import { log, sha, where, real, statR, readSmallR, gitRoot, rmF, withTimeout, pause, toast, dirOk } from './base.ts'
+import { log, logq, sha, where, real, statR, readSmallR, gitRoot, rmF, withTimeout, pause, toast, dirOk } from './base.ts'
 import { registryEntries, idleCheck } from './store.ts'
 import type { Reg, Answer } from './store.ts'
 import { sessionRoot, modelSet } from './lanes.ts'
@@ -40,7 +40,7 @@ export async function leadAccept(
   const now = await $.clock.now()
   if (c.leadLate(now, x.cueMtimeMs)) return stop('late')
 
-  // 1 and 2: this session. Its own registry row, folder, turns and holds; the row is read whole.
+  // This session. Its own registry row, folder, turns and holds; the row is read whole.
   const p = await where($)
   if (!p) return refuse('unsafe-dir')
   const rows = await reg()
@@ -68,7 +68,7 @@ export async function leadAccept(
   if (self) return stop(self)
   const repo = root as string
 
-  // 3: the offer file, at the key of this session's own folder (never one the cue names).
+  // The offer file, at the key of this session's own folder (never one the cue names).
   const key = await sha($, repo)
   const dir = `${p.root}/offers`
   const dst = await statR($, dir)
@@ -90,7 +90,7 @@ export async function leadAccept(
   const offerNo = c.leadOfferNo(offer, { now, cueNonce: nonce, repo, liveNames: names })
   if (offerNo) return refuse(offerNo)
 
-  // 4: the ledger. 5 to 7: the switch, the conductor and the other leads, read afresh each time they are asked.
+  // The ledger, then the switch, the conductor and the other leads, read afresh each time they are asked.
   const ledgerNo = async () => {
     const l = await ledgerRowsFor($, p, `"hash":"${key}"`)
     return l === 'unreadable' ? 'ledger-unreadable' : c.leadLedgerNo(l, offer, key)
@@ -116,7 +116,7 @@ export async function leadAccept(
   const trustRefusal = await trustNo()
   if (trustRefusal) return refuse(trustRefusal)
 
-  // 8: the claim, created exclusively with this session's id. The same session finds its own claim again (a retry after `held`); any other claim is taken.
+  // The claim, created exclusively with this session's id. The same session finds its own claim again (a retry after `held`); any other claim is taken.
   const claimedBySelf = async () => {
     const r = await readSmallR($, claimPath, p.uid, 64)
     return r.state === 'ok' && r.text === sid
@@ -126,13 +126,14 @@ export async function leadAccept(
   if (put === 'failed') return refuse('offer-bad')
   if (put === 'exists' && !(await claimedBySelf())) return refuse('lead-offer-taken')
 
-  // 9: idle (no draft, registry idle), then the rename. A refusal from here on leaves the offer and claim for the conductor to take back.
+  // Idle (no draft, registry idle), then the rename. A refusal from here on leaves the offer and claim for the conductor to take back.
   const idle = await withTimeout($, idleCheck($, sid, () => registryEntries($)), c.ENGINE_CALL_TIMEOUT_MS).catch(() => 'not-idle' as const)
   if (idle === 'timeout') return hold('not-idle')
   if (idle) return stop(idle)
   if (await tooLate()) return stop('late')
   const t0 = await bounded(Promise.resolve($.session.turns()))
   if (t0 === undefined) return hold('not-idle')
+  if (t0 !== 0) return refuse('not-new-panel')
   let renamed: unknown
   try {
     renamed = await withTimeout($, $.command.run({ command: 'rename', args: offer.name }), c.ENGINE_CALL_TIMEOUT_MS)
@@ -152,7 +153,7 @@ export async function leadAccept(
   if (!named) return refuse('rename-failed')
   await log($, sid, 'renamed', 'lead')
 
-  // 10: the checks again, now that the waits are behind. The rename adds at most one turn.
+  // The checks again, now that the waits are behind. The rename adds at most one turn.
   if (c.bindTurns(t0, (await bounded(Promise.resolve($.session.turns()))) ?? NaN) === undefined) return refuse('not-new-panel')
   if (await tooLate()) return refuse('late')
   const again = await readOffer()
@@ -163,7 +164,7 @@ export async function leadAccept(
   const trustAgain = await trustNo()
   if (trustAgain) return refuse(trustAgain)
 
-  // 11: the ledger row first. No row, no grant; a failure after the row writes a void row of the same nonce, which gives the repo its hour back.
+  // The ledger row first. No row, no grant; a failure after the row writes a void row of the same nonce, which gives the repo its hour back.
   if (await tooLate()) return refuse('late')
   if (!(await ledgerAdd($, { kind: 'lead-grant', hash: key, repo, lane: offer.name, nonce, by: offer.conductor.sid, target: sid }))) return refuse('ledger-write')
   const voided = (code: string) => ledgerAdd($, { kind: 'lead-offer-void', hash: key, nonce, code })
@@ -172,7 +173,7 @@ export async function leadAccept(
     return refuse(code)
   }
 
-  // 12: the grant, through the lead command's own steps with its question skipped. The last guard runs just before the grant is set.
+  // The grant, through the lead command's own steps with its question skipped. The last guard runs just before the grant is set.
   let r: Awaited<ReturnType<typeof grantLead>>
   try {
     r = await grantLead($, sid, 'plugin', async () => ({ text: 'busy', code: 'grant-failed' }), {
@@ -181,7 +182,14 @@ export async function leadAccept(
       pinned: repo,
       onLog: ['lead-on', `via conductor ${offer.conductor.sid.slice(0, 8)}`],
       toast: c.leadOnToast(offer.name, offer.conductor.sid, repo),
-      extraRecheck: async () => ((await tooLate()) ? { text: 'late', code: 'late' } : undefined),
+      extraRecheck: async () => {
+        if (await tooLate()) return { text: 'late', code: 'late' }
+        // The ledger row is ours by now (a lead-offer-void of the nonce is the only thing that ends the offer); the switch and the conductor are read once more.
+        const l = await ledgerRowsFor($, p, `"hash":"${key}"`)
+        if (l === 'unreadable' || l.some((x) => x.nonce === nonce && x.kind === 'lead-offer-void')) return { text: 'offer used', code: 'offer-used' }
+        const t = await trustNo()
+        return t ? { text: t, code: t } : undefined
+      },
       extraApply: async () => {
         const last = await readOffer()
         if (!last || last.nonce !== nonce) return { text: 'offer gone', code: 'offer-bad' }
@@ -189,18 +197,23 @@ export async function leadAccept(
       },
     })
   } catch {
-    return failed('grant-failed')
+    // A throw after the grant was set (a save, the presence file or the briefing) leaves a lead: it carries on to the answer, never a void row for a live lead.
+    if (grants.get(sid)?.level !== 'lead') return failed('grant-failed')
+    r = { text: 'granted' }
+    toast($, c.leadOnToast(offer.name, offer.conductor.sid, repo))
   }
   if (r.code !== undefined || grants.get(sid)?.level !== 'lead') return failed(r.code ?? ((offSeq.get(sid) ?? 0) !== x.seq ? 'off-meanwhile' : 'grant-failed'))
 
-  // 13: the offer and claim go, the model is set (/model adds a turn, so it comes before the turn count the start turn is held against), then the answer.
+  // The offer and claim go, the model is set (/model adds a turn, so it comes before the turn count the start turn is held against), then the answer.
+  const before = await bounded(Promise.resolve($.session.turns()))
   await rmF($, [offerPath, claimPath])
   const modelOk = await modelSet($, offer.model)
   if (!modelOk) {
-    await log($, sid, 'error', 'lead-model')
+    await logq($, sid, 'error', 'lead-model')
     toast($, `Lead ${offer.name} runs on the window's own model: the model the conductor asked for (${offer.model}) could not be set.`)
   }
-  const baseline = await bounded(Promise.resolve($.session.turns()))
+  // The baseline is the count before /model ran plus the turn it adds, so a turn typed meanwhile is not counted away.
+  const baseline = before === undefined ? undefined : before + (modelOk ? 1 : 0)
   leadStarts.set(sid, { name: offer.name, repo, brief: c.briefPath(repo, offer.name), turns: baseline ?? NaN, until: (await $.clock.now()) + c.LEAD_START_GIVE_UP_MS })
   return answer('ok', modelOk ? undefined : c.LEAD_MODEL_UNSET)
 }
