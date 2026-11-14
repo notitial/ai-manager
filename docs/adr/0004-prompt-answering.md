@@ -191,7 +191,9 @@ the person's own included. `docs/setup.md` installs it and the markers. Three th
 - **The comment cap counts what spends a run.** The review workflow starts a run only on a newly created pull-request
   comment whose body starts with `@claude review`, so only a `mcp__github__add_issue_comment` call with such a body
   counts, `--comments` when it starts `@claude review --comments`, else a full review. A mention elsewhere in a body,
-  a title, a review or a reply in a thread starts no run and is not counted.
+  a title, a review or a reply in a thread starts no run and is not counted. A comment a shell command posts
+  (`gh pr comment`, `gh api`) is not read and is not capped here: ai-toolkit's `gh-block` hook denies agents the `gh`
+  command, and a machine without it has no cap over such a post.
 
 The self-protection now relies on the hook being installed and the marker present. Without either, the rubric and
 auto mode's classifier are the only layers over an edit of those places, and the setup says so. The hook reads file
