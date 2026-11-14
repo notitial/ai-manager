@@ -10,7 +10,8 @@ import { ledgerAdd, ledgerRowsFor } from './answer-hook.ts'
 async function give($: any, sid: string, l: LeadStart, why: string) {
   leadStarts.delete(sid)
   await log($, sid, 'lead-start-dropped', why)
-  if (why === 'give-up') toast($, c.leadNotStartedToast(l.name, l.repo))
+  // Only a turn the person began is a reason that needs no word: every other drop leaves a lead that was told to wait for a first turn.
+  if (why !== 'turn-began') toast($, c.leadNotStartedToast(l.name, l.repo))
 }
 
 // Once the grant has taken the offer, the lead's first turn is held in memory: sent when the panel is idle with no draft, only while no turn has begun since

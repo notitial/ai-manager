@@ -344,3 +344,11 @@ longTest('a brief whose first line is not the conductor\'s header drops the star
   await ticks(6)
   expect(startTurns()).toBe(0)
 })
+
+longTest('a model that cannot be read back still counts its /model turn: the start turn is sent, not dropped', async ($, on) => {
+  await accepting($, on, { seed: withBrief })
+  h.modelMode = 'stay'
+  expect(await cue(147, CUE)).toBe('lead ok model-unset 147\n')
+  await ticks(6)
+  expect(startTurns()).toBe(1)
+})

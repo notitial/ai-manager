@@ -205,15 +205,15 @@ export async function leadAccept(
   if (r.code !== undefined || grants.get(sid)?.level !== 'lead') return failed(r.code ?? ((offSeq.get(sid) ?? 0) !== x.seq ? 'off-meanwhile' : 'grant-failed'))
 
   // The offer and claim go, the model is set (/model adds a turn, so it comes before the turn count the start turn is held against), then the answer.
-  const before = await bounded(Promise.resolve($.session.turns()))
   await rmF($, [offerPath, claimPath])
   const modelOk = await modelSet($, offer.model)
   if (!modelOk) {
     await logq($, sid, 'error', 'lead-model')
     toast($, `Lead ${offer.name} runs on the window's own model: the model the conductor asked for (${offer.model}) could not be set.`)
   }
-  // The baseline is the count before /model ran plus the turn it adds, so a turn typed meanwhile is not counted away.
-  const baseline = before === undefined ? undefined : before + (modelOk ? 1 : 0)
-  leadStarts.set(sid, { name: offer.name, repo, brief: c.briefPath(repo, offer.name), turns: baseline ?? NaN, until: (await $.clock.now()) + c.LEAD_START_GIVE_UP_MS })
+  // The baseline is the count after /model returned, whatever it returned: a failed read-back can still have added its turn. A count that cannot be read holds no start turn.
+  const baseline = await bounded(Promise.resolve($.session.turns()))
+  if (baseline === undefined) toast($, c.leadNotStartedToast(offer.name, repo))
+  else leadStarts.set(sid, { name: offer.name, repo, brief: c.briefPath(repo, offer.name), turns: baseline, until: (await $.clock.now()) + c.LEAD_START_GIVE_UP_MS })
   return answer('ok', modelOk ? undefined : c.LEAD_MODEL_UNSET)
 }
