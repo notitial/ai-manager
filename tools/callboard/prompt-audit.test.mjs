@@ -84,11 +84,46 @@ test('a clean ledger has no anomalies, one table row and the right wait', () => 
 
 test('lead-offer and lead-offer-void rows are read, counted by kind, and are no anomaly beside an ordinary request', () => {
   const fx = fixture()
-  ledger(fx, [ON(), ...clean(), R('lead-offer', BASE + 1000, { hash: H('c'), repo: '/Users/x/api', lane: 'LEAD-A', nonce: '0123456789abcdef0123456789abcdef', by: SID }), R('lead-offer-void', BASE + 2000, { hash: H('c'), nonce: '0123456789abcdef0123456789abcdef', code: 'panel-only' })])
+  ledger(fx, [ON(), ...clean(), R('lead-offer', BASE + 1000, { hash: H('c'), repo: '/Users/x/api', lane: 'LEAD-A', nonce: '0123456789abcdef0123456789abcdef', by: SID }), R('lead-offer-void', BASE + 2000, { hash: H('c'), nonce: '0123456789abcdef0123456789abcdef', code: 'brief-write' })])
   const rep = run(fx)
   assert.deepEqual(rules(rep), [])
   assert.equal(rep.counts.rowsByKind['lead-offer'], 1)
   assert.equal(rep.counts.rowsByKind['lead-offer-void'], 1)
+})
+
+const N1 = '0123456789abcdef0123456789abcdef'
+const N2 = 'fedcba9876543210fedcba9876543210'
+const OFFER = (n, at, by = SID, h = 'c') => R('lead-offer', BASE + at, { hash: H(h), repo: '/Users/x/api', lane: 'LEAD-A', nonce: n, by })
+const GRANT = (n, at, by = SID, h = 'c') => R('lead-grant', BASE + at, { hash: H(h), repo: '/Users/x/api', lane: 'LEAD-A', nonce: n, by, target: 'a1b2c3d4-0000-4000-8000-123456789abc' })
+
+test('g: a lead-grant after its own offer is no anomaly; one with no offer, another conductor\'s offer or an offer after it is', () => {
+  const fx = fixture()
+  ledger(fx, [ON(), ...clean(), OFFER(N1, 1000), GRANT(N1, 2000)])
+  assert.deepEqual(rules(run(fx)), [])
+  assert.equal(run(fx).counts.rowsByKind['lead-grant'], 1)
+  for (const rows of [[GRANT(N1, 2000)], [OFFER(N1, 1000, 'b1b2c3d4-0000-4000-8000-123456789abc'), GRANT(N1, 2000)], [GRANT(N1, 1000), OFFER(N1, 2000)], [OFFER(N2, 1000), GRANT(N1, 2000)], [OFFER(N1, 1000, SID, 'd'), GRANT(N1, 2000)]]) {
+    const f2 = fixture()
+    ledger(f2, [ON(), ...clean(), ...rows])
+    assert.deepEqual(rules(run(f2)), ['lead-grant-without-offer'])
+  }
+})
+
+test('g: a grant with a void row of its nonce is listed; the hour is not spent by it', () => {
+  const fx = fixture()
+  ledger(fx, [ON(), ...clean(), OFFER(N1, 1000), GRANT(N1, 2000), R('lead-offer-void', BASE + 3000, { hash: H('c'), nonce: N1, code: 'grant-failed' }), OFFER(N2, 4000), GRANT(N2, 5000)])
+  assert.deepEqual(rules(run(fx)), ['lead-grant-voided'])
+})
+
+test('g: two grants of one repo within an hour are an anomaly; another repo, or an hour apart, is not', () => {
+  const fx = fixture()
+  ledger(fx, [ON(), ...clean(), OFFER(N1, 1000), GRANT(N1, 2000), OFFER(N2, 3000), GRANT(N2, 4000)])
+  assert.deepEqual(rules(run(fx)), ['lead-grant-twice-in-hour'])
+  const f2 = fixture()
+  ledger(f2, [ON(), ...clean(), OFFER(N1, 1000), GRANT(N1, 2000), OFFER(N2, 3000, SID, 'd'), GRANT(N2, 4000, SID, 'd')])
+  assert.deepEqual(rules(run(f2)), [])
+  const f3 = fixture()
+  ledger(f3, [ON(), ...clean(), OFFER(N1, 1000), GRANT(N1, 2000), OFFER(N2, 3_700_000), GRANT(N2, 3_701_000)])
+  assert.deepEqual(rules(run(f3)), [])
 })
 
 test('a: a returned row with no answered row is an anomaly', () => {
