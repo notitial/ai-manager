@@ -164,8 +164,8 @@ touch <toolkit>/.protected-checkout
 mkdir -p ~/.claude/callboard && touch ~/.claude/callboard/.protected-checkout
 ```
 
-3. Probe it: ask a session to write a scratch file inside `<checkout>`. The write must be denied, and a write into a
-   `/tmp` clone must go through.
+3. Probe it: ask a session to write a scratch file inside `<checkout>`, and another inside `<toolkit>`. Both writes
+   must be denied, and a write into a `/tmp` clone must go through.
 
 The hook stops the file tools, the git server's tools and a shell line that names a protected path in a redirect or a
 write verb. It does not read a script, an interpreter's program, `eval` or `bash -c`, a path built at run time, a `cd` to a
@@ -299,7 +299,7 @@ lane or a live lead carries cannot be reserved. Details: callboard README, The m
 | Mod loaded | type `/callboard status` in a session | it answers a status table with a `Lane` row (`NONE`) and a `Lead` row (`OFF`) or similar |
 | Reserved names | type `/callboard reserve` | the manager's name, when it is not `MANAGER`, is listed |
 | Deny lines | read `permissions.deny` in `~/.claude/settings.json` | the two store and list-file lines and the six live-checkout lines are there |
-| Protected-paths hook | `jq -e '[.hooks.PreToolUse[]?.hooks[]?.command] \| any(endswith("/protected-paths-guard.sh"))' ~/.claude/settings.json`, and `ls <checkout>/.protected-checkout ~/.claude/callboard/.protected-checkout` | `true`, and both markers exist, before any `/callboard escalation` |
+| Protected-paths hook | `jq -e '[.hooks.PreToolUse[]?.hooks[]?.command] \| any(endswith("/protected-paths-guard.sh"))' ~/.claude/settings.json`, and `ls <checkout>/.protected-checkout <toolkit>/.protected-checkout ~/.claude/callboard/.protected-checkout` | `true`, and all three markers exist, before any `/callboard escalation` |
 | Usage watcher | `bash tools/usage-watcher/install.sh --status --ref <commit>` | exit 0, the job loaded |
 | Summary | `ls -l ~/.local/state/usage-watcher/usage-summary.json` | written in the last 5 minutes |
 | Retired hook | read `hooks.SessionStart` in `~/.claude/settings.json` | no `account-stamp.sh` entry |
