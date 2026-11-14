@@ -283,3 +283,7 @@ export const condOffers = new Map<string, { nonce: string; at: number }[]>()
 
 // When a conductor last swept its own stale offers, by session id.
 export const offerSweptAt = new Map<string, number>()
+
+// conductorGrantCheck: when a conductor last read the ledger for grants in its name, and the grants (by nonce) it has already told the person about.
+export const grantCheckedAt = new Map<string, number>()
+export const grantTold = new Map<string, Set<string>>()

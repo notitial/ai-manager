@@ -1,7 +1,7 @@
-// The two timers around a lead offer (ADR 0006). leadStartTick: the new lead's start turn, held until its panel is idle with an empty box. offerSweep: a conductor
-// takes away its own offers that nobody answered, and voids their ledger rows.
+// The timers around a lead offer (ADR 0006). leadStartTick: the new lead's start turn, held until its panel is idle with an empty box. offerSweep: a conductor
+// takes away its own offers that nobody answered, and voids their ledger rows. conductorGrantCheck: a conductor tells the person of a grant in its name that it did not ask for.
 import * as c from '../core.ts'
-import { leadStarts, grants, mem, offerSweptAt } from '../mem.ts'
+import { leadStarts, grants, mem, offerSweptAt, condOffers, grantCheckedAt, grantTold } from '../mem.ts'
 import type { LeadStart } from '../mem.ts'
 import { where, statR, readSmallR, dirOk, run, REALPATH, facts, log, logq, sha, submitOwn, toast, rmF } from './base.ts'
 import { idleCheck } from './store.ts'
@@ -79,5 +79,29 @@ export async function offerSweep($: any, sid: string) {
     if (!mine.some((x) => x.kind === 'lead-grant' || x.kind === 'lead-offer-void') && !(await ledgerAdd($, { kind: 'lead-offer-void', hash: key, nonce: offer.nonce, code: 'expired' }))) continue
     await rmF($, [path, `${dir}/${key}.claim`])
     await logq($, sid, 'lead-offer-expired', offer.name)
+  }
+}
+
+// The conductor's own check on the grants made in its name: the ledger rows of the last day that are lead-grant rows by this session and carry a nonce it has no record of
+// offering. Each such grant is toasted once. Once a minute; a ledger that cannot be read is skipped until the next minute.
+export async function conductorGrantCheck($: any, sid: string) {
+  const now = await $.clock.now()
+  const last = grantCheckedAt.get(sid)
+  if (last !== undefined && now - last < SWEEP_EVERY_MS) return
+  grantCheckedAt.set(sid, now)
+  const p = await where($)
+  if (!p) return
+  const rows = await ledgerRowsFor($, p, `"by":"${sid}"`)
+  if (rows === 'unreadable') return
+  const asked = new Set((condOffers.get(sid) ?? []).map((o) => o.nonce))
+  const told = grantTold.get(sid) ?? new Set<string>()
+  for (const r of rows) {
+    const at = Date.parse(r.t)
+    if (r.kind !== 'lead-grant' || r.by !== sid || typeof r.nonce !== 'string' || asked.has(r.nonce) || told.has(r.nonce)) continue
+    if (!Number.isNaN(at) && (at > now || now - at > c.COND_OFFERS_KEEP_MS)) continue
+    told.add(r.nonce)
+    grantTold.set(sid, new Set([...told].slice(-c.COND_OFFERS_MAX)))
+    toast($, c.leadUnaskedToast(typeof r.lane === 'string' ? r.lane : '?', typeof r.repo === 'string' ? r.repo : '/', sid))
+    await logq($, sid, 'lead-grant-unasked', typeof r.lane === 'string' ? r.lane : '?')
   }
 }

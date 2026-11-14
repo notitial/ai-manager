@@ -1,7 +1,7 @@
 import { expect } from 'claude-code/testing'
 import { REASON_TEXT } from '../hooks/core'
 import * as c from '../hooks/core'
-import { h, SID, pdirs, teeTexts, OFFERS_DIR, longTest, PROMPTS_DIR, ROOT, T0, extraStat, leadFiles, pfs } from './harness'
+import { toasts, h, SID, pdirs, teeTexts, OFFERS_DIR, longTest, PROMPTS_DIR, ROOT, T0, extraStat, leadFiles, pfs } from './harness'
 import { ledgerRows } from './answer-fixtures'
 import { ticks, CSESS, LEADPS, OTHERLEAD, PIN, condOn, leadAt, regAs } from './fixtures'
 
@@ -371,4 +371,29 @@ longTest('the sweep leaves a young offer, another conductor\'s offer and an offe
   await ticks(32)
   expect(offers()).toEqual([])
   expect(kinds()).toEqual(['lead-offer', 'lead-grant'])
+})
+
+// ---- the conductor's check on grants in its name ----
+const unasked = () => toasts.filter((t) => t.includes('has no record of asking for it'))
+
+longTest('a grant row in the conductor\'s name for a nonce it never offered is toasted once; one it offered, one by another session and an old one are not', async ($, on) => {
+  const argv: string[][] = []
+  await conductor($, on, argv)
+  expect(await open($, `ok ${NEWSID}\n`)).toContain('is on as session')
+  const mine = nonceOf()
+  const row = (over: Record<string, unknown>) => ({ kind: 'lead-grant', hash: 'c'.repeat(64), repo: PIN, lane: 'LEAD-X', by: SID, ...over })
+  seedRows(
+    { kind: 'lead-offer', t: iso(1000), hash: KEY, nonce: mine, by: SID },
+    row({ t: iso(1000), nonce: mine }),
+    row({ t: iso(2000), nonce: 'd'.repeat(32), by: OTHERLEAD }),
+    row({ t: iso(25 * 3_600_000), nonce: 'e'.repeat(32) }),
+  )
+  await ticks(32)
+  expect(unasked()).toEqual([])
+  seedRows(row({ t: iso(1000), nonce: 'f'.repeat(32) }))
+  await ticks(32)
+  expect(unasked().length).toBe(1)
+  expect(unasked()[0]).toContain('LEAD-X')
+  await ticks(64)
+  expect(unasked().length).toBe(1)
 })
