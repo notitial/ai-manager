@@ -182,6 +182,16 @@ test('lane_open reports a window error by its fixed code', async ($, on) => {
   expect(JSON.stringify(await p)).toContain('did not register in time')
 })
 
+test('lane_open reads an answer of 64 bytes at most: the 73-byte lead answer form is refused as a bad result file, and the file is removed', async ($, on) => {
+  await lead($, on, [], { sess: {}, clock: true })
+  const p = $.tool.call(leadCall('open'))
+  await h.clock!.advance(500)
+  h.openResult = `ok ${NEWSID} ${'a'.repeat(32)}\n`
+  await h.clock!.advance(500)
+  expect(JSON.stringify(await p)).toContain('result-file')
+  expect(h.openResult).toBeUndefined()
+})
+
 test('lane_open points at the unnamed panel instead of opening another', async ($, on) => {
   await lead($, on, [], { sess: {}, clock: true })
   const p = $.tool.call(leadCall('open'))

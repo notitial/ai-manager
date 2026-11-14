@@ -1211,28 +1211,36 @@ export async function laneCreateCall($: any, e: any, next: any) {
 }
 
 // The exchange with the panels extension through <root>/open (lane_open, lane_unpark): the folder must be private, an answer left over goes first, the request is
-// written, then OPEN_POLL_MAX polls of OPEN_POLL_MS each read the answer. kind names the request file (<name>.open, .reopen or .lead), its log line and its refusal codes.
+// written, then OPEN_POLL_MAX polls of OPEN_POLL_MS each read the answer (LEAD_OPEN_POLL_MAX for a lead). nonce: the lead request's, which an answer that carries one must match. kind names the request file (<name>.open, .reopen or .lead), its log line and its refusal codes.
 // { sid }: the window answered ok; otherwise the deny to return. A request no window answered is taken back.
-export async function openExchange($: any, sid: string, name: string, kind: 'open' | 'reopen' | 'lead', text: string, timeoutWhy: string, no: (reason: string, why: string) => Promise<{ deny: string }>): Promise<{ deny: string } | { sid: string }> {
+export async function openExchange($: any, sid: string, name: string, kind: 'open' | 'reopen' | 'lead', text: string, timeoutWhy: string, no: (reason: string, why: string) => Promise<{ deny: string }>, nonce?: string): Promise<{ deny: string } | { sid: string }> {
   const table = kind === 'open' ? c.OPEN_TEXT_BY_CODE : kind === 'lead' ? c.LEAD_OPEN_TEXT_BY_CODE : c.REOPEN_TEXT_BY_CODE
   const p = await where($)
   if (!p) return no('no-paths', 'no-paths')
   const result = `${p.root}/open/${name}.result`
   const request = `${p.root}/open/${name}.${kind}`
   if (!(await resultDirOk($, p, 'open'))) return no('unsafe-open-dir', 'unsafe-open-dir: ~/.claude/callboard/open is not a private folder of yours. Ask the person to check it.')
-  const openDeadline = (await $.clock.now()) + c.OPEN_POLL_MS * c.OPEN_POLL_MAX
+  const pollMax = kind === 'lead' ? c.LEAD_OPEN_POLL_MAX : c.OPEN_POLL_MAX
+  const openDeadline = (await $.clock.now()) + c.OPEN_POLL_MS * pollMax
   await run($, [RM, '-f', '--', result])
   const w = await writeIn($, 'open', `${name}.${kind}`, text)
   if ('err' in w) return no(w.err, w.err)
   await log($, sid, `${kind}-requested`, name)
-  for (let i = 0; i < c.OPEN_POLL_MAX && (await $.clock.now()) < openDeadline; i++) {
+  for (let i = 0; i < pollMax && (await $.clock.now()) < openDeadline; i++) {
     if (!(await pause($, c.OPEN_POLL_MS))) break
-    const a = await readAnswer($, result, p.uid, Math.max(c.OPEN_POLL_MS, Math.min(5000, openDeadline - (await $.clock.now()))))
+    const a = await readAnswer($, result, p.uid, Math.max(c.OPEN_POLL_MS, Math.min(5000, openDeadline - (await $.clock.now()))), kind === 'lead' ? c.LEAD_OPEN_RESULT_MAX : c.RESULT_MAX)
     if (a.state === 'absent') continue
-    if (a.state === 'bad') return no('result-file', 'result-file')
+    // An answer that is not ok, or not readable, ends the open: a request no window has claimed yet goes too, so a late window cannot open a panel nobody waits for.
+    if (a.state === 'bad') {
+      await run($, [RM, '-f', '--', request])
+      return no('result-file', 'result-file')
+    }
     await run($, [RM, '-f', '--', result])
-    const r = c.parseOpenResult(a.text, table)
-    if (!r.ok) return no(`${kind}-${r.reason}`, r.reason === 'bad-result' ? 'bad-result: the window answer was not valid.' : `${r.reason}: ${table[r.reason]}`)
+    const r = c.parseOpenResult(a.text, table, nonce)
+    if (!r.ok) {
+      await run($, [RM, '-f', '--', request])
+      return no(`${kind}-${r.reason}`, r.reason === 'bad-result' ? 'bad-result: the window answer was not valid.' : `${r.reason}: ${table[r.reason]}`)
+    }
     return { sid: r.sid }
   }
   await run($, [RM, '-f', '--', request])

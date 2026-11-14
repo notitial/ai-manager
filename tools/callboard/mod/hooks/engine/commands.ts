@@ -693,6 +693,90 @@ async function escalationCommand($: any, sid: string, code: c.OriginCode, op: pr
   return { text: `${pr.escalationState(value, await promptsOff($))} ${c.DIALOG_LINE}` }
 }
 
+// The person's `/callboard lead`: the checks before the question, then the grant dialog. Every lead grant goes through here.
+async function grantLead($: any, sid: string, code: c.OriginCode, busy: () => Promise<{ text: string }>): Promise<{ text: string }> {
+  // A lane, the manager, a conductor and a session that was the manager or a conductor are never a lead (core's holderNo): asked before the dialog and again
+  // after a yes. A conductor restore still pending does not refuse: the person's lead grant stands, and the restore then ends (lead-holder).
+  const leadNo = async (code: string) => {
+    await log($, sid, 'refused', code === 'lead-after-manager' ? code : `lead-${code}`)
+    return { text: `${code === 'lane-holder' && grants.has(sid) ? 'Lead stays on' : 'Lead stays off'}: ${c.REASON_TEXT[code]}` }
+  }
+  const laneHeld = async () => (await getLane($)).value != null
+  const held = await heldNo($, sid, 'lead', false)
+  if (held) return leadNo(held)
+  let cwd: string
+  try {
+    cwd = await sessionRoot($)
+  } catch {
+    await logq($, sid, 'error', 'lead-register')
+    return { text: 'Lead could not be set up.' }
+  }
+  // A grant from a plugin, session or script keeps the folder an earlier grant pinned; only the person's own prompt or phone moves it.
+  const pinned = (!c.originIsPerson(code) && pinOf(sid)) || cwd
+  // With another lead in the repo, both need a usable name. Asked before the dialog and again after a yes.
+  const nameNo = async (why: string) => {
+    await log($, sid, 'refused', why)
+    return { text: `${grants.has(sid) ? 'Lead stays on' : 'Lead stays off'}: ${c.REASON_TEXT[why]}` }
+  }
+  await reservedGet($, sid, true)
+  const named = await secondLeadNo($, sid, pinned)
+  if (named !== undefined) return nameNo(named)
+  return grantDialog($, sid, LEAD, {
+    question: c.askedFrom(c.leadQuestion(pinned), code),
+    yes: c.LEAD_YES,
+    no: c.LEAD_NO,
+    header: c.HEADER.lead,
+    busy,
+    person: c.originIsPerson(code),
+    on: () => grants.has(sid),
+    pin: pinned,
+    // After the click the manager grant is read through wasManager alone.
+    postClick: () => {
+      const heldAfter = c.holderNo('lead', { ...holdsOf(sid, laneBinding.has(sid), false), manager: false })
+      return heldAfter ? leadNo(heldAfter) : undefined
+    },
+    recheck: async () => {
+      // The engine calls held inside the mark have a time limit; a state read that does not answer counts as a lane binding.
+      if ((await withTimeout($, laneHeld(), c.ENGINE_CALL_TIMEOUT_MS)) !== false) return leadNo('lane-holder')
+      const namedNow = await withTimeout($, secondLeadNo($, sid, pinned), c.ENGINE_CALL_TIMEOUT_MS)
+      if (namedNow !== undefined) return nameNo(namedNow === 'timeout' ? 'lead-check-slow' : namedNow)
+    },
+    apply: async (offNow) => {
+      let set: unknown
+      try {
+        set = await withTimeout($, leadToolsOnce($, sid), c.ENGINE_CALL_TIMEOUT_MS)
+      } catch {
+        await logq($, sid, 'error', 'lead-register')
+        return { text: 'Lead could not be set up.' }
+      }
+      if (set === 'timeout') {
+        await logq($, sid, 'error', 'lead-register-timeout')
+        return { text: 'Lead could not be set up.' }
+      }
+      if (offNow()) {
+        await log($, sid, 'refused', 'off-meanwhile')
+        return { text: 'Nothing changed: callboard was turned off meanwhile.' }
+      }
+      // A re-grant with a new folder is a new reach: work in flight for the old one (a check-in) sees the epoch move and stops.
+      const oldPin = pinOf(sid)
+      if (oldPin !== undefined && oldPin !== pinned) {
+        leadEpoch.set(sid, epochOf(sid) + 1)
+        laneObs.delete(sid)
+        attnTold.delete(sid)
+      }
+      grants.set(sid, c.leadGrant(pinned))
+      return epochOf(sid)
+    },
+    afterPresence: async () => {
+      await watchInit($, sid).catch(logFail($, sid, 'lane-watch'))
+    },
+    onLog: ['lead-on', ''],
+    briefArg: pinned,
+    after: () => nameGrant($, sid),
+    text: 'Lead is on from your next prompt.\nOnly a force stop asks you.',
+  })
+}
+
 export async function commandRun($: any, e: any) {
   const sid = await $.session.id()
   ensureTimer($)
@@ -772,88 +856,7 @@ export async function commandRun($: any, e: any) {
     if (!(await leadDrop($, sid))) leadKept = true
     if (!(await managerForget($, sid))) leadKept = true
   }
-  if (arg === 'lead') {
-    // A lane, the manager, a conductor and a session that was the manager or a conductor are never a lead (core's holderNo): asked before the dialog and again
-    // after a yes. A conductor restore still pending does not refuse: the person's lead grant stands, and the restore then ends (lead-holder).
-    const leadNo = async (code: string) => {
-      await log($, sid, 'refused', code === 'lead-after-manager' ? code : `lead-${code}`)
-      return { text: `${code === 'lane-holder' && grants.has(sid) ? 'Lead stays on' : 'Lead stays off'}: ${c.REASON_TEXT[code]}` }
-    }
-    const laneHeld = async () => (await getLane($)).value != null
-    const held = await heldNo($, sid, 'lead', false)
-    if (held) return leadNo(held)
-    let cwd: string
-    try {
-      cwd = await sessionRoot($)
-    } catch {
-      await logq($, sid, 'error', 'lead-register')
-      return { text: 'Lead could not be set up.' }
-    }
-    // A grant from a plugin, session or script keeps the folder an earlier grant pinned; only the person's own prompt or phone moves it.
-    const pinned = (!c.originIsPerson(code) && pinOf(sid)) || cwd
-    // With another lead in the repo, both need a usable name. Asked before the dialog and again after a yes.
-    const nameNo = async (why: string) => {
-      await log($, sid, 'refused', why)
-      return { text: `${grants.has(sid) ? 'Lead stays on' : 'Lead stays off'}: ${c.REASON_TEXT[why]}` }
-    }
-    await reservedGet($, sid, true)
-    const named = await secondLeadNo($, sid, pinned)
-    if (named !== undefined) return nameNo(named)
-    return grantDialog($, sid, LEAD, {
-      question: c.askedFrom(c.leadQuestion(pinned), code),
-      yes: c.LEAD_YES,
-      no: c.LEAD_NO,
-      header: c.HEADER.lead,
-      busy,
-      person: c.originIsPerson(code),
-      on: () => grants.has(sid),
-      pin: pinned,
-      // After the click the manager grant is read through wasManager alone.
-      postClick: () => {
-        const heldAfter = c.holderNo('lead', { ...holdsOf(sid, laneBinding.has(sid), false), manager: false })
-        return heldAfter ? leadNo(heldAfter) : undefined
-      },
-      recheck: async () => {
-        // The engine calls held inside the mark have a time limit; a state read that does not answer counts as a lane binding.
-        if ((await withTimeout($, laneHeld(), c.ENGINE_CALL_TIMEOUT_MS)) !== false) return leadNo('lane-holder')
-        const namedNow = await withTimeout($, secondLeadNo($, sid, pinned), c.ENGINE_CALL_TIMEOUT_MS)
-        if (namedNow !== undefined) return nameNo(namedNow === 'timeout' ? 'lead-check-slow' : namedNow)
-      },
-      apply: async (offNow) => {
-        let set: unknown
-        try {
-          set = await withTimeout($, leadToolsOnce($, sid), c.ENGINE_CALL_TIMEOUT_MS)
-        } catch {
-          await logq($, sid, 'error', 'lead-register')
-          return { text: 'Lead could not be set up.' }
-        }
-        if (set === 'timeout') {
-          await logq($, sid, 'error', 'lead-register-timeout')
-          return { text: 'Lead could not be set up.' }
-        }
-        if (offNow()) {
-          await log($, sid, 'refused', 'off-meanwhile')
-          return { text: 'Nothing changed: callboard was turned off meanwhile.' }
-        }
-        // A re-grant with a new folder is a new reach: work in flight for the old one (a check-in) sees the epoch move and stops.
-        const oldPin = pinOf(sid)
-        if (oldPin !== undefined && oldPin !== pinned) {
-          leadEpoch.set(sid, epochOf(sid) + 1)
-          laneObs.delete(sid)
-          attnTold.delete(sid)
-        }
-        grants.set(sid, c.leadGrant(pinned))
-        return epochOf(sid)
-      },
-      afterPresence: async () => {
-        await watchInit($, sid).catch(logFail($, sid, 'lane-watch'))
-      },
-      onLog: ['lead-on', ''],
-      briefArg: pinned,
-      after: () => nameGrant($, sid),
-      text: 'Lead is on from your next prompt.\nOnly a force stop asks you.',
-    })
-  }
+  if (arg === 'lead') return grantLead($, sid, code, busy)
   const bound = (await getLane($)).value as Bound | null | undefined
   // Every session gets the keepalive and the nudges.
   // A lead's status adds its check-ins.

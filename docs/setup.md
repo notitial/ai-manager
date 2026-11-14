@@ -343,7 +343,7 @@ Other settings in the checkout's own config still apply (for example a `url.<bas
 fetch), which is why the commit check and the read diff are the guard. The merge is callboard's update, and the rule
 link follows the checkout too, so a change to `tools/callboard/` or `rules/` reaches every session: never install a
 commit you haven't read. After a callboard update, when the extension's version changed: quit VS Code (Cmd+Q), merge
-as above, run `link-extension.sh --apply` in a plain Terminal, then reopen VS Code. Restart every session. For the usage watcher, run
+as above, run `link-extension.sh --apply` in a plain Terminal, then reopen VS Code. Restart every session, and restart every conductor session before it calls `lead_open`: from extension 1.3.0 the answer to a lead open carries a nonce, which a conductor still on the older mod refuses (the panel opens, but the conductor is told the open failed). For the usage watcher, run
 its installer again with the new `--ref`.
 
 ## The guided way

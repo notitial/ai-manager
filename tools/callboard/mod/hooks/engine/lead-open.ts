@@ -100,7 +100,7 @@ async function openLead($: any, e: any, sid: string, base: { live: RegRow[]; lan
   // From here the offer is ours: a throw while the request is out (a host call that times out) takes back the request and the offer like any other failure.
   let r: Awaited<ReturnType<typeof openExchange>>
   try {
-    r = await openExchange($, sid, a.name, 'lead', c.leadRequestText(nonce, repo), TIMEOUT_WHY, fail)
+    r = await openExchange($, sid, a.name, 'lead', c.leadRequestText(nonce, repo), TIMEOUT_WHY, fail, nonce)
   } catch {
     await rmF($, `${p.root}/open/${a.name}.lead`)
     return fail('offer-write', c.reasonWhy('offer-write'))

@@ -15,6 +15,9 @@ const registry = createRegistry(SESSIONS)
 // Shorter than the lead's 8 s wait for lane_open, which also covers the spool's 1 s scan and the lead's 0.5 s poll.
 const SPOOL_OPEN_MS = 5000
 
+// A lead's panel gets a longer wait than a lane's: an upper bound that gives a slow cold window room (a fast open still answers at once). Shorter than the mod's 50 s wait for it.
+const LEAD_OPEN_MS = 45000
+
 // claude-vscode.editor.open opens the panel in the window's first folder, so a lane is only this window's when its folder is that one.
 const primaryFolder = () => (vscode.workspace.workspaceFolders || []).slice(0, 1).map((f) => f.uri.fsPath)
 
@@ -29,6 +32,7 @@ function activate(context) {
     dir: path.join(CLAUDE, 'callboard', 'open'),
     loadLanes: () => allLanes({ storeDir: path.join(CLAUDE, 'callboard', 'lanes') }),
     openLane: (folder) => lanes.open(folder, { timeoutMs: SPOOL_OPEN_MS, refuseUnnamed: true }),
+    openLead: (folder) => lanes.open(folder, { timeoutMs: LEAD_OPEN_MS, refuseUnnamed: true }),
     closeLane: ({ sid, pid, name }) => lanes.adopt(sid, { name, pid }),
     reopenLane: (sid) => lanes.reopen(sid, { timeoutMs: SPOOL_OPEN_MS }),
     workspaceFolders: primaryFolder,

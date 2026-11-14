@@ -51,6 +51,45 @@ longTest('lead_open opens a panel: ledger row, offer, brief and request in order
   expect(ledgerRows().some((x) => x.kind === 'lead-grant')).toBe(false)
 })
 
+// The answer a window of the nonce-echoing extension writes: the request's nonce is the one the ledger row carries.
+// The window answers after `waitMs` (a multiple of 500), with the nonce of the request's own ledger row.
+async function openEchoing($: any, nonce: (real: string) => string, waitMs = 500) {
+  const p = $.tool.call(call())
+  for (let waited = 0; waited < waitMs; waited += 500) await h.clock!.advance(500)
+  const real = String(ledgerRows().filter((x) => x.kind === 'lead-offer').slice(-1)[0].nonce)
+  h.openResult = `ok ${NEWSID} ${nonce(real)}\n`
+  await h.clock!.advance(500)
+  return JSON.stringify(await p)
+}
+
+longTest('lead_open takes an answer that echoes the request nonce, one with none, and refuses one that names another nonce', async ($, on) => {
+  const argv: string[][] = []
+  await conductor($, on, argv)
+  expect(await openEchoing($, (n) => n)).toContain('lead panel opened for LEAD-N as session 12345678')
+  expect(await open($, `ok ${NEWSID}\n`)).toContain('lead panel opened for LEAD-N')
+  const briefs = mvs(argv, '/BRIEF.md').length
+  const takenBack = () => argv.filter((a) => a[0] === '/bin/rm' && a[a.length - 1] === `${ROOT}/open/LEAD-N.lead`).length
+  const rmBefore = takenBack()
+  const bad = await openEchoing($, () => 'f'.repeat(32))
+  expect(takenBack()).toBe(rmBefore + 1)
+  expect(bad).toContain('lead_open refused: bad-result: the window answer was not valid.')
+  expect(mvs(argv, '/BRIEF.md').length).toBe(briefs)
+  expect(offers()).toEqual([])
+})
+
+longTest('a lead panel is waited for up to 50 s: an answer at 30 s is taken, a window silent for the whole wait is not', async ($, on) => {
+  const argv: string[][] = []
+  await conductor($, on, argv)
+  expect(await openEchoing($, (n) => n, 30_000)).toContain('lead panel opened for LEAD-N')
+  const p = $.tool.call(call({ name: 'LEAD-M' }))
+  let done = false
+  void p.then(() => { done = true })
+  for (let i = 0; i < 45; i++) await h.clock!.advance(1000)
+  expect(done).toBe(false)
+  for (let i = 0; i < 10; i++) await h.clock!.advance(1000)
+  expect(JSON.stringify(await p)).toContain('no window answered in time')
+})
+
 longTest('lead_open refuses before any write: repo, name, task and model that fail their checks, and a repo outside the conductor\'s reach', async ($, on) => {
   const argv: string[][] = []
   await conductor($, on, argv)

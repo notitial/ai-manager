@@ -20,7 +20,7 @@ const RESULT_KEEP_MS = 600_000
 const REQUEST_TEXT = 'open\n'
 // <NAME>.lead: `lead <nonce, 32 hex> <repo real path>`, one line.
 const LEAD_MAX = 1024
-const LEAD_RE = /^lead [0-9a-f]{32} (\/[\x21-\x7e]{1,500})\n$/
+const LEAD_RE = /^lead ([0-9a-f]{32}) (\/[\x21-\x7e]{1,500})\n$/
 const OPEN_BUDGET = 6
 const OPEN_BUDGET_MS = 60_000
 const LIVE_PER_REPO = 8
@@ -117,7 +117,7 @@ async function allLanes({ storeDir, uid, home } = {}) {
   return out
 }
 
-function createSpool({ dir, uid = process.getuid(), home = os.homedir(), loadLanes, openLane, closeLane, reopenLane, workspaceFolders, liveInRepo, now = Date.now }) {
+function createSpool({ dir, uid = process.getuid(), home = os.homedir(), loadLanes, openLane, openLead = openLane, closeLane, reopenLane, workspaceFolders, liveInRepo, now = Date.now }) {
   let seq = 0
   let busy = false
   const lastOpen = new Map()
@@ -250,12 +250,13 @@ function createSpool({ dir, uid = process.getuid(), home = os.homedir(), loadLan
     return openPanel(name, lane.folder, t, adm.prev)
   }
 
-  // Opens the panel in the folder and answers on <NAME>.result: `ok <sid>`, or `error <code>`.
-  async function openPanel(name, folder, t, prevOpen) {
+  // Opens the panel in the folder and answers on <NAME>.result: `ok <sid>`, or `error <code>`. A lead request passes its nonce, which the answer echoes
+  // (`ok <sid> <nonce>`), and its own opener.
+  async function openPanel(name, folder, t, prevOpen, { open = openLane, nonce } = {}) {
     try {
-      const sid = await openLane(folder)
+      const sid = await open(folder)
       if (!SID_RE.test(String(sid))) throw new Error('no sid')
-      await writeResult(name, `ok ${sid}\n`)
+      await writeResult(name, `ok ${sid}${nonce ? ` ${nonce}` : ''}\n`)
       return 'opened'
     } catch (e) {
       const m = String((e && e.message) || '')
@@ -270,7 +271,7 @@ function createSpool({ dir, uid = process.getuid(), home = os.homedir(), loadLan
   // without following a link and without claiming it: a request for another window's repo is left where it is, and answers nothing. Only a repo that is this window's first
   // workspace folder, is its own real path and is no broad folder is claimed (renamed, checked by inode, read again, and the same text required), so a request
   // is handled once. Then the same limits as an open (the gap per name, 8 live sessions in the repo, 6 opens a minute) and the same panel open, which refuses
-  // while an unnamed panel of ours sits in the folder. The nonce is not read here: the request only opens a window.
+  // while an unnamed panel of ours sits in the folder. The nonce decides nothing here: it is echoed on the answer, so the mod can tell this open's answer from a stale one.
   async function handleLead(name) {
     const f = await look(name, 'lead', LEAD_MAX)
     if (f.code) return f.code
@@ -283,7 +284,7 @@ function createSpool({ dir, uid = process.getuid(), home = os.homedir(), loadLan
       await writeResult(name, 'error bad-request\n')
       return 'bad-request'
     }
-    const repo = m[1]
+    const [, nonce, repo] = m
     if (!clean(repo) || pinRefusal(repo, home) !== undefined || reservedHit(name) || !(workspaceFolders() || []).includes(repo)) return 'not-mine'
     if ((await fsp.realpath(repo).catch(() => '')) !== repo) return 'not-mine'
     const got = await take(name, f.file, f.st, LEAD_MAX)
@@ -294,7 +295,7 @@ function createSpool({ dir, uid = process.getuid(), home = os.homedir(), loadLan
     }
     const adm = await admit(name, { repo }, f.t)
     if (adm.code) return adm.code
-    return openPanel(name, repo, f.t, adm.prev)
+    return openPanel(name, repo, f.t, adm.prev, { open: openLead, nonce })
   }
 
   // A close request: <LANE>.close, three lines (session id, pid, lane name), written by the mod after a stop signal. The lane must be in the lane list and

@@ -439,18 +439,18 @@ export async function writeBrief($: any, uid: number, brief: string, head: strin
 // An answer file (an open result or a cue result): a plain 0600 file of ours with one link, read with a bound and checked
 // again after the read; never with $.fs.read, which a FIFO put in its place would hang. An unsafe file is removed; a file that
 // changed during the read is left for the next poll; the caller removes an answer it takes.
-export async function readAnswer($: any, path: string, uid: number, timeoutMs = 5000): Promise<{ state: 'absent' | 'bad' } | { state: 'ok'; text: string }> {
+export async function readAnswer($: any, path: string, uid: number, timeoutMs = 5000, max = c.RESULT_MAX): Promise<{ state: 'absent' | 'bad' } | { state: 'ok'; text: string }> {
   const f = await facts($, path)
   if (!f) return { state: 'absent' }
-  if (c.cueFileOk(f, uid) || f.size > c.RESULT_MAX) {
+  if (c.cueFileOk(f, uid) || f.size > max) {
     await run($, [RM, '-f', '--', path])
     return { state: 'bad' }
   }
-  const r = await $.process.run([HEAD, '-c', String(c.RESULT_MAX + 1), '--', path], { timeoutMs })
+  const r = await $.process.run([HEAD, '-c', String(max + 1), '--', path], { timeoutMs })
   const after = await facts($, path)
   // Changed during the read, or a read that failed or ran out of time: left for the next poll.
   if (!after || !c.sameFile(f, after) || r.exitCode !== 0) return { state: 'absent' }
-  if (r.stdout.length > c.RESULT_MAX) {
+  if (r.stdout.length > max) {
     await run($, [RM, '-f', '--', path])
     return { state: 'bad' }
   }

@@ -11,7 +11,7 @@ const FOLDER = '/work/repo/lab'
 const PARKED = [{ name: 'LAB', folder: FOLDER, repo: '/work/repo', sid: SID }]
 
 // `onLoad` runs while the lane list is read: after the request file was looked at and before it is claimed, the window a competing window or a swap can use.
-function world({ lanes = [{ name: 'LAB', folder: FOLDER }], ws = [FOLDER], openLane, reopenLane, now, closeFails, uid, onLoad, liveInRepo, home } = {}) {
+function world({ lanes = [{ name: 'LAB', folder: FOLDER }], ws = [FOLDER], openLane, openLead, reopenLane, now, closeFails, uid, onLoad, liveInRepo, home } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cb-spool-'))
   fs.chmodSync(dir, 0o700)
   const opened = []
@@ -30,6 +30,7 @@ function world({ lanes = [{ name: 'LAB', folder: FOLDER }], ws = [FOLDER], openL
       opened.push(f)
       return SID
     }),
+    ...(openLead ? { openLead } : {}),
     closeLane: (r) => {
       closed.push(r)
       return !closeFails
@@ -707,8 +708,42 @@ test('a lead request for the first workspace folder opens that repo and answers 
   w.putLead('LEAD-A', leadText(repo))
   assert.deepEqual(await w.spool.scan(), [['LEAD-A', 'opened']])
   assert.deepEqual(w.opened, [repo])
-  assert.equal(w.result('LEAD-A'), `ok ${SID}\n`)
+  assert.equal(w.result('LEAD-A'), `ok ${SID} ${NONCE}\n`)
   assert.deepEqual(fs.readdirSync(w.dir).sort(), ['LEAD-A.result'])
+  assert.deepEqual(await w.spool.scan(), [])
+})
+
+test('a lead request opens its panel with the lead opener and echoes the nonce; a lane open keeps its own opener and answers without one', async () => {
+  const repo = realRepo()
+  const seen = []
+  const w = world({ lanes: [{ name: 'LAB', folder: FOLDER }], ws: [repo], home: homeOf(), openLead: async (f) => { seen.push(['lead', f]); return SID }, openLane: async (f) => { seen.push(['lane', f]); return SID } })
+  w.putLead('LEAD-A', leadText(repo))
+  assert.deepEqual(await w.spool.scan(), [['LEAD-A', 'opened']])
+  assert.deepEqual(seen, [['lead', repo]])
+  assert.equal(w.result('LEAD-A'), `ok ${SID} ${NONCE}\n`)
+  const lane = world({ openLead: async () => { throw new Error('lead opener used for a lane') } })
+  lane.put('LAB')
+  assert.deepEqual(await lane.spool.scan(), [['LAB', 'opened']])
+  assert.equal(lane.result('LAB'), `ok ${SID}\n`)
+})
+
+test('a slow lead open holds the scan: a request that arrives meanwhile is left in place and handled once by a later scan', async () => {
+  const repo = realRepo()
+  let release
+  let entered
+  const gate = new Promise((r) => { release = r })
+  const inFlight = new Promise((r) => { entered = r })
+  const w = world({ lanes: [], ws: [repo], home: homeOf(), openLead: async () => { entered(); await gate; return SID } })
+  w.putLead('LEAD-A', leadText(repo))
+  const first = w.spool.scan()
+  await inFlight
+  w.putLead('LEAD-B', leadText(repo))
+  assert.deepEqual(await w.spool.scan(), [])
+  assert.equal(fs.existsSync(path.join(w.dir, 'LEAD-B.lead')), true)
+  release()
+  assert.deepEqual(await first, [['LEAD-A', 'opened']])
+  assert.deepEqual(await w.spool.scan(), [['LEAD-B', 'opened']])
+  assert.equal(w.result('LEAD-B'), `ok ${SID} ${NONCE}\n`)
   assert.deepEqual(await w.spool.scan(), [])
 })
 

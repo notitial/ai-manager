@@ -585,6 +585,20 @@ test('parseOpenResult takes only ok <session id> or error <code>, one line', () 
   }
 })
 
+test('parseOpenResult for a lead request takes an answer with its nonce, or with none, and refuses another nonce', () => {
+  const N = '0123456789abcdef0123456789abcdef'
+  assert.deepEqual(c.parseOpenResult(`ok ${OTHER} ${N}\n`, c.OPEN_TEXT_BY_CODE, N), { ok: true, sid: OTHER })
+  assert.deepEqual(c.parseOpenResult(`ok ${OTHER}\n`, c.OPEN_TEXT_BY_CODE, N), { ok: true, sid: OTHER })
+  for (const bad of [`ok ${OTHER} ${'f'.repeat(32)}\n`, `ok ${OTHER} ${N}`, `ok ${OTHER} ${N.slice(1)}\n`, `ok ${OTHER} ${N.toUpperCase()}\n`, `ok ${OTHER} ${N} x\n`, `ok ${OTHER}  ${N}\n`]) {
+    assert.deepEqual(c.parseOpenResult(bad, c.OPEN_TEXT_BY_CODE, N), { ok: false, reason: 'bad-result' }, JSON.stringify(bad))
+  }
+  // Without an expected nonce (a lane's open) a nonce on the answer is never this open's.
+  assert.deepEqual(c.parseOpenResult(`ok ${OTHER} ${N}\n`), { ok: false, reason: 'bad-result' })
+  assert.deepEqual(c.parseOpenResult('error timeout\n', c.OPEN_TEXT_BY_CODE, N), { ok: false, reason: 'timeout' })
+  assert.ok(`ok ${OTHER} ${N}\n`.length <= c.LEAD_OPEN_RESULT_MAX)
+  assert.ok(c.LEAD_OPEN_POLL_MAX * c.OPEN_POLL_MS > 45_000)
+})
+
 test('the lead question names every ability the grant turns on', () => {
   for (const w of ['create', 'start', 'resume', 'compact', 'park', 'stop', 'retire']) assert.ok(c.leadQuestion('/w/repo').includes(w), w)
   assert.equal(c.leadQuestion('/w/repo'), 'Let this session lead the lanes in repo?\nIt can create, start, resume, compact, park, stop and retire them.\nOnly a force stop asks you.\nLead stays on after a restart until you run /callboard off.')

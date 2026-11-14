@@ -1258,6 +1258,10 @@ export function processRefusal(args: string | undefined, targetPid: unknown, sel
 export const OPEN_TEXT = 'open\n'
 export const OPEN_POLL_MS = 500
 export const OPEN_POLL_MAX = 16
+// A lead's panel is waited for longer (50 s): the extension gives up at 45 s. An upper bound: a fast open answers at the next poll.
+export const LEAD_OPEN_POLL_MAX = 100
+// The longest answer to a lead request, `ok <session id> <nonce>\n` (73 bytes), as the mod reads it; a lane's answers keep RESULT_MAX.
+export const LEAD_OPEN_RESULT_MAX = 96
 
 // The words the lead model reads for a refusal code: fixed text only, never anything a session or a file wrote.
 // Codes that ask for a retry say when; the rest mean "do not send the same cue again". A refused compact cue gets COMPACT_DROPPED too.
@@ -1495,10 +1499,13 @@ export const REOPEN_TEXT_BY_CODE: Record<string, string> = {
   other: 'the conversation did not open, for a reason not shown here.',
 }
 
-export function parseOpenResult(text: string, table: Record<string, string> = OPEN_TEXT_BY_CODE): { ok: true; sid: string } | { ok: false; reason: string } {
-  const m = /^(?:ok ([0-9a-f-]{36})|error ([a-z-]{1,20}))\n$/.exec(text)
+// nonce: the nonce of the lead request this answer is for. An answer that carries a nonce must carry that one; one with none is taken too, because an extension
+// that has not been relinked yet answers a lead request with `ok <sid>` alone.
+export function parseOpenResult(text: string, table: Record<string, string> = OPEN_TEXT_BY_CODE, nonce?: string): { ok: true; sid: string } | { ok: false; reason: string } {
+  const m = /^(?:ok ([0-9a-f-]{36})(?: ([0-9a-f]{32}))?|error ([a-z-]{1,20}))\n$/.exec(text)
   if (!m) return { ok: false, reason: 'bad-result' }
-  if (m[2]) return { ok: false, reason: openCode(m[2], table) }
+  if (m[3]) return { ok: false, reason: openCode(m[3], table) }
+  if (m[2] !== undefined && m[2] !== nonce) return { ok: false, reason: 'bad-result' }
   return SID_RE.test(m[1]) ? { ok: true, sid: m[1] } : { ok: false, reason: 'bad-result' }
 }
 
