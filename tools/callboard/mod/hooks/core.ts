@@ -305,6 +305,16 @@ export function bindTurns(before: number, after: number): number | undefined {
   return added === 0 || added === 1 ? after : undefined
 }
 
+// The rename's own transcript entries land a moment after the command returns, so the count is read again until
+// TURNS_SETTLE_READS reads in a row, each TURNS_SETTLE_MS after the last, agree with their predecessor, at most TURNS_SETTLE_TRIES times. A session someone types into keeps counting, never settles
+// inside the cap, and is still refused by startTurnsOk.
+export const TURNS_SETTLE_MS = 250
+export const TURNS_SETTLE_READS = 2
+export const TURNS_SETTLE_TRIES = 8
+export function turnsSettled(prev: number, next: number): boolean {
+  return Number.isInteger(prev) && prev === next
+}
+
 // start compares with the count read right after the rename.
 export function startTurnsOk(turnsNow: number, turnsAtBind: number | undefined): boolean {
   return Number.isInteger(turnsNow) && turnsNow === (turnsAtBind ?? 0)

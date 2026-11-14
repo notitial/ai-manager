@@ -492,9 +492,22 @@ async function birthRename(
       return refuse('rename-failed')
     }
     // A failed read counts as other turns: the binding stores -1, and lane_start is refused.
-    const t1r = await withTimeout($, $.session.turns().catch(() => NaN), c.ENGINE_CALL_TIMEOUT_MS)
-    const t1 = t1r === 'timeout' ? NaN : t1r
+    const readTurns = async (): Promise<number> => {
+      const r = await withTimeout($, $.session.turns().catch(() => NaN), c.ENGINE_CALL_TIMEOUT_MS)
+      return r === 'timeout' ? NaN : r
+    }
+    // The rename's own entries land after the command returns: wait until the count stops moving before binding to it.
+    let t1 = await readTurns()
+    let agreed = 0
+    // Stops at once when the count grew by more than a rename adds: bindTurns refuses that, and waiting longer only widens the window for a typed turn.
+    for (let i = 0; i < c.TURNS_SETTLE_TRIES && agreed < c.TURNS_SETTLE_READS && t1 - t0 <= 1; i++) {
+      if (!(await pause($, c.TURNS_SETTLE_MS))) break
+      const next = await readTurns()
+      agreed = c.turnsSettled(t1, next) ? agreed + 1 : 0
+      t1 = next
+    }
     const stored = c.bindTurns(t0, t1)
+    await logq($, sid, 'bind-turns', `t0=${t0} t1=${t1} stored=${stored} settled=${agreed >= c.TURNS_SETTLE_READS}`)
     const b: Bound = { name: cue.name!, at: now, turns: stored ?? -1, rec }
     const setting = setLane($, b)
     const w = await withTimeout($, setting, c.ENGINE_CALL_TIMEOUT_MS).catch(() => undefined)
@@ -610,7 +623,11 @@ export async function handle($: any, sid: string, cue: c.Cue, answer: Answer, cu
   if (cue.verb === 'start') {
     const ct = await counts($)
     if (ct.startDone) return refuse('start-done')
-    if (!c.startTurnsOk(await $.session.turns(), bound.turns)) return refuse('not-empty')
+    const turnsNow = await $.session.turns()
+    if (!c.startTurnsOk(turnsNow, bound.turns)) {
+      await refuse('not-empty')
+      return logq($, sid, 'start-turns', `bound=${bound.turns} now=${turnsNow}`)
+    }
     if (now - first > c.BIRTH_WINDOW_MS) return refuse('too-old')
     const p = (await where($))!
     const bf = await facts($, l.brief)
