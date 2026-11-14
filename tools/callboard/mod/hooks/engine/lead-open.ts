@@ -1,10 +1,10 @@
-// lead_open: a conductor opens a panel for a new lead in one of its repos (ADR 0006). The panel is not a lead until the person types /callboard lead in it.
+// lead_open: a conductor opens a panel for a new lead in one of its repos and cues it (ADR 0006). The new panel decides: it runs every check itself and makes itself the lead.
 // Trust rules held here: the repo is in the conductor's reach at the call; at most one live lead per repo and one open in flight per conductor; at most one successful
 // open and three offers per repo per hour, counted from the ledger; every check runs before the first write, and a write that fails takes back the offer and voids its row.
 import * as c from '../core.ts'
-import { conductorHome } from '../mem.ts'
-import { sha, where, statR, real, logq, toast, rmF } from './base.ts'
-import { writeBrief, resultDirOk } from './store.ts'
+import { conductorHome, condOffers } from '../mem.ts'
+import { sha, where, statR, real, logq, rmF, pause } from './base.ts'
+import { writeBrief, resultDirOk, sendCue } from './store.ts'
 import type { RegRow } from './store.ts'
 import { leadsFor, cfgReadStrict, reservedGet } from './grants.ts'
 import { leadTool, leadBase, openExchange } from './lanes.ts'
@@ -15,7 +15,7 @@ import { promptLinkOnce } from './answer-tiers.ts'
 const opening = new Set<string>()
 const openingNames = new Set<string>()
 
-const TIMEOUT_WHY = 'no window answered in time. A VS Code window with the repo as its first workspace folder must run the callboard panels extension (1.2.0 or later). A panel may still appear in that folder: do not open another.'
+const TIMEOUT_WHY = 'no window answered in time. A VS Code window with the repo as its first workspace folder must run the callboard panels extension (1.3.0 or later). A panel may still appear in that folder: do not open another.'
 
 export async function leadOpenCall($: any, e: any, next: any) {
   return leadTool($, e, 'lead_open', async (sid, no) => {
@@ -66,10 +66,12 @@ async function openLead($: any, e: any, sid: string, base: { live: RegRow[]; lan
   if (!(await resultDirOk($, p, 'offers'))) return no('unsafe-offers-dir', c.reasonWhy('unsafe-offers-dir'))
   const offer = `${p.root}/offers/${key}.json`
   const now = await $.clock.now()
-  // An offer left behind (a crash, a reload) is taken away once it is older than OFFER_STALE_MS; a claim is never ours to remove.
+  // An offer left behind (a crash, a reload) is taken away once it is older than OFFER_STALE_MS; a claim goes the same way, after the same age.
   const left = await statR($, offer)
   if (left !== 'absent' && !(left !== 'error' && left.kind === 'file' && now - left.mtimeMs > c.OFFER_STALE_MS && (await rmF($, offer))?.exitCode === 0)) return no('offer-open', c.reasonWhy('offer-open'))
-  if ((await statR($, `${p.root}/offers/${key}.claim`)) !== 'absent') return no('offer-open', c.reasonWhy('offer-open'))
+  // A claim left behind with no offer (its panel never answered) goes with a stale offer, after the same age; a younger one still holds the repo.
+  const cl = await statR($, `${p.root}/offers/${key}.claim`)
+  if (cl !== 'absent' && !(cl !== 'error' && cl.kind === 'file' && now - cl.mtimeMs > c.OFFER_STALE_MS && (await rmF($, `${p.root}/offers/${key}.claim`))?.exitCode === 0)) return no('offer-open', c.reasonWhy('offer-open'))
   const rows = await ledgerRowsFor($, p, `"hash":"${key}"`)
   if (rows === 'unreadable') return no('ledger-unreadable', c.reasonWhy('ledger-unreadable'))
   if (c.leadOpenRate(rows, key, now) !== 'ok') return no('open-rate', c.reasonWhy('open-rate'))
@@ -80,8 +82,9 @@ async function openLead($: any, e: any, sid: string, base: { live: RegRow[]; lan
   const nonce = (await promptNewId($)).replace(/-/g, '')
   const voided = (code: string) => ledgerAdd($, { kind: 'lead-offer-void', hash: key, nonce, code })
   if (!(await ledgerAdd($, { kind: 'lead-offer', hash: key, repo, lane: a.name, nonce, by: sid }))) return no('ledger-write', c.reasonWhy('ledger-write'))
+  const claim = `${p.root}/offers/${key}.claim`
   const fail = async (code: string, why: string) => {
-    await rmF($, offer)
+    await rmF($, [offer, claim])
     await voided(code)
     return no(code, why)
   }
@@ -106,12 +109,45 @@ async function openLead($: any, e: any, sid: string, base: { live: RegRow[]; lan
     return fail('offer-write', c.reasonWhy('offer-write'))
   }
   if ('deny' in r) return r
-  // The panel is open and nothing here grants it: the offer goes, and the hour is not spent (no lead-grant row). What follows cannot undo the open, so none of it throws out.
-  await rmF($, offer)
-  await voided('panel-only')
-  // The brief comes last, so a failed open leaves none behind; a panel that opened without one is reported as such.
+  // The panel is open. The brief comes first: with none the new lead has nothing to read, so no cue goes and the offer is voided. None of what follows throws out.
   const wb = await writeBrief($, p.uid, c.briefPath(repo, a.name), c.leadBriefHead(a.name), c.leadBriefText(a.name, a.task)).catch(() => 'brief-write')
+  if (wb) return fail('brief-write', c.leadNotGrantedText(a.name, r.sid, `its brief could not be written (${wb}).`))
+  // The nonce is kept for conductorGrantCheck: a grant that names this conductor and carries a nonce it never offered is told to the person.
+  const kept = (condOffers.get(sid) ?? []).filter((o) => now - o.at < c.COND_OFFERS_KEEP_MS)
+  condOffers.set(sid, [...kept, { nonce, at: now }].slice(-c.COND_OFFERS_MAX))
   await logq($, sid, 'lead-opened', a.name)
-  toast($, `Conductor opened a panel for lead ${a.name} in ${c.folderName(repo)}. Type /callboard lead there to make it the lead.`)
-  return { result: c.leadOpenedText(a.name, r.sid, wb || undefined) }
+
+  // The cue: the new panel runs every check itself and answers. One more try when it says it was not ready; its claim is its own, so the same cue finds it again.
+  const cue = c.leadCueLine(nonce)
+  if (!cue) return fail('grammar', c.leadNotGrantedText(a.name, r.sid, 'the cue was not valid.'))
+  let denied: string | undefined
+  const cueNo = async (reason: string) => {
+    denied = reason
+    return { deny: reason }
+  }
+  let ans: Awaited<ReturnType<typeof sendCue>> | undefined
+  for (let i = 0; i < 2; i++) {
+    denied = undefined
+    ans = await sendCue($, sid, a.name, r.sid, 'lead', cue, (await $.clock.now()) + c.LEAD_CUE_WAIT_MS, cueNo, { quiet: true })
+    if ('deny' in ans || ans.outcome !== 'held') break
+    if (i === 0) await pause($, 3000)
+  }
+  const out = ans as Awaited<ReturnType<typeof sendCue>>
+  if ('deny' in out) {
+    // No answer: the panel may still take the offer, so nothing is taken back here (the sweep removes it once it is old).
+    if (denied === 'no-answer') return { result: c.leadNoAnswerText(a.name, r.sid) }
+    return fail(denied ?? 'cue-failed', c.leadNotGrantedText(a.name, r.sid, `the cue was not sent (${denied ?? 'cue-failed'}).`))
+  }
+  if (out.outcome === 'ok') {
+    await rmF($, [offer, `${p.root}/offers/${key}.claim`])
+    return { result: c.leadOpenedText(a.name, r.sid, out.reason === c.LEAD_MODEL_UNSET) }
+  }
+  // A refusal that names no reason (the panel's own tick failed) is as unclear as no answer: nothing is taken back.
+  if (out.outcome === 'refused' && out.reason === 'other') return { result: c.leadNoAnswerText(a.name, r.sid) }
+  // Refused, or not ready twice: the offer and the claim go, the row is voided (the hour is not spent), and the panel stays an ordinary one.
+  await rmF($, [offer, `${p.root}/offers/${key}.claim`])
+  await voided(out.reason)
+  const why = `${out.outcome === 'held' ? 'it was not ready: ' : ''}${c.reasonWhy(out.reason)}`
+  await logq($, sid, 'lead-refused', `${a.name} ${out.reason}`)
+  return no(`${out.outcome}-${out.reason}`, c.leadNotGrantedText(a.name, r.sid, why))
 }

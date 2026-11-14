@@ -305,7 +305,7 @@ export function applyCheck(a: ApplyIn): ApplyOut {
 }
 
 // ---- the ledger: machine-wide, one JSON row per line, no input text ----
-export type RowKind = 'requested' | 'answered' | 'escalated' | 'dropped' | 'returned' | 'superseded' | 'expired-denied' | 'off' | 'abandoned' | 'dialog' | 'not-judgeable' | 'no-tier' | 'answering-on' | 'answering-off' | 'relayed' | 'relay-lost' | 'relay-left' | 'relay-late' | 'deny-unclear' | 'lead-offer' | 'lead-offer-void'
+export type RowKind = 'requested' | 'answered' | 'escalated' | 'dropped' | 'returned' | 'superseded' | 'expired-denied' | 'off' | 'abandoned' | 'dialog' | 'not-judgeable' | 'no-tier' | 'answering-on' | 'answering-off' | 'relayed' | 'relay-lost' | 'relay-left' | 'relay-late' | 'deny-unclear' | 'lead-offer' | 'lead-offer-void' | 'lead-grant'
 // cap and target: set on an `answered` and a `returned` row of a comment that starts the review command (claudeCap), so the standing comment cap can be counted.
 // by: the session id of the lead that answered (on `answered` and `returned`, so the apply and the audit can bind a decision file to its row); tuid: the call's tool_use_id (on `returned`).
 // opt, lh (a question's `answer` rows, code 'answer'): the chosen option's index as a string, and the first 16 hex of SHA-256(id + "\n" + label); no label text. Strings, since the audit drops a row with another type.

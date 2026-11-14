@@ -482,11 +482,9 @@ export async function resultDirOk($: any, p: { uid: number; root: string }, fold
   return (await dirOk($, p.root, p.uid)) && (await dirOk($, `${p.root}/${folder}`, p.uid))
 }
 
-// One cue to one target and the wait for its answer (lane_start, lane_retire and the other cue tools): the per-target lock, the answer file and
-// the one deadline counted from the tool call. undefined: the target answered ok; otherwise the deny to return.
-export async function cueExchange($: any, sid: string, laneName: string, toSid: string, verb: c.Verb, deadline: number, no: (reason: string, why: string) => Promise<{ deny: string }>, retire = false): Promise<{ deny: string } | undefined> {
-  const text = c.cueLine(verb, laneName, verb === 'rename' ? sid : undefined)
-  if (!text) return no('grammar', 'bad cue.')
+// One cue to one target and the wait for its answer: the per-target lock, the answer file and one deadline counted from the call. The text is built by the
+// caller (cueLine, or the lead cue). Returns the target's answer, or the deny to give back (no answer included).
+export async function sendCue($: any, sid: string, label: string, toSid: string, verb: c.Verb, text: string, deadline: number, no: (reason: string, why: string) => Promise<{ deny: string }>, opt: { retire?: boolean; quiet?: boolean } = {}): Promise<{ deny: string } | { outcome: c.Outcome; reason: string }> {
   // Any grant (a lead's or the manager's); each tool has checked its own reach.
   if (!grants.has(sid)) return no('off', 'the lead tools are off. Ask the person to turn them on.')
   const p = await where($)
@@ -510,25 +508,34 @@ export async function cueExchange($: any, sid: string, laneName: string, toSid: 
     await run($, [RM, '-f', '--', resultPath])
     const w = await writeCue($, toSid, text)
     if ('err' in w) return no(w.err, w.err)
-    await log($, sid, 'cued', `${verb} ${laneName}`)
-    toast($, `${verb[0].toUpperCase()}${verb.slice(1)} sent to lane ${laneName}`)
+    await log($, sid, 'cued', `${verb} ${label}`)
+    if (!opt.quiet) toast($, `${verb[0].toUpperCase()}${verb.slice(1)} sent to lane ${label}`)
     // A retire waits from the cue write (its target answers on its next tick, and the checks before the cue take time), and polls faster to shorten the window before the signal.
-    const r = await awaitResult($, resultPath, p.uid, verb, w.ino, retire ? (await $.clock.now()) + c.RETIRE_WAIT_MS : deadline, retire ? c.RETIRE_POLL_MS : c.RESULT_POLL_MS)
+    const r = await awaitResult($, resultPath, p.uid, verb, w.ino, opt.retire ? (await $.clock.now()) + c.RETIRE_WAIT_MS : deadline, opt.retire ? c.RETIRE_POLL_MS : c.RESULT_POLL_MS)
     if (!r) return no('no-answer', c.NO_ANSWER)
-    // An order the lane took (held nudged): kept in memory, from its first cue, for the deadline notice (orderTick).
-    if (verb === 'compact' && r.outcome === 'held' && r.reason === 'nudged') {
-      const mine = orders.get(sid) ?? new Map<string, { lane: string; at: number }>()
-      orders.set(sid, mine)
-      if (!mine.has(toSid)) mine.set(toSid, { lane: laneName, at: await $.clock.now() })
-    }
-    if (r.outcome !== 'ok') return no(`${r.outcome}-${r.reason}`, c.cueRefusalText(verb, r.outcome, r.reason))
-    await log($, sid, 'acted', `${verb} ${laneName}`)
-    return undefined
+    return r
   } finally {
     if (got) got()
     else void locked.then((r) => r())
     countDown(cueInFlight, key)
   }
+}
+
+// One cue to a lane (lane_start, lane_retire and the other cue tools). undefined: the target answered ok; otherwise the deny to return.
+export async function cueExchange($: any, sid: string, laneName: string, toSid: string, verb: c.Verb, deadline: number, no: (reason: string, why: string) => Promise<{ deny: string }>, retire = false): Promise<{ deny: string } | undefined> {
+  const text = c.cueLine(verb, laneName, verb === 'rename' ? sid : undefined)
+  if (!text) return no('grammar', 'bad cue.')
+  const r = await sendCue($, sid, laneName, toSid, verb, text, deadline, no, { retire })
+  if ('deny' in r) return r
+  // An order the lane took (held nudged): kept in memory, from its first cue, for the deadline notice (orderTick).
+  if (verb === 'compact' && r.outcome === 'held' && r.reason === 'nudged') {
+    const mine = orders.get(sid) ?? new Map<string, { lane: string; at: number }>()
+    orders.set(sid, mine)
+    if (!mine.has(toSid)) mine.set(toSid, { lane: laneName, at: await $.clock.now() })
+  }
+  if (r.outcome !== 'ok') return no(`${r.outcome}-${r.reason}`, c.cueRefusalText(verb, r.outcome, r.reason))
+  await log($, sid, 'acted', `${verb} ${laneName}`)
+  return undefined
 }
 
 export type Answer = (outcome: c.Outcome, reason?: string) => Promise<void>

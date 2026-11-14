@@ -347,6 +347,8 @@ export const h = {
   psConfirmFails: undefined,
   psConfirmOut: undefined,
   renameMode: 'ok' as 'ok' | 'throw' | 'hang',
+  // Runs when a rename command is taken, with the new name: a test uses it to make the registry carry that name.
+  onRename: undefined as undefined | ((name: string) => void),
   // Run once, before the answer, at the next `ps -o args=` (a process check), then cleared.
   psArgsHook: undefined,
   modelMode: 'ok' as 'ok' | 'stay' | 'throw' | 'hang',
@@ -428,6 +430,7 @@ function resetSession() {
   h.submitFails = false
   renames.length = 0
   h.renameMode = 'ok'
+  h.onRename = undefined
   modelRuns.length = 0
   colorRuns.length = 0
   h.modelMode = 'ok'
@@ -710,6 +713,7 @@ export function engine(on0: any, argvSeen: string[][], stdins: string[] = [], cl
       if (h.renameMode === 'throw') throw new Error('refused')
       if (h.renameMode === 'hang') return new Promise(() => undefined)
       h.turnsNow += h.turnsAddedByRename
+      h.onRename?.(e.args)
     } else if (e.command === 'model') {
       modelRuns.push(`${e.args}@${submitted.length}`)
       h.turnsNow++
@@ -814,7 +818,7 @@ export function engine(on0: any, argvSeen: string[][], stdins: string[] = [], cl
     if (e.path === LANESDIR && h.lanesListHook) await h.lanesListHook()
     return listed_(e)
   })
-  const listed_ = (e: any) => ({ value: e.path === '/Users/x/.claude/hooks' ? h.hooksList.map((name) => ({ name, kind: 'file', size: 1, mtimeMs: 0, isLink: true })) : isPromptPath(e.path) ? promptList(e.path) : e.path === `${ROOT}/leads` ? [...leadFiles.entries()].map(([k, f]) => ({ name: k.slice(ROOT.length + 7), kind: 'file', size: 1, mtimeMs: (f.mtimeSec ?? Math.floor(h.nowMs / 1000)) * 1000, isLink: false })) : e.path === `${ROOT}/result` ? h.resultList : e.path === `${ROOT}/cue` ? h.cueList : e.path === `${ROOT}/open` ? h.openList : e.path === `${ROOT}/log` ? h.logList : e.path === LANESDIR ? [...storeFiles.keys()].map((k) => ({ name: k.slice(LANESDIR.length + 1), kind: 'file', size: 1, mtimeMs: 0, isLink: false })) : e.path === SESSIONS ? Object.keys(regFiles()).map((name) => ({ name, kind: 'file', size: 1, mtimeMs: 0, isLink: false })) : [] })
+  const listed_ = (e: any) => ({ value: e.path === '/Users/x/.claude/hooks' ? h.hooksList.map((name) => ({ name, kind: 'file', size: 1, mtimeMs: 0, isLink: true })) : isPromptPath(e.path) ? promptList(e.path) : e.path === `${ROOT}/leads` ? [...leadFiles.entries()].map(([k, f]) => ({ name: k.slice(ROOT.length + 7), kind: 'file', size: 1, mtimeMs: (f.mtimeSec ?? Math.floor(h.nowMs / 1000)) * 1000, isLink: false })) : e.path === `${ROOT}/result` ? h.resultList : e.path === `${ROOT}/cue` ? h.cueList : e.path === `${ROOT}/open` ? h.openList : e.path === OFFERS_DIR ? [...pfs.entries()].filter(([k]) => k.startsWith(`${OFFERS_DIR}/`)).map(([k, f]) => ({ name: k.slice(OFFERS_DIR.length + 1), kind: 'file', size: f.text.length, mtimeMs: (f.mtimeSec ?? Math.floor(h.nowMs / 1000)) * 1000, isLink: false })) : e.path === `${ROOT}/log` ? h.logList : e.path === LANESDIR ? [...storeFiles.keys()].map((k) => ({ name: k.slice(LANESDIR.length + 1), kind: 'file', size: 1, mtimeMs: 0, isLink: false })) : e.path === SESSIONS ? Object.keys(regFiles()).map((name) => ({ name, kind: 'file', size: 1, mtimeMs: 0, isLink: false })) : [] })
   on('process.run', function procRun(_: any, e: any): any {
     if (over()) return { value: { exitCode: 1, stdout: '', stderr: 'test over', isStdoutTruncated: false, isStderrTruncated: false } }
     argvSeen.push([...e.argv])

@@ -180,6 +180,10 @@ export const takenSwept = new Map<string, number>()
 
 // The rename of an attached session cannot run inside the command (the engine refuses it there), so it runs from the next tick, once.
 export const pendingRename = new Map<string, { name: string; until: number; manager?: true }>()
+// A new lead's start turn, held until its box is empty and it is idle (engine/lead-accept.ts sets it, leadStartTick submits it): the lead's name, repo and brief
+// path, the turn count the grant left (a person who typed meanwhile is driving), and when it is given up.
+export type LeadStart = { name: string; repo: string; brief: string; turns: number; until: number }
+export const leadStarts = new Map<string, LeadStart>()
 
 // A bound session makes sure its own store record names it, once per binding (name, time and record hash): the record of a lane born through lane_rename,
 // one restored through the dialog, a rebind and every older record. Run from the tick before the cue is claimed, under a time limit. The key is set
@@ -273,3 +277,13 @@ export const promptCapLogged = new Set<string>()
 // is told twice at most. A request that closed meanwhile is dropped by the tick's scan and its marks here with it.
 export const promptMidSent = new Map<string, Set<string>>()
 export const promptMidRetold = new Map<string, Set<string>>()
+
+// A conductor's own lead offers, by its session id: the nonce and the time of each, newest last (capped, one day). conductorGrantCheck reads it to tell a grant it made from one it did not.
+export const condOffers = new Map<string, { nonce: string; at: number }[]>()
+
+// When a conductor last swept its own stale offers, by session id.
+export const offerSweptAt = new Map<string, number>()
+
+// conductorGrantCheck: when a conductor last read the ledger for grants in its name, and the grants (by nonce) it has already told the person about.
+export const grantCheckedAt = new Map<string, number>()
+export const grantTold = new Map<string, Set<string>>()

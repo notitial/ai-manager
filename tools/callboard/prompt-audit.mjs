@@ -19,6 +19,7 @@
 //   relay-left id, short, by, tier   the person dismissed or answered something else; relay-late short, by, code (closed | decided)   an answer after the request ended
 //   deny-unclear   a deny whose reason the cleaner-command rule found too vague to judge
 //   lead-offer hash, repo, lane, nonce, by   a conductor's lead_open wrote an offer (hash: the repo's sha-256); lead-offer-void hash, nonce, code   it ended with no grant
+//   lead-grant hash, repo, lane, nonce, by, target   the new panel (target) made itself a lead from that offer; written before the grant, so a failure after it is followed by a lead-offer-void of the nonce
 //   answered / returned rows of a question's answer carry code: "answer", opt (the chosen option's index, as a string) and lh (the first 16 hex of SHA-256(id + "\n" + label), the label redacted
 //              and trimmed); the labels themselves are in prompts/questions-YYYY-MM.jsonl, { t, id, lane, repo, tier, by, header, question, options, label, via? }
 //   answered / returned rows of the person's own answer carry via: "person", short and by = the relaying tier's session id (no prompt_answer call exists for them)
@@ -63,7 +64,7 @@ const QUESTION_DAYS = 90
 const LABEL_MAX = 256
 
 const ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
-const KINDS = new Set(['requested', 'answered', 'escalated', 'dropped', 'returned', 'superseded', 'expired-denied', 'off', 'abandoned', 'dialog', 'not-judgeable', 'no-tier', 'answering-on', 'answering-off', 'relayed', 'relay-lost', 'relay-left', 'relay-late', 'deny-unclear', 'lead-offer', 'lead-offer-void'])
+const KINDS = new Set(['requested', 'answered', 'escalated', 'dropped', 'returned', 'superseded', 'expired-denied', 'off', 'abandoned', 'dialog', 'not-judgeable', 'no-tier', 'answering-on', 'answering-off', 'relayed', 'relay-lost', 'relay-left', 'relay-late', 'deny-unclear', 'lead-offer', 'lead-offer-void', 'lead-grant'])
 const FIELDS = ['code', 'id', 'lane', 'repo', 'tool', 'pattern', 'hash', 'tier', 'why', 'nonce', 'tuid', 'by', 'via', 'short', 'opt', 'lh']
 const ENDS = new Set(['returned', 'superseded', 'expired-denied', 'off', 'abandoned'])
 // A `dropped` row with one of these codes is a decision the hook refused as forged or wrong: an anomaly. The others are ordinary.
@@ -658,6 +659,22 @@ function ruleDialog({ groups, flag }) {
   }
 }
 
+// g. lead grants (ADR 0006): a lead-grant needs a lead-offer row of the same repo hash and nonce written by the same session; at most one grant of a repo in an hour (a grant
+// followed by a void of its nonce does not count); and a grant with a void of its nonce is a grant that was told to have failed, which is listed so a person looks at it.
+function ruleLeadGrants({ rows, flag, inRange }) {
+  const grants = rows.filter((r) => r.kind === 'lead-grant' && inRange(r.ms))
+  const voided = (g) => rows.some((r) => r.kind === 'lead-offer-void' && r.nonce === g.nonce && r.hash === g.hash)
+  for (const g of grants) {
+    if (!rows.some((r) => r.kind === 'lead-offer' && r.nonce === g.nonce && r.hash === g.hash && r.by === g.by && r.ms <= g.ms)) flag('g', 'lead-grant-without-offer', `the lead-grant of ${g.lane ?? '?'} (${g.t}) has no earlier lead-offer row of the same repo and nonce by session ${g.by ?? '?'}`, { t: g.t })
+    if (voided(g)) flag('g', 'lead-grant-voided', `the lead-grant of ${g.lane ?? '?'} (${g.t}) has a lead-offer-void row of the same nonce: the panel was told the grant failed`, { t: g.t })
+  }
+  const live = grants.filter((g) => !voided(g)).sort((a, b) => a.ms - b.ms)
+  for (let i = 1; i < live.length; i++) {
+    const prev = live.slice(0, i).reverse().find((x) => x.hash === live[i].hash && live[i].ms - x.ms < 3_600_000)
+    if (prev) flag('g', 'lead-grant-twice-in-hour', `two lead-grants for one repo within an hour: ${prev.lane ?? '?'} (${prev.t}) and ${live[i].lane ?? '?'} (${live[i].t})`, { t: live[i].t })
+  }
+}
+
 // e. a request must be raised while answering is on: the latest answering-on or answering-off row at its time says on (not the first answering-on row ever written, which a later off outlives).
 // An answering-off with code asks only turned the questions off (an earlier mod wrote it); permission answering stayed on.
 // The hook reads the switch once at its start and writes the requested row after slower steps, so an off typed in between reads on, off, requested, and the waiting hook then
@@ -975,6 +992,7 @@ export function audit({ root, projects, since, now = Date.now(), projectsExplici
   for (const r of abandonedNoId) abandoned.push({ id: '', t: r.t, code: r.code ?? '', tool: r.tool ?? '' })
 
   ruleDialog(ctx)
+  ruleLeadGrants(ctx)
   ruleAnsweringOn(ctx)
   const files = ruleStaleRequestFiles(ctx, rootReal, entries)
   ruleClosedWithoutRow(ctx, files)

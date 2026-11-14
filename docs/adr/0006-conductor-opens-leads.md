@@ -62,33 +62,56 @@ For waking a lead:
   request** for the extension (name, repo, nonce). The extension claims the request once, opens a panel only in a
   window whose first workspace folder is the repo's exact real path, and answers the new session's id. It never
   reads the offer or the brief.
-- **The grant.** The conductor's mod writes a `lead <nonce>` cue to that session. The new session's own mod first
-  claims the offer with a claim file only one session can create (the offer stays in place, so the repo stays
-  taken), then accepts only when every check passes, again after its last wait:
-  - the cue names it and its nonce equals the offer's; a ledger row for that offer exists;
-  - it started in the repo less than two minutes ago, is a person's interactive session, has had no turn, has no
-    name, and holds no level (lane, lead, conductor, manager, or any `-after-` state);
-  - the offer passes its file checks and is younger than two minutes; its name passes the name rules again;
-  - the offer's conductor is a live session whose pid and start time match the process table, and it is a
-    conductor this session trusts for the repo by the same presence, saved-grant and list-file checks a lead
-    uses today before taking a conductor's compact cue;
-  - no other live lead is in the repo, read with every unreadable file counted as a failure;
-  - the person's switch is on.
+- **Waiting.** A lead's panel is waited for up to 45 s in the extension and 50 s in the mod, which gives a slow
+  cold window room; a fast open answers at the next poll. The extension echoes the request's nonce in its answer
+  (`ok <session id> <nonce>`) and the mod refuses an answer that names another. The brief is written once the
+  panel is open and before the cue: a brief that cannot be written sends no cue, takes the offer back and voids
+  its row (`brief-write`).
+- **The grant.** The conductor's mod writes a `lead <nonce>` cue to that session and waits 35 s for its answer.
+  The cue only makes the new session look: its own mod runs every check, in this order, and a read that fails or
+  times out is a refusal:
+  1. Its own state, read with nothing written: it started in the repo less than two minutes ago, sits at the
+     repo's root, is a person's interactive session, has had no turn, has no name, and holds no level (lane, lead,
+     conductor, manager, or any `-after-` state).
+  2. The offer file, read at the key of its own folder: plain file checks, the cue's nonce equals the offer's,
+     the offer is younger than two minutes, and its name passes the name rules again.
+  3. The ledger: a `lead-offer` row of this conductor and nonce, and no `lead-grant` or `lead-offer-void` row of
+     it.
+  4. The person's switch is on; the offer's conductor is a live session whose pid and start time match the
+     process table, and one this session trusts for the repo by the same presence, saved-grant and list-file
+     checks a lead uses before taking a conductor's compact cue; no other live lead is in the repo, read with
+     every unreadable file counted as a failure.
+  5. A claim file only one session can create (the offer stays in place, so the repo stays taken), then the idle
+     check, then the rename to NAME, and every check above again.
+  6. The ledger row `lead-grant`, **written first: no row, no grant.** Then the grant through the shared lead
+     steps (tools, grant, saved grant, presence, briefing) with the question skipped, guarded once more just
+     before it is set.
+  7. The offer and claim are deleted, the model the conductor asked for is set (a failure leaves the lead on the
+     window's own model, shows a toast and makes the answer say `model-unset`), the turn count is taken, and
+     the answer `ok` is written last, so the conductor's wait covers the whole grant.
 
-  It renames itself to NAME first, then takes the lead grant through the shared lead steps (tools, grant, saved
-  grant, presence, briefing). A failure before the grant leaves the session plain; a failure after it drops the
-  grant again. It then deletes the claimed offer, shows a toast naming the lead, the offer's conductor and the repo
-  with `/callboard off` as the way out, and submits one fixed start turn that points at the brief, once the session
-  is idle with an empty box.
+  Every check that can refuse is made within 25 s of the cue file's time and the conductor waits 35 s; the steps
+  after the grant is set (saved grant, presence, briefing, model) are not timed, so a slow one can outlast the
+  conductor's wait. It then says the panel may still become the lead. A panel that is not ready (the registry row not written yet, a draft in the
+  box, not idle) answers `held`, and the conductor sends the cue once more. A failure before the grant leaves the
+  session plain; a refusal after the rename leaves it named and plain, and a failure after the ledger row writes
+  a `lead-offer-void` row of the nonce with its code, which gives the repo its hour back. A conductor that gets a
+  refusal or a second `held` takes the offer and claim back and says the panel now carries the name; one that
+  gets no answer takes nothing back and says the panel may still become the lead. Offers nobody answered are
+  removed by their conductor's tick after ten minutes (`expired`).
+
+  A toast names the lead, the offer's conductor and the repo, with `/callboard off` as the way out. The first
+  turn is a fixed text that points at the brief; it is held in memory and sent once the session is idle with an
+  empty box, only while no turn has begun since the grant and the brief is still a plain file of the person's
+  inside the repo. A panel that stays busy gets it dropped after ten minutes, with a toast.
 - **Afterwards it is a lead.** The saved grant, the restore at the next start, the tools, the tier rights and
   `/callboard off` are the same as for a lead the person made. Who made it is a log line and a ledger row, never
   a field anything reads to decide.
 - **Consent.** The person's consent is the conductor grant. Its dialog says, for a new grant: "It can also open a
   lead in one of these repos without asking you (one per repo, one an hour each)." Conductors granted before
   this change get the power without a new dialog, by the person's choice.
-- **Built in steps.** The tool and the extension's open come first, and alone they only open the panel: the person
-  clicks `Lead` there, as today. The clickless grant, which is the part on the risk list, is a separate change
-  that needs the person's own go.
+- **Built in steps.** The tool and the extension's open came first and alone only opened the panel. The grant
+  is the second step; it is the part on the risk list and needed the person's own go.
 
 ### Lead state
 
@@ -110,9 +133,11 @@ prompt or the person for N minutes. Display only; the registry is a filter, neve
 ### Audit
 
 Ledger rows `lead-offer`, `lead-offer-void`, `lead-grant` and `lead-resume`. The audit flags a grant with no offer
-row of the same nonce, more than one grant per repo in an hour, a second live lead granted in a repo that had one,
-and a resume whose sender was not a conductor or manager at the time. The conductor's own mod compares the grants
-the ledger says it made with the offers it remembers writing, and shows the person a toast for any it did not.
+row of the same nonce and conductor, two grants of one repo in an hour (a grant whose nonce was voided does not
+count), a grant that was told to have failed (a void row of its nonce), and a resume whose sender was not a
+conductor or manager at the time. The conductor's own mod reads the ledger once a minute for grants naming its
+session in the last day and shows the person a toast for any whose nonce it has no memory of offering (it also
+fires for a grant it offered before a restart, which is the safe side).
 
 ## Consequences
 
@@ -136,6 +161,8 @@ the ledger says it made with the offers it remembers writing, and shows the pers
   an hour. The toast, the log, the ledger, the audit and the conductor's own check make it visible; nothing
   prevents it. The same process can write `resume` cues: at most 12 fixed turns an hour into an idle lead, each
   pointing only at a message with its token.
+- **Accepted residual: a named, plain panel.** A refusal after the rename leaves a panel named NAME that holds no
+  level: the person can click `Lead` in it. Nothing runs in it until then.
 - **Accepted residual: two opens at once.** The repo-keyed offer makes two conductors' opens for one repo
   exclusive, and the claim makes one offer serve one session. A lead the person makes by hand in the same seconds
   can still pass beside it, as two person-made leads can (ADR 0002, several leads in a repo).
@@ -149,10 +176,10 @@ the ledger says it made with the offers it remembers writing, and shows the pers
 Each is open until run, and each needs the person at the machine.
 
 - **P-C1.** A window signed in to a second Claude account (same macOS user): `editor.open` there opens a panel
-  whose session loads the mod, writes a registry row of kind `interactive`, and passes the interactive check.
-- **P-C2.** With three windows open, only the one whose first folder is the repo answers an open request.
+  whose session loads the mod, writes a registry row of kind `interactive`, and passes the interactive check. *Passed 2026-11-14.*
+- **P-C2.** With three windows open, only the one whose first folder is the repo answers an open request. *Passed 2026-11-14.*
 - **P-C3.** The new panel's registry row and session root appear within the two-minute birth window on a cold
-  window.
+  window. *Passed 2026-11-14.*
 - **P-C4.** A lead grant set from the tick before the first turn: the first turn's system prompt carries the lead
   section, so the grant needs no briefing note.
 - **P-C5.** A `resume` into an idle lead while a `Relay` question is on screen, and while a draft is in the box:

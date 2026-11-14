@@ -355,7 +355,7 @@ export function leadDrop($: any, sid: string): Promise<boolean> {
 
 // The grant dialog of the three levels, in one order: ask once, a click that is not yes, the checks again after a yes, the tools and the grant, the epoch, the saved
 // grant and the presence file (the manager's first), the briefing. The command's own checks before the question stay with the command.
-export async function grantDialog($: any, sid: string, d: LevelDesc, g: GrantDialog): Promise<{ text: string }> {
+export async function grantDialog($: any, sid: string, d: LevelDesc, g: GrantDialog): Promise<{ text: string; code?: string }> {
   const seq = g.seq ?? offSeq.get(sid) ?? 0
   const offNow = () => (offSeq.get(sid) ?? 0) !== seq
   const label = d.level.charAt(0).toUpperCase() + d.level.slice(1)
@@ -384,7 +384,7 @@ export async function grantDialog($: any, sid: string, d: LevelDesc, g: GrantDia
     if (bad) return bad
     if (offNow()) {
       await log($, sid, 'refused', 'off-meanwhile')
-      return { text: 'Nothing changed: callboard was turned off meanwhile.' }
+      return { text: 'Nothing changed: callboard was turned off meanwhile.', code: 'off-meanwhile' }
     }
     const granted = await g.apply(offNow)
     if (typeof granted === 'object') return granted
@@ -1479,7 +1479,7 @@ async function conductorTools($: any, sid: string) {
     ['lane_list', "List the lanes of this conductor's repos, as one table under a Conductor header line (one row per lane with its lead, repo folder name, session and waiting columns; a lead no live session carries is marked not live): each lane, its folder when it is outside the repo root, whether a live session carries its name or it is parked, and how many minutes it has waited on a prompt. A live lead of its repos with no lanes is one row with – in the lane cells.", { type: 'object', properties: {} }],
     ['lane_compact', "Ask a session to compact. lane: the session name of a live lead of your repos (it compacts only when it asked with request_compact on-cue, and is never nudged), or a lane name (at once if it asked on-cue, otherwise it is ordered to compact).", lane],
     ['lane_terminate', "Stop a lane's session with SIGTERM, whatever it is doing. Every stop asks the person: they confirm in a dialog that names the lane, its repo, the session and the pid. Once the session has stopped, the lane's record is deleted too (the .archive/<LANE> folder and report stay). A lane with no live session is removed directly. lane: the lane name. A lead cannot be stopped.", lane],
-    ['lead_open', "Open a panel for a new lead in one of your repos and write the task to its brief (<repo>/.archive/<NAME>/BRIEF.md). The repo must be one of yours with no live lead, and no open may be running or have been tried more than three times in the last hour. The panel is not a lead until the person types /callboard lead in it: tell them so. repo: the repo's absolute path. name: the new lead's name. task: the brief text, as for lane_create. model: opus, sonnet, haiku or fable (default as lane_create); it is not applied yet.", { type: 'object', properties: { repo: { type: 'string' }, name: { type: 'string' }, task: { type: 'string' }, model: { type: 'string' } }, required: ['repo', 'name', 'task'] }],
+    ['lead_open', "Open a panel for a new lead in one of your repos, write the task to its brief (<repo>/.archive/<NAME>/BRIEF.md) and make it the lead without asking the person. The repo must be one of yours with no live lead, and no open may be running, one succeeded in the last hour, or three been tried in the last hour. The person sees a toast. repo: the repo's absolute path. name: the new lead's name. task: the brief text, as for lane_create. model: opus, sonnet, haiku or fable (default as lane_create); the new lead is set to it.", { type: 'object', properties: { repo: { type: 'string' }, name: { type: 'string' }, task: { type: 'string' }, model: { type: 'string' } }, required: ['repo', 'name', 'task'] }],
   ]
   for (const [name, description, inputSchema] of tools) await $.tool.register({ name, description, inputSchema })
   await promptToolsRegister($)

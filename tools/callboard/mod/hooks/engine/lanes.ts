@@ -102,6 +102,7 @@ import { dropRequest, doCompact, isEligible, leadNudge, busyAgents, backgroundSh
 import { ensureTimer } from './tick.ts'
 import { getLane, getLastTurn, getRequest, getSeen, setLane } from '../state.ts'
 import { usageReadings } from './usage.ts'
+import { leadAccept } from './lead-accept.ts'
 
 const stopCallKey = (sid: string, verb: string, lane: unknown) => `${sid}\n${verb}\n${String(lane)}`
 
@@ -512,7 +513,9 @@ async function birthRename(
   }
 }
 
-export async function handle($: any, sid: string, cue: c.Cue, answer: Answer) {
+export async function handle($: any, sid: string, cue: c.Cue, answer: Answer, cueMtimeMs: number = NaN) {
+  // The off counter before any await: a lead offer's accept holds it from here to the grant, so an /callboard off typed meanwhile is seen.
+  const seq = offSeq.get(sid) ?? 0
   // The answer goes first: the lead is waiting on it, and the log line costs several process runs.
   const refuse = async (reason: string) => {
     await answer('refused', reason)
@@ -524,7 +527,8 @@ export async function handle($: any, sid: string, cue: c.Cue, answer: Answer) {
   }
   const now = await $.clock.now()
   const bound = (await getLane($)).value as { name: string; turns?: number; rec?: string; adopted?: boolean; lead?: string } | null | undefined
-  const first = (await getSeen($)).value ?? now
+  const seen = (await getSeen($)).value
+  const first = seen ?? now
   // One cue reads the registry and the lane list once.
   const reg = regOnce($)
   let lanesP: Promise<c.Lane[] | string> | undefined
@@ -538,6 +542,8 @@ export async function handle($: any, sid: string, cue: c.Cue, answer: Answer) {
     return doCompact($, sid, req, true, answer)
   }
   if (cue.verb === 'rename') return birthRename($, sid, cue, { bound, now, first, reg, lanesOnce, refuse, hold, answer })
+  // A lead offer is judged by the session itself, a lane or a lead included: each gets its own refusal, not the lane rules below.
+  if (cue.verb === 'lead') return leadAccept($, sid, cue, { bound: bound != null, seen, seq, cueMtimeMs, reg, refuse, hold, answer })
   // One rule for every lane, made or joined: its session takes a cue only while a live lead of its repo passes leadHere, or, for the verbs they can cause, a
   // trusted live manager or conductor does.
   if (bound) {
@@ -641,7 +647,7 @@ export async function handle($: any, sid: string, cue: c.Cue, answer: Answer) {
 }
 
 // /model in this session's own engine, then a read-back: the session's model name, lowercased, must contain the alias ("Haiku 5.5", "claude-haiku-5-5").
-async function modelSet($: any, model: c.LaneModel): Promise<boolean> {
+export async function modelSet($: any, model: c.LaneModel): Promise<boolean> {
   try {
     if ((await withTimeout($, $.command.run({ command: 'model', args: model }), c.MODEL_TIMEOUT_MS)) === 'timeout') return false
     return String(await $.session.model()).toLowerCase().includes(model)
@@ -710,7 +716,7 @@ export async function claim($: any, sid: string, p: { uid: number; root: string 
   await run($, [RM, '-f', '--', taken])
   if (!after || !c.sameFile(moved, after)) return { bad: 'changed', ino }
   if (!c.isFresh(await $.clock.now(), moved.mtimeMs)) return { bad: 'stale', ino }
-  return { text, ino }
+  return { text, ino, mtimeMs: moved.mtimeMs }
 }
 
 export async function sweepTaken($: any, sid: string, p: { uid: number; root: string }) {
