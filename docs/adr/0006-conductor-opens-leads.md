@@ -1,6 +1,6 @@
 # 6. A conductor opens leads and wakes them
 
-**Status:** proposed
+**Status:** accepted (opening leads, 2026-11-14); waking a lead is not built, and probes P-C5 and P-C6 stay open until it is
 **Date:** 2026-11-13
 
 Scope: three conductor powers over leads in its approved repos: open a new lead, see whether a lead is busy, idle
@@ -22,7 +22,7 @@ Facts that bound the options:
   and answer the new session's id (`lane_open` does this today). That window may be signed in to a different
   Claude account on the same macOS user; the new session runs on that account.
 - A born lane's mod takes its name from its tick before its first turn. Whether a lead grant set the same way
-  reaches the first turn's system prompt is probed before the grant is built (P-C4).
+  reaches the first turn's system prompt was probed before the grant was built (P-C4, passed).
 - Any process running as the person can write every callboard file (ADR 0002, Consequences).
 - One role, one behaviour: a lead behaves the same whatever made it. How it was made may be logged and may limit
   the act of making; it never changes what the lead does afterwards.
@@ -181,8 +181,8 @@ Each is open until run, and each needs the person at the machine.
 - **P-C3.** The new panel's registry row and session root appear within the two-minute birth window on a cold
   window. *Passed 2026-11-14.*
 - **P-C4.** A lead grant set from the tick before the first turn: the first turn's system prompt carries the lead
-  section, so the grant needs no briefing note.
+  section, so the grant needs no briefing note. *Passed 2026-11-14:* a lead made with no click answered with its role and repo on its first turn, from exactly one briefing note.
 - **P-C5.** A `resume` into an idle lead while a `Relay` question is on screen, and while a draft is in the box:
   the registry shows the dialog as waiting, and nothing is submitted.
 - **P-C6.** `/rename` and `/model` from the tick in a session with no turn yet, re-checked for a lead.
-- **P-C7.** How long the accept takes on a cold session (registry, process table, tool registration).
+- **P-C7.** How long the accept takes on a cold session (registry, process table, tool registration). *Passed 2026-11-14, same account:* the panel appeared 2.1 s after the request, the cue was sent at 2.2 s, and the session was a lead 4.1 s after the cue. *Second account* (the repo's window signed in to the other Claude account, the conductor in the first): the panel appeared at 2.1 s and the session was a lead 4.3 s after the cue, so it read the first account's conductor files. No tool call was cut off.
