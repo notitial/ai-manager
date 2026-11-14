@@ -1157,7 +1157,7 @@ test('helpText is a header and a two-column table with one row per subcommand, m
   assert.ok(lines.includes('| lane \\[NAME\\] | Make this session a lane, named NAME if given; lane off takes it out of its lane. |'))
   for (const l of rows) assert.equal(l.replace(/\\\|/g, '').split('|').length, 4, l)
   assert.ok(!c.helpText().includes('Floor'))
-  assert.ok(!c.FLOOR_LINE.includes('optional'))
+  assert.ok(!c.DIALOG_LINE.includes('optional'))
   assert.match(c.HELP_USAGE, /manager/)
   assert.doesNotMatch(c.HELP_USAGE, /prompts/)
   assert.ok(c.HELP_USAGE.endsWith('Run /callboard help for the full list.'))

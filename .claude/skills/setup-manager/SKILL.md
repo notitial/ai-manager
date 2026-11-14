@@ -79,13 +79,15 @@ first; it is the source for every step here, and wins where the two differ.
    `jq -e --arg r '<line>' '(.permissions.deny // []) | index($r) != null' ~/.claude/settings.json`. For any `false`,
    show the person the missing lines to add to `permissions.deny` by hand. If they run a conductor repo, give them
    `chmod go-w <conductor repo>/.claude`.
-   - Prompt answering lines: the two lines in docs/setup.md (Before escalation: two lines (by hand)). Run
-     `jq -e --arg r 'Edit(~/.claude/callboard/**)' '(.permissions.deny // []) | index($r) != null' ~/.claude/settings.json`
-     and
-     `jq -e --arg r 'Bash(*.claude/callboard*)' '(.permissions.ask // []) | index($r) != null' ~/.claude/settings.json`.
-     Note the arrays: the first line is a deny rule, the second an ask rule. For any `false`, show the person the
-     missing line and the array to add it to (`permissions.deny` or `permissions.ask`), by hand. Say that both are
-     required before any `/callboard escalation`, which only the person types.
+   - Protected-paths hook: docs/setup.md, Before escalation: the protected-paths hook. Run
+     `jq -e '[.hooks.PreToolUse[]?.hooks[]?.command] | any(endswith("/protected-paths-guard.sh"))' ~/.claude/settings.json`
+     and `ls ~/.claude/hooks/protected-paths-guard.sh`. If either fails, tell the person to update their ai-toolkit
+     checkout and run `/setup-claude` themselves, then come back: it is ai-toolkit's, never yours to wire or edit.
+     Then run `ls <checkout>/.protected-checkout <toolkit>/.protected-checkout ~/.claude/callboard/.protected-checkout`; for each marker that is
+     missing, give the person the `touch` command from that section (the marker is theirs to make). Say that the
+     hook and all three markers are required before any `/callboard escalation`, which only the person types. Last, on the
+     person's own request in their own turn, run one probe: a Write of a scratch file inside `<checkout>` and another inside
+     `<toolkit>`. Each must be denied by the hook; a write into a `/tmp` clone must go through. If the Write is accepted, report it.
 6. **Old watcher.** First ask whether the repo is public; if unsure, run the dry run
    `bash tools/usage-watcher/install.sh --ref <commit>`: a fetch failure means it is not public yet. Not public: skip
    steps 6 to 8 (an old job stays until the new one can replace it), and say the manager will report

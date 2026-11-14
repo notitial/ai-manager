@@ -648,7 +648,7 @@ const HELP_ROWS: [string, string][] = [
   ['help', 'Show this table.'],
 ]
 // What escalation never hands to an agent: the one wording of it, appended to the answer of /callboard escalation.
-export const FLOOR_LINE = 'Floor (never answered by an agent): edits to settings, hooks, rules and callboard state and code, and any write whose target cannot be shown to stay outside those. Merges, force pushes, pushes to main, master or production and destructive deletes are not on it: the rubric passes them up.'
+export const DIALOG_LINE = 'Never answered by an agent: a dialog of another kind (the plan-mode exit). Writes to the checkouts, the settings and callboard\'s state are stopped by a hook before any prompt exists, not here. Merges, force pushes, pushes to main, master or production and destructive deletes are not on it: the rubric passes them up.'
 export const helpText = (): string => mdPage('**Callboard commands**', ['Command', 'What it does'], HELP_ROWS.map((r) => r.map(mdEscape)))
 // A word the handler does not know: the short list, then the way to the full one.
 export const HELP_USAGE = 'Use /callboard help, lanes, status, lead, lane [NAME], escalation [off], manager or off. Run /callboard help for the full list.'
