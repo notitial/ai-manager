@@ -180,6 +180,9 @@ export const takenSwept = new Map<string, number>()
 
 // The rename of an attached session cannot run inside the command (the engine refuses it there), so it runs from the next tick, once.
 export const pendingRename = new Map<string, { name: string; until: number; manager?: true }>()
+// A new lead's start turn, held until its box is empty and it is idle (engine/lead-accept.ts sets it, leadStartTick submits it): the lead's name, repo and brief
+// path, the turn count the grant left (a person who typed meanwhile is driving), and when it is given up.
+export const leadStarts = new Map<string, { name: string; repo: string; brief: string; turns: number; until: number }>()
 
 // A bound session makes sure its own store record names it, once per binding (name, time and record hash): the record of a lane born through lane_rename,
 // one restored through the dialog, a rebind and every older record. Run from the tick before the cue is claimed, under a time limit. The key is set

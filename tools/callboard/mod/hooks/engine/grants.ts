@@ -355,7 +355,7 @@ export function leadDrop($: any, sid: string): Promise<boolean> {
 
 // The grant dialog of the three levels, in one order: ask once, a click that is not yes, the checks again after a yes, the tools and the grant, the epoch, the saved
 // grant and the presence file (the manager's first), the briefing. The command's own checks before the question stay with the command.
-export async function grantDialog($: any, sid: string, d: LevelDesc, g: GrantDialog): Promise<{ text: string }> {
+export async function grantDialog($: any, sid: string, d: LevelDesc, g: GrantDialog): Promise<{ text: string; code?: string }> {
   const seq = g.seq ?? offSeq.get(sid) ?? 0
   const offNow = () => (offSeq.get(sid) ?? 0) !== seq
   const label = d.level.charAt(0).toUpperCase() + d.level.slice(1)
@@ -384,7 +384,7 @@ export async function grantDialog($: any, sid: string, d: LevelDesc, g: GrantDia
     if (bad) return bad
     if (offNow()) {
       await log($, sid, 'refused', 'off-meanwhile')
-      return { text: 'Nothing changed: callboard was turned off meanwhile.' }
+      return { text: 'Nothing changed: callboard was turned off meanwhile.', code: 'off-meanwhile' }
     }
     const granted = await g.apply(offNow)
     if (typeof granted === 'object') return granted

@@ -46,7 +46,7 @@ export type LevelDesc = {
   presence?: { err: string; fields(g: c.Grant, home?: string): object; key?(g: c.Grant, home?: string): string }
 }
 
-type Refusal = { text: string } | void
+type Refusal = { text: string; code?: string } | void
 
 // What a command hands grantDialog beside the level's LevelDesc: the question and closures over what the command read before it. A closure that refuses
 // returns the reply, its refusal already logged. person: the origin is the person's own. on: the session holds this level.
@@ -55,7 +55,7 @@ export type GrantDialog = {
   yes: string
   no: string
   header: string
-  busy: () => Promise<{ text: string }>
+  busy: () => Promise<{ text: string; code?: string }>
   person: boolean
   on: () => boolean
   pin?: string
@@ -67,11 +67,11 @@ export type GrantDialog = {
   // A question that is not the grant's own (the manager's restore) ends its own way when the answer is not yes.
   onNotYes?: (r: Asked) => Promise<{ text: string }>
   // The checks that read the marks, with no await: the marks are read and set with nothing between.
-  postClick: () => Promise<{ text: string }> | undefined
+  postClick: () => Promise<{ text: string; code?: string }> | undefined
   // Checks inside the mark, then the tools and the grant (offNow: an off came since the question).
   recheck: () => Promise<Refusal>
   // It returns the grant's epoch, read right after the grant was set (no await between), or the refusal.
-  apply: (offNow: () => boolean) => Promise<{ text: string } | number>
+  apply: (offNow: () => boolean) => Promise<{ text: string; code?: string } | number>
   // Once the presence file is written (presenceFirst: with its result, and a refusal ends the grant), or after the saved grant when presence follows it.
   afterPresence?: (wrote: unknown, epoch: number) => Promise<Refusal>
   onLog: [string, string]

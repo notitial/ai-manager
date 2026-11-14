@@ -1594,8 +1594,8 @@ export const LEAD_CUE_WAIT_MS = 35_000
 // A start turn that finds the box busy is dropped after this long, with a toast.
 export const LEAD_START_GIVE_UP_MS = 10 * 60_000
 export const LEAD_MODEL_UNSET = 'model-unset'
-// Answers that say "try the same cue again": the panel's own row was not there yet.
-export const LEAD_HELD_CODES: readonly string[] = ['registry-pending', 'registry-unreadable']
+// Answers that say "try the same cue again": the panel's own row was not there yet, or a draft sits in its box, or it is not idle.
+export const LEAD_HELD_CODES: readonly string[] = ['registry-pending', 'registry-unreadable', 'draft-in-box', 'not-idle']
 const SKEW_MS = 5_000
 
 // The offer file's content: exactly these keys and types, within OFFER_MAX bytes. undefined when anything is off.

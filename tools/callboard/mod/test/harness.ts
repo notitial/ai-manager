@@ -347,6 +347,8 @@ export const h = {
   psConfirmFails: undefined,
   psConfirmOut: undefined,
   renameMode: 'ok' as 'ok' | 'throw' | 'hang',
+  // Runs when a rename command is taken, with the new name: a test uses it to make the registry carry that name.
+  onRename: undefined as undefined | ((name: string) => void),
   // Run once, before the answer, at the next `ps -o args=` (a process check), then cleared.
   psArgsHook: undefined,
   modelMode: 'ok' as 'ok' | 'stay' | 'throw' | 'hang',
@@ -428,6 +430,7 @@ function resetSession() {
   h.submitFails = false
   renames.length = 0
   h.renameMode = 'ok'
+  h.onRename = undefined
   modelRuns.length = 0
   colorRuns.length = 0
   h.modelMode = 'ok'
@@ -710,6 +713,7 @@ export function engine(on0: any, argvSeen: string[][], stdins: string[] = [], cl
       if (h.renameMode === 'throw') throw new Error('refused')
       if (h.renameMode === 'hang') return new Promise(() => undefined)
       h.turnsNow += h.turnsAddedByRename
+      h.onRename?.(e.args)
     } else if (e.command === 'model') {
       modelRuns.push(`${e.args}@${submitted.length}`)
       h.turnsNow++

@@ -693,13 +693,28 @@ async function escalationCommand($: any, sid: string, code: c.OriginCode, op: pr
   return { text: `${pr.escalationState(value, await promptsOff($))} ${c.DIALOG_LINE}` }
 }
 
-// The person's `/callboard lead`: the checks before the question, then the grant dialog. Every lead grant goes through here.
-async function grantLead($: any, sid: string, code: c.OriginCode, busy: () => Promise<{ text: string }>): Promise<{ text: string }> {
+// What a caller other than the person's command adds to a lead grant (the new panel taking a conductor's offer, engine/lead-accept.ts): the grant's question is
+// skipped (silent) with the off counter as it stood when the caller began (seq), the folder is pinned as given, and the caller's own checks run among the
+// grant's: extraRecheck with the dialog's re-checks, extraApply last of all before the grant is set, with no await between it and the set.
+export type LeadGrantOpts = {
+  silent?: boolean
+  seq?: number
+  pinned?: string
+  onLog?: [string, string]
+  toast?: string
+  extraRecheck?: () => Promise<{ text: string; code?: string } | undefined>
+  extraApply?: () => Promise<{ text: string; code?: string } | undefined>
+}
+type Said = { text: string; code?: string }
+
+// The person's `/callboard lead`: the checks before the question, then the grant dialog. Every lead grant goes through here. A refusal carries its code beside
+// its text; a grant that was made carries none.
+export async function grantLead($: any, sid: string, code: c.OriginCode, busy: () => Promise<Said>, o: LeadGrantOpts = {}): Promise<Said> {
   // A lane, the manager, a conductor and a session that was the manager or a conductor are never a lead (core's holderNo): asked before the dialog and again
   // after a yes. A conductor restore still pending does not refuse: the person's lead grant stands, and the restore then ends (lead-holder).
   const leadNo = async (code: string) => {
     await log($, sid, 'refused', code === 'lead-after-manager' ? code : `lead-${code}`)
-    return { text: `${code === 'lane-holder' && grants.has(sid) ? 'Lead stays on' : 'Lead stays off'}: ${c.REASON_TEXT[code]}` }
+    return { text: `${code === 'lane-holder' && grants.has(sid) ? 'Lead stays on' : 'Lead stays off'}: ${c.REASON_TEXT[code]}`, code }
   }
   const laneHeld = async () => (await getLane($)).value != null
   const held = await heldNo($, sid, 'lead', false)
@@ -709,14 +724,14 @@ async function grantLead($: any, sid: string, code: c.OriginCode, busy: () => Pr
     cwd = await sessionRoot($)
   } catch {
     await logq($, sid, 'error', 'lead-register')
-    return { text: 'Lead could not be set up.' }
+    return { text: 'Lead could not be set up.', code: 'grant-failed' }
   }
   // A grant from a plugin, session or script keeps the folder an earlier grant pinned; only the person's own prompt or phone moves it.
-  const pinned = (!c.originIsPerson(code) && pinOf(sid)) || cwd
+  const pinned = o.pinned ?? ((!c.originIsPerson(code) && pinOf(sid)) || cwd)
   // With another lead in the repo, both need a usable name. Asked before the dialog and again after a yes.
   const nameNo = async (why: string) => {
     await log($, sid, 'refused', why)
-    return { text: `${grants.has(sid) ? 'Lead stays on' : 'Lead stays off'}: ${c.REASON_TEXT[why]}` }
+    return { text: `${grants.has(sid) ? 'Lead stays on' : 'Lead stays off'}: ${c.REASON_TEXT[why]}`, code: why }
   }
   await reservedGet($, sid, true)
   const named = await secondLeadNo($, sid, pinned)
@@ -730,6 +745,8 @@ async function grantLead($: any, sid: string, code: c.OriginCode, busy: () => Pr
     person: c.originIsPerson(code),
     on: () => grants.has(sid),
     pin: pinned,
+    silent: o.silent,
+    seq: o.seq,
     // After the click the manager grant is read through wasManager alone.
     postClick: () => {
       const heldAfter = c.holderNo('lead', { ...holdsOf(sid, laneBinding.has(sid), false), manager: false })
@@ -740,6 +757,7 @@ async function grantLead($: any, sid: string, code: c.OriginCode, busy: () => Pr
       if ((await withTimeout($, laneHeld(), c.ENGINE_CALL_TIMEOUT_MS)) !== false) return leadNo('lane-holder')
       const namedNow = await withTimeout($, secondLeadNo($, sid, pinned), c.ENGINE_CALL_TIMEOUT_MS)
       if (namedNow !== undefined) return nameNo(namedNow === 'timeout' ? 'lead-check-slow' : namedNow)
+      return o.extraRecheck?.()
     },
     apply: async (offNow) => {
       let set: unknown
@@ -747,15 +765,18 @@ async function grantLead($: any, sid: string, code: c.OriginCode, busy: () => Pr
         set = await withTimeout($, leadToolsOnce($, sid), c.ENGINE_CALL_TIMEOUT_MS)
       } catch {
         await logq($, sid, 'error', 'lead-register')
-        return { text: 'Lead could not be set up.' }
+        return { text: 'Lead could not be set up.', code: 'grant-failed' }
       }
       if (set === 'timeout') {
         await logq($, sid, 'error', 'lead-register-timeout')
-        return { text: 'Lead could not be set up.' }
+        return { text: 'Lead could not be set up.', code: 'grant-failed' }
       }
+      // The caller's last check: nothing is awaited between its answer and the set below.
+      const last = await o.extraApply?.()
+      if (last) return last
       if (offNow()) {
         await log($, sid, 'refused', 'off-meanwhile')
-        return { text: 'Nothing changed: callboard was turned off meanwhile.' }
+        return { text: 'Nothing changed: callboard was turned off meanwhile.', code: 'off-meanwhile' }
       }
       // A re-grant with a new folder is a new reach: work in flight for the old one (a check-in) sees the epoch move and stops.
       const oldPin = pinOf(sid)
@@ -770,7 +791,8 @@ async function grantLead($: any, sid: string, code: c.OriginCode, busy: () => Pr
     afterPresence: async () => {
       await watchInit($, sid).catch(logFail($, sid, 'lane-watch'))
     },
-    onLog: ['lead-on', ''],
+    onLog: o.onLog ?? ['lead-on', ''],
+    toast: o.toast,
     briefArg: pinned,
     after: () => nameGrant($, sid),
     text: 'Lead is on from your next prompt.\nOnly a force stop asks you.',

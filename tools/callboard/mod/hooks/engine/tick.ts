@@ -225,7 +225,7 @@ async function tick($: any) {
     answer = answerer($, sid, parsed?.ok ? parsed.cue.verb : '-', got.ino)
     if ('bad' in got) return await answerLog($, sid, answer, got.bad)
     if (!parsed!.ok) return await answerLog($, sid, answer, parsed!.reason)
-    const done = await withTimeout($, handle($, sid, parsed!.cue, answer).finally(() => saveHint($, sid)), ACTION_TIMEOUT_MS)
+    const done = await withTimeout($, handle($, sid, parsed!.cue, answer, got.mtimeMs).finally(() => saveHint($, sid)), ACTION_TIMEOUT_MS)
     if (done === 'timeout') {
       await answer('held', 'timeout')
       await log($, sid, 'error', 'tick-timeout')
