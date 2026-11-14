@@ -526,6 +526,8 @@ test('a lead yes that lands while a rename cue is binding the session is refused
   expect((await $.command.run(lane('lead'))).text).toBe(LANE_HOLDER)
   open()
   await pause()
+  await h.clock!.advance(2000)
+  await pause()
   expect(resultFiles.get(RESULT)).toBe('rename ok - 96\n')
   expect((await $.command.run(lane('status'))).text).toContain('| Lane | LABLANE |\n| Lead | OFF |')
   expect(logged(stdins)).toContain('refused:lead-lane-holder')

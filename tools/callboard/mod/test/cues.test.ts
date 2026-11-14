@@ -501,7 +501,7 @@ test('a birth binding write that times out is answered bind-failed, frees the ma
   h.askAnswer = YES
   expect((await $.command.run(lane('lead'))).text).toContain('Lead is on')
 })
-async function modelLane($: any, on: any, stdins: string[], model: string | undefined, opts: { trace?: Trace; brief?: boolean; mode?: 'ok' | 'stay' | 'throw' | 'hang'; now?: string } = {}) {
+async function modelLane($: any, on: any, stdins: string[], model: string | undefined, opts: { trace?: Trace; brief?: boolean; mode?: 'ok' | 'stay' | 'throw' | 'hang'; now?: string; late?: { afterMs: number; added: number }; added?: number; typed?: boolean } = {}) {
   laneSeed.text = undefined
   h.sessions = { [REGFILE]: REG({ cwd: MFOLDER }) }
   h.turnsAddedByRename = 1
@@ -513,12 +513,45 @@ async function modelLane($: any, on: any, stdins: string[], model: string | unde
   await $.session.start({ cwd: MFOLDER, surface: 'vscode', isInteractive: true })
   h.callerCwd = MFOLDER
   await $.command.run(lane('status'))
+  h.renameLate = opts.late
+  if (opts.added !== undefined) h.turnsAddedByRename = opts.added
   expect(await cue(42, 'rename LABLANE\n')).toBe('rename ok - 42\n')
+  if (opts.typed) h.turnsNow++
   if (opts.brief !== false) extraStat.set(`${MFOLDER}/BRIEF.md`, fileStat)
   h.modelMode = opts.mode ?? 'ok'
   if (opts.now) h.modelNow = opts.now
   await cue(43, 'start\n')
 }
+
+test('start is accepted when the rename entries land after the command returns', async ($, on) => {
+  const stdins: string[] = []
+  await modelLane($, on, stdins, undefined, { late: { afterMs: 100, added: 1 }, added: 0 })
+  expect(resultFiles.get(RESULT)).toBe('start ok - 43\n')
+  expect(logged(stdins)).toContain('bind-turns:t0=0 t1=1 stored=1 settled=true')
+  expect(submitted.length).toBe(1)
+})
+
+test('start is accepted when the rename entries land later than one poll', async ($, on) => {
+  const stdins: string[] = []
+  await modelLane($, on, stdins, undefined, { late: { afterMs: 400, added: 1 }, added: 0 })
+  expect(resultFiles.get(RESULT)).toBe('start ok - 43\n')
+  expect(logged(stdins)).toContain('bind-turns:t0=0 t1=1 stored=1 settled=true')
+})
+
+test('a count that grows by more than a rename adds is not bound: the rename is answered bind-turns-mismatch', async ($, on) => {
+  const stdins: string[] = []
+  await modelLane($, on, stdins, undefined, { late: { afterMs: 100, added: 2 }, added: 0 }).catch(() => undefined)
+  expect(resultFiles.get(RESULT)).toBe('rename refused bind-turns-mismatch 42\n')
+  expect(logged(stdins)).toContain('refused:bind-turns-mismatch')
+})
+
+test('start still refuses a session someone typed into after the rename, and logs the counts', async ($, on) => {
+  const stdins: string[] = []
+  await modelLane($, on, stdins, undefined, { late: { afterMs: 100, added: 1 }, added: 0, typed: true })
+  expect(resultFiles.get(RESULT)).toBe('start refused not-empty 43\n')
+  expect(logged(stdins)).toContain('start-turns:bound=1 now=2')
+  expect(submitted.length).toBe(0)
+})
 
 test('start runs /model for a record with a model, after the brief checks and before the start text', async ($, on) => {
   const stdins: string[] = []

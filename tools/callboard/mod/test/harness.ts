@@ -279,6 +279,9 @@ export const h = {
   timerHeld: undefined,
   turnsNow: 0,
   turnsAddedByRename: 1,
+  // Entries the rename writes after the command returns: they show in the count once afterMs of test time has passed since the rename.
+  renameLate: undefined as undefined | { afterMs: number; added: number },
+  renameAt: 0,
   tokensNow: 150_000,
   // Runs once inside the next session.usage call, to change state while a hook awaits it.
   usageHook: undefined,
@@ -423,6 +426,7 @@ function resetClock() {
 function resetSession() {
   seen.compacted = false
   h.turnsNow = 0
+  h.renameLate = undefined
   h.composeStale = false
   h.appendRows = []
   h.appendDeny = false
@@ -660,7 +664,7 @@ export function engine(on0: any, argvSeen: string[][], stdins: string[] = [], cl
       return { value: undefined }
     })
   }
-  on('session.turns', () => ({ value: h.turnsNow }))
+  on('session.turns', () => ({ value: h.turnsNow + (h.renameLate && h.nowMs - h.renameAt >= h.renameLate.afterMs ? h.renameLate.added : 0) }))
   on('session.id', () => ({ value: SID }))
   // An appended row counts as a turn here, so a note before lane_start would make it refuse not-empty in the tests too.
   // An earlier test's module is cut off from this test's shared mocks: its processes fail, its store, prompt, toast and append calls do nothing.
@@ -713,6 +717,7 @@ export function engine(on0: any, argvSeen: string[][], stdins: string[] = [], cl
       if (h.renameMode === 'throw') throw new Error('refused')
       if (h.renameMode === 'hang') return new Promise(() => undefined)
       h.turnsNow += h.turnsAddedByRename
+      h.renameAt = h.nowMs
       h.onRename?.(e.args)
     } else if (e.command === 'model') {
       modelRuns.push(`${e.args}@${submitted.length}`)

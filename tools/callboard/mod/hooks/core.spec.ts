@@ -111,6 +111,22 @@ test('startTurnsOk accepts only the turn count read right after the rename', () 
   assert.equal(c.startTurnsOk(Number.NaN, 0), false)
 })
 
+test('turnsSettled holds only when two reads of a whole count agree', () => {
+  assert.equal(c.turnsSettled(1, 1), true)
+  assert.equal(c.turnsSettled(1, 2), false)
+  assert.equal(c.turnsSettled(Number.NaN, Number.NaN), false)
+  assert.equal(c.turnsSettled(0.5, 0.5), false)
+})
+
+test('a rename whose entries land late binds to the settled count, and a later typed turn is still refused', () => {
+  const reads = [0, 1, 1]
+  assert.equal(c.turnsSettled(reads[0], reads[1]), false)
+  assert.equal(c.turnsSettled(reads[1], reads[2]), true)
+  const bound = c.bindTurns(0, reads[2])
+  assert.equal(c.startTurnsOk(1, bound), true)
+  assert.equal(c.startTurnsOk(2, bound), false)
+})
+
 test('bindTurns accepts a rename that added zero turns (terminal) or one (panel) and nothing else', () => {
   assert.equal(c.bindTurns(0, 0), 0)
   assert.equal(c.bindTurns(0, 1), 1)
