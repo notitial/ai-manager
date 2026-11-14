@@ -424,6 +424,15 @@ test('garbage lines are tolerated, counted and never crash', () => {
   assert.match(rep.notes.join('\n'), /7 ledger line\(s\) were not valid rows/)
 })
 
+test('a legacy floor row is skipped quietly, neither a row nor garbage', () => {
+  const fx = fixture()
+  ledger(fx, [ON(), JSON.stringify({ t: new Date(BASE).toISOString(), kind: 'floor', id: uid(9), code: 'settings' }), ...clean()])
+  const rep = run(fx)
+  assert.deepEqual(rep.anomalies, [])
+  assert.equal(rep.table.length, 1)
+  assert.doesNotMatch(rep.notes.join('\n'), /not valid rows/)
+})
+
 test('--since keeps older requests and their anomalies out', () => {
   const fx = fixture()
   const oldAt = BASE - 5 * 86400_000

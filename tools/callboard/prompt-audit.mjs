@@ -214,6 +214,7 @@ function readLedger(root, entries, problems, notes) {
   let garbage = 0
   const { files, skippedLong } = eachMonthFile(root, entries, 'ledger', problems, (line, file) => {
     if (line.trim() === '') return
+    if (parseObj(line)?.kind === 'floor') return // a row of the removed floor judge: not a row now, and not damage
     const r = parseRow(line)
     if (r) rows.push({ ...r, seq: rows.length, file })
     else garbage++
