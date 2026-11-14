@@ -193,7 +193,9 @@ the person's own included. `docs/setup.md` installs it and the markers. Three th
   counts, `--comments` when it starts `@claude review --comments`, else a full review. A mention elsewhere in a body,
   a title, a review or a reply in a thread starts no run and is not counted. A comment a shell command posts
   (`gh pr comment`, `gh api`) is not read and is not capped here: ai-toolkit's `gh-block` hook denies agents the `gh`
-  command, and a machine without it has no cap over such a post.
+  command, and a machine without it has no cap over such a post. The cap covers workflows triggered by the review
+  command (`@claude review`, the toolkit's claude-review kit). A repo that runs the stock action, which fires on any
+  `@claude` mention, is not capped by it: a mention that does not start with the review command is not counted.
 
 The self-protection now relies on the hook being installed and the marker present. Without either, the rubric and
 auto mode's classifier are the only layers over an edit of those places, and the setup says so. The hook reads file
@@ -368,7 +370,7 @@ the label is in the questions file for 90 days. It prints the lane's question be
 for a lead, a conductor or the manager in the middle of a turn, as the same fixed text beside its next tool result (the idle turn stays the fallback, and
 resends once a request still open when that turn ends; both count against the same 30). Over the cap a notice stays owed,
 and the next tier opens by the clock. Per pull request, at most 2
-`@claude review --comments` and 1 other `@claude` comment are approved by an agent, counted from the ledger. A
+`@claude review --comments` and 1 full `@claude review` are approved by an agent, counted from the ledger. A
 request's input copy is redacted and removed on close; each string in it is capped at 10 KB and the whole input at 32 KB, so
 an ordinary pull request body (about 8 KB) reaches the lead whole. Past a cap the input is marked truncated, and the
 rubric then lets the lead deny it but never allow it. A truncated input is never relayed either (a deny of it is
