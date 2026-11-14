@@ -1,8 +1,9 @@
 import { expect } from 'claude-code/testing'
 import { REASON_TEXT } from '../hooks/core'
-import { h, teeTexts, OFFERS_DIR, longTest, PROMPTS_DIR, ROOT, T0, extraStat, leadFiles, pfs } from './harness'
+import * as c from '../hooks/core'
+import { h, SID, pdirs, teeTexts, OFFERS_DIR, longTest, PROMPTS_DIR, ROOT, T0, extraStat, leadFiles, pfs } from './harness'
 import { ledgerRows } from './answer-fixtures'
-import { CSESS, LEADPS, OTHERLEAD, PIN, condOn, leadAt, regAs } from './fixtures'
+import { ticks, CSESS, LEADPS, OTHERLEAD, PIN, condOn, leadAt, regAs } from './fixtures'
 
 const call = (over: Record<string, unknown> = {}) => ({ tool: 'mcp__callboard__lead_open', repo: PIN, name: 'LEAD-N', task: 'Do the work.', ...over }) as any
 const NEWSID = '12345678-aaaa-4bbb-8ccc-dddddddddddd'
@@ -335,4 +336,39 @@ longTest('no answer to the cue takes nothing back and says the panel may still b
   expect(r).toContain('may still become the lead')
   expect(kinds()).toEqual(['lead-offer'])
   expect(offers().length).toBe(1)
+})
+
+// ---- the offer sweep ----
+const staleOffer = (over: Record<string, unknown> = {}) =>
+  c.offerText({ v: 1, name: 'LEAD-N', repo: PIN, model: 'sonnet', conductor: { sid: SID, pid: 4242, start: 'x' }, at: T0 - 11 * 60_000, nonce: 'b'.repeat(32), ...over } as any)
+
+longTest('a conductor takes away its own offer nobody answered once it is ten minutes old: the row is voided as expired, the offer and claim go', async ($, on) => {
+  const argv: string[][] = []
+  await conductor($, on, argv)
+  pdirs.add(OFFERS_DIR)
+  pfs.set(`${OFFERS_DIR}/${KEY}.json`, { text: staleOffer(), mtimeSec: T0 / 1000 - 11 * 60 })
+  pfs.set(`${OFFERS_DIR}/${KEY}.claim`, { text: 'x', mtimeSec: T0 / 1000 - 11 * 60 })
+  seedRows({ kind: 'lead-offer', t: iso(11 * 60_000), nonce: 'b'.repeat(32), by: SID })
+  await ticks(32)
+  expect(kinds()).toEqual(['lead-offer', 'lead-offer-void expired'])
+  expect(offers()).toEqual([])
+})
+
+longTest('the sweep leaves a young offer, another conductor\'s offer and an offer already closed by a grant or void alone (the last only loses its files)', async ($, on) => {
+  const argv: string[][] = []
+  await conductor($, on, argv)
+  pdirs.add(OFFERS_DIR)
+  pfs.set(`${OFFERS_DIR}/${KEY}.json`, { text: staleOffer(), mtimeSec: T0 / 1000 - 5 * 60 })
+  seedRows({ kind: 'lead-offer', t: iso(11 * 60_000), nonce: 'b'.repeat(32), by: SID })
+  await ticks(32)
+  expect(offers().length).toBe(1)
+  expect(kinds()).toEqual(['lead-offer'])
+  pfs.set(`${OFFERS_DIR}/${KEY}.json`, { text: staleOffer({ conductor: { sid: OTHERLEAD, pid: 4243, start: 'x' } }), mtimeSec: T0 / 1000 - 11 * 60 })
+  await ticks(32)
+  expect(offers().length).toBe(1)
+  pfs.set(`${OFFERS_DIR}/${KEY}.json`, { text: staleOffer(), mtimeSec: T0 / 1000 - 11 * 60 })
+  seedRows({ kind: 'lead-offer', t: iso(11 * 60_000), nonce: 'b'.repeat(32), by: SID }, { kind: 'lead-grant', t: iso(10 * 60_000), nonce: 'b'.repeat(32) })
+  await ticks(32)
+  expect(offers()).toEqual([])
+  expect(kinds()).toEqual(['lead-offer', 'lead-grant'])
 })

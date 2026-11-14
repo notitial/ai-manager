@@ -1,6 +1,6 @@
 import { expect } from 'claude-code/testing'
 import * as c from '../hooks/core'
-import { h, longTest, pfs, pdirs, OFFERS_DIR, PROMPTS_DIR, ROOT, SID, T0, extraStat, laneSeed, leadFiles, modelRuns, renames, resultFiles, toasts } from './harness'
+import { h, longTest, pfs, pdirs, OFFERS_DIR, PROMPTS_DIR, ROOT, SID, T0, extraStat, laneSeed, leadFiles, modelRuns, renames, resultFiles, submitted, toasts } from './harness'
 import { ledgerRows } from './answer-fixtures'
 import { COND, KEY, LEADPS, OTHERLEAD, PIN, RESULT, cue, condPresenceOf, dirStat, grantAt, lane, leadFileText, leadReg, LEADPATH, logged, putCond, regAs, started, tickTwice, ticks, waitFor } from './fixtures'
 
@@ -261,4 +261,76 @@ longTest('the lead the panel became is a lead like any other: /callboard off rem
 longTest('a claim that names this very session is taken again (the retry after a held answer)', async ($, on) => {
   await accepting($, on, { seed: () => pfs.set(CLAIM_PATH, { text: SID, mtimeSec: T0 / 1000 }) })
   expect(await cue(135, CUE)).toBe('lead ok - 135\n')
+})
+
+// ---- the held start turn ----
+const BRIEFP = `${PIN}/.archive/LEAD-N/BRIEF.md`
+const START = c.leadStartText('LEAD-N', PIN, BRIEFP)
+const withBrief = () => extraStat.set(BRIEFP, '501 600 1 Regular File 9 100 1700000000\n')
+// The person starts typing as the panel is renamed: the accept is done by then, and the start turn finds a draft.
+const typingAfterRename = () => {
+  const prev = h.onRename
+  h.onRename = (name) => {
+    prev?.(name)
+    h.draftNow = 'typing'
+  }
+}
+const startTurns = () => submitted.filter((t) => t === START).length
+
+longTest('the lead is started once its panel is idle with an empty box: one fixed turn, never twice', async ($, on) => {
+  await accepting($, on, { seed: withBrief })
+  expect(await cue(140, CUE)).toBe('lead ok - 140\n')
+  await ticks(4)
+  expect(startTurns()).toBe(1)
+  await ticks(10)
+  expect(startTurns()).toBe(1)
+})
+
+longTest('a draft in the box holds the start turn; it goes once the box is empty', async ($, on) => {
+  await accepting($, on, { seed: withBrief })
+  typingAfterRename()
+  expect(await cue(141, CUE)).toBe('lead ok - 141\n')
+  await ticks(6)
+  expect(startTurns()).toBe(0)
+  h.draftNow = ''
+  await ticks(4)
+  expect(startTurns()).toBe(1)
+})
+
+longTest('a turn that began since the grant (the person typed first) drops the start turn', async ($, on) => {
+  await accepting($, on, { seed: withBrief })
+  typingAfterRename()
+  expect(await cue(142, CUE)).toBe('lead ok - 142\n')
+  h.turnsNow++
+  h.draftNow = ''
+  await ticks(6)
+  expect(startTurns()).toBe(0)
+})
+
+longTest('a brief that is not a plain file of the user drops the start turn', async ($, on) => {
+  await accepting($, on, { seed: () => extraStat.set(BRIEFP, '501 600 2 Regular File 9 100 1700000000\n') })
+  expect(await cue(143, CUE)).toBe('lead ok - 143\n')
+  await ticks(6)
+  expect(startTurns()).toBe(0)
+})
+
+longTest('a busy panel gives the start turn up after ten minutes, with a toast; the lead stays on', async ($, on) => {
+  await accepting($, on, { seed: withBrief })
+  typingAfterRename()
+  expect(await cue(144, CUE)).toBe('lead ok - 144\n')
+  await h.clock!.advance(c.LEAD_START_GIVE_UP_MS + 5_000)
+  await ticks(3)
+  expect(startTurns()).toBe(0)
+  expect(toasts).toContain(c.leadNotStartedToast('LEAD-N', PIN))
+  expect(leadKey()).toBeDefined()
+})
+
+longTest('/callboard off before the start turn drops it', async ($, on) => {
+  await accepting($, on, { seed: withBrief })
+  typingAfterRename()
+  expect(await cue(145, CUE)).toBe('lead ok - 145\n')
+  await $.command.run(lane('off'))
+  h.draftNow = ''
+  await ticks(6)
+  expect(startTurns()).toBe(0)
 })

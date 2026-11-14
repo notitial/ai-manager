@@ -63,6 +63,7 @@ import {
 import { promptCloseTick, promptSweep } from './answer-hook.ts'
 import { promptNoticeTick } from './answer-tiers.ts'
 import { usageFlush } from './usage.ts'
+import { leadStartTick, offerSweep } from './lead-start.ts'
 import { getRequest, getSeen, setInteractive, setRequest, setSeen } from '../state.ts'
 
 const RESUME_TTL_MS = 120_000
@@ -182,6 +183,8 @@ async function tick($: any) {
     if (lr) await timedStep($, sid, leadRestore($, sid, lr.hint, lr.tries + 1), 'error', (r) => `lead-restore-${r}`)
     // A pending conductor restore, and a running conductor's reach and saved grant.
     await conductorTick($, sid).catch(logFail($, sid, 'conductor-tick'))
+    // A conductor's own lead offers that nobody answered.
+    if (grants.get(sid)?.level === 'conductor') await offerSweep($, sid).catch(logFail($, sid, 'offer-sweep'))
     // ADR 0004: close the requests of sessions that are gone, and any older than a day.
     await promptCloseTick($).catch(logFail($, sid, 'prompt-close'))
     await promptSweep($).catch(logFail($, sid, 'prompt-sweep'))
@@ -200,6 +203,8 @@ async function tick($: any) {
       await presenceTouch($, sid).catch(logFail($, sid, 'presence'))
       await presencePrune($).catch(logFail($, sid, 'presence-prune'))
       await leadRenameTick($, sid).catch(logFail($, sid, 'lead-rename'))
+      // The start turn of a lead that a conductor opened, before the other notices (a tick submits at most once).
+      await leadStartTick($, sid, submitsAtStart).catch(logFail($, sid, 'lead-start'))
       await watchTick($, sid).catch(logFail($, sid, 'lane-watch'))
       // ADR 0004: the notice of a prompt waiting, after the lanes-changed one (a tick submits at most once).
       await promptNoticeTick($, sid, submitsAtStart).catch(logFail($, sid, 'prompt-notice'))
