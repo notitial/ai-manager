@@ -2,7 +2,7 @@
 // Panel control for callboard. All vscode and filesystem access is injected so the
 // registry-diff race can be tested with a fake registry.
 
-const { reservedHit, SID_RE, NAME_RE, pidAlive } = require('./reserved.js')
+const { SID_RE, NAME_RE, pidAlive } = require('./reserved.js')
 const { psStart, procStateWith } = require('./proc.js')
 
 const ADOPT_MAX = 64
@@ -286,8 +286,8 @@ function createLanes({ vscode, registry, sleep, now, workspaceFolders = () => un
 
   // A panel this extension opened leaves a dead tab with an exit banner once its session ends. Sweeping notes each such panel's last name,
   // process id and tab from the registry. When no live entry is left and that process is dead, its tab is closed, but only if no live session
-  // still carries that name (a new panel for the same lane), only for a known pid (a missing or odd pid is never taken for dead), never a
-  // reserved name, and only the tab seen for that panel (or, if VS Code gave out a new object, the one Claude tab with its label).
+  // still carries that name (a new panel for the same lane), only for a known pid (a missing or odd pid is never taken for dead), and only
+  // the tab seen for that panel (or, if VS Code gave out a new object, the one Claude tab with its label).
   // The tab is shown for a moment first, so its session does not stay marked unread (closeSeen). History stays, so the session can be reopened. A live process (a /clear or a resume in the same panel) is never closed.
   // Rows and the recorded process are judged by procState: a dead row neither keeps a tab nor blocks a close, and anything not proven dead
   // (a failed `ps`, a row with no start time) keeps the tab: a row of that sid that is 'maybe' and not the recorded pid keeps it, the recorded
@@ -359,7 +359,7 @@ function createLanes({ vscode, registry, sleep, now, workspaceFolders = () => un
         continue
       }
       forget(sid)
-      if (!rec.name || reservedHit(rec.name)) continue
+      if (!rec.name) continue
       let held = false
       for (const x of all) if (x.name === rec.name && (await procState(x.pid, x.procStart, starts)) !== 'dead') { held = true; break }
       if (held) continue
@@ -374,7 +374,7 @@ function createLanes({ vscode, registry, sleep, now, workspaceFolders = () => un
   // close its tab under the same rules, so the request adds nothing a forged file could use: the pid must be dead, no live session may carry the name,
   // and only the one Claude tab with that label goes. The number of adopted panels is bounded.
   function adopt(sid, { name, pid } = {}) {
-    if (!SID_RE.test(String(sid)) || !Number.isInteger(pid) || pid < 2 || pid > PID_MAX || typeof name !== 'string' || !NAME_RE.test(name) || reservedHit(name)) return false
+    if (!SID_RE.test(String(sid)) || !Number.isInteger(pid) || pid < 2 || pid > PID_MAX || typeof name !== 'string' || !NAME_RE.test(name)) return false
     if (!opened.has(sid) && opened.size >= ADOPT_MAX) return false
     const prev = lastSeen.get(sid)
     if (!opened.has(sid)) adoptedAt.set(sid, now())

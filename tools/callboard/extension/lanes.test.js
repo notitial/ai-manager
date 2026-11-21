@@ -410,7 +410,7 @@ test('sweep closes the tab of an opened panel once its session is gone and its p
   assert.ok(s)
 })
 
-test('sweep never closes a panel it did not open, a reserved name, an ambiguous label or a non-Claude tab', async () => {
+test('sweep never closes a panel it did not open, an ambiguous label or a non-Claude tab', async () => {
   // Each process is alive while its row is listed and dead once the row is gone.
   const dead = new Set()
   const w = world({ alive: (pid) => !dead.has(pid) })
@@ -422,15 +422,6 @@ test('sweep never closes a panel it did not open, a reserved name, an ambiguous 
   gone(7)
   await w.lanes.sweep()
   assert.deepEqual(closed, [], 'not opened by the extension')
-
-  await w.lanes.open(A)
-  w.entries[0].pid = 11
-  w.entries[0].name = 'manager'
-  w.vscode.window.tabGroups.all[0].tabs = [claudeTab('manager')]
-  await w.lanes.sweep()
-  gone(11)
-  await w.lanes.sweep()
-  assert.deepEqual(closed, [], 'reserved name')
 
   await w.lanes.open(A)
   w.entries[0].pid = 12
@@ -449,6 +440,33 @@ test('sweep never closes a panel it did not open, a reserved name, an ambiguous 
   gone(13)
   await w.lanes.sweep()
   assert.deepEqual(closed, [], 'not a Claude panel')
+})
+
+test('sweep closes the tab of a lane named like the manager once its process is dead, and keeps it while a live session carries the name', async () => {
+  const dead = new Set()
+  const w = world({ alive: (pid) => !dead.has(pid) })
+  const tab = claudeTab('MANAGER-182')
+  const closed = trackTabs(w, tab)
+  await w.lanes.open(A)
+  w.entries[0].pid = 31
+  w.entries[0].name = 'MANAGER-182'
+  await w.lanes.sweep()
+  w.entries.length = 0
+  dead.add(31)
+  w.entries.push({ sessionId: 'f0000000-0000-4000-8000-0000000000bb', cwd: A, entrypoint: 'claude-vscode', name: 'MANAGER-182', pid: 32 })
+  await w.lanes.sweep()
+  assert.deepEqual(closed, [], 'a live session carrying the name holds the tab')
+
+  const w2 = world({ alive: (pid) => !dead.has(pid) })
+  const closed2 = trackTabs(w2, tab)
+  await w2.lanes.open(A)
+  w2.entries[0].pid = 33
+  w2.entries[0].name = 'MANAGER-182'
+  await w2.lanes.sweep()
+  w2.entries.length = 0
+  dead.add(33)
+  await w2.lanes.sweep()
+  assert.deepEqual(closed2, [tab])
 })
 
 test('sweep keeps the tab when a live session already carries the name, and drops a record with no known pid without closing', async () => {
@@ -612,6 +630,15 @@ test('adopt gives the sweep a panel it did not open: its tab closes once the pid
   assert.equal(closed.length, 1, 'closed once')
 })
 
+test('an adopted panel named like the manager is accepted and its tab closes once the pid is dead', async () => {
+  const w = world({ alive: () => false })
+  const tab = claudeTab('MANAGER-182')
+  const closed = trackTabs(w, tab)
+  assert.equal(w.lanes.adopt(VALID_SID, { name: 'MANAGER-182', pid: 4242 }), true)
+  await w.lanes.sweep()
+  assert.deepEqual(closed, [tab])
+})
+
 test('an adopted panel keeps its tab while a live session carries the name, or while its registry entry is still there', async () => {
   const dead = new Set([4242])
   const w = world({ alive: (pid) => !dead.has(pid) })
@@ -633,10 +660,10 @@ test('an adopted panel keeps its tab while a live session carries the name, or w
   assert.deepEqual(closed, [tab])
 })
 
-test('adopt ignores a bad session id, pid or name, a reserved name, and more than 64 panels; the sweep closes nothing for them', async () => {
+test('adopt ignores a bad session id, pid or name, and more than 64 panels; the sweep closes nothing for them', async () => {
   const w = world({ alive: () => false })
-  const closed = trackTabs(w, claudeTab('manager'), claudeTab('ATT'))
-  for (const [id, r] of [['nope', { name: 'ATT', pid: 4242 }], [VALID_SID, { name: 'ATT', pid: 1 }], [VALID_SID, { name: 'ATT', pid: 12.5 }], [VALID_SID, { name: 'ATT', pid: '4242' }], [VALID_SID, { name: 'manager', pid: 4242 }], [VALID_SID, { name: 'a b', pid: 4242 }], [VALID_SID, {}], [VALID_SID, undefined]]) {
+  const closed = trackTabs(w, claudeTab('ATT'))
+  for (const [id, r] of [['nope', { name: 'ATT', pid: 4242 }], [VALID_SID, { name: 'ATT', pid: 1 }], [VALID_SID, { name: 'ATT', pid: 12.5 }], [VALID_SID, { name: 'ATT', pid: '4242' }], [VALID_SID, { name: 'a b', pid: 4242 }], [VALID_SID, {}], [VALID_SID, undefined]]) {
     assert.equal(w.lanes.adopt(id, r), false, JSON.stringify([id, r]))
   }
   await w.lanes.sweep()

@@ -228,8 +228,6 @@ or an answer file, and a registry file. The protected-paths guard keeps agents' 
 that fails leaves the dialog with you with no deadline (ADR 0012, Consequences). Beyond that, specific to what you see:
 
 - Messages between sessions carry no proof of who sent them.
-- The extension knows only the name `MANAGER`, so it does not keep a panel with another reserved name from being
-  closed.
 - A PR notice's counts include the lane's own comments (ADR 0010).
 - What a tier handles and what it passes up is guidance in its rubric, not a check in the plugin. A tier that
   misreads it, or is talked round by a lane's input, can allow what a guard or hook was written to put in front of

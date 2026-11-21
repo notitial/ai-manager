@@ -188,14 +188,14 @@ test('parse keeps only the request\'s own fields', () => {
   assert.deepEqual(parse(JSON.stringify({ ...OPEN, sid: SID })), OPEN)
 })
 
-test('with the real lanes.js: a close is taken and a reserved name is refused', async () => {
+test('with the real lanes.js: a close is taken, including for a lane named like the manager', async () => {
   const lanes = createLanes({ vscode: {}, registry: {}, sleep: async () => undefined, now: Date.now })
   const w = world({ lanes: { adopt: lanes.adopt } })
   w.put('c1', CLOSE)
-  w.put('c2', { ...CLOSE, name: 'MANAGER' })
+  w.put('c2', { ...CLOSE, name: 'MANAGER-182' })
   await w.spool.scan()
   assert.deepEqual(w.result('c1'), { ok: true })
-  assert.deepEqual(w.result('c2'), { ok: false, code: 'refused' })
+  assert.deepEqual(w.result('c2'), { ok: true })
 })
 
 test('a request whose answer cannot be written is reported and does not stop the scan', async () => {
